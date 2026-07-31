@@ -147,11 +147,6 @@ impl JitInstance {
     }
 
     #[inline]
-    pub(crate) fn clone_function_registry(&self) -> SharedFunctionRegistry {
-        self.function_registry.clone()
-    }
-
-    #[inline]
     pub(crate) fn module_revision(&self) -> u64 {
         self.module_revision
     }
@@ -209,12 +204,6 @@ impl JitInstance {
     #[inline]
     pub(crate) fn clone_ref_registry(&self) -> SharedRefRegistry {
         Rc::clone(&self.ref_registry)
-    }
-
-    #[inline]
-    #[cfg(sf_has_simd)]
-    pub(crate) fn clone_simd_registry(&self) -> SharedSimdRegistry {
-        self.simd_registry.clone()
     }
 
     #[inline]

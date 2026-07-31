@@ -4,8 +4,7 @@
 //! JIT is the reference.
 #![cfg(all(sf_interp, sf_jit))]
 
-use sf_nano_core::module::Module;
-use sf_nano_core::{Instance, InterpInstance, Value};
+use sf_nano_core::{Config, Engine, Instance, Tier, Value};
 
 fn value_bits(v: &Value) -> u64 {
     match v {
@@ -23,17 +22,13 @@ fn diff(wasm: &[u8], export: &str, args: &[Value]) {
     let jit_results = jit.invoke(export, args).expect("jit invoke");
     let jbits: Vec<u64> = jit_results.iter().map(value_bits).collect();
 
-    let module = Module::new("diff", wasm).expect("module parse");
-    let iargs: Vec<u64> = args.iter().map(value_bits).collect();
+    let interp_engine =
+        Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter engine configuration");
+    let mut interp = Instance::new(&interp_engine, wasm, &[]).expect("interpreter instantiation");
+    let interp_results = interp.invoke(export, args).expect("interpreter invoke");
+    let ibits: Vec<u64> = interp_results.iter().map(value_bits).collect();
 
-    let mut interp =
-        InterpInstance::new(&engine(), module, None, &[]).expect("interp instantiation");
-    let idx = interp.find_export(export).expect("export in interp");
-    let mut iresults = vec![0u64; jit_results.len()];
-    interp
-        .invoke(idx, &iargs, &mut iresults)
-        .expect("interp invoke");
-    assert_eq!(jbits, iresults, "engines disagree on {export}({args:?})");
+    assert_eq!(jbits, ibits, "engines disagree on {export}({args:?})");
 }
 
 fn diff_wat(src: &str, export: &str, args: &[Value]) {

@@ -254,22 +254,7 @@ fn compute_static_table_dispatch_modes(
 }
 
 impl JitInstanceLease {
-    pub fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
-        let module = Module::new("main", wasm_bytes)?;
-        Self::from_module(engine, module, imports)
-    }
-
-    pub fn from_module(
-        engine: &Engine,
-        module: Module,
-        imports: &[Import],
-    ) -> Result<Self, WasmError> {
-        let registry = LinkRegistry::new();
-        Self::from_module_with_registry(engine, module, imports, &registry)
-            .map_err(|err| err.into_parts().1)
-    }
-
-    pub fn from_module_with_registry(
+    pub(crate) fn from_module_with_registry(
         engine: &Engine,
         module: Module,
         imports: &[Import],
@@ -1008,14 +993,6 @@ impl JitInstanceLease {
         }
     }
 
-    pub fn invoke(
-        &mut self,
-        name: &str,
-        args: &[Value],
-    ) -> Result<collections::Vec<Value>, WasmError> {
-        Self::invoke_token(self.checkout_for_invocation()?, name, args)
-    }
-
     pub(crate) fn invoke_token(
         token: InstanceToken,
         name: &str,
@@ -1036,7 +1013,7 @@ impl JitInstanceLease {
     }
 
     /// The function index behind an exported name, resolved once.
-    pub fn function_index_of_export(&self, name: &str) -> Option<usize> {
+    pub(crate) fn function_index_of_export(&self, name: &str) -> Option<usize> {
         self.store()
             .exports()
             .iter()
@@ -1045,7 +1022,7 @@ impl JitInstanceLease {
     }
 
     /// Call by index, writing results into a caller-owned slice.
-    pub fn call_function_index(
+    pub(crate) fn call_function_index(
         &mut self,
         idx: usize,
         args: &[Value],
@@ -1063,7 +1040,7 @@ impl JitInstanceLease {
         Ok(())
     }
 
-    pub fn invoke_function_index(
+    pub(crate) fn invoke_function_index(
         &mut self,
         idx: usize,
         args: &[Value],
@@ -1082,7 +1059,7 @@ impl JitInstanceLease {
         runtime::eval(token, idx, args)
     }
 
-    pub fn has_function_export(&self, name: &str) -> bool {
+    pub(crate) fn has_function_export(&self, name: &str) -> bool {
         self.store()
             .exports()
             .iter()
@@ -1130,7 +1107,7 @@ impl JitInstanceLease {
         self.lease.is_exclusive()
     }
 
-    pub fn get_global(&self, name: &str) -> Result<Option<Value>, WasmError> {
+    pub(crate) fn get_global(&self, name: &str) -> Result<Option<Value>, WasmError> {
         let store = self.store();
         Ok(self
             .store()
@@ -1144,7 +1121,7 @@ impl JitInstanceLease {
             .transpose()?)
     }
 
-    pub fn global_at(&self, idx: usize) -> Result<Option<Value>, WasmError> {
+    pub(crate) fn global_at(&self, idx: usize) -> Result<Option<Value>, WasmError> {
         let store = self.store();
         Ok(store
             .module()
@@ -1154,7 +1131,7 @@ impl JitInstanceLease {
             .transpose()?)
     }
 
-    pub fn replace_global_at(&mut self, idx: usize, value: Value) -> Result<(), WasmError> {
+    pub(crate) fn replace_global_at(&mut self, idx: usize, value: Value) -> Result<(), WasmError> {
         let store = self.store_mut();
         let reachable = store.module().global_is_reachable(idx);
         let raw = value_to_container_raw_in_store(value, reachable, store);
@@ -1167,26 +1144,7 @@ impl JitInstanceLease {
         Ok(())
     }
 
-    pub fn set_global(&mut self, name: &str, value: Value) -> Result<(), WasmError> {
-        let idx = self
-            .store()
-            .exports()
-            .iter()
-            .find(|(n, k, _)| matches!(k, ExportKind::Global) && n == name)
-            .map(|(_, _, idx)| *idx)
-            .ok_or_else(|| WasmError::invalid("global not found"))?;
-        let store = self.store_mut();
-        let reachable = store.module().global_is_reachable(idx);
-        let raw = value_to_container_raw_in_store(value, reachable, store);
-        let global = store.global_mut(idx);
-        if !global.mutable {
-            return Err(WasmError::invalid("cannot set immutable global"));
-        }
-        global.set_raw(raw);
-        Ok(())
-    }
-
-    pub fn memory(&self) -> Option<&[u8]> {
+    pub(crate) fn memory(&self) -> Option<&[u8]> {
         let store = self.store();
         if store.module().memories.is_empty() {
             None
@@ -1197,7 +1155,7 @@ impl JitInstanceLease {
         }
     }
 
-    pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
+    pub(crate) fn memory_mut(&mut self) -> Option<&mut [u8]> {
         let store = self.store_mut();
         if store.module().memories.is_empty() {
             None
@@ -1208,7 +1166,7 @@ impl JitInstanceLease {
         }
     }
 
-    pub fn memory_pages(&self, name: &str) -> Option<usize> {
+    pub(crate) fn memory_pages(&self, name: &str) -> Option<usize> {
         for (n, kind, idx) in self.store().exports() {
             if n == name && matches!(kind, ExportKind::Memory) {
                 return Some(self.store().memory(*idx).current_pages());
@@ -1217,30 +1175,7 @@ impl JitInstanceLease {
         None
     }
 
-    pub fn memory_bytes_at(&self, idx: usize) -> Option<&[u8]> {
-        self.store().module().memories.get(idx).map(|mem| {
-            let len = mem.memory_len();
-            unsafe { core::slice::from_raw_parts(mem.memory_ptr(), len) }
-        })
-    }
-
-    pub fn replace_memory_bytes_at(&mut self, idx: usize, bytes: &[u8]) -> Result<(), WasmError> {
-        let mem = self
-            .store_mut()
-            .module_mut()
-            .memories
-            .get_mut(idx)
-            .ok_or_else(|| WasmError::invalid("memory index out of range"))?;
-        let len = mem.memory_len();
-        if len != bytes.len() {
-            return Err(WasmError::invalid("memory size mismatch"));
-        }
-        let dst = unsafe { core::slice::from_raw_parts_mut(mem.memory_ptr(), len) };
-        dst.copy_from_slice(bytes);
-        Ok(())
-    }
-
-    pub fn table_size(&self, name: &str) -> Option<usize> {
+    pub(crate) fn table_size(&self, name: &str) -> Option<usize> {
         for (n, kind, idx) in self.store().exports() {
             if n == name && matches!(kind, ExportKind::Table) {
                 return Some(self.store().table(*idx).size());
@@ -1249,7 +1184,7 @@ impl JitInstanceLease {
         None
     }
 
-    pub fn function_type_at(&self, idx: usize) -> Option<FunctionType> {
+    pub(crate) fn function_type_at(&self, idx: usize) -> Option<FunctionType> {
         self.store()
             .module()
             .functions
@@ -1257,7 +1192,7 @@ impl JitInstanceLease {
             .map(|func| func.func_type().clone())
     }
 
-    pub fn function_type_index_at(&self, idx: usize) -> Option<u32> {
+    pub(crate) fn function_type_index_at(&self, idx: usize) -> Option<u32> {
         self.store()
             .module()
             .functions
@@ -1277,7 +1212,7 @@ impl JitInstanceLease {
     }
 
     /// Mint the function's absolute reference form for external use.
-    pub fn function_handle_at(&self, idx: usize) -> Option<RefValue> {
+    pub(crate) fn function_handle_at(&self, idx: usize) -> Option<RefValue> {
         let store = self.store();
         let handle = store.module().function_handle(idx)?;
         if handle.is_null() {
@@ -1288,7 +1223,7 @@ impl JitInstanceLease {
 
     /// Resolve an exported tag to its runtime identity. Required for
     /// cross-module tag linking via `Import::linked_tag_typed(...)`.
-    pub fn tag_identity(&self, name: &str) -> Option<TagIdentity> {
+    pub(crate) fn tag_identity(&self, name: &str) -> Option<TagIdentity> {
         let (_, _, idx) = self
             .store()
             .exports()
@@ -1297,7 +1232,7 @@ impl JitInstanceLease {
         self.store().module().tags.get(*idx).map(|t| t.handle)
     }
 
-    pub fn shared_table_state_at(&self, idx: usize) -> Option<ImportedTableState> {
+    pub(crate) fn shared_table_state_at(&self, idx: usize) -> Option<ImportedTableState> {
         let store = self.store();
         if !store.module().table_is_reachable(idx) {
             return None;
@@ -1313,7 +1248,7 @@ impl JitInstanceLease {
             })
     }
 
-    pub fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
+    pub(crate) fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
         let store = self.store();
         if !store.module().global_is_reachable(idx) {
             return None;
@@ -1329,35 +1264,11 @@ impl JitInstanceLease {
             })
     }
 
-    pub fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
+    pub(crate) fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
         self.store().module().memories.get(idx).cloned()
     }
 
-    pub fn clone_function_registry(&self) -> LinkRegistry {
-        #[cfg(sf_has_simd)]
-        {
-            LinkRegistry::from_shared(
-                self.store().clone_function_registry(),
-                self.store().clone_ref_registry(),
-                self.store().clone_simd_registry(),
-                self.store()
-                    .instance_backref()
-                    .table()
-                    .expect("live JIT instance table"),
-            )
-        }
-        #[cfg(not(sf_has_simd))]
-        LinkRegistry::from_shared(
-            self.store().clone_function_registry(),
-            self.store().clone_ref_registry(),
-            self.store()
-                .instance_backref()
-                .table()
-                .expect("live JIT instance table"),
-        )
-    }
-
-    pub fn append_host_function<F>(&mut self, func_type: FunctionType, callback: F) -> usize
+    pub(crate) fn append_host_function<F>(&mut self, func_type: FunctionType, callback: F) -> usize
     where
         F: for<'a, 'b, 'c, 'd> Fn(
                 &'a mut Caller<'b>,
@@ -1542,6 +1453,47 @@ mod tests {
         utils::limits::Limits,
         value_type::ValueType,
     };
+
+    trait TestJitInstanceLease: Sized {
+        fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError>;
+
+        fn from_module(
+            engine: &Engine,
+            module: Module,
+            imports: &[Import],
+        ) -> Result<Self, WasmError>;
+
+        fn invoke(
+            &mut self,
+            name: &str,
+            args: &[Value],
+        ) -> Result<collections::Vec<Value>, WasmError>;
+    }
+
+    impl TestJitInstanceLease for JitInstanceLease {
+        fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
+            let module = Module::new("main", wasm_bytes)?;
+            Self::from_module(engine, module, imports)
+        }
+
+        fn from_module(
+            engine: &Engine,
+            module: Module,
+            imports: &[Import],
+        ) -> Result<Self, WasmError> {
+            let registry = LinkRegistry::new();
+            Self::from_module_with_registry(engine, module, imports, &registry)
+                .map_err(|error| error.into_parts().1)
+        }
+
+        fn invoke(
+            &mut self,
+            name: &str,
+            args: &[Value],
+        ) -> Result<collections::Vec<Value>, WasmError> {
+            Self::invoke_token(self.checkout_for_invocation()?, name, args)
+        }
+    }
 
     fn importer_with_memory(limits: Limits) -> Module {
         let mut builder = ModuleBuilder::new();

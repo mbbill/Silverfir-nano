@@ -90,7 +90,7 @@ type DynHostDispatch =
     dyn for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>;
 
 #[derive(Clone)]
-pub struct HostDispatch {
+pub(crate) struct HostDispatch {
     callback: Rc<RefCell<Box<DynHostDispatch>>>,
 }
 
@@ -535,11 +535,11 @@ pub struct InterpInstance {
     /// and nothing for an embedder to have to outlive.
     module: Module,
     funcs: Vec<Option<Rc<PredecodedFunction>>>,
-    /// Runtime state only the executor touches. `new()` still builds it on
-    /// every target -- doing so is what rejects imported/64-bit/non-funcref
-    /// memories and tables and traps out-of-range active segments -- but a
-    /// target without an executor validates and drops it rather than
-    /// carrying it.
+    /// Runtime state only the executor touches. Instance construction still
+    /// builds it on every target -- doing so is what rejects
+    /// imported/64-bit/non-funcref memories and tables and traps out-of-range
+    /// active segments -- but a target without an executor validates and
+    /// drops it rather than carrying it.
     memories: Vec<MemoryState>,
     dropped_data: Vec<bool>,
     dropped_elems: Vec<bool>,
@@ -703,17 +703,19 @@ impl InterpInstanceLease {
     }
 
     pub(crate) fn memory(&self) -> Option<&[u8]> {
-        let memory = self.with_instance(|instance| instance.shared_memory_at(0))?;
-        let ptr = memory.memory_ptr();
-        let len = memory.memory_len();
-        Some(unsafe { core::slice::from_raw_parts(ptr, len) })
+        self.lease
+            .token()
+            .interp()
+            .expect("interpreter lease must resolve to an InterpInstance")
+            .memory()
     }
 
     pub(crate) fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        let memory = self.with_instance(|instance| instance.shared_memory_at(0))?;
-        let ptr = memory.memory_ptr();
-        let len = memory.memory_len();
-        Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
+        self.lease
+            .token_mut()
+            .interp_mut()
+            .expect("interpreter lease must resolve to an InterpInstance")
+            .memory_mut()
     }
 }
 
@@ -917,47 +919,6 @@ fn limits_satisfy(declared: &Limits, provided: &Limits) -> bool {
 }
 
 impl InterpInstance {
-    /// Instantiate, link the host, then run the start function -- in that
-    /// order, which is why the host arrives here rather than through a
-    /// setter. A start function may call an import, and a setter cannot
-    /// be called before a constructor that already ran it.
-    pub fn new(
-        engine: &Engine,
-        module: Module,
-        host: Option<HostDispatch>,
-        imports: &[Import],
-    ) -> Result<Self, WasmError> {
-        Self::new_partial(engine, module, host, imports, None).map_err(|(_, e)| e)
-    }
-
-    /// Instantiate, handing the instance back even when a data segment traps.
-    ///
-    /// Element segments run before data ones, so a module whose data segment
-    /// traps has already written its elements -- possibly into a table another
-    /// instance holds. Those writes stand and anything they reference must
-    /// stay callable, so the caller keeps the instance rather than losing it.
-    pub fn new_partial(
-        engine: &Engine,
-        module: Module,
-        host: Option<HostDispatch>,
-        imports: &[Import],
-        funcref_host: Option<FuncRefHost>,
-    ) -> Result<Self, (Option<Self>, WasmError)> {
-        let registry = LinkRegistry::new();
-        let (_, instance_backref) = registry.reserve_instance();
-        let inst = Self::build(
-            engine,
-            module,
-            host,
-            imports,
-            funcref_host,
-            registry.arenas(),
-            instance_backref,
-        )
-        .map_err(|e| (None, e))?;
-        Self::initialize(inst)
-    }
-
     /// Registry-aware partial instantiation used by linkers that keep several
     /// interpreter instances in one runtime graph.
     pub(crate) fn new_partial_with_registry(
@@ -1040,7 +1001,7 @@ impl InterpInstance {
         Ok(InterpInstanceLease { lease })
     }
 
-    fn build(
+    pub(in crate::vm) fn build(
         engine: &Engine,
         module: Module,
         host: Option<HostDispatch>,
@@ -1521,44 +1482,11 @@ impl InterpInstance {
             function_identities,
             native: None,
         };
-        // The dispatch chain, the data segments and the start function are
-        // `new_partial`'s, in that order: start can call an import and must
-        // see initialized memory, and a trap in either has to hand the
-        // instance back rather than lose it.
+        // `initialize` adds the dispatch chain, data segments, and start
+        // function in that order: start can call an import and must see
+        // initialized memory, and a trap in either has to hand the instance
+        // back rather than lose it.
         Ok(inst)
-    }
-
-    /// Build the storage half of an interpreter instance for the instance
-    /// table's Miri tests without touching generated native dispatch symbols,
-    /// which Miri cannot evaluate.
-    ///
-    /// These tests never execute guest code; they exercise the real boxed
-    /// instance, checkout tokens, scoped accessors, and mutable interpreter
-    /// storage.
-    #[cfg(test)]
-    pub(crate) fn build_for_instance_table_test(
-        engine: &Engine,
-        module: Module,
-        registry: &LinkRegistry,
-        instance_backref: InstanceBackref,
-    ) -> Result<Self, WasmError> {
-        Self::build(
-            engine,
-            module,
-            None,
-            &[],
-            None,
-            registry.arenas(),
-            instance_backref,
-        )
-    }
-
-    /// Force an observable write to the inline instance allocation in Miri
-    /// materialization tests.
-    #[cfg(test)]
-    pub fn touch_storage_for_instance_table_test(&mut self) {
-        let dropped_data = core::mem::take(&mut self.dropped_data);
-        self.dropped_data = dropped_data;
     }
 
     /// Copy every active element segment into its table.
@@ -1897,31 +1825,6 @@ impl InterpInstance {
         Vec::new()
     }
 
-    /// Install the host dispatcher used for imported functions. Generic
-    /// so callers pass a plain closure; boxing happens here (unsizing to
-    /// the dyn target through the `alloc` box, then wrapping in the
-    /// tracked facade — the same pattern as the JIT's host callbacks).
-    /// Box a host dispatcher for [`Self::new`].
-    ///
-    /// Keeps the engine's allocator-tracked `Box` out of the caller's
-    /// type, so an embedder writes an ordinary closure.
-    pub fn boxed_host<F>(host: F) -> HostDispatch
-    where
-        F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
-    {
-        let mut host = host;
-        let wrapped = move |module: &str,
-                            name: &str,
-                            caller: &mut Caller<'_>,
-                            args: &[u64],
-                            results: &mut [u64]| {
-            let mut empty_memory = [];
-            let memory = caller.memory_mut().unwrap_or(&mut empty_memory);
-            host(module, name, memory, args, results)
-        };
-        Self::boxed_caller_host(wrapped)
-    }
-
     pub(crate) fn boxed_caller_host<F>(host: F) -> HostDispatch
     where
         F: for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>
@@ -1929,17 +1832,6 @@ impl InterpInstance {
     {
         let host: alloc::boxed::Box<DynHostDispatch> = alloc::boxed::Box::new(host);
         HostDispatch::new(tracked_alloc::box_from_alloc(host))
-    }
-
-    /// Replace the host dispatcher after instantiation.
-    ///
-    /// Prefer passing it to [`Self::new`]: a start function that calls an
-    /// import runs during instantiation, before this could be reached.
-    pub fn set_host<F>(&mut self, host: F)
-    where
-        F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
-    {
-        self.host = Some(Self::boxed_host(host));
     }
 
     /// Resolve the element-segment function value at `seg[k]`.
@@ -1975,7 +1867,7 @@ impl InterpInstance {
     ///
     /// Only a global that is imported or exported is held as a `GlobalInst`;
     /// a purely private one lives in the array and has nothing to share.
-    pub fn global_state_at(&self, idx: usize) -> Option<GlobalInst> {
+    pub(crate) fn global_state_at(&self, idx: usize) -> Option<GlobalInst> {
         if !self.global_reachable.get(idx).copied().unwrap_or(true) {
             return None;
         }
@@ -1983,7 +1875,7 @@ impl InterpInstance {
     }
 
     /// The runtime identity of tag `idx`, for an importer to link against.
-    pub fn tag_identity_at(&self, idx: usize) -> Option<TagIdentity> {
+    pub(crate) fn tag_identity_at(&self, idx: usize) -> Option<TagIdentity> {
         self.tags.get(idx).copied()
     }
 
@@ -2292,7 +2184,7 @@ impl InterpInstance {
     ///
     /// Only a table that is imported or exported is held as a `TableInst`;
     /// a purely private one keeps an array and has nothing to share.
-    pub fn table_state_at(&self, idx: usize) -> Option<TableInst> {
+    pub(crate) fn table_state_at(&self, idx: usize) -> Option<TableInst> {
         if !self.table_reachable.get(idx).copied().unwrap_or(true) {
             return None;
         }
@@ -2304,13 +2196,13 @@ impl InterpInstance {
 
     /// The current size of table `idx`, which `table.grow` may have changed
     /// since instantiation.
-    pub fn table_len(&self, idx: usize) -> Option<usize> {
+    pub(crate) fn table_len(&self, idx: usize) -> Option<usize> {
         self.tables.get(idx).map(|t| t.entries.len())
     }
 
     /// The module this instance was built from.
     #[inline]
-    pub fn module(&self) -> &Module {
+    pub(crate) fn module(&self) -> &Module {
         &self.module
     }
 
@@ -2326,21 +2218,21 @@ impl InterpInstance {
 
     /// The first linear memory's contents, if the module defines one.
     #[inline]
-    pub fn memory(&self) -> Option<&[u8]> {
+    pub(crate) fn memory(&self) -> Option<&[u8]> {
         {
             self.memories.first().map(|m| m.bytes())
         }
     }
 
     #[inline]
-    pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
+    pub(crate) fn memory_mut(&mut self) -> Option<&mut [u8]> {
         {
             self.memories.first_mut().map(|m| m.bytes_mut())
         }
     }
 
     /// Find an exported function's index by name.
-    pub fn find_export(&self, name: &str) -> Option<usize> {
+    pub(crate) fn find_export(&self, name: &str) -> Option<usize> {
         self.module
             .functions()
             .iter()
@@ -2348,7 +2240,7 @@ impl InterpInstance {
     }
 
     /// (params, results) arity of a function.
-    pub fn func_arity(&self, func_index: usize) -> Option<(usize, usize)> {
+    pub(crate) fn func_arity(&self, func_index: usize) -> Option<(usize, usize)> {
         self.module.functions().get(func_index).map(|f| {
             let ft = f.func_type();
             (ft.params().len(), ft.results().len())
@@ -2356,7 +2248,7 @@ impl InterpInstance {
     }
 
     /// The function's absolute world identity for an external boundary.
-    pub fn function_handle_at(&self, func_index: usize) -> Option<RefValue> {
+    pub(crate) fn function_handle_at(&self, func_index: usize) -> Option<RefValue> {
         self.function_identities
             .get(func_index)
             .copied()
@@ -2368,14 +2260,14 @@ impl InterpInstance {
     /// Sharing the substrate's `MemInst` is what makes an interpreter
     /// instance linkable: the importer takes this backing rather than a
     /// copy, so writes on either side are visible to both.
-    pub fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
+    pub(crate) fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
         {
             self.memories.get(idx).map(|m| m.inst.clone())
         }
     }
 
     /// A global's raw 64-bit value by index.
-    pub fn global_at(&self, idx: usize) -> Option<u64> {
+    pub(crate) fn global_at(&self, idx: usize) -> Option<u64> {
         // Through the shared cell where there is one: the array slot beside a
         // shared global is stale by design, so reading it would report the
         // value as of instantiation rather than now.
@@ -2386,7 +2278,7 @@ impl InterpInstance {
     }
 
     /// Overwrite a global's raw 64-bit value by index.
-    pub fn set_global_at(&mut self, idx: usize, raw: u64) -> Result<(), WasmError> {
+    pub(crate) fn set_global_at(&mut self, idx: usize, raw: u64) -> Result<(), WasmError> {
         let raw = self.global_slot_for_storage(idx, raw);
         if let Some(Some(shared)) = self.shared_globals.get_mut(idx) {
             shared.set_raw(raw);
@@ -2402,20 +2294,11 @@ impl InterpInstance {
     }
 
     /// The index of an exported global, if the module exports one.
-    pub fn find_export_global(&self, name: &str) -> Option<usize> {
+    pub(crate) fn find_export_global(&self, name: &str) -> Option<usize> {
         self.module
             .globals()
             .iter()
             .position(|g| g.export_names().iter().any(|n| n == name))
-    }
-
-    /// Read an exported global's raw 64-bit value.
-    pub fn get_export_global(&self, name: &str) -> Option<u64> {
-        self.module
-            .globals()
-            .iter()
-            .position(|g| g.export_names().iter().any(|n| n == name))
-            .and_then(|i| self.globals.get(i).copied())
     }
 
     /// Invoke a function by index. `args` and `results` are this instance's
@@ -2424,7 +2307,7 @@ impl InterpInstance {
     /// The typed `Instance` adapter converts its absolute [`Value`]s at this
     /// boundary; direct raw callers already speak the
     /// interpreter frame form.
-    pub fn invoke(
+    pub(crate) fn invoke(
         &mut self,
         func_index: usize,
         args: &[u64],
@@ -4483,6 +4366,69 @@ mod tests {
     use super::*;
     use crate::module::Module;
     use std::vec::Vec as StdVec;
+
+    trait TestInterpInstance: Sized {
+        fn new(
+            engine: &Engine,
+            module: Module,
+            host: Option<HostDispatch>,
+            imports: &[Import],
+        ) -> Result<Self, WasmError>;
+
+        fn boxed_host<F>(host: F) -> HostDispatch
+        where
+            F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static;
+
+        fn set_host<F>(&mut self, host: F)
+        where
+            F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static;
+    }
+
+    impl TestInterpInstance for InterpInstance {
+        fn new(
+            engine: &Engine,
+            module: Module,
+            host: Option<HostDispatch>,
+            imports: &[Import],
+        ) -> Result<Self, WasmError> {
+            let registry = LinkRegistry::new();
+            let (_, instance_backref) = registry.reserve_instance();
+            let inst = Self::build(
+                engine,
+                module,
+                host,
+                imports,
+                None,
+                registry.arenas(),
+                instance_backref,
+            )?;
+            Self::initialize(inst).map_err(|(_, error)| error)
+        }
+
+        fn boxed_host<F>(host: F) -> HostDispatch
+        where
+            F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
+        {
+            let mut host = host;
+            let wrapped = move |module: &str,
+                                name: &str,
+                                caller: &mut Caller<'_>,
+                                args: &[u64],
+                                results: &mut [u64]| {
+                let mut empty_memory = [];
+                let memory = caller.memory_mut().unwrap_or(&mut empty_memory);
+                host(module, name, memory, args, results)
+            };
+            Self::boxed_caller_host(wrapped)
+        }
+
+        fn set_host<F>(&mut self, host: F)
+        where
+            F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
+        {
+            self.host = Some(Self::boxed_host(host));
+        }
+    }
 
     fn instantiate(src: &str) -> (StdVec<u8>, ()) {
         let bin: StdVec<u8> = wat::parse_str(src).expect("wat");

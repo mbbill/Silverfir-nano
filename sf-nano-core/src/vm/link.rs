@@ -1048,37 +1048,6 @@ impl LinkRegistry {
     pub(crate) fn simd_registry_shared(&self) -> SharedSimdRegistry {
         self.arenas.simd.clone()
     }
-
-    #[inline]
-    #[cfg(all(sf_jit, sf_has_simd))]
-    pub(crate) fn from_shared(
-        functions: SharedFunctionRegistry,
-        refs: SharedRefRegistry,
-        simd: SharedSimdRegistry,
-        instances: InstanceTable,
-    ) -> Self {
-        Self {
-            arenas: LinkArenas {
-                functions,
-                refs,
-                simd,
-            },
-            instances,
-        }
-    }
-
-    #[inline]
-    #[cfg(all(sf_jit, not(sf_has_simd)))]
-    pub(crate) fn from_shared(
-        functions: SharedFunctionRegistry,
-        refs: SharedRefRegistry,
-        instances: InstanceTable,
-    ) -> Self {
-        Self {
-            arenas: LinkArenas { functions, refs },
-            instances,
-        }
-    }
 }
 
 #[cfg(all(test, sf_interp))]
@@ -1150,10 +1119,13 @@ mod instance_table_tests {
             Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter test engine");
         let module = Module::new(name, MEMORY_WASM).expect("interpreter test module");
         let (id, handle) = registry.reserve_instance();
-        let instance = InterpInstance::build_for_instance_table_test(
+        let instance = InterpInstance::build(
             &engine,
             module,
-            registry,
+            None,
+            &[],
+            None,
+            registry.arenas(),
             handle.clone(),
         )
         .expect("interpreter test instance");
@@ -1402,7 +1374,6 @@ mod instance_table_tests {
             );
             first_a
                 .with_instance_mut(|a| {
-                    a.touch_storage_for_instance_table_test();
                     a.memory_mut().expect("A memory")[0] = 0x11;
                     assert_eq!(a.instance_backref().self_id(), a_id);
                 })
@@ -1415,7 +1386,6 @@ mod instance_table_tests {
             let mut b_access = InterpInstanceAccess::checked_out(b_token);
             b_access
                 .with_instance_mut(|b| {
-                    b.touch_storage_for_instance_table_test();
                     b.memory_mut().expect("B memory")[0] = 0x22;
                     let a_token = b
                         .instance_backref()
@@ -1424,7 +1394,6 @@ mod instance_table_tests {
                     let mut reentered_a = InterpInstanceAccess::checked_out(a_token);
                     reentered_a
                         .with_instance_mut(|a| {
-                            a.touch_storage_for_instance_table_test();
                             assert_eq!(a.memory().expect("re-entered A memory")[0], 0x11);
                             a.memory_mut().expect("re-entered A memory")[0] = 0x33;
                         })
@@ -1443,7 +1412,6 @@ mod instance_table_tests {
             );
             final_a
                 .with_instance_mut(|a| {
-                    a.touch_storage_for_instance_table_test();
                     assert_eq!(a.memory().expect("final A memory")[0], 0x33);
                 })
                 .expect("final A materialization");
