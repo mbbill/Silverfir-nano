@@ -80,7 +80,9 @@ use crate::{
                 NativeCodeCache, NativeRootEntry,
             },
             code_buf::CodeBuffer,
-            dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64},
+            dispatch_view::{
+                NativeLocalCallInfo32, NativeLocalCallInfo64, SelfAbsoluteFunctionRange,
+            },
         },
         jit::template,
         jit::wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
@@ -640,6 +642,7 @@ fn compile_semantic_function_owned(
     const_pool: &mut ConstPoolBuilder,
     is_local_func: &[bool],
     table_dispatch_modes: &[TableDispatchMode],
+    self_absolute_range: SelfAbsoluteFunctionRange,
     #[cfg(sf_has_guard_pages)] use_guard_pages: bool,
     #[cfg(sf_has_guard_pages)] use_stack_guard_pages: bool,
 ) -> Result<ParallelCompiledFunction, WasmError> {
@@ -678,6 +681,7 @@ fn compile_semantic_function_owned(
         &mut compiled_view.abi.functions,
         is_local_func,
         table_dispatch_modes,
+        self_absolute_range,
         const_pool,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages,
@@ -719,6 +723,7 @@ fn compile_full_functions_parallel(
     store: &JitInstance,
     abi: &MachineModuleAbi,
     is_local_func: &[bool],
+    self_absolute_range: SelfAbsoluteFunctionRange,
     worker_count: usize,
     #[cfg(sf_has_guard_pages)] use_guard_pages: bool,
     #[cfg(sf_has_guard_pages)] use_stack_guard_pages: bool,
@@ -772,6 +777,7 @@ fn compile_full_functions_parallel(
                         &mut const_pool,
                         is_local_func,
                         table_dispatch_modes,
+                        self_absolute_range,
                         #[cfg(sf_has_guard_pages)]
                         use_guard_pages,
                         #[cfg(sf_has_guard_pages)]
@@ -855,6 +861,7 @@ fn compile_full_streaming_function(
     const_pool: &mut ConstPoolBuilder,
     is_local_func: &[bool],
     table_dispatch_modes: &[TableDispatchMode],
+    self_absolute_range: SelfAbsoluteFunctionRange,
     groups: &mut usize,
     ssa_ops: &mut usize,
     mir_ops: &mut usize,
@@ -897,6 +904,7 @@ fn compile_full_streaming_function(
         &mut compiled_view.abi.functions,
         is_local_func,
         table_dispatch_modes,
+        self_absolute_range,
         const_pool,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages,
@@ -1046,6 +1054,7 @@ fn finish_native_compile_streaming(
     module: &ModuleInst,
     store: &JitInstance,
 ) -> Result<(), WasmError> {
+    let self_absolute_range = store.self_absolute_range();
     let (abi, is_local_func) = build_static_summaries(module, store, backend)?;
     let mut compiled_view = StreamingCompiledModule::new(backend, abi);
     let mut const_pool = ConstPoolBuilder::new();
@@ -1081,6 +1090,7 @@ fn finish_native_compile_streaming(
                 store,
                 &compiled_view.abi,
                 &is_local_func,
+                self_absolute_range,
                 worker_count,
                 #[cfg(sf_has_guard_pages)]
                 use_guard_pages,
@@ -1174,6 +1184,7 @@ fn finish_native_compile_streaming(
                 &mut const_pool,
                 &is_local_func,
                 module.table_dispatch_modes(),
+                self_absolute_range,
                 &mut groups,
                 &mut ssa_ops,
                 &mut mir_ops,
@@ -1491,6 +1502,7 @@ pub(crate) fn ensure_module_compiled(store: &JitInstance) -> Result<(), WasmErro
             use_stack_guard_pages,
         },
         module.table_dispatch_modes(),
+        store.self_absolute_range(),
     )?;
     let module_opt_phase = phase_span("module_opt");
     optimize_module(&mut lowered.module);

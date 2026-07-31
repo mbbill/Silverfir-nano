@@ -19,6 +19,7 @@ use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, TableInst};
 use crate::vm::jit::entities::ModuleInst;
 use crate::vm::jit::gc_heap::{GcHeap, GcRef};
 use crate::vm::jit::instantiate::ExportKind;
+use crate::vm::jit::runtime::dispatch_view::SelfAbsoluteFunctionRange;
 #[cfg(sf_has_simd)]
 use crate::vm::link::SharedSimdRegistry;
 use crate::vm::link::{
@@ -37,11 +38,9 @@ pub(crate) struct JitInstance {
     instance_backref: InstanceBackref,
     function_registry: SharedFunctionRegistry,
     local_funcaddrs: collections::Vec<usize>,
-    /// Reverse lookup for this instance's own registered wasm functions.
-    /// `absolute - self_abs_base` indexes `self_local_by_abs`; gaps contain
-    /// `u32::MAX`. Imported host and linked functions never populate it.
-    self_abs_base: usize,
-    self_local_by_abs: collections::Vec<u32>,
+    /// Absolute-handle span occupied by this instance's registered functions.
+    /// Linked functions retain their foreign identity and never populate it.
+    self_absolute_range: SelfAbsoluteFunctionRange,
     ref_registry: SharedRefRegistry,
     #[cfg(sf_has_simd)]
     simd_registry: SharedSimdRegistry,
@@ -71,8 +70,7 @@ impl JitInstance {
             instance_backref,
             function_registry,
             local_funcaddrs: collections::vec![UNREGISTERED_FUNCADDR; function_count],
-            self_abs_base: usize::MAX,
-            self_local_by_abs: collections::Vec::new(),
+            self_absolute_range: SelfAbsoluteFunctionRange::default(),
             ref_registry,
             #[cfg(sf_has_simd)]
             simd_registry,
@@ -254,20 +252,16 @@ impl JitInstance {
         (funcaddr != UNREGISTERED_FUNCADDR).then_some(funcaddr)
     }
 
-    /// Finalize the owner-private absolute-to-local map after initial function
-    /// registration. Only wasm-defined functions participate: imports can
-    /// carry another instance's absolute identity and must never enter this
-    /// reverse map. Instantiation calls this once before any `NativeContext`
-    /// can publish a view into the resulting allocation.
-    pub(crate) fn finalize_self_local_by_abs(&mut self) {
+    /// Finalize the owner-private absolute-handle span after initial function
+    /// registration. Linked imports carry another instance's absolute identity
+    /// and never enter this range. Instantiation calls this once before native
+    /// compilation.
+    pub(crate) fn finalize_self_absolute_range(&mut self) {
         let self_id = self.instance_backref.self_id();
         let mut self_abs_base = usize::MAX;
         let mut self_abs_hi = 0usize;
 
-        for (local_index, func) in self.module.functions.iter().enumerate() {
-            if !matches!(func, FunctionInst::Local { .. }) {
-                continue;
-            }
+        for local_index in 0..self.module.functions.len() {
             let Some(funcaddr) = self.funcaddr_for_local_index(local_index) else {
                 continue;
             };
@@ -285,36 +279,19 @@ impl JitInstance {
             self_abs_hi = self_abs_hi.max(encoded);
         }
 
-        let mut self_local_by_abs = collections::Vec::new();
-        if self_abs_base != usize::MAX {
-            self_local_by_abs.resize(self_abs_hi - self_abs_base + 1, u32::MAX);
-            for (local_index, func) in self.module.functions.iter().enumerate() {
-                if !matches!(func, FunctionInst::Local { .. }) {
-                    continue;
-                }
-                let Some(funcaddr) = self.funcaddr_for_local_index(local_index) else {
-                    continue;
-                };
-                let encoded = FUNCADDR_TOP
-                    .checked_sub(funcaddr)
-                    .expect("registered funcaddr exceeds the encoding range");
-                self_local_by_abs[encoded - self_abs_base] = u32::try_from(local_index)
-                    .expect("local function index exceeds the funcaddr encoding");
+        self.self_absolute_range = if self_abs_base == usize::MAX {
+            SelfAbsoluteFunctionRange::default()
+        } else {
+            SelfAbsoluteFunctionRange {
+                base: self_abs_base,
+                count: self_abs_hi - self_abs_base + 1,
             }
-        }
-
-        self.self_abs_base = self_abs_base;
-        self.self_local_by_abs = self_local_by_abs;
+        };
     }
 
     #[inline]
-    pub(crate) fn self_abs_base(&self) -> usize {
-        self.self_abs_base
-    }
-
-    #[inline]
-    pub(crate) fn self_local_by_abs(&self) -> &[u32] {
-        &self.self_local_by_abs
+    pub(crate) fn self_absolute_range(&self) -> SelfAbsoluteFunctionRange {
+        self.self_absolute_range
     }
 
     pub(crate) fn function_entry_for_handle(&self, handle: RefValue) -> Option<FuncEntry> {
