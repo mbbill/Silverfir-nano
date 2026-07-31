@@ -41,10 +41,15 @@ pub use vm::instance::{
     Func, Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
     InstanceInstantiationError, RuntimeWorld,
 };
-// The interpreter's instance is public as the counterpart to
-// `JitInstanceLease` -- the escape hatch for what only this engine can answer.
-// Its predecoded representation (instructions, opcode enum, operand flags)
-// is not: it is how the engine stores a function, not something an
+// Each engine publishes one escape hatch for what only it can answer: the
+// interpreter's dispatch statistics here, the JIT's native-code question on
+// `JitInstanceLease`. They are not counterparts in shape -- the JIT hands
+// back a token wrapper and the interpreter lends its body for a closure
+// scope -- and they need not be, because each exposes a handful of methods.
+// Everything else an embedder needs is on `Instance`.
+//
+// The predecoded representation (instructions, opcode enum, operand flags)
+// stays private: it is how the engine stores a function, not something an
 // embedder builds against.
 #[cfg(sf_interp)]
 pub use vm::interpreter::{FuncRefHost, InterpInstance};

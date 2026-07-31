@@ -125,26 +125,30 @@ that is what it hands out, and the interpreter publishes its body because
 that is what its closure lends. Each is internally consistent. `lib.rs:44-49`
 calling them counterparts is what is false.
 
-The two shapes are not equally safe. The closure form is the containment
-pattern this refactor established — materialization is bounded by a scope the
-caller cannot escape. The lease form is safe today only because
-`JitInstanceLease`'s 28 methods each materialize internally and return
-nothing borrowed.
+Neither shape dominates on safety, and an earlier draft of this section
+claimed otherwise. `with_interp` holds a materialization across arbitrary
+caller code — the HRTB proves nothing *escapes*, but the closure body can be
+anything. `JitInstanceLease::memory()` materializes briefly, then returns a
+`from_raw_parts` slice that outlives the materialization it came from. They
+trade different risks.
 
-Three coherent resolutions:
+**Resolved by shrinking instead of choosing** (`04149af6`). The measured fact
+was that the whole workspace used six of those 54 methods, so both hatches
+were cut to what only their engine can answer:
 
-- **A — make both closure-scoped.** Add `with_jit(f)`, retire `as_jit`.
-  Consistent with the containment design and makes the counterpart claim
-  true. Breaks any embedder calling `as_jit`.
-- **B — make both lease-returning.** Publish `InterpInstanceLease` with
-  forwarding methods. More work, and it spreads the weaker shape.
-- **C — keep both, correct the comment.** Free and honest: document that the
-  JIT hatch is a token wrapper and the interpreter's is a scoped accessor,
-  because that is how each engine materializes.
+| | escape hatch | public methods |
+|---|---|---|
+| JIT | `as_jit()` | **1** — `function_has_native_code` |
+| Interp | `with_interp(f)` | **5** — the dispatch statistics |
 
-**Recommendation: A**, on the grounds that the closure shape is the one the
-rest of the runtime is built on; **C** if the API break is not worth it.
-This is a decision about the public API, not about spelling.
+At that size the shape difference stops being an ergonomic question: nobody
+chains one method. Unifying it would now be an API break bought for
+symmetry alone, so it is **not** scheduled. What remains is to correct
+`lib.rs:44-49`, which still calls the two types counterparts.
+
+The shrink also removed most of the exposure the safety argument was about:
+the `from_raw_parts` accessors are no longer reachable from outside the
+crate.
 
 ### 2. `Handle` carries four roles
 
