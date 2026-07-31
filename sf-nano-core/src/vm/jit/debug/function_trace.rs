@@ -18,8 +18,8 @@ mod imp {
     use crate::error::WasmError;
     use crate::value_type::ValueType;
     use crate::vm::jit::entities::ModuleInst;
+    use crate::vm::jit::instance::JitInstance;
     use crate::vm::jit::runtime::context::NativeContext;
-    use crate::vm::jit::store::JitInstance;
 
     const TRACE_ENV: &str = "SF_FUNCTION_TRACE";
     const TRACE_MEMORY_ENV: &str = "SF_FUNCTION_TRACE_MEMORY";
@@ -416,7 +416,7 @@ mod tests {
     use super::imp::*;
     use crate::module::type_context::TypeContext;
     use crate::vm::{
-        jit::entities::ModuleInst, jit::runtime::context::NativeContext, jit::store::JitInstance,
+        jit::entities::ModuleInst, jit::instance::JitInstance, jit::runtime::context::NativeContext,
     };
 
     struct TraceTestGuard {

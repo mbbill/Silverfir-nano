@@ -49,7 +49,7 @@ boundary.
   `RefRegistryEntry::Gc { store: *mut Store, gc_ref }` (`vm/link.rs`) hand
   raw pointers to whoever resolves the entry later.
 - Correctness rests on `Drop for Store` linearly scanning both shared
-  registries to null out entries (`vm/jit/store.rs`), and on every consumer
+  registries to null out entries (`vm/jit/instance.rs`), and on every consumer
   honoring the poisoning contract at each `unsafe` deref site. Those sites
   fall into two populations:
   - **GC-entry derefs**, roughly 13 of them in
@@ -235,7 +235,7 @@ instance chosen before the call.
 **`InstanceToken` is engine-discriminated**, and this is not optional. An
 earlier draft named `world.store(id) -> Option<&Store>` as the seam's one
 resolution primitive, which cannot address a `WorldSlot::Interp` at all:
-`JitInstance` is JIT-only (`jit/store.rs:30`, imported under `#[cfg(sf_jit)]` at
+`JitInstance` is JIT-only (`jit/instance.rs:30`, imported under `#[cfg(sf_jit)]` at
 `link.rs:26-29`), while the seam is claimed engine-neutral and is walked
 through on the interpreter below. The token is therefore an enum over the
 slot kinds, or carries per-engine accessors that return `None` for the other
@@ -1005,7 +1005,7 @@ Five candidate fourth channels were tried and refuted, which is recorded
 because "we could not think of another" is weaker than showing the search:
 
 - **A shared `Module`.** Refuted by value ownership: `JitInstance` holds
-  `module: ModuleInst` by value (`jit/store.rs:30-31`), and `ModuleInst` owns
+  `module: ModuleInst` by value (`jit/instance.rs:30-31`), and `ModuleInst` owns
   its `function_handles: Vec<RefValue>` by value (`jit/entities.rs:182-186`).
   No two instances share one.
 - **Unwinding** (traps, wasm exceptions). Covered twice over — an exception
@@ -1137,7 +1137,7 @@ not export is the embedder reaching past its own declared interface.
 **Filtering those two is necessary and not sufficient**, because the sharing
 API is not the only door. A second, entirely `pub` route exists:
 `Instance::as_jit` -> `JitInstance::store` (`jit/instance.rs:1082`) ->
-`Store::table(idx)` (`jit/store.rs:100`) -> `&TableInst` ->
+`Store::table(idx)` (`jit/instance.rs:100`) -> `&TableInst` ->
 `clone_shared_elements` (`entities.rs:221`) -> `TableInst::from_shared` ->
 `ImportedTableState`, whose fields are `pub` (`imports.rs:25-28`). Globals
 likewise via `Store::global` and `clone_shared_cell`. So:

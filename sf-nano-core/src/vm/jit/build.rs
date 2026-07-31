@@ -58,6 +58,7 @@ use crate::{
             helpers::page_align_function,
             types::{DirectCallPatch, DirectCallPatchSite, FunctionArtifact},
         },
+        jit::instance::JitInstance,
         jit::machine::{
             derive_param_locs_from_types, derive_return_abi,
             lower_module_with_table_dispatch_modes,
@@ -81,7 +82,6 @@ use crate::{
             code_buf::CodeBuffer,
             dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64},
         },
-        jit::store::JitInstance,
         jit::template,
         jit::wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
     },
@@ -1531,7 +1531,7 @@ mod tests {
         vm::{
             entities::{FunctionInst, MemInst},
             jit::entities::ModuleInst,
-            jit::store::tests::store as test_store,
+            jit::instance::tests::store as test_store,
         },
     };
 

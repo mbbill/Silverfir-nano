@@ -41,10 +41,11 @@ pub(crate) mod entities;
 pub(crate) mod expr_eval;
 pub(crate) mod gc_heap;
 pub(crate) mod instance;
+pub(crate) mod instantiate;
 pub(crate) mod machine;
 pub(crate) mod middle;
 pub(crate) mod runtime;
-pub(crate) mod store;
+
 pub(crate) mod template;
 pub(crate) mod value_encoding;
 pub(crate) mod wasm;

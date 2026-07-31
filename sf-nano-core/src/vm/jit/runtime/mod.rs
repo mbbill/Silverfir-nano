@@ -7,7 +7,7 @@
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
-use crate::vm::jit::store::JitInstance;
+use crate::vm::jit::instance::JitInstance;
 use crate::vm::jit::value_encoding::try_machine_raw_to_value_in_store;
 use crate::vm::link::{InstanceId, InstanceToken};
 use crate::vm::value::Value;

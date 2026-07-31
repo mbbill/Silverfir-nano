@@ -7,6 +7,7 @@ use crate::{
     module::type_context::{check_function_types_equivalent, concrete_type_matches_cross_context},
     vm::{
         jit::arch::backend_config,
+        jit::instance::JitInstance,
         jit::runtime::{
             self,
             common::{
@@ -16,7 +17,6 @@ use crate::{
             context::{NativeContext, PendingEscape},
             StoreAccess,
         },
-        jit::store::JitInstance,
         jit::value_encoding::{
             localize, try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
@@ -425,8 +425,8 @@ mod tests {
         vm::{
             entities::{HostFn, MemInst},
             jit::entities::ModuleInst,
+            jit::instance::{tests::store as test_store, JitInstance},
             jit::runtime::{common::NativeCallStatus, context::NativeContextBox},
-            jit::store::{tests::store as test_store, JitInstance},
         },
     };
 

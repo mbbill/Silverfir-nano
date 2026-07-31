@@ -8,13 +8,13 @@ use crate::{
         entities::{MemInst, TableInst},
         jit::arch::backend_config,
         jit::gc_heap::GcRef,
+        jit::instance::JitInstance,
         jit::runtime::{
             self,
             common::{internal_error, trap_error},
             context::{NativeContext, PendingEscape},
             StoreAccess,
         },
-        jit::store::JitInstance,
         jit::value_encoding::{
             absolutize, retag_for_container, try_machine_raw_to_value_in_store,
             value_to_machine_raw_in_store,
