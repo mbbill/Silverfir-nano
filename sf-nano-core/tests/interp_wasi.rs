@@ -6,15 +6,17 @@
 //!
 //! Gated on the target having a generated dispatch engine — the same
 //! condition `enable_native_dispatch` uses, so one grep finds both. A
-//! target without one fails `InterpInstance::new` cleanly, and `interp` is
+//! target without one fails interpreter instantiation cleanly, and `interp` is
 //! a default feature of the CLI and spectest crates, so an ungated test
 //! would fail `cargo test --workspace` there.
 #![cfg(sf_interp)]
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
-use sf_nano_core::module::Module;
-use sf_nano_core::{InterpInstance, WasmError};
+use sf_nano_core::{Caller, Config, Engine, Import, Instance, Tier, Value, WasmError};
+
+const WASI_MODULE: &str = "wasi_snapshot_preview1";
 
 fn r32(mem: &[u8], p: usize) -> u32 {
     u32::from_le_bytes(mem[p..p + 4].try_into().unwrap())
@@ -34,80 +36,173 @@ struct HostState {
     exit_code: Cell<Option<u32>>,
 }
 
+fn arg_u32(args: &[Value], index: usize) -> u32 {
+    match args[index] {
+        Value::I32(value) => value as u32,
+        _ => panic!("WASI argument {index} is not i32"),
+    }
+}
+
+fn set_success(results: &mut [Value]) {
+    results[0] = Value::I32(0);
+}
+
+fn clock_time_get(
+    state: &HostState,
+    caller: &mut Caller<'_>,
+    args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    // Advance 11 fake seconds per read so self-timing benchmark loops
+    // converge immediately.
+    let t = state.fake_nanos.get() + 11_000_000_000;
+    state.fake_nanos.set(t);
+    let mem = caller.memory_mut().expect("clock_time_get needs memory");
+    w64(mem, arg_u32(args, 2) as usize, t);
+    set_success(results);
+    Ok(())
+}
+
+fn clock_res_get(
+    caller: &mut Caller<'_>,
+    args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    let mem = caller.memory_mut().expect("clock_res_get needs memory");
+    w64(mem, arg_u32(args, 1) as usize, 1);
+    set_success(results);
+    Ok(())
+}
+
+fn fd_write(
+    state: &HostState,
+    caller: &mut Caller<'_>,
+    args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    let mem = caller.memory_mut().expect("fd_write needs memory");
+    let iovs = arg_u32(args, 1) as usize;
+    let n = arg_u32(args, 2) as usize;
+    let mut written = 0u32;
+    for k in 0..n {
+        let ptr = r32(mem, iovs + k * 8) as usize;
+        let len = r32(mem, iovs + k * 8 + 4) as usize;
+        state
+            .output
+            .borrow_mut()
+            .extend_from_slice(&mem[ptr..ptr + len]);
+        written += len as u32;
+    }
+    w32(mem, arg_u32(args, 3) as usize, written);
+    set_success(results);
+    Ok(())
+}
+
+fn args_sizes_get(
+    caller: &mut Caller<'_>,
+    args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    let mem = caller.memory_mut().expect("args_sizes_get needs memory");
+    w32(mem, arg_u32(args, 0) as usize, 0);
+    w32(mem, arg_u32(args, 1) as usize, 0);
+    set_success(results);
+    Ok(())
+}
+
+fn args_get(
+    _caller: &mut Caller<'_>,
+    _args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    set_success(results);
+    Ok(())
+}
+
+fn fd_close(
+    _caller: &mut Caller<'_>,
+    _args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    set_success(results);
+    Ok(())
+}
+
+fn fd_seek(
+    caller: &mut Caller<'_>,
+    args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    let mem = caller.memory_mut().expect("fd_seek needs memory");
+    w64(mem, arg_u32(args, 3) as usize, 0);
+    set_success(results);
+    Ok(())
+}
+
+fn fd_fdstat_get(
+    caller: &mut Caller<'_>,
+    args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    let mem = caller.memory_mut().expect("fd_fdstat_get needs memory");
+    let p = arg_u32(args, 1) as usize;
+    mem[p..p + 24].fill(0);
+    set_success(results);
+    Ok(())
+}
+
+fn proc_exit(
+    state: &HostState,
+    _caller: &mut Caller<'_>,
+    args: &[Value],
+    _results: &mut [Value],
+) -> Result<(), WasmError> {
+    state.exit_code.set(Some(arg_u32(args, 0)));
+    Err(WasmError::trap("proc_exit"))
+}
+
+fn wasi_imports(state: &Rc<HostState>) -> [Import; 9] {
+    let clock_state = Rc::clone(state);
+    let write_state = Rc::clone(state);
+    let exit_state = Rc::clone(state);
+    [
+        Import::func(
+            WASI_MODULE,
+            "clock_time_get",
+            move |caller, args, results| clock_time_get(&clock_state, caller, args, results),
+        ),
+        Import::func(WASI_MODULE, "clock_res_get", clock_res_get),
+        Import::func(WASI_MODULE, "fd_write", move |caller, args, results| {
+            fd_write(&write_state, caller, args, results)
+        }),
+        Import::func(WASI_MODULE, "args_sizes_get", args_sizes_get),
+        Import::func(WASI_MODULE, "args_get", args_get),
+        Import::func(WASI_MODULE, "fd_close", fd_close),
+        Import::func(WASI_MODULE, "fd_seek", fd_seek),
+        Import::func(WASI_MODULE, "fd_fdstat_get", fd_fdstat_get),
+        Import::func(WASI_MODULE, "proc_exit", move |caller, args, results| {
+            proc_exit(&exit_state, caller, args, results)
+        }),
+    ]
+}
+
 fn run_wasi(path: &str) -> (Result<(), WasmError>, HostState) {
     let wasm = std::fs::read(path).expect("read wasm");
-    let module = Module::new("wasi", &wasm).expect("parse");
-    // The dispatcher is `'static` (the same bound the JIT's host callbacks
-    // carry), so shared state reaches it by refcount rather than by borrow.
-    let state = std::rc::Rc::new(HostState {
+    // Host callbacks are `'static`, so shared state reaches them by refcount
+    // rather than by borrow.
+    let state = Rc::new(HostState {
         fake_nanos: Cell::new(0),
         output: RefCell::new(Vec::new()),
         exit_code: Cell::new(None),
     });
     let result = {
-        let state = std::rc::Rc::clone(&state);
-        let mut inst = InterpInstance::new(&engine(), module, None, &[]).expect("instantiate");
-        inst.set_host(
-            move |_mod: &str, name: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
-                match name {
-                    "clock_time_get" => {
-                        // Advance 11 fake seconds per read so self-timing
-                        // benchmark loops converge immediately.
-                        let t = state.fake_nanos.get() + 11_000_000_000;
-                        state.fake_nanos.set(t);
-                        w64(mem, args[2] as usize, t);
-                        results[0] = 0;
-                    }
-                    "fd_write" => {
-                        let iovs = args[1] as usize;
-                        let n = args[2] as usize;
-                        let mut written = 0u32;
-                        for k in 0..n {
-                            let ptr = r32(mem, iovs + k * 8) as usize;
-                            let len = r32(mem, iovs + k * 8 + 4) as usize;
-                            state
-                                .output
-                                .borrow_mut()
-                                .extend_from_slice(&mem[ptr..ptr + len]);
-                            written += len as u32;
-                        }
-                        w32(mem, args[3] as usize, written);
-                        results[0] = 0;
-                    }
-                    "args_sizes_get" => {
-                        w32(mem, args[0] as usize, 0);
-                        w32(mem, args[1] as usize, 0);
-                        results[0] = 0;
-                    }
-                    "args_get" => results[0] = 0,
-                    "fd_close" | "fd_seek" | "fd_fdstat_get" => {
-                        // benign stubs: zero any out-parameters conservatively
-                        if name == "fd_seek" {
-                            w64(mem, args[3] as usize, 0);
-                        }
-                        if name == "fd_fdstat_get" {
-                            let p = args[1] as usize;
-                            mem[p..p + 24].fill(0);
-                        }
-                        results[0] = 0;
-                    }
-                    "proc_exit" => {
-                        state.exit_code.set(Some(args[0] as u32));
-                        return Err(WasmError::trap("proc_exit"));
-                    }
-                    other => panic!("unshimmed WASI import: {other}"),
-                }
-                Ok(())
-            },
-        );
-        let start = inst.find_export("_start").expect("_start export");
-        inst.invoke(start, &[], &mut [])
+        let imports = wasi_imports(&state);
+        let mut inst = Instance::new(&engine(), &wasm, &imports).expect("instantiate");
+        inst.invoke("_start", &[]).map(|_| ())
     };
     (
         result,
-        std::rc::Rc::try_unwrap(state)
-            .ok()
-            .expect("host state still shared"),
+        Rc::try_unwrap(state).ok().expect("host state still shared"),
     )
 }
 
@@ -155,7 +250,7 @@ fn interpreter_runs_sha256_benchmark() {
     assert!(!out.is_empty(), "sha256 produced no output");
 }
 
-/// One engine on this target's defaults, for the tests in this file.
-fn engine() -> sf_nano_core::Engine {
-    sf_nano_core::Engine::with_defaults()
+/// The interpreter engine under test.
+fn engine() -> Engine {
+    Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter engine configuration failed")
 }

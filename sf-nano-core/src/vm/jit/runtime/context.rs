@@ -1056,7 +1056,7 @@ mod tests {
         let mut live_store = store_with_registry(module_with_local(), &registry);
         let live_handle = live_store.register_local_function(0);
         assert_eq!(live_handle.payload(), 0);
-        assert_eq!(live_store.clone_function_registry().borrow().len(), 2);
+        assert_eq!(registry.function_registry_shared().borrow().len(), 2);
 
         let n_globals = live_store.module().globals.len();
         let ctx = NativeContext::new(
