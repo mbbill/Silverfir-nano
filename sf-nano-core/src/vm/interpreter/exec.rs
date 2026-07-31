@@ -477,7 +477,11 @@ enum StepExit {
         search_current: bool,
     },
     ExternalCall {
-        call: PreparedCall,
+        /// Boxed on purpose. `StepExit` and [`Effect`] are returned by value
+        /// from the slow path, so an inline `PreparedCall` sets the size of
+        /// every exit -- including the common ones that carry two words. The
+        /// indirection is paid only when a host call actually happens.
+        call: Box<PreparedCall>,
         result_base: usize,
         site: usize,
         search_current: bool,
@@ -500,7 +504,10 @@ pub(super) enum Effect {
         arg_base: usize,
     },
     ExternalCall {
-        call: PreparedCall,
+        /// Boxed for the same reason as `StepExit::ExternalCall`: this enum is
+        /// `exec_ins`'s by-value return, so the largest variant is copied on
+        /// every slow exit, not only on the external-call one.
+        call: Box<PreparedCall>,
         arg_base: usize,
         tail_target: Option<usize>,
     },
@@ -586,6 +593,18 @@ pub struct InterpInstance {
     /// Non-escapable local functions keep the null sentinel and consume no
     /// world address.
     function_identities: Vec<RefValue>,
+    /// Reverse of `function_identities`, restricted to this instance's OWN
+    /// functions: absolute encoded value minus `self_abs_base` -> local index,
+    /// `u32::MAX` for a gap. Built once at instantiation.
+    ///
+    /// Without it, localizing a self-owned funcref read out of a reachable
+    /// table falls through to the shared arena on every indirect call, which
+    /// costs a `RefCell` borrow pair and a dependent load chain. The local
+    /// early-out cannot catch these: `link.rs` keeps the absolute range
+    /// disjoint from the local one, so a self-owned absolute handle never
+    /// satisfies it.
+    self_abs_base: usize,
+    self_local_by_abs: Vec<u32>,
     native: Option<NativeState>,
 }
 
@@ -1174,6 +1193,37 @@ impl InterpInstance {
             function_identities.push(absolute);
         }
 
+        // Reverse map for this instance's own escapable functions. Imports
+        // carry a peer's identity and must NOT localize through it.
+        let mut self_abs_base = usize::MAX;
+        let mut self_abs_hi = 0usize;
+        for (idx, func) in module.functions().iter().enumerate() {
+            if func.is_import() {
+                continue;
+            }
+            let identity = function_identities[idx];
+            if identity.is_null() || identity.is_special() {
+                continue;
+            }
+            let encoded = identity.encoded();
+            self_abs_base = self_abs_base.min(encoded);
+            self_abs_hi = self_abs_hi.max(encoded);
+        }
+        let mut self_local_by_abs = Vec::new();
+        if self_abs_base != usize::MAX {
+            self_local_by_abs.resize(self_abs_hi - self_abs_base + 1, u32::MAX);
+            for (idx, func) in module.functions().iter().enumerate() {
+                if func.is_import() {
+                    continue;
+                }
+                let identity = function_identities[idx];
+                if identity.is_null() || identity.is_special() {
+                    continue;
+                }
+                self_local_by_abs[identity.encoded() - self_abs_base] = idx as u32;
+            }
+        }
+
         // Predecode every local function eagerly; imports are dispatched at
         // the slow boundary, so import-free modules remain entirely local.
         let mut funcs = Vec::new();
@@ -1479,6 +1529,8 @@ impl InterpInstance {
             funcref_host: funcref_host.map(|host| Rc::new(RefCell::new(host))),
             import_names,
             function_handles,
+            self_abs_base,
+            self_local_by_abs,
             function_identities,
             native: None,
         };
@@ -1923,6 +1975,17 @@ impl InterpInstance {
 
     #[inline]
     fn localize_ref(&self, handle: RefValue) -> RefValue {
+        // Self-owned absolute handles resolve from an owner-private array.
+        // Correct by construction: only non-import functions populate it, so a
+        // peer's identity can never hit and still falls through below.
+        let encoded = handle.encoded();
+        if encoded >= self.self_abs_base {
+            if let Some(&local) = self.self_local_by_abs.get(encoded - self.self_abs_base) {
+                if local != u32::MAX {
+                    return RefValue::new(local as usize);
+                }
+            }
+        }
         localize_ref_with(
             &self.module,
             &self.instance_backref,
@@ -3943,7 +4006,7 @@ impl InterpInstance {
                         None
                     };
                     return Ok(Effect::ExternalCall {
-                        call,
+                        call: Box::new(call),
                         arg_base: base,
                         tail_target,
                     });
@@ -4254,7 +4317,7 @@ impl InterpInstance {
                         None
                     };
                     return Ok(Effect::ExternalCall {
-                        call,
+                        call: Box::new(call),
                         arg_base: base,
                         tail_target,
                     });
