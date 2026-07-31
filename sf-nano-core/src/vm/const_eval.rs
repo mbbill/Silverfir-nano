@@ -7,7 +7,7 @@
 //! reference value, where a previously-initialized global is read from,
 //! and whether GC objects can be allocated at all. Engines provide that
 //! through [`ConstResolver`]; the JIT's implementation allocates in its
-//! `Store`, the interpreter's reads its flat state and refuses GC.
+//! `JitInstance`, the interpreter's reads its flat state and refuses GC.
 
 use crate::collections;
 use crate::error::WasmError;

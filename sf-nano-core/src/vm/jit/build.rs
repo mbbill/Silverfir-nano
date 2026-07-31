@@ -81,7 +81,7 @@ use crate::{
             code_buf::CodeBuffer,
             dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64},
         },
-        jit::store::Store,
+        jit::store::JitInstance,
         jit::template,
         jit::wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
     },
@@ -115,7 +115,7 @@ fn over_budget_template_unsupported() -> WasmError {
 
 fn decode_function_semantic(
     module: &ModuleInst,
-    store: &Store,
+    store: &JitInstance,
     spec: &FunctionSpec,
 ) -> Result<SemanticProgram, WasmError> {
     let params = spec.func_type().params().len() as u16;
@@ -454,7 +454,7 @@ fn arm64_branch_delta_words(from_addr: usize, to_addr: usize) -> Result<i32, Was
 
 fn build_static_summaries(
     module: &ModuleInst,
-    store: &Store,
+    store: &JitInstance,
     backend: BackendConfig,
 ) -> Result<(MachineModuleAbi, collections::Vec<bool>), WasmError> {
     let mut abi = MachineModuleAbi {
@@ -716,7 +716,7 @@ fn compile_semantic_function_owned(
 fn compile_full_functions_parallel(
     backend: BackendConfig,
     module: &ModuleInst,
-    store: &Store,
+    store: &JitInstance,
     abi: &MachineModuleAbi,
     is_local_func: &[bool],
     worker_count: usize,
@@ -847,7 +847,7 @@ fn compile_full_functions_parallel(
 fn compile_full_streaming_function(
     backend: BackendConfig,
     module: &ModuleInst,
-    store: &Store,
+    store: &JitInstance,
     spec: &FunctionSpec,
     func_idx: usize,
     func_id: MachineFuncId,
@@ -1044,7 +1044,7 @@ fn link_streaming_artifact(
 fn finish_native_compile_streaming(
     backend: BackendConfig,
     module: &ModuleInst,
-    store: &Store,
+    store: &JitInstance,
 ) -> Result<(), WasmError> {
     let (abi, is_local_func) = build_static_summaries(module, store, backend)?;
     let mut compiled_view = StreamingCompiledModule::new(backend, abi);
@@ -1379,7 +1379,7 @@ fn finish_native_compile(
     Ok(())
 }
 
-pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
+pub(crate) fn ensure_module_compiled(store: &JitInstance) -> Result<(), WasmError> {
     let backend = arch::backend_config();
     let module = store.module();
     let all_compiled = module

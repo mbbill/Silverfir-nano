@@ -1,4 +1,4 @@
-//! Instantiation-time entities of the JIT's `Store` world, plus the JIT's
+//! Instantiation-time entities of the JIT's `JitInstance` world, plus the JIT's
 //! own extensions to the shared entity model.
 //!
 //! The interpreter instantiates from the parsed `Module` directly and keeps
@@ -108,7 +108,7 @@ impl MemInstJit for MemInst {
     }
 }
 
-// Instantiation-time entity of the JIT's `Store` world. The interpreter
+// Instantiation-time entity of the JIT's `JitInstance` world. The interpreter
 // tracks tag identity with bare `TagIdentity`s in its own state.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TagInst {

@@ -343,7 +343,7 @@ fn is_exn_ref_type(ty: ValueType) -> bool {
 
 fn inline_throw_tag(
     compile: CompileContext<'_>,
-    owner_store: &crate::vm::jit::store::Store,
+    owner_store: &crate::vm::jit::store::JitInstance,
     tag_idx: u32,
 ) -> Option<(Option<u32>, TagIdentity, usize)> {
     let tag_inst = owner_store.module().tags.get(tag_idx as usize).copied()?;
@@ -368,7 +368,7 @@ fn with_inline_local_spec<R>(
     func_idx: u32,
     analyze: impl for<'owner> FnOnce(
         &'owner crate::module::entities::FunctionSpec,
-        &'owner crate::vm::jit::store::Store,
+        &'owner crate::vm::jit::store::JitInstance,
     ) -> Option<R>,
 ) -> Option<R> {
     match compile.store.function(func_idx as usize) {
@@ -399,7 +399,7 @@ fn with_inline_local_spec<R>(
 fn analyze_simple_inline_throw_wrapper(
     compile: CompileContext<'_>,
     spec: &crate::module::entities::FunctionSpec,
-    owner_store: &crate::vm::jit::store::Store,
+    owner_store: &crate::vm::jit::store::JitInstance,
 ) -> Option<InlineThrowWrapper> {
     let params = spec.func_type().params().len() as u32;
     let bytes: &[u8] = spec.code();
@@ -483,7 +483,7 @@ fn simple_inline_throw_wrapper(
 fn analyze_simple_inline_conditional_throw_wrapper(
     compile: CompileContext<'_>,
     spec: &crate::module::entities::FunctionSpec,
-    owner_store: &crate::vm::jit::store::Store,
+    owner_store: &crate::vm::jit::store::JitInstance,
 ) -> Option<InlineConditionalThrowWrapper> {
     if spec.func_type().params() != [ValueType::I32]
         || spec.func_type().results() != [ValueType::I32]

@@ -19,7 +19,7 @@ mod imp {
     use crate::value_type::ValueType;
     use crate::vm::jit::entities::ModuleInst;
     use crate::vm::jit::runtime::context::NativeContext;
-    use crate::vm::jit::store::Store;
+    use crate::vm::jit::store::JitInstance;
 
     const TRACE_ENV: &str = "SF_FUNCTION_TRACE";
     const TRACE_MEMORY_ENV: &str = "SF_FUNCTION_TRACE_MEMORY";
@@ -227,7 +227,7 @@ mod imp {
         func_idx: u32,
         depth: u32,
         results: &[u64],
-        store: &Store,
+        store: &JitInstance,
         error: Option<&WasmError>,
     ) {
         if !enabled() {
@@ -416,7 +416,7 @@ mod tests {
     use super::imp::*;
     use crate::module::type_context::TypeContext;
     use crate::vm::{
-        jit::entities::ModuleInst, jit::runtime::context::NativeContext, jit::store::Store,
+        jit::entities::ModuleInst, jit::runtime::context::NativeContext, jit::store::JitInstance,
     };
 
     struct TraceTestGuard {

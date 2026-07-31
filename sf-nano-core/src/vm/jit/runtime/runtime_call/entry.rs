@@ -16,7 +16,7 @@ use crate::{
             context::{NativeContext, PendingEscape},
             StoreAccess,
         },
-        jit::store::Store,
+        jit::store::JitInstance,
         jit::value_encoding::{
             localize, try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
@@ -248,9 +248,9 @@ fn call_runtime_by_handle(
 }
 
 fn validate_runtime_target_type(
-    owner_store: &Store,
+    owner_store: &JitInstance,
     local_index: u32,
-    caller_store: &Store,
+    caller_store: &JitInstance,
     expected_type_idx: u32,
     type_check_kind: RuntimeCallTypeCheckKind,
 ) -> Result<(), WasmError> {
@@ -426,15 +426,15 @@ mod tests {
             entities::{HostFn, MemInst},
             jit::entities::ModuleInst,
             jit::runtime::{common::NativeCallStatus, context::NativeContextBox},
-            jit::store::{tests::store as test_store, Store},
+            jit::store::{tests::store as test_store, JitInstance},
         },
     };
 
-    fn test_context(module: ModuleInst) -> (Box<Store>, NativeContextBox) {
+    fn test_context(module: ModuleInst) -> (Box<JitInstance>, NativeContextBox) {
         let mut store = test_store(module);
         let n_globals = store.module().globals.len();
         let ctx = NativeContext::new(
-            (&mut *store) as *mut Store,
+            (&mut *store) as *mut JitInstance,
             core::ptr::null_mut(),
             n_globals,
         );

@@ -1,8 +1,8 @@
 //! The JIT engine's runtime world.
 //!
-//! A `Store` owns one instantiated module's entities plus the caches native
+//! A `JitInstance` owns one instantiated module's entities plus the caches native
 //! code addresses directly. It is JIT-owned by construction: the interpreter
-//! keeps its own flat runtime state and only ever *reads* a foreign `Store`
+//! keeps its own flat runtime state and only ever *reads* a foreign `JitInstance`
 //! through a registry entry when both engines are compiled in.
 //!
 //! The revision counters exist for exactly one consumer: the native
@@ -31,7 +31,7 @@ use core::cell::RefCell;
 
 const UNREGISTERED_FUNCADDR: usize = usize::MAX;
 
-pub(crate) struct Store {
+pub(crate) struct JitInstance {
     module: ModuleInst,
     exports: collections::Vec<(String, ExportKind, usize)>,
     instance_backref: InstanceBackref,
@@ -49,7 +49,7 @@ pub(crate) struct Store {
     native_stack_cache: Option<collections::Vec<u64>>,
 }
 
-impl Store {
+impl JitInstance {
     #[inline]
     pub(crate) fn new_with_registries(
         module: ModuleInst,
@@ -301,7 +301,7 @@ impl Store {
     }
 
     #[cfg(sf_has_simd)]
-    // Store a v128 payload out-of-line and return the 64-bit raw handle used by
+    // JitInstance a v128 payload out-of-line and return the 64-bit raw handle used by
     // the current frame/global storage ABI.
     pub(crate) fn intern_v128(&self, value: [u8; 16]) -> u64 {
         self.simd_registry.intern(value)
@@ -321,10 +321,10 @@ pub(crate) mod tests {
     use crate::vm::link::LinkRegistry;
     use tracked_alloc::boxed::Box;
 
-    pub(crate) fn store(module: ModuleInst) -> Box<Store> {
+    pub(crate) fn store(module: ModuleInst) -> Box<JitInstance> {
         let registry = LinkRegistry::new();
         let (_, instance_backref) = registry.reserve_instance();
-        Box::new(Store::new_with_registries(
+        Box::new(JitInstance::new_with_registries(
             module,
             instance_backref,
             registry.function_registry_shared(),
@@ -338,9 +338,9 @@ pub(crate) mod tests {
     mod interp {
         use super::*;
 
-        fn store_with(registry: &LinkRegistry) -> alloc::boxed::Box<Store> {
+        fn store_with(registry: &LinkRegistry) -> alloc::boxed::Box<JitInstance> {
             let (_, instance_backref) = registry.reserve_instance();
-            alloc::boxed::Box::new(Store::new_with_registries(
+            alloc::boxed::Box::new(JitInstance::new_with_registries(
                 ModuleInst::default(),
                 instance_backref,
                 registry.function_registry_shared(),
@@ -361,7 +361,7 @@ pub(crate) mod tests {
             let resolved = registry
                 .arenas()
                 .resolve_exn(handle)
-                .expect("Store-owned exception");
+                .expect("JitInstance-owned exception");
 
             assert_eq!(resolved.tag, tag);
             assert_eq!(resolved.fields, fields);

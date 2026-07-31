@@ -8,14 +8,14 @@ use crate::{
     module::type_context::TypeContext,
     op_decoder::{BlockType, Immediate},
     value_type::ValueType,
-    vm::jit::store::Store,
+    vm::jit::store::JitInstance,
 };
 
 /// Immutable decode context for one function body.
 #[derive(Clone, Copy)]
 pub(crate) struct CompileContext<'a> {
     pub(in crate::vm::jit::wasm) types: &'a TypeContext,
-    pub(in crate::vm::jit::wasm) store: &'a Store,
+    pub(in crate::vm::jit::wasm) store: &'a JitInstance,
     pub(in crate::vm::jit::wasm) params: u16,
     pub(in crate::vm::jit::wasm) local_count: u16,
     pub(in crate::vm::jit::wasm) results: u16,
@@ -30,7 +30,7 @@ impl<'a> CompileContext<'a> {
     #[inline]
     pub(crate) const fn with_value_types(
         types: &'a TypeContext,
-        store: &'a Store,
+        store: &'a JitInstance,
         params: u16,
         local_count: u16,
         results: u16,

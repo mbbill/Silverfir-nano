@@ -1,5 +1,5 @@
 //! The JIT's resolution of constant expressions: references come from the
-//! `Store`'s registries, globals from its entity model, GC objects from its
+//! `JitInstance`'s registries, globals from its entity model, GC objects from its
 //! heap. The grammar itself lives in [`crate::vm::const_eval`].
 
 use crate::collections;
@@ -8,12 +8,12 @@ use crate::module::entities::ConstExpr;
 use crate::value_type::{AbstractHeapType, HeapType, RefType};
 use crate::vm::const_eval::{self, ConstResolver};
 use crate::vm::entities::FunctionInst;
-use crate::vm::jit::store::Store;
+use crate::vm::jit::store::JitInstance;
 use crate::vm::jit::value_encoding::{absolutize, try_raw_to_value_in_store};
 use crate::vm::value::Value;
 
 struct StoreResolver<'a> {
-    store: &'a mut Store,
+    store: &'a mut JitInstance,
 }
 
 impl ConstResolver for StoreResolver<'_> {
@@ -88,7 +88,10 @@ impl ConstResolver for StoreResolver<'_> {
     }
 }
 
-pub(crate) fn eval_const_expr(expr: &ConstExpr, store: &mut Store) -> Result<Value, WasmError> {
+pub(crate) fn eval_const_expr(
+    expr: &ConstExpr,
+    store: &mut JitInstance,
+) -> Result<Value, WasmError> {
     let bytes: &[u8] = expr;
     // The type context is cloned out so the resolver can borrow the store
     // mutably; type contexts are Rc-backed and cheap to clone.

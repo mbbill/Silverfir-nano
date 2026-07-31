@@ -14,7 +14,7 @@ use crate::{
             context::{NativeContext, PendingEscape},
             StoreAccess,
         },
-        jit::store::Store,
+        jit::store::JitInstance,
         jit::value_encoding::{
             absolutize, retag_for_container, try_machine_raw_to_value_in_store,
             value_to_machine_raw_in_store,
@@ -26,7 +26,7 @@ use crate::{
 };
 
 #[inline]
-fn current_store(ctx: &NativeContext) -> Result<&Store, WasmError> {
+fn current_store(ctx: &NativeContext) -> Result<&JitInstance, WasmError> {
     let store = ctx
         .store()
         .ok_or_else(|| internal_error("preserved helper context is missing store"))?;
@@ -34,7 +34,7 @@ fn current_store(ctx: &NativeContext) -> Result<&Store, WasmError> {
 }
 
 #[inline]
-fn current_store_mut(ctx: &mut NativeContext) -> Result<&mut Store, WasmError> {
+fn current_store_mut(ctx: &mut NativeContext) -> Result<&mut JitInstance, WasmError> {
     ctx.store_mut()
         .ok_or_else(|| internal_error("preserved helper context is missing store"))
 }
@@ -76,7 +76,7 @@ fn value_from_machine(
 }
 
 #[inline]
-fn value_to_machine(store: &mut Store, value: Value) -> u64 {
+fn value_to_machine(store: &mut JitInstance, value: Value) -> u64 {
     value_to_machine_raw_in_store(value, active_gp_unit_bytes(), store)
 }
 
@@ -105,7 +105,7 @@ fn read_exn_payload_fields(
     start_slot: u16,
     slot_count: u16,
     params: &[ValueType],
-    store: &Store,
+    store: &JitInstance,
     label: &'static str,
 ) -> Result<collections::Vec<Value>, WasmError> {
     require_arg_slots(slot_count, params.len() as u16, label)?;
@@ -299,7 +299,7 @@ pub(super) fn do_v128_from_raw(ctx: &NativeContext, raw: u64) -> Result<[u8; 16]
         .ok_or_else(|| internal_error("invalid v128 raw value"))
 }
 
-fn decode_i31(store: &Store, handle: RefValue) -> Result<i32, WasmError> {
+fn decode_i31(store: &JitInstance, handle: RefValue) -> Result<i32, WasmError> {
     if handle.is_null() {
         return Err(trap_error("null i31 reference"));
     }
@@ -475,7 +475,7 @@ pub(super) fn do_struct_new(
 }
 
 fn struct_field_storage(
-    store: &Store,
+    store: &JitInstance,
     type_idx: u32,
     field_idx: u32,
 ) -> Result<StorageType, WasmError> {
@@ -509,7 +509,7 @@ impl ResolvedGcRef {
     #[inline]
     fn with_store<R>(
         &self,
-        use_store: impl for<'store> FnOnce(&'store Store) -> Result<R, WasmError>,
+        use_store: impl for<'store> FnOnce(&'store JitInstance) -> Result<R, WasmError>,
     ) -> Result<R, WasmError> {
         self.access.with_store(use_store)?
     }
@@ -517,7 +517,7 @@ impl ResolvedGcRef {
     #[inline]
     fn with_store_mut<R>(
         &mut self,
-        use_store: impl for<'store> FnOnce(&'store mut Store) -> Result<R, WasmError>,
+        use_store: impl for<'store> FnOnce(&'store mut JitInstance) -> Result<R, WasmError>,
     ) -> Result<R, WasmError> {
         self.access.with_store_mut(use_store)?
     }
@@ -586,7 +586,7 @@ fn extend_packed_field(value: Value, storage: StorageType, signed: bool) -> Valu
     }
 }
 
-fn array_element_field(store: &Store, type_idx: u32) -> Result<FieldType, WasmError> {
+fn array_element_field(store: &JitInstance, type_idx: u32) -> Result<FieldType, WasmError> {
     let def_type = store
         .module()
         .types
@@ -599,7 +599,7 @@ fn array_element_field(store: &Store, type_idx: u32) -> Result<FieldType, WasmEr
     Ok(array_type.element)
 }
 
-fn array_element_storage(store: &Store, type_idx: u32) -> Result<StorageType, WasmError> {
+fn array_element_storage(store: &JitInstance, type_idx: u32) -> Result<StorageType, WasmError> {
     Ok(array_element_field(store, type_idx)?.storage)
 }
 

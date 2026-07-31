@@ -319,7 +319,7 @@ direction"; "The seam: checkout"; "The safety invariant lives on the token".*
   API — with the full checkout mechanism, but nothing yet uses cross-instance
   ids.
 - **Work**: `InstanceTable` (slots/generations/in_use, all the sketch's
-  shapes), `InstanceBackref { table: Weak<...>, self_id }` carried by `Store`
+  shapes), `InstanceBackref { table: Weak<...>, self_id }` carried by `JitInstance`
   and `InterpInstance` where `LinkRegistry` is carried today,
   engine-discriminated `InstanceToken` as an RAII guard, `checkout` with
   `&raw` pointer extraction, generation retire-at-`u32::MAX`, `free` erroring

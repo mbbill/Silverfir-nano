@@ -135,7 +135,7 @@ restores the first role without the second:
 The single most important structural fact about the current design is one an
 earlier draft of this document overlooked, and it constrains everything
 below. `LinkRegistry`'s three arenas (`link.rs:198-205`) **own no
-instances**. They are `Rc`-shared side tables, cloned into every `Store`
+instances**. They are `Rc`-shared side tables, cloned into every `JitInstance`
 (`store.rs:30-36`) and every `InterpInstance` (`exec.rs:381`), which is
 exactly why borrowing an arena can never overlap borrowing an instance —
 and therefore why the deep runtime helpers compile at all.
@@ -151,7 +151,7 @@ through. So the state is split by whether it owns instances:
 
 - **The arenas keep the `LinkRegistry` shape.** The reference arena, the
   function address space, and the SIMD arena stay `Rc`-shared side tables
-  cloned into every `Store` and `InterpInstance`. Their reachability is
+  cloned into every `JitInstance` and `InterpInstance`. Their reachability is
   unchanged from today. What changes is only their *contents*: entries hold
   an `InstanceId` instead of a `*mut Store`. That is the point of the design,
   and it is independent of where the arena lives.
@@ -190,7 +190,7 @@ struct InstanceTableInner {
     in_use:      RefCell<Vec<u32>>,
 }
 
-/// What every `Store` and `InterpInstance` carries, in the same place
+/// What every `JitInstance` and `InterpInstance` carries, in the same place
 /// `LinkRegistry` lives today. NON-owning, which is what keeps the graph
 /// acyclic.
 pub(crate) struct InstanceBackref {
@@ -235,7 +235,7 @@ instance chosen before the call.
 **`InstanceToken` is engine-discriminated**, and this is not optional. An
 earlier draft named `world.store(id) -> Option<&Store>` as the seam's one
 resolution primitive, which cannot address a `WorldSlot::Interp` at all:
-`Store` is JIT-only (`jit/store.rs:30`, imported under `#[cfg(sf_jit)]` at
+`JitInstance` is JIT-only (`jit/store.rs:30`, imported under `#[cfg(sf_jit)]` at
 `link.rs:26-29`), while the seam is claimed engine-neutral and is walked
 through on the interpreter below. The token is therefore an enum over the
 slot kinds, or carries per-engine accessors that return `None` for the other
@@ -403,7 +403,7 @@ how the step-1 benchmark should be read, not because the two costs interact.
 #### The concession
 
 The `Rc` does not disappear, and this document should not imply it does.
-What the world replaces is **raw-pointer identity for instances**: `Store`
+What the world replaces is **raw-pointer identity for instances**: `JitInstance`
 addresses stop being the cross-instance name, `InstanceId` plus a generation
 takes over, the `Drop` scan is deleted, and the poisoning contract every
 consumer had to honor is gone. That is the win. A single `Rc` holding the
@@ -1004,7 +1004,7 @@ value leaves the region only `I` observes by exactly three channels:
 Five candidate fourth channels were tried and refuted, which is recorded
 because "we could not think of another" is weaker than showing the search:
 
-- **A shared `Module`.** Refuted by value ownership: `Store` holds
+- **A shared `Module`.** Refuted by value ownership: `JitInstance` holds
   `module: ModuleInst` by value (`jit/store.rs:30-31`), and `ModuleInst` owns
   its `function_handles: Vec<RefValue>` by value (`jit/entities.rs:182-186`).
   No two instances share one.

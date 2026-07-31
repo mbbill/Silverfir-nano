@@ -4,7 +4,7 @@
 //! ([`entities`]), the public value model ([`value`]), tags, import
 //! declarations, instance dispatch — and [`link`], the registry through
 //! which separately instantiated modules exchange references. Runtime
-//! *storage* is not part of it: each engine owns its own (the JIT's `Store`
+//! *storage* is not part of it: each engine owns its own (the JIT's `JitInstance`
 //! lives in [`jit`], the interpreter's flat state in [`interpreter`]).
 //!
 //! The engines sit beside each other on top of it:

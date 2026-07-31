@@ -41,7 +41,7 @@ use crate::{
             },
             layout::local_call_info_abi_layout,
         },
-        jit::store::Store,
+        jit::store::JitInstance,
         tag::TagIdentity,
         value::RefValue,
     },
@@ -113,7 +113,7 @@ pub(crate) struct NativeContext {
     /// runtime). Kept in the ABI-visible area for host-side bounds-checking;
     /// JIT code never reloads it.
     pub(crate) globals_len: usize,
-    pub(crate) store: *mut Store,
+    pub(crate) store: *mut JitInstance,
     pub(crate) current_module: *const ModuleInst,
     pub(crate) error: Option<WasmError>,
     /// Pending wasm exception / trap in transit between runtime-call entry
@@ -168,7 +168,7 @@ impl NativeContext {
     /// overwrites existing slots.
     #[inline]
     pub(crate) fn new(
-        store: *mut Store,
+        store: *mut JitInstance,
         stack_end: *mut u64,
         n_globals: usize,
     ) -> NativeContextBox {
@@ -192,7 +192,7 @@ impl NativeContext {
     }
 
     #[inline]
-    pub(crate) fn prepare_for_invocation(&mut self, store: *mut Store, stack_end: *mut u64) {
+    pub(crate) fn prepare_for_invocation(&mut self, store: *mut JitInstance, stack_end: *mut u64) {
         self.store = store;
         self.stack_end = stack_end;
         self.error = None;
@@ -414,7 +414,7 @@ impl NativeContext {
     /// When `store` is null, every slot is nulled.
     #[inline]
     pub(crate) fn refresh_globals_ptrs(&mut self) {
-        // Snapshot the raw Store pointer (Copy) before taking an exclusive
+        // Snapshot the raw JitInstance pointer (Copy) before taking an exclusive
         // borrow of the tail — otherwise `self.store` and `self.globals_ptrs_mut()`
         // would alias self concurrently.
         let store_ptr = self.store;
@@ -424,7 +424,7 @@ impl NativeContext {
         }
         let mut written = 0usize;
         // SAFETY: the pointer's provenance and lifetime are managed by the
-        // owning `Instance` / `Store`; the context only reads through it
+        // owning `Instance` / `JitInstance`; the context only reads through it
         // between refreshes. Accessing it here while `tail` is borrowed is
         // sound because the store is an independent allocation.
         if let Some(store) = unsafe { store_ptr.as_ref() } {
@@ -674,12 +674,12 @@ impl NativeContext {
     }
 
     #[inline]
-    pub(crate) fn store(&self) -> Option<&Store> {
+    pub(crate) fn store(&self) -> Option<&JitInstance> {
         unsafe { self.store.as_ref() }
     }
 
     #[inline]
-    pub(crate) fn store_mut(&mut self) -> Option<&mut Store> {
+    pub(crate) fn store_mut(&mut self) -> Option<&mut JitInstance> {
         unsafe { self.store.as_mut() }
     }
 }
@@ -706,7 +706,7 @@ pub(crate) struct NativeContextBox {
 }
 
 impl NativeContextBox {
-    fn new(store: *mut Store, stack_end: *mut u64, n_globals: usize) -> Self {
+    fn new(store: *mut JitInstance, stack_end: *mut u64, n_globals: usize) -> Self {
         // Backing size in bytes: fixed header + inline raw-ptr tail.
         let header_size = core::mem::size_of::<NativeContext>();
         let ptr_size = core::mem::size_of::<*mut u64>();
@@ -936,7 +936,7 @@ mod tests {
             entities::Caller,
             jit::{
                 entities::ModuleInst,
-                store::{tests::store as test_store, Store},
+                store::{tests::store as test_store, JitInstance},
             },
             link::LinkRegistry,
             value::Value,
@@ -963,9 +963,9 @@ mod tests {
         })
     }
 
-    fn store_with_registry(module: ModuleInst, registry: &LinkRegistry) -> Box<Store> {
+    fn store_with_registry(module: ModuleInst, registry: &LinkRegistry) -> Box<JitInstance> {
         let (_, instance_backref) = registry.reserve_instance();
-        Box::new(Store::new_with_registries(
+        Box::new(JitInstance::new_with_registries(
             module,
             instance_backref,
             registry.function_registry_shared(),
@@ -1030,7 +1030,7 @@ mod tests {
         }
         let n_globals = store.module().globals.len();
         let ctx = NativeContext::new(
-            (&mut *store) as *mut Store,
+            (&mut *store) as *mut JitInstance,
             core::ptr::null_mut(),
             n_globals,
         );
@@ -1060,7 +1060,7 @@ mod tests {
 
         let n_globals = live_store.module().globals.len();
         let ctx = NativeContext::new(
-            (&mut *live_store) as *mut Store,
+            (&mut *live_store) as *mut JitInstance,
             core::ptr::null_mut(),
             n_globals,
         );
@@ -1109,7 +1109,7 @@ mod tests {
         }
         let n_globals = store.module().globals.len();
         let ctx = NativeContext::new(
-            (&mut *store) as *mut Store,
+            (&mut *store) as *mut JitInstance,
             core::ptr::null_mut(),
             n_globals,
         );
