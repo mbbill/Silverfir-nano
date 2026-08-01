@@ -370,15 +370,15 @@ struct Activation {
 /// so every frame that can catch an exception from a callee has one of these
 /// checkpoints. Restoring the cursor discards the callee's sentinel together
 /// with any native-only descendant records below it.
-// On AArch64, keeping the activation before the return cursor lets the hot
-// save use two paired vector moves followed by one paired scalar move.
-#[cfg_attr(sf_backend_arm64, repr(C))]
+// The activation precedes the return cursor so the hot save is a few wide
+// paired moves instead of a field-by-field shuffle. Measured on AArch64
+// (Cobalt-100) and x86-64; see cross-instance-identity in mcts_mem.
+#[repr(C)]
 struct SavedActivation {
     activation: Activation,
     ret_cursor: usize,
 }
 
-#[cfg(sf_backend_arm64)]
 #[cold]
 #[inline(never)]
 fn grow_saved_activations(saved: &mut Vec<SavedActivation>) {
@@ -2579,9 +2579,9 @@ impl InterpInstance {
     /// instance. Imported and external targets are prepared here, but their
     /// owned requests are returned to [`Self::drive_on`] before invocation.
     // One call enters this loop per materialization; local calls and returns
-    // stay inside it. Keeping that scheduling region separate on AArch64 also
-    // prevents the token boundary's slow paths from forcing its state to spill.
-    #[cfg_attr(sf_backend_arm64, inline(never))]
+    // stay inside it. Keeping that scheduling region separate prevents the
+    // token boundary's slow paths from forcing its state to spill.
+    #[inline(never)]
     fn run_materialized(
         &mut self,
         act: &mut Activation,
@@ -2631,9 +2631,8 @@ impl InterpInstance {
                         pc: 0,
                         route_established: false,
                     };
-                    // Dominate `push`'s capacity check so the AArch64 hot path
-                    // can copy the caller straight into the spare Vec slot.
-                    #[cfg(sf_backend_arm64)]
+                    // Dominate `push`'s capacity check so the hot path can
+                    // copy the caller straight into the spare Vec slot.
                     while saved.len() == saved.capacity() {
                         grow_saved_activations(saved);
                     }
