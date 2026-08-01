@@ -354,7 +354,11 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
     // 128 bytes and pin that down. Handler-body size changes still shift
     // later handlers -- that is the one placement change a diff author
     // actually made, and the one a benchmark should see.
-    a.align(6);
+    if caps.page_aligned_blob {
+        a.align(12);
+    } else {
+        a.align(6);
+    }
     a.global_label("sf_interp_code_base");
     let base = a.base_label();
     a.label(&base);

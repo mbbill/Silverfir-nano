@@ -500,6 +500,7 @@ impl Isa for Arm64 {
             has_float_regs: true,
             float_pin_f32: true,
             native_calls: true,
+            page_aligned_blob: true,
         }
     }
 

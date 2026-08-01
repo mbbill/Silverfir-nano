@@ -353,6 +353,7 @@ impl Isa for Arm32 {
             has_float_regs: false,
             float_pin_f32: false,
             native_calls: false,
+            page_aligned_blob: false,
         }
     }
 
