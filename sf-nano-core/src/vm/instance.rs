@@ -323,6 +323,7 @@ impl Instance {
     }
 
     /// Call an exported function by name.
+    #[inline]
     pub fn invoke(
         &mut self,
         name: &str,
@@ -700,6 +701,7 @@ impl Instance {
 
 impl RuntimeWorld {
     /// An empty world. The first instantiation fixes its tier.
+    #[inline]
     pub fn new() -> Self {
         Self {
             registry: LinkRegistry::new(),
@@ -741,6 +743,7 @@ impl RuntimeWorld {
     /// other's function identities out of one address space, and the engines
     /// do not share a call path for those. Mixing tiers is rejected rather
     /// than half-supported.
+    #[inline]
     pub fn instantiate(
         &mut self,
         engine: &Engine,
@@ -778,6 +781,7 @@ impl RuntimeWorld {
     ///
     /// `None` once the id stops resolving, and also for a slot left occupied
     /// by a partial instantiation, which has no usable facade.
+    #[inline]
     pub fn instance(&self, id: InstanceId) -> Option<&Instance> {
         self.instances
             .iter()
@@ -797,6 +801,7 @@ impl RuntimeWorld {
     ///
     /// Fails while the instance is checked out — that is, while a call into
     /// it is on the stack.
+    #[inline]
     pub fn free(&mut self, id: InstanceId) -> Result<(), WasmError> {
         let index = self
             .instances
