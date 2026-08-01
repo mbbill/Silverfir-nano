@@ -906,6 +906,8 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::vm::engine::Tier;
+    use core::cell::Cell;
+    use std::rc::Rc;
 
     const ADD_WASM: &[u8] = &[
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f,
@@ -942,11 +944,11 @@ mod tests {
     }
 
     /// The embedder's `&mut RuntimeWorld` receiver stays live for the outer
-    /// invocation while `a` enters this host callback. The callback owns only
-    /// a weak world handle, so it can check out and invoke `b` without
-    /// reconstructing or aliasing that mutable borrow.
+    /// invocation while `a` enters a host callback. The callback owns only a
+    /// weak world handle, so it can check out a peer or re-enter `a` itself
+    /// without reconstructing or aliasing that mutable borrow.
     #[test]
-    fn world_handle_reenters_a_peer_from_a_host_callback() {
+    fn world_handle_reenters_from_a_host_callback() {
         let provider_wasm = wat::parse_str(
             r#"
             (module
@@ -969,6 +971,22 @@ mod tests {
             "#,
         )
         .expect("encode handle caller");
+        let self_caller_wasm = wat::parse_str(
+            r#"
+            (module
+              (func $call_self (import "host" "call_self") (param i32) (result i32))
+              (func (export "nested") (param i32) (result i32)
+                local.get 0
+                i32.const 40
+                i32.add)
+              (func (export "run_self") (param i32) (result i32)
+                local.get 0
+                call $call_self
+                i32.const 1
+                i32.add))
+            "#,
+        )
+        .expect("encode same-instance handle caller");
         let callback_type = FunctionType::new(
             collections::vec![crate::value_type::ValueType::I32],
             collections::vec![crate::value_type::ValueType::I32],
@@ -1013,6 +1031,43 @@ mod tests {
                     .expect("a host callback invokes b"),
                 collections::vec![Value::I32(43)],
                 "{tier:?}: host callback did not reach b through the handle"
+            );
+
+            let self_id = Rc::new(Cell::new(None));
+            let callback_id = Rc::clone(&self_id);
+            let callback_handle = handle.clone();
+            let self_host = Import::func_typed(
+                "host",
+                "call_self",
+                move |_caller, args, results| {
+                    let id = callback_id.get().ok_or_else(|| {
+                        WasmError::internal("same-instance callback id is not initialized")
+                    })?;
+                    let returned = callback_handle.invoke(id, 1, args)?;
+                    if returned.len() != results.len() {
+                        return Err(WasmError::invalid("argument/result arity mismatch"));
+                    }
+                    results.copy_from_slice(&returned);
+                    Ok(())
+                },
+                callback_type.clone(),
+            );
+            let self_caller = world
+                .instantiate(
+                    &engine,
+                    Module::new("handle-self-caller", &self_caller_wasm)
+                        .expect("parse same-instance caller"),
+                    &[self_host],
+                )
+                .expect("instantiate same-instance caller");
+            self_id.set(Some(self_caller));
+
+            assert_eq!(
+                world
+                    .invoke(self_caller, "run_self", &[Value::I32(2)])
+                    .expect("a host callback re-enters the current instance"),
+                collections::vec![Value::I32(43)],
+                "{tier:?}: host callback did not re-enter the current slot"
             );
 
             drop(world);

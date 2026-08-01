@@ -489,6 +489,21 @@ enum StepExit {
     Return,
 }
 
+/// Why a materialized run of the local activation driver ended.
+///
+/// `ExternalCall` owns everything needed to run outside the current instance
+/// materialization, so the token-derived `&mut InterpInstance` can end before
+/// the call is invoked.
+enum MaterializedRunExit {
+    ExternalCall {
+        call: Box<PreparedCall>,
+        result_base: usize,
+        error_site: Option<usize>,
+        resume_tail_return: bool,
+    },
+    Complete,
+}
+
 /// Result of executing exactly one instruction.
 pub(super) enum Effect {
     Next,
@@ -2502,45 +2517,84 @@ impl InterpInstance {
         let mut act = root;
         let mut saved: Vec<SavedActivation> = Vec::new();
         loop {
-            let step =
-                access.with_instance_mut(|instance| instance.native_step(&mut act, &mut ctx))??;
+            // Local dispatch cannot re-enter the instance table. Keep one
+            // materialization through native sessions, slow instructions,
+            // local calls, returns, and exception handling. The helper can
+            // leave this scope only with an owned external-call request.
+            let exit = access.with_instance_mut(|instance| {
+                instance.run_materialized(&mut act, &mut saved, &mut ctx, max_depth, results)
+            })??;
+            let MaterializedRunExit::ExternalCall {
+                call,
+                result_base,
+                error_site,
+                resume_tail_return,
+            } = exit
+            else {
+                return Ok(());
+            };
+
+            // This is the re-entry barrier. Host callbacks, installed
+            // funcref hooks, and foreign instances may all check out this
+            // same slot, so no token-derived instance reference is live.
+            match Self::run_external_call(access, &call) {
+                Ok(returned) => {
+                    ctx.stack[result_base..result_base + returned.len()].copy_from_slice(&returned);
+                    ctx.acc = returned.first().copied().unwrap_or(0);
+                    if resume_tail_return {
+                        // Preserve the imported-tail ordering: the host call
+                        // and its result writes happen before this internal
+                        // landing invariant is validated.
+                        act.pc = act.func.slow_tail_return.ok_or(WasmError::invalid(
+                            "interp: tail call has no return landing",
+                        ))? as usize;
+                    }
+                }
+                Err(error) => {
+                    let pending = access
+                        .with_instance_mut(|instance| instance.pending_from_error(error))??;
+                    access.with_instance(|instance| {
+                        instance
+                            .unwind_exception(pending, &mut act, &mut saved, &mut ctx, error_site)
+                    })??;
+                }
+            }
+        }
+    }
+
+    /// Run only work that cannot execute guest or host code outside this
+    /// instance. Imported and external targets are prepared here, but their
+    /// owned requests are returned to [`Self::drive_on`] before invocation.
+    fn run_materialized(
+        &mut self,
+        act: &mut Activation,
+        saved: &mut Vec<SavedActivation>,
+        ctx: &mut DriveCtx<'_>,
+        max_depth: u32,
+        results: &mut [u64],
+    ) -> Result<MaterializedRunExit, WasmError> {
+        loop {
+            let step = self.native_step(act, ctx)?;
             match step {
                 StepExit::Call { callee, arg_base } => {
                     if saved.len() as u32 >= max_depth {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
-                    let entry =
-                        access.with_instance(|instance| instance.funcs.get(callee).cloned())?;
-                    let f = match entry {
+                    let f = match self.funcs.get(callee).cloned() {
                         Some(Some(f)) => f,
                         Some(None) => {
                             // Imported function: dispatch to the host. Its
                             // first result rides the accumulator relay like
                             // any other call result.
                             let base = act.base;
-                            let call = access.with_instance(|instance| {
-                                instance.prepare_import_call(callee, &ctx.stack[base..], arg_base)
-                            })??;
-                            match Self::run_external_call(access, &call) {
-                                Ok(returned) => {
-                                    let result_base = base + arg_base;
-                                    ctx.stack[result_base..result_base + returned.len()]
-                                        .copy_from_slice(&returned);
-                                    ctx.acc = returned.first().copied().unwrap_or(0);
-                                }
-                                Err(error) => {
-                                    let pending = access.with_instance_mut(|instance| {
-                                        instance.pending_from_error(error)
-                                    })??;
-                                    let site = act.pc.checked_sub(1);
-                                    access.with_instance(|instance| {
-                                        instance.unwind_exception(
-                                            pending, &mut act, &mut saved, &mut ctx, site,
-                                        )
-                                    })??;
-                                }
-                            }
-                            continue;
+                            let call =
+                                self.prepare_import_call(callee, &ctx.stack[base..], arg_base)?;
+                            return Ok(MaterializedRunExit::ExternalCall {
+                                call: Box::new(call),
+                                result_base: base + arg_base,
+                                error_site: act.pc.checked_sub(1),
+                                resume_tail_return: false,
+                            });
                         }
                         None => return Err(WasmError::trap("undefined element")),
                     };
@@ -2561,10 +2615,9 @@ impl InterpInstance {
                         route_established: false,
                     };
                     saved.push(SavedActivation {
-                        activation: act,
+                        activation: core::mem::replace(act, callee_act),
                         ret_cursor: ctx.ret_cursor,
                     });
-                    act = callee_act;
                 }
                 StepExit::TailCall { callee, arg_base } => {
                     // The callee returns to THIS activation's caller, so it
@@ -2573,49 +2626,28 @@ impl InterpInstance {
                     // our results are expected), and the activation is
                     // replaced rather than pushed. Recursion through a tail
                     // call therefore runs at constant depth.
-                    let entry =
-                        access.with_instance(|instance| instance.funcs.get(callee).cloned())?;
-                    let f = match entry {
+                    let f = match self.funcs.get(callee).cloned() {
                         Some(Some(f)) => f,
                         Some(None) => {
                             // An imported tail callee: run the host, leave
                             // its results at this frame's base, and return
                             // to the caller as this activation would have.
                             let base = act.base;
-                            let call = access.with_instance(|instance| {
-                                instance.prepare_import_call(callee, &ctx.stack[base..], arg_base)
-                            })??;
-                            match Self::run_external_call(access, &call) {
-                                Ok(returned) => {
-                                    ctx.stack[base..base + returned.len()]
-                                        .copy_from_slice(&returned);
-                                    ctx.acc = returned.first().copied().unwrap_or(0);
-                                }
-                                Err(error) => {
-                                    let pending = access.with_instance_mut(|instance| {
-                                        instance.pending_from_error(error)
-                                    })??;
-                                    // A tail call retires this activation
-                                    // before entering the callee, so its try
-                                    // scopes are not candidates.
-                                    access.with_instance(|instance| {
-                                        instance.unwind_exception(
-                                            pending, &mut act, &mut saved, &mut ctx, None,
-                                        )
-                                    })??;
-                                    continue;
-                                }
-                            }
-                            // Do not synthesize a Rust return here. This
-                            // activation may itself have native-only callers
-                            // represented solely by raw return records. The
-                            // landing executes an ordinary native Return,
-                            // consuming the current record and routing through
-                            // every such caller before the sentinel exits.
-                            act.pc = act.func.slow_tail_return.ok_or(WasmError::invalid(
-                                "interp: tail call has no return landing",
-                            ))? as usize;
-                            continue;
+                            let call =
+                                self.prepare_import_call(callee, &ctx.stack[base..], arg_base)?;
+                            return Ok(MaterializedRunExit::ExternalCall {
+                                call: Box::new(call),
+                                result_base: base,
+                                // A tail call retires this activation before
+                                // entering the callee, so its try scopes are
+                                // not candidates.
+                                error_site: None,
+                                // Do not synthesize a Rust return. After the
+                                // host succeeds, the landing executes an
+                                // ordinary native Return and consumes every
+                                // native-only caller route before the sentinel.
+                                resume_tail_return: true,
+                            });
                         }
                         None => return Err(WasmError::trap("undefined element")),
                     };
@@ -2643,37 +2675,28 @@ impl InterpInstance {
                     search_current,
                 } => {
                     let site = search_current.then_some(act.pc);
-                    access.with_instance(|instance| {
-                        instance.unwind_exception(pending, &mut act, &mut saved, &mut ctx, site)
-                    })??;
+                    self.unwind_exception(pending, act, saved, ctx, site)?;
                 }
                 StepExit::ExternalCall {
                     call,
                     result_base,
                     site,
                     search_current,
-                } => match Self::run_external_call(access, &call) {
-                    Ok(returned) => {
-                        ctx.stack[result_base..result_base + returned.len()]
-                            .copy_from_slice(&returned);
-                        ctx.acc = returned.first().copied().unwrap_or(0);
-                    }
-                    Err(error) => {
-                        let pending = access
-                            .with_instance_mut(|instance| instance.pending_from_error(error))??;
-                        let site = search_current.then_some(site);
-                        access.with_instance(|instance| {
-                            instance.unwind_exception(pending, &mut act, &mut saved, &mut ctx, site)
-                        })??;
-                    }
-                },
+                } => {
+                    return Ok(MaterializedRunExit::ExternalCall {
+                        call,
+                        result_base,
+                        error_site: search_current.then_some(site),
+                        resume_tail_return: false,
+                    });
+                }
                 StepExit::Return => {
                     // Results are already in place: the callee's frame base
                     // IS the caller's staged-argument slot.
                     match saved.pop() {
                         None => {
                             results.copy_from_slice(&ctx.stack[..results.len()]);
-                            return Ok(());
+                            return Ok(MaterializedRunExit::Complete);
                         }
                         Some(parent) => {
                             // Native Return already popped the callee's
@@ -2682,7 +2705,7 @@ impl InterpInstance {
                             // covers targets whose backend reports Return
                             // without exposing its cursor mechanics.
                             ctx.ret_cursor = parent.ret_cursor;
-                            act = parent.activation;
+                            *act = parent.activation;
                         }
                     }
                 }
