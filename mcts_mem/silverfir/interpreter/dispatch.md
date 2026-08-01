@@ -665,6 +665,27 @@
   the target is to halve them without losing time
   [[dispatch.fact/narrow-field-reads-2026-07-30]] (code)
 
+- 2026-08-01 measurement: the generated dispatch engine's absolute layout, not
+  just its content, sets interpreter benchmark scores. Inserting N bytes of
+  UNREACHABLE padding between the prelude and the first handler -- changing no
+  executed instruction -- moved x64-windows sha256 from -14.83% to +0.27% at
+  N=48 and to -1.57% at N=32; stream-Scale from -24.78% to -0.47% and +4.72%;
+  stream-Add from -26.33% to -1.88% and -11.46%. On arm64-linux the same N=48
+  moved stream-Scale by +103.49%. Directions scatter per metric and per
+  platform, which is the signature of a placement draw rather than a fix
+  (code).
+
+- 2026-08-01 pitfall: the engine emits ONE alignment directive at the blob head
+  and none per handler -- 3 directives for 10,321 handler labels in the
+  generated assembly, two of them rodata. So any edit changing any handler's
+  size shifts every downstream handler: adding two instructions to the
+  call_indirect guard moved all 10,003 handler-table entries by exactly 13
+  bytes and changed the instruction-fetch footprint of about 39% of handlers.
+  Windows' prelude is 4 bytes longer than Linux's, so the two operating systems
+  sit in different phases and a common shift is an independent draw on each.
+  Consequence: a perf regression on an interpreter benchmark is not evidence of
+  a code defect until layout is controlled for (code).
+
 ## Moves
 
 - 2026-07-26 replaced [[stencil-stitching]]: removing the dispatch between cells is
