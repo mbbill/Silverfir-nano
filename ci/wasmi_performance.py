@@ -934,6 +934,17 @@ def build_parser() -> argparse.ArgumentParser:
             "NEGLIGIBLE instead of failing"
         ),
     )
+    parser.add_argument(
+        "--placement-metric",
+        action="append",
+        default=[],
+        metavar="METRIC",
+        help=(
+            "metric whose regressions are classified PLACEMENT (measured "
+            "and reported, never failing): its swings are proven to track "
+            "the binary's address layout rather than its code"
+        ),
+    )
     parser.add_argument("--engine", choices=("jit", "interp"), required=True)
     parser.add_argument(
         "--category",
@@ -1270,6 +1281,7 @@ def main() -> int:
             minimum_effect_log=math.log1p(
                 args.minimum_effect_percent / 100.0
             ),
+            placement_metrics=frozenset(args.placement_metric),
         )
     except (
         ArithmeticError,

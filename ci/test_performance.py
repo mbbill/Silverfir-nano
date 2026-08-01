@@ -326,6 +326,26 @@ class ProbabilityGateTests(unittest.TestCase):
 
         self.assertEqual(result["small"]["status"], "REGRESSION")
 
+    def test_placement_metric_reports_but_never_fails(self) -> None:
+        initial = {"c-ray": measured_metric([-5.0] * 4)}
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
+        )
+        result = classify_metrics(
+            initial=initial,
+            final={"c-ray": measured_metric([-5.0] * 6)},
+            plans=plans,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            placement_metrics=frozenset({"c-ray"}),
+        )
+
+        self.assertEqual(result["c-ray"]["status"], "PLACEMENT")
+
     def test_build_metadata_requires_matching_platform_and_engine(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

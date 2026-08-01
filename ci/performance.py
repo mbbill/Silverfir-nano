@@ -569,6 +569,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--placement-metric",
+        action="append",
+        default=[],
+        metavar="METRIC",
+        help=(
+            "metric whose regressions are classified PLACEMENT (measured "
+            "and reported, never failing): its swings are proven to track "
+            "the binary's address layout rather than its code"
+        ),
+    )
+    parser.add_argument(
         "--regression-probability",
         type=float,
         default=99.99,
@@ -933,6 +944,7 @@ def main() -> int:
                 minimum_effect_log=math.log1p(
                     args.minimum_effect_percent / 100.0
                 ),
+                placement_metrics=frozenset(args.placement_metric),
             )
             selected_plans = {
                 metric_name: plan
