@@ -664,6 +664,7 @@ impl Isa for RiscV {
                 has_float_regs: self.fp,
                 float_pin_f32: false,
                 native_calls: true,
+                page_aligned_blob: false,
             }
         } else {
             // One pinned local on RV32: a second would take a second
@@ -677,6 +678,7 @@ impl Isa for RiscV {
                 has_float_regs: false,
                 float_pin_f32: false,
                 native_calls: false,
+                page_aligned_blob: false,
             }
         }
     }

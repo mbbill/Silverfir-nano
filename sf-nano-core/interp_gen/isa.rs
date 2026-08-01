@@ -111,6 +111,14 @@ pub struct Caps {
     /// flavours link to the slow stub, and the driver drives every
     /// activation — correct, but two chain crossings per call.
     pub native_calls: bool,
+    /// Whether the engine blob starts on its own page. Wide cores predict
+    /// the dispatch chain's indirect branches through virtually indexed
+    /// structures whose granule exceeds a cache line, so the same handler
+    /// bytes at a different page offset measure differently per binary;
+    /// pinning the base makes every handler's virtual address a constant
+    /// of the blob's content. Costs up to one page of padding, so the
+    /// flash-constrained targets leave it off.
+    pub page_aligned_blob: bool,
 }
 
 /// One handler the driver is asking about.
