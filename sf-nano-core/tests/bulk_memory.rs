@@ -1,4 +1,8 @@
 //! Regression tests for native bulk-memory helper calls.
+//!
+//! These exercise the interpreter's native helper chain, so the whole file
+//! is that engine's own code surface.
+#![cfg(sf_interp)]
 
 use sf_nano_core::{Config, Engine, Instance, Tier, Value};
 
