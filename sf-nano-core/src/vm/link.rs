@@ -1136,6 +1136,57 @@ mod instance_table_tests {
         (id, handle)
     }
 
+    #[cfg(sf_interp)]
+    fn occupied_reentrant_import(registry: &LinkRegistry) -> InstanceId {
+        // `(module (import "host" "reenter" (func)) (memory 1))`.
+        // Keep this binary literal small because the exact test runs in Miri.
+        const REENTRANT_IMPORT_WASM: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+            0x02, 0x10, 0x01, 0x04, 0x68, 0x6f, 0x73, 0x74, 0x07, 0x72, 0x65, 0x65, 0x6e, 0x74,
+            0x65, 0x72, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01,
+        ];
+        let engine =
+            Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter test engine");
+        let module =
+            Module::new("Miri reentrant import", REENTRANT_IMPORT_WASM).expect("import module");
+        let func_type = module.functions()[0].func_type().clone();
+        let (id, handle) = registry.reserve_instance();
+        let callback_handle = handle.clone();
+        let host =
+            InterpInstance::boxed_caller_host(move |_module, _name, _caller, _args, _results| {
+                let token = callback_handle
+                    .checkout(id)
+                    .ok_or_else(|| WasmError::internal("same-slot host re-entry failed"))?;
+                let mut reentered = InterpInstanceAccess::checked_out(token);
+                reentered.with_instance_mut(|instance| {
+                    assert_eq!(instance.instance_backref().self_id(), id);
+                    instance.memory_mut().expect("re-entered instance memory")[0] = 0x44;
+                })?;
+                Ok(())
+            });
+        let import = crate::Import::func_typed(
+            "host",
+            "reenter",
+            |_caller, _args, _results| Ok(()),
+            func_type,
+        );
+        let instance = InterpInstance::build(
+            &engine,
+            module,
+            Some(host),
+            &[import],
+            None,
+            registry.arenas(),
+            handle,
+        )
+        .expect("reentrant import instance");
+        registry
+            .instance_table()
+            .occupy_interp(id, Box::new(instance))
+            .expect("fresh reentrant import slot");
+        id
+    }
+
     #[test]
     fn checkout_rejects_generation_mismatch() {
         let registry = LinkRegistry::new();
@@ -1416,8 +1467,34 @@ mod instance_table_tests {
                 })
                 .expect("final A materialization");
             drop(final_a);
+
+            // An imported host call is the same-slot re-entry barrier used by
+            // the interpreter driver. The callback checks out and materializes
+            // this exact instance while the outer invocation token remains
+            // live. The outer access is materialized again afterward so Miri
+            // makes any accidentally overlapping token-derived reference
+            // load-bearing.
+            let reentrant_id = occupied_reentrant_import(&interp_registry);
+            let mut outer = InterpInstanceAccess::checked_out(
+                interp_table
+                    .checkout(reentrant_id)
+                    .expect("outer reentrant-import checkout"),
+            );
+            InterpInstance::invoke_access(&mut outer, 0, &[], &mut [])
+                .expect("host callback re-enters the same interpreter slot");
+            outer
+                .with_instance(|instance| {
+                    assert_eq!(instance.memory().expect("post-callback memory")[0], 0x44);
+                })
+                .expect("post-callback materialization");
+            drop(outer);
+
+            interp_table
+                .free(reentrant_id)
+                .expect("free reentrant import");
             interp_table.free(b_id).expect("free interpreter B");
             interp_table.free(a_id).expect("free interpreter A");
+            assert!(interp_table.checkout(reentrant_id).is_none());
             assert!(interp_table.checkout(a_id).is_none());
             assert!(interp_table.checkout(b_id).is_none());
         }
