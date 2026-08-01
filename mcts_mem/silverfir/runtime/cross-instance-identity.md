@@ -161,6 +161,26 @@
   reverse of its own identity map (code).
 
 
+- 2026-08-01 measurement: the perf CI jobs differ enormously in runner
+  stability, and only one is usable for magnitudes. Across three runs the
+  funcref-exported-table BASELINE moved 0.1% on arm64-linux, 18% on
+  x64-windows, 30% on arm64-darwin and 58% on x64-linux. The gate's verdict
+  stays sound everywhere because baseline and candidate share a runner within
+  a run, but a latency-bound regression's magnitude scales with core speed, so
+  the same defect reads -14.80% on a slow x64 runner and -5.14% on a fast one.
+  Bisect by ordering, not by percentage, and prefer arm64-linux when a number
+  has to be trusted (code).
+
+- 2026-08-01 pitfall: each successive fix to this regression needed a
+  different instrument, and reusing the previous one would have missed it.
+  Wall clock found the JIT's dead inline path; instruction count found the
+  144-byte Effect return and the arena fallthrough, and simultaneously proved
+  the residual was NOT instruction-bound; cache and branch simulation found
+  the last one, an L1-I set conflict from enum variant order that raised
+  instruction-cache misses 28% while instructions, D1 misses and branch
+  mispredicts all improved. A wide out-of-order core hides front-end cost
+  entirely, so an M4 measurement cannot see this class at all (code).
+
 ## Moves
 
 - 2026-07-30 (bc7cbb03) replaced [[pointer-identity]]: raw store pointers made
