@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -923,6 +924,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baseline-sha", required=True)
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--platform", required=True)
+    parser.add_argument(
+        "--minimum-effect-percent",
+        type=float,
+        default=0.0,
+        help=(
+            "practical-significance floor: a regression must be shown to "
+            "exceed this percentage at the gate confidence, or it reports "
+            "NEGLIGIBLE instead of failing"
+        ),
+    )
     parser.add_argument("--engine", choices=("jit", "interp"), required=True)
     parser.add_argument(
         "--category",
@@ -1256,6 +1267,9 @@ def main() -> int:
             regression_probability=effective_regression_probability,
             improvement_probability=effective_improvement_probability,
             identical_binaries=identical_runtime,
+            minimum_effect_log=math.log1p(
+                args.minimum_effect_percent / 100.0
+            ),
         )
     except (
         ArithmeticError,

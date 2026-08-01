@@ -382,6 +382,13 @@ jobs:
             --baseline-sha "${{ needs.prepare.outputs.baseline }}" \
             --candidate-sha "${{ needs.prepare.outputs.candidate }}"
 
+      - name: Record runner CPU
+        shell: bash
+        run: |
+          uname -a || true
+          lscpu 2>/dev/null | grep -iE "model name|vendor|bios" || true
+          sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+
       - name: Run benchmark suite
         env:
           BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
@@ -410,6 +417,7 @@ jobs:
             --pilot-probability 80
             --regression-probability 99.99
             --improvement-probability 99.99
+            --minimum-effect-percent 1.0
             --family-jobs "${{ matrix.family_jobs }}"
             --out-dir "perf-output/${ENGINE}"
           )
@@ -547,6 +555,13 @@ jobs:
           shared-key: wasmi-${{ matrix.platform }}-${{ matrix.engine }}
           workspaces: ". -> wasmi-target"
 
+      - name: Record runner CPU
+        shell: bash
+        run: |
+          uname -a || true
+          lscpu 2>/dev/null | grep -iE "model name|vendor|bios" || true
+          sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+
       - name: Compare wasmi-benchmarks
         env:
           BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
@@ -570,6 +585,7 @@ jobs:
             --pilot-probability 80 \
             --regression-probability 99.99 \
             --improvement-probability 99.99 \
+            --minimum-effect-percent 1.0 \
             --family-jobs 4 \
             --family-metric-count 27 \
             --max-confirmation-runs 2 \

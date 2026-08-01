@@ -160,6 +160,29 @@ def direction_probability_for_pairs(
     return student_t_cdf(t_value, pair_count - 1)
 
 
+def effect_exceeds_probability(
+    *,
+    mean_log_ratio: float,
+    log_ratio_stddev: float,
+    pair_count: int,
+    minimum_effect_log: float,
+) -> float:
+    """Probability that the true effect magnitude exceeds the floor.
+
+    Shifts the paired t statistic by the practical-significance floor, so
+    with a zero floor this reduces to the plain directional probability.
+    """
+    if pair_count < 2:
+        raise ValueError("pair count must be at least two")
+    if minimum_effect_log < 0.0:
+        raise ValueError("minimum effect must not be negative")
+    magnitude = abs(mean_log_ratio) - minimum_effect_log
+    if log_ratio_stddev == 0.0:
+        return 1.0 if magnitude > 0.0 else 0.0
+    t_value = magnitude / (log_ratio_stddev / math.sqrt(pair_count))
+    return student_t_cdf(t_value, pair_count - 1)
+
+
 def family_adjusted_probability(
     probability: float,
     *,
@@ -293,8 +316,14 @@ def classify_metrics(
     regression_probability: float,
     improvement_probability: float,
     identical_binaries: bool = False,
+    minimum_effect_log: float = 0.0,
 ) -> dict[str, dict[str, Any]]:
-    """Classify only directions frozen by the initial screening stage."""
+    """Classify only directions frozen by the initial screening stage.
+
+    A regression additionally needs the data to support a true effect
+    beyond ``minimum_effect_log`` at the same confidence; a directional
+    hit inside the floor reports NEGLIGIBLE and does not fail the gate.
+    """
     metrics: dict[str, dict[str, Any]] = {}
     for name, initial_metric in initial.items():
         plan = plans[name]
@@ -305,12 +334,22 @@ def classify_metrics(
 
         direction = plan["direction"]
         if direction == "regression" and selected:
-            status = (
-                "REGRESSION"
-                if measured["probability_regression"]
-                >= regression_probability
-                else "RECOVERED"
-            )
+            if measured["probability_regression"] < regression_probability:
+                status = "RECOVERED"
+            elif (
+                minimum_effect_log > 0.0
+                and float(measured["mean_log_ratio"]) < 0.0
+                and effect_exceeds_probability(
+                    mean_log_ratio=float(measured["mean_log_ratio"]),
+                    log_ratio_stddev=float(measured["log_ratio_stddev"]),
+                    pair_count=int(measured["pair_count"]),
+                    minimum_effect_log=minimum_effect_log,
+                )
+                < regression_probability
+            ):
+                status = "NEGLIGIBLE"
+            else:
+                status = "REGRESSION"
         elif direction == "improvement" and selected:
             status = (
                 "IMPROVEMENT"

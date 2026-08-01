@@ -278,6 +278,54 @@ class ProbabilityGateTests(unittest.TestCase):
         self.assertEqual(result["regression"]["status"], "UNSTABLE")
         self.assertEqual(result["improvement"]["status"], "PASS")
 
+    def test_minimum_effect_floor_reports_negligible(self) -> None:
+        initial = {
+            "small": measured_metric([-0.5] * 4),
+            "large": measured_metric([-2.0] * 4),
+        }
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
+        )
+        result = classify_metrics(
+            initial=initial,
+            final={
+                "small": measured_metric([-0.5] * 6),
+                "large": measured_metric([-2.0] * 6),
+            },
+            plans=plans,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_effect_log=math.log1p(0.01),
+        )
+
+        # Both are certain regressions; only the one the data show to
+        # exceed the one-percent floor fails the gate.
+        self.assertEqual(result["small"]["status"], "NEGLIGIBLE")
+        self.assertEqual(result["large"]["status"], "REGRESSION")
+
+    def test_zero_floor_keeps_the_old_classification(self) -> None:
+        initial = {"small": measured_metric([-0.5] * 4)}
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
+        )
+        result = classify_metrics(
+            initial=initial,
+            final={"small": measured_metric([-0.5] * 6)},
+            plans=plans,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+        )
+
+        self.assertEqual(result["small"]["status"], "REGRESSION")
+
     def test_build_metadata_requires_matching_platform_and_engine(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
