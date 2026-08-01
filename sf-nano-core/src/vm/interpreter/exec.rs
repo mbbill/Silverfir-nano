@@ -370,9 +370,19 @@ struct Activation {
 /// so every frame that can catch an exception from a callee has one of these
 /// checkpoints. Restoring the cursor discards the callee's sentinel together
 /// with any native-only descendant records below it.
+// On AArch64, keeping the activation before the return cursor lets the hot
+// save use two paired vector moves followed by one paired scalar move.
+#[cfg_attr(sf_backend_arm64, repr(C))]
 struct SavedActivation {
     activation: Activation,
     ret_cursor: usize,
+}
+
+#[cfg(sf_backend_arm64)]
+#[cold]
+#[inline(never)]
+fn grow_saved_activations(saved: &mut Vec<SavedActivation>) {
+    saved.reserve(1);
 }
 
 #[derive(Clone, Copy)]
@@ -2568,6 +2578,10 @@ impl InterpInstance {
     /// Run only work that cannot execute guest or host code outside this
     /// instance. Imported and external targets are prepared here, but their
     /// owned requests are returned to [`Self::drive_on`] before invocation.
+    // One call enters this loop per materialization; local calls and returns
+    // stay inside it. Keeping that scheduling region separate on AArch64 also
+    // prevents the token boundary's slow paths from forcing its state to spill.
+    #[cfg_attr(sf_backend_arm64, inline(never))]
     fn run_materialized(
         &mut self,
         act: &mut Activation,
@@ -2617,6 +2631,12 @@ impl InterpInstance {
                         pc: 0,
                         route_established: false,
                     };
+                    // Dominate `push`'s capacity check so the AArch64 hot path
+                    // can copy the caller straight into the spare Vec slot.
+                    #[cfg(sf_backend_arm64)]
+                    while saved.len() == saved.capacity() {
+                        grow_saved_activations(saved);
+                    }
                     saved.push(SavedActivation {
                         activation: core::mem::replace(act, callee_act),
                         ret_cursor: ctx.ret_cursor,
