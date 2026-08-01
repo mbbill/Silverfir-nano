@@ -2512,7 +2512,7 @@ impl InterpInstance {
                     let entry =
                         access.with_instance(|instance| instance.funcs.get(callee).cloned())?;
                     let f = match entry {
-                        Some(Some(f)) => f.clone(),
+                        Some(Some(f)) => f,
                         Some(None) => {
                             // Imported function: dispatch to the host. Its
                             // first result rides the accumulator relay like
@@ -2576,7 +2576,7 @@ impl InterpInstance {
                     let entry =
                         access.with_instance(|instance| instance.funcs.get(callee).cloned())?;
                     let f = match entry {
-                        Some(Some(f)) => f.clone(),
+                        Some(Some(f)) => f,
                         Some(None) => {
                             // An imported tail callee: run the host, leave
                             // its results at this frame's base, and return
