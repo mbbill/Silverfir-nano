@@ -407,8 +407,18 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
 
     // Tables. Kept in read-only data rather than in `.text`: the runtime
     // reads them, and nothing here needs to be executable.
+    //
+    // Every dispatch loads the next handler's address out of these tables,
+    // so on wide cores their base gets the same page pin as the blob: the
+    // set index a table line lands in must be a constant of the engine's
+    // content, not of whatever read-only data the rest of the crate linked
+    // in front of it.
     a.rodata();
-    a.align(2);
+    if caps.page_aligned_blob {
+        a.align(12);
+    } else {
+        a.align(2);
+    }
     a.global_label("sf_interp_meta");
     a.code_off(&st.entry);
     a.code_off(&st.slow);
