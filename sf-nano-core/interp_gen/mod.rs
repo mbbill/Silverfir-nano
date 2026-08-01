@@ -346,12 +346,21 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
         a.raw("\t.syntax unified");
         a.raw("\t.thumb");
     }
-    a.align(4);
+    // The blob base and the first handler each sit on their own cache line,
+    // so neither the size of the code linked ahead of the blob nor the size
+    // of the prelude and stubs can change any handler's cache-line phase. A
+    // 13-byte prelude edit once re-rolled the measured throughput of ~39% of
+    // handlers on every platform at once; these two boundaries cost at most
+    // 128 bytes and pin that down. Handler-body size changes still shift
+    // later handlers -- that is the one placement change a diff author
+    // actually made, and the one a benchmark should see.
+    a.align(6);
     a.global_label("sf_interp_code_base");
     let base = a.base_label();
     a.label(&base);
 
     isa.emit_prelude(&mut a, &st);
+    a.align(6);
 
     for group in emit_order() {
         for &op in group.ops {
