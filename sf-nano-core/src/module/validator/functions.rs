@@ -3,7 +3,7 @@ use crate::collections;
 use crate::{
     error::WasmError,
     module::{
-        entities::{Element, ElementInit, FunctionSpec, FunctionType},
+        entities::{FunctionSpec, FunctionType},
         type_context::TypeContext,
         type_defs::{ArrayType, CompositeType, StorageType},
         Module,
@@ -225,6 +225,7 @@ fn expect_simd_shuffle_immediate(imm: Immediate) -> Result<[u8; 16], WasmError> 
 pub(super) struct FunctionValidator<'a> {
     module: &'a Module,
     function: &'a FunctionSpec,
+    declared_functions: &'a [bool],
     context: Context,
 }
 
@@ -294,7 +295,11 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
 }
 
 impl<'a> FunctionValidator<'a> {
-    pub(super) fn new(module: &'a Module, function: &'a FunctionSpec) -> Result<Self, WasmError> {
+    pub(super) fn new(
+        module: &'a Module,
+        function: &'a FunctionSpec,
+        declared_functions: &'a [bool],
+    ) -> Result<Self, WasmError> {
         let mut context = Context::new(
             module.types().clone(),
             function.func_type().params(),
@@ -306,6 +311,7 @@ impl<'a> FunctionValidator<'a> {
         Ok(FunctionValidator {
             module,
             function,
+            declared_functions,
             context,
         })
     }
@@ -1028,29 +1034,7 @@ impl<'a> FunctionValidator<'a> {
                 if function_index as usize >= self.module.functions().len() {
                     return Err(WasmError::invalid("function index out of range"));
                 }
-
-                // Check if the function is declared in any element section
-                let mut is_declared = false;
-                for element in self.module.elements() {
-                    match element {
-                        Element::Active { init, .. }
-                        | Element::Passive { init, .. }
-                        | Element::Declarative { init, .. } => match init {
-                            ElementInit::FunctionIndexes(indices) => {
-                                if indices.contains(&(function_index as usize)) {
-                                    is_declared = true;
-                                    break;
-                                }
-                            }
-                            ElementInit::InitExprs { .. } => {
-                                is_declared = true;
-                                break;
-                            }
-                        },
-                    }
-                }
-
-                if !is_declared {
+                if !self.declared_functions[function_index as usize] {
                     return Err(WasmError::invalid("undeclared function reference"));
                 }
 

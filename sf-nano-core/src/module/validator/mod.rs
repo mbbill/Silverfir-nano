@@ -68,7 +68,10 @@ impl<'a> Validator<'a> {
             }
         }
 
-        // Phase 2: Validate function bodies
+        // Phase 2: Validate function bodies. `ref.func` inside a body is
+        // only valid for a function declared outside all bodies, and that
+        // declared set is exactly the escapable set the runtime registers.
+        let declared_functions = self.module.escapable_functions()?;
         self.module
             .functions()
             .iter()
@@ -79,7 +82,7 @@ impl<'a> Validator<'a> {
                     WasmError::invalid("Function validation failed: not a local function")
                 })?;
                 let code = spec.code();
-                let mut validator = FunctionValidator::new(self.module, spec)?;
+                let mut validator = FunctionValidator::new(self.module, spec, &declared_functions)?;
                 let mut decoder = op_decoder::Decoder::new(code);
                 decoder.add_handler(&mut validator);
                 decoder.decode_function()?;
