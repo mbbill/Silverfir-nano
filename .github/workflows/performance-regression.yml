@@ -432,6 +432,17 @@ jobs:
           if [[ -f "perf-output/${ENGINE}/summary.md" ]]; then
             cat "perf-output/${ENGINE}/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # A pure regression verdict (exit 1) in perf mode is not final:
+          # runs of byte-identical sources have flagged disjoint row sets,
+          # so one runner's verdict confounds the change with the draw.
+          # The confirm job re-measures flagged rows on an independent
+          # runner and fails only what reproduces. Build, correctness,
+          # and harness failures stay fatal right here.
+          if [[ "$status" -eq 1 && "$MODE" != "correctness" ]]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> Regressions above are forwarded to cross-run confirmation." >> "$GITHUB_STEP_SUMMARY"
+            status=0
+          fi
           if [[ "$status" -ne 0 && "$GITHUB_REF" == refs/heads/dev/* ]]; then
             echo "::warning title=Dev performance soft-fail::Action required; see the job summary and artifact."
           fi
@@ -444,6 +455,181 @@ jobs:
           path: |
             perf-output/${{ matrix.engine }}/
             perf-bin/build-metadata.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Mark dev soft-fail as action required
+        if: failure() && startsWith(github.ref, 'refs/heads/dev/')
+        run: |
+          {
+            echo
+            echo "> [!CAUTION]"
+            echo "> **SOFT-FAIL — ACTION REQUIRED.** Email is suppressed for"
+            echo "> dev branches, but a preceding step failed. This is not a pass."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Dev CI soft-fail::Action required; this job did not pass."
+
+  compare-confirm:
+    name: confirm / ${{ matrix.platform }} / ${{ matrix.engine }}
+    needs: [prepare, compare]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    # See CLAUDE.md and AGENTS.md: this suppresses dev failure email only.
+    # A failed dev job still requires correction.
+    continue-on-error: ${{ startsWith(github.ref, 'refs/heads/dev/') }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/perf-target
+    steps:
+      - name: Fetch the primary verdict
+        if: matrix.mode != 'correctness'
+        uses: actions/download-artifact@v7
+        with:
+          name: performance-${{ matrix.platform }}-${{ matrix.engine }}
+          path: primary
+
+      - name: Decide whether confirmation is needed
+        id: decide
+        if: matrix.mode != 'correctness'
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          set -euo pipefail
+          flagged=$(python3 -c "import json, os, pathlib; doc = pathlib.Path('primary/perf-output') / os.environ['ENGINE'] / 'comparison.json'; tests = (json.loads(doc.read_text(encoding='utf-8')).get('tests') or {}) if doc.is_file() else {}; print(' '.join(sorted({name for t in tests.values() for name, m in t.get('metrics', {}).items() if m.get('status') == 'REGRESSION'})))")
+          if [[ -n "$flagged" ]]; then confirm=true; else confirm=false; fi
+          echo "confirm=$confirm" >> "$GITHUB_OUTPUT"
+          echo "flagged=$flagged" >> "$GITHUB_OUTPUT"
+          echo "primary flagged rows: ${flagged:-none}"
+
+      - name: Enable Git long paths
+        if: steps.decide.outputs.confirm == 'true' && runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - name: Checkout candidate
+        if: steps.decide.outputs.confirm == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.candidate }}
+
+      - name: Checkout baseline
+        if: steps.decide.outputs.confirm == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.baseline }}
+          path: baseline
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.decide.outputs.confirm == 'true'
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        if: steps.decide.outputs.confirm == 'true'
+        with:
+          shared-key: perf-${{ matrix.platform }}-${{ matrix.engine }}
+          workspaces: ". -> perf-target"
+
+      - name: Build baseline and candidate
+        if: steps.decide.outputs.confirm == 'true'
+        env:
+          ENGINE: ${{ matrix.engine }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          EXE: ${{ matrix.exe }}
+        run: |
+          set -euo pipefail
+          python3 -m ci.performance_build \
+            --baseline-source baseline \
+            --candidate-source . \
+            --out-dir perf-bin \
+            --engine "$ENGINE" \
+            --platform "$PLATFORM" \
+            --target "$TARGET" \
+            --exe-suffix "$EXE" \
+            --baseline-sha "${{ needs.prepare.outputs.baseline }}" \
+            --candidate-sha "${{ needs.prepare.outputs.candidate }}"
+
+      - name: Record runner CPU
+        if: steps.decide.outputs.confirm == 'true'
+        run: |
+          uname -a || true
+          lscpu 2>/dev/null | grep -iE "model name|vendor|bios" || true
+          sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+
+      - name: Re-measure the flagged rows on this runner
+        if: steps.decide.outputs.confirm == 'true'
+        env:
+          BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
+          BLOCKS: ${{ needs.prepare.outputs.blocks }}
+          ENGINE: ${{ matrix.engine }}
+          PLATFORM: ${{ matrix.platform }}
+          RUNNER_PREFIX: ${{ matrix.runner_prefix }}
+          EXE: ${{ matrix.exe }}
+          FLAGGED: ${{ steps.decide.outputs.flagged }}
+        run: |
+          set -euo pipefail
+          # The rows under test were pre-registered by the primary run, so
+          # this is a single re-test per row on independent hardware: the
+          # uncorrected gate probability with the same practical floor.
+          # Only the flagged rows are re-measured, keeping this job well
+          # inside the ten-minute budget.
+          args=(
+            -m ci.performance
+            --baseline-exec "perf-bin/baseline${EXE}"
+            --candidate-exec "perf-bin/candidate${EXE}"
+            --engine "$ENGINE"
+            --platform "$PLATFORM"
+            --baseline-sha "$BASELINE_SHA"
+            --candidate-sha "$CANDIDATE_SHA"
+            --build-metadata "perf-bin/build-metadata.json"
+            --blocks "$BLOCKS"
+            --min-pairs 6
+            --max-pairs 24
+            --pilot-probability 80
+            --regression-probability 99
+            --improvement-probability 99.99
+            --minimum-effect-percent 1.0
+            --family-jobs 1
+            --out-dir "perf-output-confirm/${ENGINE}"
+          )
+          if [[ -n "$RUNNER_PREFIX" ]]; then
+            args+=(--runner-prefix "$RUNNER_PREFIX")
+          fi
+          for metric in $FLAGGED; do
+            args+=(--only "$metric")
+          done
+          python3 "${args[@]}" || true
+          if [[ -f "perf-output-confirm/${ENGINE}/summary.md" ]]; then
+            cat "perf-output-confirm/${ENGINE}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Cross-run verdict
+        if: steps.decide.outputs.confirm == 'true'
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 -m ci.perf_confirm \
+            --primary "primary/perf-output/${ENGINE}/comparison.json" \
+            --confirm "perf-output-confirm/${ENGINE}/comparison.json" \
+            --summary-out verdict.md || status=$?
+          if [[ -f verdict.md ]]; then
+            cat verdict.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.decide.outputs.confirm == 'true'
+        with:
+          name: performance-confirm-${{ matrix.platform }}-${{ matrix.engine }}
+          path: perf-output-confirm/${{ matrix.engine }}/
           if-no-files-found: warn
           retention-days: 14
 
@@ -594,6 +780,17 @@ jobs:
           if [[ -f "wasmi-output/${ENGINE}-${CATEGORY}/summary.md" ]]; then
             cat "wasmi-output/${ENGINE}-${CATEGORY}/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # A pure regression verdict is not final; the confirm job
+          # re-measures on an independent runner and fails only what
+          # reproduces there. Harness errors keep their exit status.
+          if [[ "$status" -eq 1 ]]; then
+            flagged=$(python3 -c "import json, os, pathlib; doc = pathlib.Path('wasmi-output') / (os.environ['ENGINE'] + '-' + os.environ['CATEGORY']) / 'comparison.json'; metrics = (json.loads(doc.read_text(encoding='utf-8')).get('metrics') or {}) if doc.is_file() else {}; print('true' if any(m.get('status') == 'REGRESSION' for m in metrics.values()) else 'false')")
+            if [[ "$flagged" == "true" ]]; then
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "> Regressions above are forwarded to cross-run confirmation." >> "$GITHUB_STEP_SUMMARY"
+              status=0
+            fi
+          fi
           if [[ "$status" -ne 0 && "$GITHUB_REF" == refs/heads/dev/* ]]; then
             echo "::warning title=Dev wasmi performance soft-fail::Action required; see the job summary and artifact."
           fi
@@ -617,3 +814,205 @@ jobs:
             echo "> dev branches, but a preceding step failed. This is not a pass."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning title=Dev CI soft-fail::Action required; this wasmi job did not pass."
+
+  wasmi-confirm:
+    name: wasmi-confirm / ${{ matrix.platform }} / ${{ matrix.engine }} / ${{ matrix.category }}
+    needs: [prepare, wasmi]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    # Dev continue-on-error suppresses failure email only. A failure remains
+    # action-required and is surfaced in the summary below.
+    continue-on-error: ${{ startsWith(github.ref, 'refs/heads/dev/') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+            engine: jit
+            category: execute
+          - platform: x64-linux
+            runner: ubuntu-latest
+            engine: jit
+            category: startup
+          - platform: x64-linux
+            runner: ubuntu-latest
+            engine: interp
+            category: execute
+          - platform: x64-linux
+            runner: ubuntu-latest
+            engine: interp
+            category: startup
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            engine: jit
+            category: execute
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            engine: jit
+            category: startup
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            engine: interp
+            category: execute
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            engine: interp
+            category: startup
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Fetch the primary verdict
+        uses: actions/download-artifact@v7
+        with:
+          name: wasmi-performance-${{ matrix.platform }}-${{ matrix.engine }}-${{ matrix.category }}
+          path: primary
+
+      - name: Decide whether confirmation is needed
+        id: decide
+        run: |
+          set -euo pipefail
+          flagged=$(python3 -c "import json, pathlib; doc = pathlib.Path('primary/comparison.json'); metrics = (json.loads(doc.read_text(encoding='utf-8')).get('metrics') or {}) if doc.is_file() else {}; print(' '.join(sorted(name for name, m in metrics.items() if m.get('status') == 'REGRESSION')))")
+          if [[ -n "$flagged" ]]; then confirm=true; else confirm=false; fi
+          echo "confirm=$confirm" >> "$GITHUB_OUTPUT"
+          echo "flagged=$flagged" >> "$GITHUB_OUTPUT"
+          echo "primary flagged rows: ${flagged:-none}"
+
+      - name: Checkout candidate
+        if: steps.decide.outputs.confirm == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.candidate }}
+
+      - name: Checkout baseline
+        if: steps.decide.outputs.confirm == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.baseline }}
+          path: baseline
+
+      - name: Checkout pinned wasmi-benchmarks
+        if: steps.decide.outputs.confirm == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.decide.outputs.confirm == 'true'
+        id: rust-toolchain
+
+      - name: Install wasmi benchmark system dependency
+        if: steps.decide.outputs.confirm == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libfontconfig1-dev
+
+      - name: Restore cargo-criterion
+        if: steps.decide.outputs.confirm == 'true'
+        id: cargo-criterion-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-criterion
+          key: cargo-criterion-1.1.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rust-toolchain.outputs.cachekey }}
+
+      - name: Install pinned cargo-criterion
+        if: steps.decide.outputs.confirm == 'true' && steps.cargo-criterion-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 1.1.0 cargo-criterion
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        if: steps.decide.outputs.confirm == 'true'
+        with:
+          shared-key: wasmi-${{ matrix.platform }}-${{ matrix.engine }}
+          workspaces: ". -> wasmi-target"
+
+      - name: Record runner CPU
+        if: steps.decide.outputs.confirm == 'true'
+        run: |
+          uname -a || true
+          lscpu 2>/dev/null | grep -iE "model name|vendor|bios" || true
+          sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+
+      - name: Re-measure the flagged rows on this runner
+        if: steps.decide.outputs.confirm == 'true'
+        env:
+          BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
+          CATEGORY: ${{ matrix.category }}
+          ENGINE: ${{ matrix.engine }}
+          PLATFORM: ${{ matrix.platform }}
+          FLAGGED: ${{ steps.decide.outputs.flagged }}
+        run: |
+          set -euo pipefail
+          # The rows under test were pre-registered by the primary run, so
+          # this is a single re-test per row on independent hardware: the
+          # uncorrected gate probability with the same practical floor.
+          # Only the flagged rows are re-measured, keeping this job well
+          # inside the ten-minute budget.
+          only_args=()
+          for group in $FLAGGED; do
+            only_args+=(--only "$group")
+          done
+          python3 -m ci.wasmi_performance \
+            --suite wasmi-benchmarks \
+            --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
+            --baseline-source baseline \
+            --candidate-source . \
+            --baseline-sha "$BASELINE_SHA" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --platform "$PLATFORM" \
+            --engine "$ENGINE" \
+            --category "$CATEGORY" \
+            --pilot-probability 80 \
+            --regression-probability 99 \
+            --improvement-probability 99.99 \
+            --minimum-effect-percent 1.0 \
+            --family-jobs 1 \
+            --family-metric-count 27 \
+            --max-confirmation-runs 2 \
+            --target-root wasmi-target \
+            "${only_args[@]}" \
+            --out-dir "wasmi-output-confirm/${ENGINE}-${CATEGORY}" || true
+          if [[ -f "wasmi-output-confirm/${ENGINE}-${CATEGORY}/summary.md" ]]; then
+            cat "wasmi-output-confirm/${ENGINE}-${CATEGORY}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Cross-run verdict
+        if: steps.decide.outputs.confirm == 'true'
+        env:
+          CATEGORY: ${{ matrix.category }}
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 -m ci.perf_confirm \
+            --primary "primary/comparison.json" \
+            --confirm "wasmi-output-confirm/${ENGINE}-${CATEGORY}/comparison.json" \
+            --summary-out verdict.md || status=$?
+          if [[ -f verdict.md ]]; then
+            cat verdict.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.decide.outputs.confirm == 'true'
+        with:
+          name: wasmi-performance-confirm-${{ matrix.platform }}-${{ matrix.engine }}-${{ matrix.category }}
+          path: wasmi-output-confirm/${{ matrix.engine }}-${{ matrix.category }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Mark dev soft-fail as action required
+        if: failure() && startsWith(github.ref, 'refs/heads/dev/')
+        run: |
+          {
+            echo
+            echo "> [!CAUTION]"
+            echo "> **SOFT-FAIL — ACTION REQUIRED.** Email is suppressed for"
+            echo "> dev branches, but a preceding step failed. This is not a pass."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Dev CI soft-fail::Action required; this wasmi-confirm job did not pass."
