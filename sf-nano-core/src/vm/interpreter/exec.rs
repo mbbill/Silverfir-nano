@@ -463,12 +463,15 @@ impl PreparedCall {
     }
 }
 
+/// Variant order is performance-sensitive. `Call` is the common exit from
+/// `native_step`; keeping it at discriminant zero removes a taken branch from
+/// the AArch64 local-call dispatch and preserves the measured hot-loop layout.
 enum StepExit {
-    TailCall {
+    Call {
         callee: usize,
         arg_base: usize,
     },
-    Call {
+    TailCall {
         callee: usize,
         arg_base: usize,
     },
