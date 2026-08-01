@@ -491,16 +491,19 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: performance-${{ matrix.platform }}-${{ matrix.engine }}
-          path: primary
+          # Outside the workspace: the checkout below cleans the workspace
+          # and would silently delete the downloaded verdict.
+          path: ${{ runner.temp }}/primary
 
       - name: Decide whether confirmation is needed
         id: decide
         if: matrix.mode != 'correctness'
         env:
           ENGINE: ${{ matrix.engine }}
+          PRIMARY_DIR: ${{ runner.temp }}/primary
         run: |
           set -euo pipefail
-          flagged=$(python3 -c "import json, os, pathlib; doc = pathlib.Path('primary/perf-output') / os.environ['ENGINE'] / 'comparison.json'; tests = (json.loads(doc.read_text(encoding='utf-8')).get('tests') or {}) if doc.is_file() else {}; print(' '.join(sorted({name for t in tests.values() for name, m in t.get('metrics', {}).items() if m.get('status') == 'REGRESSION'})))")
+          flagged=$(python3 -c "import json, os, pathlib; doc = pathlib.Path(os.environ['PRIMARY_DIR']) / 'perf-output' / os.environ['ENGINE'] / 'comparison.json'; tests = (json.loads(doc.read_text(encoding='utf-8')).get('tests') or {}) if doc.is_file() else {}; print(' '.join(sorted({name for t in tests.values() for name, m in t.get('metrics', {}).items() if m.get('status') == 'REGRESSION'})))")
           if [[ -n "$flagged" ]]; then confirm=true; else confirm=false; fi
           echo "confirm=$confirm" >> "$GITHUB_OUTPUT"
           echo "flagged=$flagged" >> "$GITHUB_OUTPUT"
@@ -613,11 +616,12 @@ jobs:
         if: steps.decide.outputs.confirm == 'true'
         env:
           ENGINE: ${{ matrix.engine }}
+          PRIMARY_DIR: ${{ runner.temp }}/primary
         run: |
           set -euo pipefail
           status=0
           python3 -m ci.perf_confirm \
-            --primary "primary/perf-output/${ENGINE}/comparison.json" \
+            --primary "${PRIMARY_DIR}/perf-output/${ENGINE}/comparison.json" \
             --confirm "perf-output-confirm/${ENGINE}/comparison.json" \
             --summary-out verdict.md || status=$?
           if [[ -f verdict.md ]]; then
@@ -867,13 +871,17 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: wasmi-performance-${{ matrix.platform }}-${{ matrix.engine }}-${{ matrix.category }}
-          path: primary
+          # Outside the workspace: the checkout below cleans the workspace
+          # and would silently delete the downloaded verdict.
+          path: ${{ runner.temp }}/primary
 
       - name: Decide whether confirmation is needed
         id: decide
+        env:
+          PRIMARY_DIR: ${{ runner.temp }}/primary
         run: |
           set -euo pipefail
-          flagged=$(python3 -c "import json, pathlib; doc = pathlib.Path('primary/comparison.json'); metrics = (json.loads(doc.read_text(encoding='utf-8')).get('metrics') or {}) if doc.is_file() else {}; print(' '.join(sorted(name for name, m in metrics.items() if m.get('status') == 'REGRESSION')))")
+          flagged=$(python3 -c "import json, os, pathlib; doc = pathlib.Path(os.environ['PRIMARY_DIR']) / 'comparison.json'; metrics = (json.loads(doc.read_text(encoding='utf-8')).get('metrics') or {}) if doc.is_file() else {}; print(' '.join(sorted(name for name, m in metrics.items() if m.get('status') == 'REGRESSION')))")
           if [[ -n "$flagged" ]]; then confirm=true; else confirm=false; fi
           echo "confirm=$confirm" >> "$GITHUB_OUTPUT"
           echo "flagged=$flagged" >> "$GITHUB_OUTPUT"
@@ -986,11 +994,12 @@ jobs:
         env:
           CATEGORY: ${{ matrix.category }}
           ENGINE: ${{ matrix.engine }}
+          PRIMARY_DIR: ${{ runner.temp }}/primary
         run: |
           set -euo pipefail
           status=0
           python3 -m ci.perf_confirm \
-            --primary "primary/comparison.json" \
+            --primary "${PRIMARY_DIR}/comparison.json" \
             --confirm "wasmi-output-confirm/${ENGINE}-${CATEGORY}/comparison.json" \
             --summary-out verdict.md || status=$?
           if [[ -f verdict.md ]]; then
