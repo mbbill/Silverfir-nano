@@ -366,16 +366,6 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
     isa.emit_prelude(&mut a, &st);
     a.align(6);
 
-    // TEMPORARY layout probe. Shifts every handler by a fixed number of bytes
-    // without changing any executed instruction, so a controlled experiment can
-    // tell a real regression from a code-placement draw. Not reachable: it sits
-    // between the prelude and the first handler, and control only enters
-    // handlers via the dispatch table.
-    const LAYOUT_PROBE_PAD: u32 = 0;
-    if LAYOUT_PROBE_PAD > 0 {
-        a.raw(&format!("\t.space {LAYOUT_PROBE_PAD}, 0"));
-    }
-
     for group in emit_order() {
         for &op in group.ops {
             let fam = family(op);
