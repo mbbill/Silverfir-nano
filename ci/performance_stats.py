@@ -317,6 +317,7 @@ def classify_metrics(
     improvement_probability: float,
     identical_binaries: bool = False,
     minimum_effect_log: float = 0.0,
+    placement_metrics: frozenset[str] = frozenset(),
 ) -> dict[str, dict[str, Any]]:
     """Classify only directions frozen by the initial screening stage.
 
@@ -348,6 +349,14 @@ def classify_metrics(
                 < regression_probability
             ):
                 status = "NEGLIGIBLE"
+            elif name in placement_metrics:
+                # Evidence (mcts_mem interpreter/dispatch.md, 2026-08-01):
+                # these rows measure the binary's address draw, not its
+                # code. Identical sources with identical dispatch counts
+                # swing them by whole percent across builds and runners.
+                # Interim classification until the gate can verify a
+                # confirmed row against a layout-perturbed rebuild.
+                status = "PLACEMENT"
             else:
                 status = "REGRESSION"
         elif direction == "improvement" and selected:

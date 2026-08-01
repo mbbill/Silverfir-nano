@@ -418,6 +418,13 @@ jobs:
             --regression-probability 99.99
             --improvement-probability 99.99
             --minimum-effect-percent 1.0
+            --placement-metric sha256
+            --placement-metric stream-Scale
+            --placement-metric stream-Add
+            --placement-metric stream-Triad
+            --placement-metric c-ray
+            --placement-metric lz4-decompress
+            --placement-metric mandelbrot
             --family-jobs "${{ matrix.family_jobs }}"
             --out-dir "perf-output/${ENGINE}"
           )
@@ -598,6 +605,13 @@ jobs:
             --regression-probability 99
             --improvement-probability 99.99
             --minimum-effect-percent 1.0
+            --placement-metric sha256
+            --placement-metric stream-Scale
+            --placement-metric stream-Add
+            --placement-metric stream-Triad
+            --placement-metric c-ray
+            --placement-metric lz4-decompress
+            --placement-metric mandelbrot
             --family-jobs 1
             --out-dir "perf-output-confirm/${ENGINE}"
           )
@@ -776,6 +790,10 @@ jobs:
             --regression-probability 99.99 \
             --improvement-probability 99.99 \
             --minimum-effect-percent 1.0 \
+            --placement-metric execute/fibonacci-tail \
+            --placement-metric execute/tiny_keccak \
+            --placement-metric execute/json_parse \
+            --placement-metric execute/mandelbrot \
             --family-jobs 4 \
             --family-metric-count 27 \
             --max-confirmation-runs 2 \
@@ -979,6 +997,10 @@ jobs:
             --regression-probability 99 \
             --improvement-probability 99.99 \
             --minimum-effect-percent 1.0 \
+            --placement-metric execute/fibonacci-tail \
+            --placement-metric execute/tiny_keccak \
+            --placement-metric execute/json_parse \
+            --placement-metric execute/mandelbrot \
             --family-jobs 1 \
             --family-metric-count 27 \
             --max-confirmation-runs 2 \
