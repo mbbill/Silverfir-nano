@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import json
 import os
 import shlex
@@ -558,6 +559,16 @@ def main() -> int:
         help="Maximum total pairs for an initially selected metric",
     )
     parser.add_argument(
+        "--minimum-effect-percent",
+        type=float,
+        default=0.0,
+        help=(
+            "practical-significance floor: a regression must be shown to "
+            "exceed this percentage at the gate confidence, or it reports "
+            "NEGLIGIBLE instead of failing"
+        ),
+    )
+    parser.add_argument(
         "--regression-probability",
         type=float,
         default=99.99,
@@ -919,6 +930,9 @@ def main() -> int:
                 regression_probability=effective_regression_probability,
                 improvement_probability=effective_improvement_probability,
                 identical_binaries=identical_binaries,
+                minimum_effect_log=math.log1p(
+                    args.minimum_effect_percent / 100.0
+                ),
             )
             selected_plans = {
                 metric_name: plan
