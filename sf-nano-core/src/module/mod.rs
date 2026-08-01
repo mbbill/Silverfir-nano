@@ -133,18 +133,13 @@ impl Module {
 
     /// Functions whose identity may leave direct-call-only code.
     ///
-    /// The code-section scan is authoritative: the validator deliberately
-    /// over-approximates expression-form element declarations. Element
-    /// initializers, other constant expressions, and exports supplement the
-    /// exact `ref.func` operands found in function bodies.
+    /// Exactly the module's declared-reference set: function indices found
+    /// in element segments, exports, and table/global constant initializers.
+    /// A valid module's code-section `ref.func` operands are required to be
+    /// a subset of this set, so function bodies are never scanned here; the
+    /// validator enforces that requirement with this same set.
     pub(crate) fn escapable_functions(&self) -> Result<collections::Vec<bool>, WasmError> {
         let mut escapable = collections::vec![false; self.functions.len()];
-
-        for function in &self.functions {
-            if let Some(spec) = function.spec() {
-                scan_ref_funcs(spec.code(), &mut escapable)?;
-            }
-        }
 
         for (index, function) in self.functions.iter().enumerate() {
             if !function.export_names().is_empty() {

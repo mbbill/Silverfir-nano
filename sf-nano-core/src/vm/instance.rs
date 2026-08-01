@@ -1144,9 +1144,11 @@ mod tests {
               (func $element_declared)
               (func (export "declared_ref") (result funcref)
                 ref.func $code_ref)
-              ;; The validator's expression-form arm over-declares every
-              ;; function even though this segment contains no ref.func.
+              ;; An expression-form segment holding only ref.null declares
+              ;; nothing: exactness means it must not leak any function
+              ;; into the escapable set.
               (elem declare funcref (ref.null func))
+              (elem declare func $code_ref)
               (elem declare func $element_declared)
             )
             "#,
@@ -1198,6 +1200,41 @@ mod tests {
                     .collect::<collections::Vec<_>>(),
                 collections::vec![1, 2, 3],
                 "{tier:?}: escapable function set is not exact"
+            );
+        }
+    }
+
+    /// `ref.func` in a body of a function declared nowhere outside code is
+    /// invalid; the escapable set never scans bodies, so the validator must
+    /// reject the module rather than the runtime inventing an identity.
+    #[cfg(sf_module_validator)]
+    #[test]
+    fn undeclared_code_ref_func_is_rejected() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (func $undeclared)
+              (func (export "get") (result funcref)
+                ref.func $undeclared)
+              ;; Expression-form segments must not over-declare: this one
+              ;; names no function, so the ref.func above stays undeclared.
+              (elem declare funcref (ref.null func))
+            )
+            "#,
+        )
+        .expect("encode undeclared ref.func module");
+
+        for &tier in Tier::ALL {
+            let engine = Engine::new(Config::new().tier(tier)).expect("engine config");
+            let module = Module::new("undeclared-ref-func", &wasm).expect("parse module");
+            let mut world = RuntimeWorld::new();
+            let error = world
+                .instantiate(&engine, module, &[])
+                .expect_err("undeclared ref.func must fail validation");
+            let message = alloc::format!("{:?}", error.error());
+            assert!(
+                message.contains("undeclared function reference"),
+                "{tier:?}: unexpected rejection: {message}"
             );
         }
     }
