@@ -979,9 +979,38 @@ fn emit_xmm_modrm_mem(
 
 // --- F64 (double) arithmetic: prefix 66, 0F xx ---
 
-pub(crate) fn movsd_rr(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
-    // F2 0F 10 (MOVSD xmm1, xmm2)
-    sse_rr(e, 0xF2, 0x0F, 0x10, dst, src);
+/// Full 128-bit register copy. Unlike the scalar `movss`/`movsd` register
+/// forms, MOVAPS does not merge into the destination's upper lanes, so it
+/// carries no false dependency on the destination's previous value and the
+/// core can eliminate it at rename.
+pub(crate) fn movaps_rr(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
+    // 0F 28 (MOVAPS xmm1, xmm2)
+    sse_rr(e, 0, 0x0F, 0x28, dst, src);
+}
+
+/// Scalar FP load from a RIP-relative address with a zero displacement.
+/// Returns the text offset of the disp32 so the literal-pool flush can patch
+/// it once the literal's final offset is known.
+fn sse_load_rip(e: &mut TextEmitter, prefix: u8, dst: Xmm) -> usize {
+    e.emit_u8(prefix);
+    if dst >= 8 {
+        e.emit_u8(rex(false, true, false, false));
+    }
+    e.emit_u8(0x0F);
+    e.emit_u8(0x10);
+    // mod=00 rm=101 selects [rip + disp32].
+    e.emit_u8(modrm(0, dst & 7, 5));
+    e.emit_u32(0)
+}
+
+/// MOVSS xmm, [rip + disp32] with the displacement left for patching.
+pub(crate) fn movss_rip(e: &mut TextEmitter, dst: Xmm) -> usize {
+    sse_load_rip(e, 0xF3, dst)
+}
+
+/// MOVSD xmm, [rip + disp32] with the displacement left for patching.
+pub(crate) fn movsd_rip(e: &mut TextEmitter, dst: Xmm) -> usize {
+    sse_load_rip(e, 0xF2, dst)
 }
 
 pub(crate) fn addsd(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
@@ -1025,10 +1054,6 @@ pub(crate) fn orpd(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
 }
 
 // --- F32 (single) arithmetic: prefix F3, 0F xx ---
-
-pub(crate) fn movss_rr(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
-    sse_rr(e, 0xF3, 0x0F, 0x10, dst, src);
-}
 
 pub(crate) fn addss(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
     sse_rr(e, 0xF3, 0x0F, 0x58, dst, src);

@@ -16,7 +16,7 @@ use crate::{
 
 use super::{
     abi::{C_ARG0, C_ARG1},
-    backend::X86_64Backend,
+    backend::{FpLiteralFixup, X86_64Backend},
     callconv,
     enc::{self, Cc},
     fusion::map_int_cond,
@@ -700,10 +700,10 @@ impl<'a> X86_64Backend<'a> {
                     if dst_fp != src_fp {
                         match width {
                             MachineFloatWidth::F32 => {
-                                enc::movss_rr(&mut self.core.text, dst_fp, src_fp)
+                                enc::movaps_rr(&mut self.core.text, dst_fp, src_fp)
                             }
                             MachineFloatWidth::F64 => {
-                                enc::movsd_rr(&mut self.core.text, dst_fp, src_fp)
+                                enc::movaps_rr(&mut self.core.text, dst_fp, src_fp)
                             }
                         };
                     }
@@ -724,16 +724,23 @@ impl<'a> X86_64Backend<'a> {
                     Ok(())
                 }
                 MachineValue::Imm64(value) => {
-                    let scratch = self.gp_scratch.scoped_alloc().detach();
-                    self.materialize_u64(*scratch, value);
-                    match width {
-                        MachineFloatWidth::F32 => {
-                            enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch)
-                        }
-                        MachineFloatWidth::F64 => {
-                            enc::movq_xmm_r64(&mut self.core.text, dst_fp, *scratch)
-                        }
+                    // Load from the function's literal pool: one FP-domain
+                    // load the core can hoist, instead of a GP
+                    // materialization plus a domain-crossing move on the
+                    // consumer's critical path.
+                    let bits = match width {
+                        MachineFloatWidth::F32 => u64::from(value as u32),
+                        MachineFloatWidth::F64 => value,
                     };
+                    let literal_index = self.intern_fp_literal(bits);
+                    let disp_offset = match width {
+                        MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, dst_fp),
+                        MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, dst_fp),
+                    };
+                    self.fp_literal_fixups.push(FpLiteralFixup {
+                        disp_offset,
+                        literal_index,
+                    });
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
@@ -797,12 +804,18 @@ impl<'a> X86_64Backend<'a> {
                 MachineFloatWidth::F64 => enc::xorpd(&mut self.core.text, dst_fp, dst_fp),
             };
         } else {
-            let scratch = self.gp_scratch.scoped_alloc().detach();
-            self.materialize_u64(*scratch, imm);
-            match width {
-                MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch),
-                MachineFloatWidth::F64 => enc::movq_xmm_r64(&mut self.core.text, dst_fp, *scratch),
+            // Load from the function's literal pool: one FP-domain load the
+            // core can hoist, instead of a GP materialization plus a
+            // domain-crossing move on the consumer's critical path.
+            let literal_index = self.intern_fp_literal(imm);
+            let disp_offset = match width {
+                MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, dst_fp),
+                MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, dst_fp),
             };
+            self.fp_literal_fixups.push(FpLiteralFixup {
+                disp_offset,
+                literal_index,
+            });
         }
         self.core.set_fp_reg_width(dst, width)?;
         Ok(())
@@ -1767,10 +1780,10 @@ impl<'a> X86_64Backend<'a> {
                     if dst_fp != true_fp as u8 {
                         match width {
                             MachineFloatWidth::F32 => {
-                                enc::movss_rr(&mut self.core.text, dst_fp, true_fp as u8)
+                                enc::movaps_rr(&mut self.core.text, dst_fp, true_fp as u8)
                             }
                             MachineFloatWidth::F64 => {
-                                enc::movsd_rr(&mut self.core.text, dst_fp, true_fp as u8)
+                                enc::movaps_rr(&mut self.core.text, dst_fp, true_fp as u8)
                             }
                         };
                     }
@@ -1780,10 +1793,10 @@ impl<'a> X86_64Backend<'a> {
                     if dst_fp != false_fp as u8 {
                         match width {
                             MachineFloatWidth::F32 => {
-                                enc::movss_rr(&mut self.core.text, dst_fp, false_fp as u8)
+                                enc::movaps_rr(&mut self.core.text, dst_fp, false_fp as u8)
                             }
                             MachineFloatWidth::F64 => {
-                                enc::movsd_rr(&mut self.core.text, dst_fp, false_fp as u8)
+                                enc::movaps_rr(&mut self.core.text, dst_fp, false_fp as u8)
                             }
                         };
                     }
@@ -2129,10 +2142,10 @@ impl<'a> X86_64Backend<'a> {
                 if result_fp != src_fp as u8 {
                     match width {
                         MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, result_fp, src_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, result_fp, src_fp as u8)
                         }
                         MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, result_fp, src_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, result_fp, src_fp as u8)
                         }
                     };
                 }
@@ -2154,10 +2167,10 @@ impl<'a> X86_64Backend<'a> {
                 if result_fp != src_fp as u8 {
                     match width {
                         MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, result_fp, src_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, result_fp, src_fp as u8)
                         }
                         MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, result_fp, src_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, result_fp, src_fp as u8)
                         }
                     };
                 }
@@ -2211,30 +2224,19 @@ impl<'a> X86_64Backend<'a> {
             | MachineFloatBinaryOp::Div => {
                 // SSE two-operand: dst = dst OP src. Move lhs into result first.
                 // If result == rhs and result != lhs, the move would clobber rhs.
-                // Save rhs to scratch first in that case.
+                // Save rhs to scratch first in that case. Full-register MOVAPS
+                // copies: the scalar move forms merge into the destination's
+                // upper lanes, and that false dependency on the destination's
+                // previous value serializes loop iterations.
                 let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
                     let scratch = *fp1 as u8;
-                    match width {
-                        MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, scratch, rhs_fp as u8)
-                        }
-                        MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, scratch, rhs_fp as u8)
-                        }
-                    };
+                    enc::movaps_rr(&mut self.core.text, scratch, rhs_fp as u8);
                     scratch
                 } else {
                     rhs_fp as u8
                 };
                 if result_fp != lhs_fp as u8 {
-                    match width {
-                        MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, result_fp, lhs_fp as u8)
-                        }
-                        MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, result_fp, lhs_fp as u8)
-                        }
-                    };
+                    enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8);
                 }
                 match (width, op) {
                     (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
@@ -2287,10 +2289,10 @@ impl<'a> X86_64Backend<'a> {
                     let scratch = *fp1 as u8;
                     match width {
                         MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, scratch, rhs_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, scratch, rhs_fp as u8)
                         }
                         MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, scratch, rhs_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, scratch, rhs_fp as u8)
                         }
                     };
                     scratch
@@ -2304,10 +2306,10 @@ impl<'a> X86_64Backend<'a> {
                 if result_fp != lhs_fp as u8 {
                     match width {
                         MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, result_fp, lhs_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8)
                         }
                         MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, result_fp, lhs_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8)
                         }
                     };
                 }
@@ -2376,10 +2378,10 @@ impl<'a> X86_64Backend<'a> {
                 if result_fp != lhs_fp as u8 {
                     match width {
                         MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, result_fp, lhs_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8)
                         }
                         MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, result_fp, lhs_fp as u8)
+                            enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8)
                         }
                     };
                 }

@@ -70,11 +70,37 @@ pub(crate) struct CompiledX86_64Entry {
 // ── X86_64Backend ────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
+/// One pending RIP-relative reference into the function's FP literal pool.
+pub(super) struct FpLiteralFixup {
+    /// Text offset of the load's disp32 field.
+    pub disp_offset: usize,
+    /// Index into `fp_literals`.
+    pub literal_index: usize,
+}
+
 pub(crate) struct X86_64Backend<'a> {
     pub core: CompilerCore<'a>,
     pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: GpScratchPool,
     pub(super) fp_scratch: ScratchPool<u32, 2>,
+    /// Deduplicated scalar FP immediates, flushed after the function body as
+    /// its literal pool and loaded RIP-relatively.
+    pub(super) fp_literals: collections::Vec<u64>,
+    pub(super) fp_literal_fixups: collections::Vec<FpLiteralFixup>,
+}
+
+impl X86_64Backend<'_> {
+    pub(super) fn intern_fp_literal(&mut self, bits: u64) -> usize {
+        if let Some(index) = self
+            .fp_literals
+            .iter()
+            .position(|&existing| existing == bits)
+        {
+            return index;
+        }
+        self.fp_literals.push(bits);
+        self.fp_literals.len() - 1
+    }
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -95,6 +121,8 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             fixups: collections::Vec::new(),
             gp_scratch: GpScratchPool::new(abi::gp_backend_owned_regs()),
             fp_scratch: abi::new_fp_scratch_pool(),
+            fp_literals: collections::Vec::new(),
+            fp_literal_fixups: collections::Vec::new(),
         }
     }
 
@@ -106,6 +134,30 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
     fn into_core(self) -> CompilerCore<'a> {
         self.core
+    }
+
+    fn lower_function_literal_pool(&mut self) -> Result<(), WasmError> {
+        if self.fp_literals.is_empty() {
+            return Ok(());
+        }
+        while self.core.text.len() % 8 != 0 {
+            self.core.text.emit_u8(0);
+        }
+        let mut literal_offsets = collections::Vec::with_capacity(self.fp_literals.len());
+        for &bits in &self.fp_literals {
+            literal_offsets.push(self.core.text.emit_u64(bits));
+        }
+        for fixup in &self.fp_literal_fixups {
+            let literal_offset = literal_offsets[fixup.literal_index];
+            // disp32 is relative to the end of the load instruction, whose
+            // last field is the displacement itself.
+            let disp = literal_offset as i64 - (fixup.disp_offset as i64 + 4);
+            let disp = i32::try_from(disp).map_err(|_| {
+                WasmError::internal("x86_64 fp literal pool displacement out of range")
+            })?;
+            self.core.text.patch_i32(fixup.disp_offset, disp);
+        }
+        Ok(())
     }
 
     fn lower_prologue(&mut self) {
@@ -315,18 +367,18 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         let dst_fp = self.map_fp_reg(dst.reg)? as u8;
         let width = dst.ty.float_width().expect("FP param width");
         match width {
-            MachineFloatWidth::F32 => enc::movss_rr(&mut self.core.text, temp as u8, dst_fp),
-            MachineFloatWidth::F64 => enc::movsd_rr(&mut self.core.text, temp as u8, dst_fp),
+            MachineFloatWidth::F32 => enc::movaps_rr(&mut self.core.text, temp as u8, dst_fp),
+            MachineFloatWidth::F64 => enc::movaps_rr(&mut self.core.text, temp as u8, dst_fp),
         };
         let src_fp = self.map_fp_reg(src)? as u8;
         match width {
             MachineFloatWidth::F32 => {
-                enc::movss_rr(&mut self.core.text, dst_fp, src_fp);
+                enc::movaps_rr(&mut self.core.text, dst_fp, src_fp);
                 self.core
                     .set_fp_reg_width(dst.reg, MachineFloatWidth::F32)?;
             }
             MachineFloatWidth::F64 => {
-                enc::movsd_rr(&mut self.core.text, dst_fp, src_fp);
+                enc::movaps_rr(&mut self.core.text, dst_fp, src_fp);
                 self.core
                     .set_fp_reg_width(dst.reg, MachineFloatWidth::F64)?;
             }
@@ -511,6 +563,37 @@ impl<'a> X86_64Backend<'a> {
                 return Ok(self.map_fp_reg(reg)?);
             }
         }
+        if let MachineValue::Imm64(bits) = value {
+            // Load FP immediates from the function's literal pool: one
+            // FP-domain load the core can hoist, instead of a GP
+            // materialization plus a domain-crossing move on the consumer's
+            // critical path.
+            let imm = match width {
+                MachineFloatWidth::F32 => u64::from(bits as u32),
+                MachineFloatWidth::F64 => bits,
+            };
+            if imm == 0 {
+                match width {
+                    MachineFloatWidth::F32 => {
+                        enc::xorps(&mut self.core.text, fp_scratch as u8, fp_scratch as u8)
+                    }
+                    MachineFloatWidth::F64 => {
+                        enc::xorpd(&mut self.core.text, fp_scratch as u8, fp_scratch as u8)
+                    }
+                };
+                return Ok(fp_scratch);
+            }
+            let literal_index = self.intern_fp_literal(imm);
+            let disp_offset = match width {
+                MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, fp_scratch as u8),
+                MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, fp_scratch as u8),
+            };
+            self.fp_literal_fixups.push(FpLiteralFixup {
+                disp_offset,
+                literal_index,
+            });
+            return Ok(fp_scratch);
+        }
         let gp = self.materialize_value(gp_scratch, value)?;
         match width {
             MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, fp_scratch as u8, gp),
@@ -537,12 +620,12 @@ impl<'a> X86_64Backend<'a> {
                         let src_fp = self.map_fp_reg(src_reg)? as u8;
                         match width {
                             MachineFloatWidth::F32 => {
-                                enc::movss_rr(&mut self.core.text, dst_fp, src_fp);
+                                enc::movaps_rr(&mut self.core.text, dst_fp, src_fp);
                                 self.core
                                     .set_fp_reg_width(dst.reg, MachineFloatWidth::F32)?;
                             }
                             MachineFloatWidth::F64 => {
-                                enc::movsd_rr(&mut self.core.text, dst_fp, src_fp);
+                                enc::movaps_rr(&mut self.core.text, dst_fp, src_fp);
                                 self.core
                                     .set_fp_reg_width(dst.reg, MachineFloatWidth::F64)?;
                             }
@@ -629,10 +712,10 @@ impl<'a> X86_64Backend<'a> {
                 let dst_fp = self.map_fp_reg(dst.reg)? as u8;
                 match width {
                     MachineFloatWidth::F32 => {
-                        enc::movss_rr(&mut self.core.text, dst_fp, temp as u8)
+                        enc::movaps_rr(&mut self.core.text, dst_fp, temp as u8)
                     }
                     MachineFloatWidth::F64 => {
-                        enc::movsd_rr(&mut self.core.text, dst_fp, temp as u8)
+                        enc::movaps_rr(&mut self.core.text, dst_fp, temp as u8)
                     }
                 };
                 self.core.set_fp_reg_width(dst.reg, width)?;
