@@ -686,7 +686,94 @@
   Consequence: a perf regression on an interpreter benchmark is not evidence of
   a code defect until layout is controlled for (code).
 
-## Moves
+- 2026-08-01 measurement: per-handler alignment does NOT stabilize the
+  placement draw, it re-rolls it, at any granule tried. Against the same
+  baseline, 16-byte handler alignment measured stream-Triad +64.7%,
+  lz4-compress +20.5% and stream-Add -30.0% on x64-windows while creating
+  fibonacci-tail -25.1% and coremark -7.7% on x64-linux; 32-byte alignment
+  measured sha256 +26.5%, stream-Triad +89.1% and stream-Scale -14.3% on
+  x64-windows while creating stream-Triad -29.2% on arm64-darwin. Text cost
+  measured with the real assembler: 16-byte alignment adds 60-70 KB on
+  arm64/x64 and 14-16 KB on armv7/thumbv8m; 32-byte roughly doubles that.
+  Alignment moves every handler to a new address, so it is one more draw
+  purchased at 8-35% of engine size (code).
+
+- 2026-08-01 measurement: the placement draw's granule exceeds a cache
+  line, and its index is virtual. fibonacci-tail retires exactly
+  9,000,010 native dispatches on main and on the runtime-world branch --
+  the self-tail lowering is intact and the executed cells are identical
+  -- yet one binary of it measures -20% on two independently allocated
+  runners while binaries differing only in unrelated Rust code swing it
+  from -15% to -38%. Per-binary consistent across machines rules out
+  physical placement; cross-binary rolling despite 64-byte-pinned
+  handler phase rules out line-granule structures; what remains is a
+  virtually indexed predictor keyed above 64 bytes, fed by the blob's
+  base address, which page-granular ASLR preserves per binary (code).
+
+- 2026-08-01 statement: a nine-handler self-tail loop is the maximum
+  possible exposure to that structure, because every dispatch is the
+  same few indirect branches issued from the same few addresses;
+  benchmarks that touch many handlers dilute the identical mechanism
+  below the gate floor (code).
+
+- 2026-08-01 measurement: page-pinning the blob text and the dispatch
+  tables does NOT make fibonacci-tail invariant to unrelated Rust code:
+  with both pinned, one cold uninlined function elsewhere in the crate
+  moved it from -12.94% to -1.54%, both intervals tight and disjoint.
+  Whatever address the effect keys on is per-binary but outside the
+  engine's own text and rodata; two alignment remedies are refuted and
+  the knob-chasing stops here (code).
+
+- 2026-08-01 measurement: the same binary's fibonacci-tail expression
+  also depends on the runner's CPU model: one run reproduced -9.6% and
+  -20.3% on two independently allocated machines, while another run's
+  confirmation machine measured the identical binary clean (code).
+
+- 2026-08-01 measurement: the placement mechanism is indirect-branch
+  predictor aliasing keyed on address bits above the page. Cachegrind
+  measures two cold-pad variants bit-for-bit identical on every
+  reference, cache miss, and simulated branch, yet their real wall time
+  is bistable per LAUNCH -- the same binary draws 12.27s or 15.7s on
+  successive invocations -- with a per-binary bias that flips between
+  runner models. Page-granular ASLR of the image base is the per-launch
+  input; disabling it with setarch -R collapses both variants onto the
+  same fast number and the inter-variant difference disappears (code).
+
+- 2026-08-01 statement: criterion-style sampling inside a handful of
+  processes measures which way each launch's coin landed, not the code;
+  a tight confidence interval on such a metric certifies the bias of
+  the draw, and cross-runner reproduction certifies only that the coin
+  is loaded (code).
+
+- 2026-08-01 measurement: three controlled comparisons against the
+  pre-merge baseline (a2d46b6e) on today's runners: the identical
+  binary measures 17/17 green; the same baseline plus one cold Rust pad
+  measures 17/17 green with fibonacci-tail at -0.7%; replaying the
+  HISTORICAL i64 loop-fusion commit (29b49217, shipped without incident
+  before the gate existed) fails 11/17 jobs with swings in both
+  directions -- fibonacci-tail +23.8%, counter-global -45.1%,
+  stream-Triad -24.9% and -32.8%, spectralnorm -32.8%, sort -14.5%,
+  plus 1-3% startup bands on every platform. A benign engine change
+  from the calm era produces the same gate chaos attributed to the
+  runtime-world branch (code).
+
+- 2026-08-01 statement: the gate has never passed a real
+  interpreter-emission change: every green in its five-day history was
+  a docs, ci, or identical-binary comparison, and both engine changes
+  ever judged -- the runtime-world branch and the replayed historical
+  commit -- flagged double digits. The instability class is a property
+  of gating engine-touching diffs, not of any particular diff (code).
+
+- 2026-08-01 statement: the entry above naming "indirect-branch
+  predictor aliasing" overstates what the experiments localize. What is
+  established: the state is sensitive to virtual-address bits 12 and up
+  (ASLR moves the image only in page units and per-launch behavior
+  changes), it is not the caches (simulation identical), and it sits in
+  the core's speculation machinery by exclusion. Modern cores predict
+  indirect branches with history-indexed tagged tables, not per-branch
+  last-target slots, so the specific structure and bits are NOT
+  identified and cannot be from these PMU-less VMs; the remedies rest
+  only on the address-sensitivity facts (code).
 
 - 2026-07-26 replaced [[stencil-stitching]]: removing the dispatch between cells is
   worth 1.30x and baking the operand immediates another 1.13x, but the result

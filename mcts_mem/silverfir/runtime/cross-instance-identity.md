@@ -181,6 +181,30 @@
   mispredicts all improved. A wide out-of-order core hides front-end cost
   entirely, so an M4 measurement cannot see this class at all (code).
 
+- 2026-08-01 measurement: the escapable-function set's code-section scan
+  (step 5) re-decodes every function body once per Instance::new. In perf
+  builds the validator feature is off, so that pass is the second of only
+  two full decodes and cost 22-26% of interpreter startup on every wasmi
+  startup workload on x64-linux and arm64-linux, and 1.5-3.1% of JIT
+  startup where codegen dilutes it. Commit-level probes bracketed it
+  exactly (step 4 clean, step 5 fully regressed) and deleting the scan loop
+  alone restored every startup metric to noise (code).
+
+- 2026-08-01 statement: for a spec-valid module the code-section scan can
+  never add an escapable index, because validation of ref.func in a
+  function body requires the index to appear outside code, in an element
+  segment, export, or constant initializer, which the remaining scans
+  already cover exactly; only spec-invalid modules that also slip the
+  validator's expression-form element over-approximation ever reach the
+  scan's extra indices (sourced).
+
+- 2026-08-01 measurement: the AArch64 local-call save fix (repr(C) on the
+  saved activation, inline(never) on the materialized run loop, dominated
+  capacity check) fixes the same defect on x86-64 when its sf_backend_arm64
+  gates are removed: wasmi execute fibonacci-rec went from -21.6% at the
+  branch tip to unflagged, matrix_mul from -11.6% to -0.5%, with no
+  measured penalty on any other platform (code).
+
 ## Moves
 
 - 2026-07-30 (bc7cbb03) replaced [[pointer-identity]]: raw store pointers made
