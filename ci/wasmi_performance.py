@@ -311,6 +311,21 @@ def raise_for_process_failure(
     )
 
 
+class GroupMeasurementError(RuntimeError):
+    """One benchmark group failed to measure for one side.
+
+    Carries which version's process failed so the shard can isolate the
+    group as a CANNOT-RUN row instead of abandoning every other group's
+    measurement, and fail the job only when the broken side is the
+    candidate.
+    """
+
+    def __init__(self, *, group: str, version: str, detail: str) -> None:
+        super().__init__(detail)
+        self.group = group
+        self.version = version
+
+
 def git_revision(path: Path) -> str:
     result = run_process(
         ["git", "-C", str(path), "rev-parse", "HEAD"],
@@ -706,16 +721,20 @@ def measure_pair(
         if baseline_first
         else ("candidate", "baseline")
     )
-    measured = {
-        version: measure_case(
-            contexts[version],
-            group=group,
-            phase=phase,
-            run_index=run_index,
-            raw_root=raw_root,
-        )
-        for version in order
-    }
+    measured: dict[str, dict[str, Any]] = {}
+    for version in order:
+        try:
+            measured[version] = measure_case(
+                contexts[version],
+                group=group,
+                phase=phase,
+                run_index=run_index,
+                raw_root=raw_root,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise GroupMeasurementError(
+                group=group, version=version, detail=str(exc)
+            ) from exc
     return {
         "order": list(order),
         "baseline": measured["baseline"],
@@ -854,10 +873,18 @@ def render_summary(
         ),
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ])
+    cannot_run: list[tuple[str, dict[str, Any]]] = []
     for name in BENCHMARK_GROUPS:
         if name not in metrics:
             continue
         metric = metrics[name]
+        if metric["status"] == "CANNOT-RUN":
+            cannot_run.append((name, metric))
+            lines.append(
+                f"| {name} | - | - | - | - | - | - | - | - | - | "
+                f"**CANNOT-RUN ({metric['failed_version']} crashed)** |"
+            )
+            continue
         deltas = metric["pair_deltas_percent"]
         delta_range = f"{min(deltas):+.2f}%..{max(deltas):+.2f}%"
         gate = metric["status"]
@@ -883,6 +910,22 @@ def render_summary(
         ),
         "",
     ])
+    if cannot_run:
+        lines.extend([
+            "> [!CAUTION]",
+            "> **CANNOT RUN.** These benchmarks crashed before producing a",
+            "> verdict; the raw artifact holds each crash log. A candidate",
+            "> crash fails this job; a baseline crash only marks the row.",
+            "",
+        ])
+        for name, metric in cannot_run:
+            detail_lines = metric["error"].strip().splitlines()
+            detail = detail_lines[0] if detail_lines else ""
+            lines.append(
+                f"- `{name}`: the {metric['failed_version']} process "
+                f"failed: {detail}"
+            )
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -1209,17 +1252,29 @@ def main() -> int:
             == builds["candidate"]["runtime_fingerprint"]
         )
 
+        group_errors: dict[str, dict[str, str]] = {}
         pilot_pairs: dict[str, dict[str, Any]] = {}
         initial: dict[str, dict[str, Any]] = {}
         for index, group in enumerate(selected_groups):
-            pair = measure_pair(
-                contexts,
-                group=group,
-                phase="pilot",
-                run_index=0,
-                baseline_first=index % 2 == 0,
-                raw_root=raw_root,
-            )
+            try:
+                pair = measure_pair(
+                    contexts,
+                    group=group,
+                    phase="pilot",
+                    run_index=0,
+                    baseline_first=index % 2 == 0,
+                    raw_root=raw_root,
+                )
+            except GroupMeasurementError as exc:
+                print(
+                    f"CANNOT RUN {group}: the {exc.version} process failed",
+                    file=sys.stderr,
+                )
+                group_errors[group] = {
+                    "version": exc.version,
+                    "error": str(exc),
+                }
+                continue
             pilot_pairs[group] = pair
             initial[group] = summarize_pairs([pair])
 
@@ -1252,18 +1307,38 @@ def main() -> int:
                     if group not in pending:
                         continue
                     pilot_baseline_first = index % 2 == 0
-                    pair = measure_pair(
-                        contexts,
-                        group=group,
-                        phase="confirmation",
-                        run_index=run_index,
-                        baseline_first=(
-                            pilot_baseline_first
-                            if run_index % 2
-                            else not pilot_baseline_first
-                        ),
-                        raw_root=raw_root,
-                    )
+                    try:
+                        pair = measure_pair(
+                            contexts,
+                            group=group,
+                            phase="confirmation",
+                            run_index=run_index,
+                            baseline_first=(
+                                pilot_baseline_first
+                                if run_index % 2
+                                else not pilot_baseline_first
+                            ),
+                            raw_root=raw_root,
+                        )
+                    except GroupMeasurementError as exc:
+                        # A group that measured in the pilot but crashed
+                        # here has no trustworthy sample; abandon its
+                        # partial data rather than classify half a run.
+                        print(
+                            f"CANNOT RUN {group}: the {exc.version} "
+                            "process failed during confirmation",
+                            file=sys.stderr,
+                        )
+                        group_errors[group] = {
+                            "version": exc.version,
+                            "error": str(exc),
+                        }
+                        pending.remove(group)
+                        confirmation_pairs.pop(group, None)
+                        pilot_pairs.pop(group, None)
+                        initial.pop(group, None)
+                        plans.pop(group, None)
+                        continue
                     confirmation_pairs[group].append(pair)
                     metric = summarize_pairs(confirmation_pairs[group])
                     direction = str(plans[group]["direction"])
@@ -1364,6 +1439,12 @@ def main() -> int:
             if identical_runtime or not plans[group]["selected"]
             else len(confirmation_pairs[group])
         )
+    for group, failure in group_errors.items():
+        metrics[group] = {
+            "status": "CANNOT-RUN",
+            "failed_version": failure["version"],
+            "error": failure["error"][-2000:],
+        }
 
     document = {
         "schema_version": 1,
@@ -1433,14 +1514,27 @@ def main() -> int:
     )
     print()
     print(summary)
-    return (
-        1
-        if any(
-            metric["status"] == "REGRESSION"
-            for metric in metrics.values()
-        )
-        else 0
-    )
+    return exit_status(metrics)
+
+
+def exit_status(metrics: dict[str, dict[str, Any]]) -> int:
+    """2 if the candidate cannot run a benchmark, 1 on regression, else 0.
+
+    A baseline-side crash leaves its row visible as CANNOT-RUN without
+    failing the job: no comparison is possible for that row on any
+    rerun, and the failure is not the candidate's doing.
+    """
+    if any(
+        metric["status"] == "CANNOT-RUN"
+        and metric["failed_version"] == "candidate"
+        for metric in metrics.values()
+    ):
+        return 2
+    if any(
+        metric["status"] == "REGRESSION" for metric in metrics.values()
+    ):
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import unittest
 
-from ci.perf_confirm import regression_rows, verdict_lines
+from ci.perf_confirm import metric_rows, regression_rows, verdict_lines
 
 
 def native_doc(statuses: dict[str, str]) -> dict:
@@ -83,6 +83,34 @@ class VerdictTests(unittest.TestCase):
         lines, failed = verdict_lines({}, {})
         self.assertFalse(failed)
         self.assertIn("flagged nothing", "\n".join(lines))
+
+    def test_confirm_crash_on_flagged_row_fails_closed(self) -> None:
+        primary = regression_rows(
+            wasmi_doc(
+                {
+                    "execute/fibonacci-tail": "REGRESSION",
+                    "execute/matrix_mul": "REGRESSION",
+                }
+            )
+        )
+        confirm_doc = wasmi_doc(
+            {
+                "execute/fibonacci-tail": "CANNOT-RUN",
+                "execute/matrix_mul": "PASS",
+            }
+        )
+        cannot_run = {
+            name: metric
+            for name, metric in metric_rows(confirm_doc).items()
+            if metric["status"] == "CANNOT-RUN"
+        }
+        lines, failed = verdict_lines(
+            primary, regression_rows(confirm_doc), cannot_run
+        )
+        self.assertTrue(failed)
+        text = "\n".join(lines)
+        self.assertIn("failing closed", text)
+        self.assertIn("execute/fibonacci-tail", text)
 
 
 if __name__ == "__main__":

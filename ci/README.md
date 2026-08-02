@@ -82,6 +82,40 @@ executes every benchmark once on both revisions and validates its fixed oracle;
 it does not calculate or gate performance deltas, and no benchmark receives a
 platform-specific exclusion.
 
+## Measurement trust
+
+Runs of byte-identical sources have measured statistically certain but
+disjoint regression sets, so a single runner's verdict confounds the change
+with the draw. Three mechanisms separate them:
+
+- **Address-layout pinning.** Every benchmark process runs with ASLR
+  disabled and on a fixed core: `setarch -R` plus `taskset` on Linux,
+  a `posix_spawn` shim (`ci/noaslr.c`) on macOS, `/DYNAMICBASE:NO` at link
+  time on Windows. A score is a property of the image, not the launch.
+- **Certified floors.** `ci/measurement_floors.json` records, per row, how
+  far apart identical binaries still measure after pinning; a listed row
+  gates at 1.5x its floor and reports `NOISY-FLOOR` below that. Regenerate
+  with `ci.certify_floors` from calibration-run artifacts.
+- **Cross-run confirmation.** A primary job never fails on a pure
+  regression verdict; it forwards flagged rows to a confirm job that
+  re-measures only those rows on an independently allocated runner
+  (`ci.perf_confirm` intersects the two documents). A row the confirmation
+  runner cannot measure fails closed.
+
+Rows whose swings are proven to track the binary's address layout rather
+than its code are listed as `--placement-metric` in the workflow and report
+`PLACEMENT` instead of failing.
+
+The wasmi driver isolates per-benchmark process failures: a group whose
+baseline or candidate crashes becomes a `CANNOT-RUN` row instead of
+aborting the shard. A candidate-side crash fails the job; a baseline-side
+crash only marks the row, since no rerun can ever compare against it.
+
+The `run report` job (`ci.summarize_run`) walks every artifact and writes
+one consolidated summary: a per-job verdict table plus flat lists of
+regressions (each annotated with its confirmation outcome), improvements,
+cannot-run, noisy-floor, placement, and drift rows.
+
 ## Policy
 
 `ci.lint_policy` rejects unaudited Rust `allow`/`expect` attributes for

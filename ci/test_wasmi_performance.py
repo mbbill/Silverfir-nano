@@ -659,6 +659,167 @@ class WasmiPerformanceTests(unittest.TestCase):
             )
         )
 
+    def test_measure_pair_attributes_the_failing_side(self) -> None:
+        def failing_case(context: object, **_kwargs: object) -> dict:
+            raise RuntimeError("bench process exploded")
+
+        with patch.object(
+            wasmi_performance, "measure_case", side_effect=failing_case
+        ):
+            with self.assertRaises(
+                wasmi_performance.GroupMeasurementError
+            ) as caught:
+                wasmi_performance.measure_pair(
+                    {"baseline": object(), "candidate": object()},
+                    group="startup/bz2",
+                    phase="pilot",
+                    run_index=0,
+                    baseline_first=False,
+                    raw_root=Path("unused"),
+                )
+        self.assertEqual(caught.exception.version, "candidate")
+        self.assertEqual(caught.exception.group, "startup/bz2")
+
+    def run_shard_with_crash(
+        self, *, crashed_group: str, crashed_version: str
+    ) -> tuple[int, dict, str]:
+        def measure_pair(_contexts: object, **kwargs: object) -> dict:
+            group = str(kwargs["group"])
+            if group == crashed_group:
+                raise wasmi_performance.GroupMeasurementError(
+                    group=group,
+                    version=crashed_version,
+                    detail="command failed with exit code 101: bench\ntrap",
+                )
+            return {
+                "order": ["baseline", "candidate"],
+                "baseline": fake_run(100.0, "baseline"),
+                "candidate": fake_run(100.0, "candidate"),
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            suite = root / "wasmi"
+            suite.mkdir()
+            (suite / "Cargo.toml").write_text(
+                "[package]\nname = \"wasmi-benchmarks\"\n",
+                encoding="utf-8",
+            )
+            (suite / "Cargo.lock").write_text(
+                "# pinned fixture\n",
+                encoding="utf-8",
+            )
+            for name in ("baseline", "candidate"):
+                core = root / name / "sf-nano-core"
+                core.mkdir(parents=True)
+                (core / "Cargo.toml").write_text(
+                    "[package]\nname = \"sf-nano-core\"\n",
+                    encoding="utf-8",
+                )
+            out_dir = root / "out"
+            argv = [
+                "wasmi_performance.py",
+                "--suite",
+                str(suite),
+                "--baseline-source",
+                str(root / "baseline"),
+                "--candidate-source",
+                str(root / "candidate"),
+                "--baseline-sha",
+                "base0000",
+                "--candidate-sha",
+                "head0000",
+                "--platform",
+                "x64-linux",
+                "--engine",
+                "jit",
+                "--category",
+                "startup",
+                "--family-metric-count",
+                "27",
+                "--out-dir",
+                str(out_dir),
+                "--target-root",
+                str(root / "target"),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    wasmi_performance,
+                    "git_revision",
+                    side_effect=[
+                        wasmi_performance.WASMI_BENCHMARKS_REVISION,
+                        "base000000000000000000000000000000000000",
+                        "head000000000000000000000000000000000000",
+                    ],
+                ),
+                patch.object(
+                    wasmi_performance,
+                    "verify_cargo_criterion",
+                    return_value="cargo-criterion 1.1.0",
+                ),
+                patch.object(
+                    wasmi_performance,
+                    "build_context",
+                    side_effect=[
+                        {"runtime_fingerprint": "baseline"},
+                        {"runtime_fingerprint": "candidate"},
+                    ],
+                ),
+                patch.object(
+                    wasmi_performance,
+                    "measure_pair",
+                    side_effect=measure_pair,
+                ),
+            ):
+                exit_code = wasmi_performance.main()
+
+            document = json.loads(
+                (out_dir / "comparison.json").read_text(encoding="utf-8")
+            )
+            summary = (out_dir / "summary.md").read_text(encoding="utf-8")
+        return exit_code, document, summary
+
+    def test_baseline_crash_isolates_the_group_and_passes(self) -> None:
+        exit_code, document, summary = self.run_shard_with_crash(
+            crashed_group="startup/spidermonkey",
+            crashed_version="baseline",
+        )
+        self.assertEqual(exit_code, 0)
+        crashed = document["metrics"]["startup/spidermonkey"]
+        self.assertEqual(crashed["status"], "CANNOT-RUN")
+        self.assertEqual(crashed["failed_version"], "baseline")
+        measured = {
+            group
+            for group, metric in document["metrics"].items()
+            if metric["status"] != "CANNOT-RUN"
+        }
+        self.assertEqual(len(measured), 6)
+        self.assertIn("CANNOT-RUN (baseline crashed)", summary)
+        self.assertIn("command failed with exit code 101", summary)
+
+    def test_candidate_crash_isolates_the_group_and_fails(self) -> None:
+        exit_code, document, summary = self.run_shard_with_crash(
+            crashed_group="startup/bz2",
+            crashed_version="candidate",
+        )
+        self.assertEqual(exit_code, 2)
+        crashed = document["metrics"]["startup/bz2"]
+        self.assertEqual(crashed["status"], "CANNOT-RUN")
+        self.assertEqual(crashed["failed_version"], "candidate")
+        self.assertIn("CANNOT-RUN (candidate crashed)", summary)
+
+    def test_exit_status_candidate_crash_outranks_regression(self) -> None:
+        metrics = {
+            "a": {"status": "REGRESSION"},
+            "b": {"status": "CANNOT-RUN", "failed_version": "candidate"},
+        }
+        self.assertEqual(wasmi_performance.exit_status(metrics), 2)
+        metrics["b"]["failed_version"] = "baseline"
+        self.assertEqual(wasmi_performance.exit_status(metrics), 1)
+        del metrics["a"]
+        self.assertEqual(wasmi_performance.exit_status(metrics), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

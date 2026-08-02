@@ -6,6 +6,12 @@ on:
     branches:
       - main
       - "dev/**"
+    # Docs and design-memory pushes cannot change a measurement, and a
+    # run they trigger can cancel a queued benchmark run through main's
+    # one-pending-slot rule.
+    paths-ignore:
+      - "docs/**"
+      - "mcts_mem/**"
   workflow_dispatch:
     inputs:
       baseline:
@@ -443,6 +449,11 @@ jobs:
             --regression-probability 99.99
             --improvement-probability 99.99
             --minimum-effect-percent 1.0
+            # PLACEMENT rows cover the per-binary layout class the
+            # certified floors cannot: their swings track the image's
+            # address layout, not its code. The list stays until a
+            # successor (layout jiggle or an instruction-count lane)
+            # can prove a given row's swing is layout.
             --placement-metric sha256
             --placement-metric stream-Scale
             --placement-metric stream-Add
@@ -515,6 +526,10 @@ jobs:
   compare-confirm:
     name: confirm / ${{ matrix.platform }} / ${{ matrix.engine }}
     needs: [prepare, compare]
+    # Without this, one crashed primary cell skips the entire
+    # confirmation layer and every other cell's flagged regressions go
+    # unadjudicated while the run page stays green.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     # See CLAUDE.md and AGENTS.md: this suppresses dev failure email only.
@@ -531,6 +546,10 @@ jobs:
     steps:
       - name: Fetch the primary verdict
         if: matrix.mode != 'correctness'
+        # A primary cell that failed before measuring uploads no verdict;
+        # a missing artifact means nothing to confirm here, and that
+        # cell's own red job stays the visible signal.
+        continue-on-error: true
         uses: actions/download-artifact@v7
         with:
           name: performance-${{ matrix.platform }}-${{ matrix.engine }}
@@ -823,6 +842,12 @@ jobs:
         run: |
           set -euo pipefail
           status=0
+          # PLACEMENT rows (--placement-metric below) cover the
+          # per-binary layout class the certified floors cannot: their
+          # swings track the image's address layout, not its code. The
+          # list stays until a successor (layout jiggle or an
+          # instruction-count lane) can prove a row's swing is layout.
+          #
           # Linux-only jobs: the setarch personality is inherited by every
           # child, pinning the address layout of the bench processes that
           # cargo-criterion spawns.
@@ -890,6 +915,10 @@ jobs:
   wasmi-confirm:
     name: wasmi-confirm / ${{ matrix.platform }} / ${{ matrix.engine }} / ${{ matrix.category }}
     needs: [prepare, wasmi]
+    # Without this, one crashed primary cell skips the entire
+    # confirmation layer and every other cell's flagged regressions go
+    # unadjudicated while the run page stays green.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     # Dev continue-on-error suppresses failure email only. A failure remains
@@ -936,6 +965,10 @@ jobs:
         shell: bash
     steps:
       - name: Fetch the primary verdict
+        # A primary cell that failed before measuring uploads no verdict;
+        # a missing artifact means nothing to confirm here, and that
+        # cell's own red job stays the visible signal.
+        continue-on-error: true
         uses: actions/download-artifact@v7
         with:
           name: wasmi-performance-${{ matrix.platform }}-${{ matrix.engine }}-${{ matrix.category }}
