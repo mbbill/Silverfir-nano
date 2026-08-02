@@ -438,7 +438,7 @@ jobs:
           # Windows is pinned at link time (performance_build).
           pin=""
           case "$(uname -s)" in
-            Linux)  pin="setarch $(uname -m) -R" ;;
+            Linux)  pin="taskset -c 1 setarch $(uname -m) -R" ;;
             Darwin) pin="/tmp/noaslr" ;;
           esac
           if [[ -n "$RUNNER_PREFIX" ]]; then
@@ -636,7 +636,7 @@ jobs:
           )
           pin=""
           case "$(uname -s)" in
-            Linux)  pin="setarch $(uname -m) -R" ;;
+            Linux)  pin="taskset -c 1 setarch $(uname -m) -R" ;;
             Darwin) pin="/tmp/noaslr" ;;
           esac
           if [[ -n "$RUNNER_PREFIX" ]]; then
@@ -805,7 +805,7 @@ jobs:
           # Linux-only jobs: the setarch personality is inherited by every
           # child, pinning the address layout of the bench processes that
           # cargo-criterion spawns.
-          setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
+          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
             --suite wasmi-benchmarks \
             --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
             --baseline-source baseline \
@@ -1015,7 +1015,7 @@ jobs:
           # Linux-only jobs: the setarch personality is inherited by every
           # child, pinning the address layout of the bench processes that
           # cargo-criterion spawns.
-          setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
+          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
             --suite wasmi-benchmarks \
             --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
             --baseline-source baseline \
