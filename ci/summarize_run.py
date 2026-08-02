@@ -6,9 +6,9 @@ regressions, improvements, cannot-run, noisy-floor and placement rows --
 so the run's outcome is legible without opening any job page.
 
 Confirm-job artifacts are not separate jobs: each is matched back to its
-primary job and its verdict is stamped onto that job's regression rows,
-so the report says whether a listed regression reproduced on independent
-hardware, was dismissed there, or was never re-measured at all.
+primary job, its confirmed count appears in the verdict table, and the
+flagged regressions are split by adjudication -- confirmed on an
+independent runner, not reproduced there, or never adjudicated at all.
 """
 
 from __future__ import annotations
@@ -55,29 +55,20 @@ def document_rows(doc):
         yield from metrics.items()
 
 
-def confirm_note(name: str, confirm_statuses: dict[str, str] | None) -> str:
-    """How the confirmation layer adjudicated one flagged regression."""
-    if confirm_statuses is None:
-        return "not re-measured (confirmation did not run)"
-    status = confirm_statuses.get(name)
-    if status == "REGRESSION":
-        return "confirmed on an independent runner"
-    if status == "CANNOT-RUN":
-        return "crashed on the confirmation runner (fails closed)"
-    if status is None:
-        return "not re-measured (confirmation did not run)"
-    return "not reproduced on an independent runner"
+def format_delta(metric) -> str:
+    delta = metric.get("delta_percent") if isinstance(metric, dict) else None
+    return f"{delta:+.2f}%" if isinstance(delta, (int, float)) else "?"
 
 
 def render_report(artifacts_dir: Path) -> str:
     per_job: dict[str, dict[str, list]] = {}
-    confirm_rows: dict[str, dict[str, str]] = {}
+    confirm_rows: dict[str, dict[str, dict]] = {}
     for artifact, doc in iter_documents(artifacts_dir):
         if "-confirm-" in artifact:
             primary = artifact.replace("-confirm-", "-", 1)
-            statuses = confirm_rows.setdefault(primary, {})
+            rows = confirm_rows.setdefault(primary, {})
             for name, metric in document_rows(doc):
-                statuses[name] = metric.get("status", "")
+                rows[name] = metric
             continue
         bucket = per_job.setdefault(
             artifact, {status: [] for status in INTERESTING}
@@ -101,16 +92,25 @@ def render_report(artifacts_dir: Path) -> str:
         lines.append("No result artifacts found.")
         return "\n".join(lines)
 
+    def confirm_status(job: str, name: str) -> str | None:
+        row = confirm_rows.get(job, {}).get(name)
+        return row.get("status", "") if isinstance(row, dict) else None
+
     lines.append(
-        "| job | pass | regression | improvement | cannot-run "
+        "| job | pass | regression | confirmed | improvement | cannot-run "
         "| noisy-floor | placement | unstable |"
     )
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     for job in sorted(per_job):
         bucket = per_job[job]
+        confirmed = sum(
+            confirm_status(job, name) == "REGRESSION"
+            for name, _ in bucket["REGRESSION"]
+        )
         lines.append(
             f"| {job} | {len(bucket['PASS-COUNT'])} "
             f"| {len(bucket['REGRESSION'])} "
+            f"| {confirmed} "
             f"| {len(bucket['IMPROVEMENT'])} "
             f"| {len(bucket['CANNOT-RUN'])} "
             f"| {len(bucket['NOISY-FLOOR'])} "
@@ -128,14 +128,58 @@ def render_report(artifacts_dir: Path) -> str:
             )
         ]
 
-    regressions = rows_for("REGRESSION")
-    if regressions:
-        lines.extend(["", "### Regressions", ""])
-        for job, name, metric in regressions:
-            note = confirm_note(name, confirm_rows.get(job))
+    confirmed_rows: list[tuple[str, str, dict, dict]] = []
+    dismissed_rows: list[tuple[str, str, dict, dict]] = []
+    unadjudicated_rows: list[tuple[str, str, dict, str]] = []
+    for job, name, metric in rows_for("REGRESSION"):
+        row_confirm = confirm_rows.get(job, {}).get(name)
+        status = (
+            row_confirm.get("status", "")
+            if isinstance(row_confirm, dict)
+            else None
+        )
+        if status == "REGRESSION":
+            confirmed_rows.append((job, name, metric, row_confirm))
+        elif status == "CANNOT-RUN":
+            unadjudicated_rows.append((
+                job, name, metric,
+                "crashed on the confirmation runner; fails closed",
+            ))
+        elif status is None:
+            unadjudicated_rows.append((
+                job, name, metric,
+                "not re-measured; confirmation did not run",
+            ))
+        else:
+            dismissed_rows.append((job, name, metric, row_confirm))
+
+    if confirmed_rows:
+        lines.extend([
+            "", "### Regressions confirmed on an independent runner", "",
+        ])
+        for job, name, metric, row_confirm in confirmed_rows:
             lines.append(
-                f"- **{name}** {metric['delta_percent']:+.2f}% — {job} "
-                f"— {note}"
+                f"- **{name}** primary {format_delta(metric)}, "
+                f"confirmation {format_delta(row_confirm)} — {job}"
+            )
+
+    if dismissed_rows:
+        lines.extend([
+            "",
+            "### Flagged by one runner, not reproduced on re-measure",
+            "",
+        ])
+        for job, name, metric, row_confirm in dismissed_rows:
+            lines.append(
+                f"- **{name}** primary {format_delta(metric)}, "
+                f"re-measure {format_delta(row_confirm)} — {job}"
+            )
+
+    if unadjudicated_rows:
+        lines.extend(["", "### Flagged regressions without a verdict", ""])
+        for job, name, metric, reason in unadjudicated_rows:
+            lines.append(
+                f"- **{name}** {format_delta(metric)} — {job} — {reason}"
             )
 
     cannot_run = rows_for("CANNOT-RUN")
@@ -159,9 +203,7 @@ def render_report(artifacts_dir: Path) -> str:
             continue
         lines.extend(["", f"### {title}", ""])
         for job, name, metric in rows:
-            delta = metric.get("delta_percent")
-            shown = f"{delta:+.2f}%" if isinstance(delta, (int, float)) else "?"
-            lines.append(f"- **{name}** {shown} — {job}")
+            lines.append(f"- **{name}** {format_delta(metric)} — {job}")
 
     if failures:
         lines.extend(["", "### Jobs with no verdict", ""])
