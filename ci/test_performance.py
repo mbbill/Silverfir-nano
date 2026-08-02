@@ -346,6 +346,30 @@ class ProbabilityGateTests(unittest.TestCase):
 
         self.assertEqual(result["c-ray"]["status"], "PLACEMENT")
 
+    def test_certified_floor_reports_noisy_floor(self) -> None:
+        initial = {"wild": measured_metric([-4.0] * 4)}
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
+        )
+        result = classify_metrics(
+            initial=initial,
+            final={"wild": measured_metric([-4.0] * 6)},
+            plans=plans,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_effect_log=math.log1p(0.01),
+            metric_floor_logs={"wild": math.log1p(0.10)},
+        )
+
+        # Certain at -4%, but the certified floor for this row is 10%:
+        # identical binaries measure that far apart, so the verdict is
+        # a visible NOISY-FLOOR, not a failure.
+        self.assertEqual(result["wild"]["status"], "NOISY-FLOOR")
+
     def test_build_metadata_requires_matching_platform_and_engine(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

@@ -1,0 +1,4 @@
+{
+ "_comment": "Certified per-row measurement floors, percent. Generated from identical-binary calibration runs on the pinned harness; a row's regression gate uses max(global minimum effect, 1.5x its floor) and reports NOISY-FLOOR instead of failing below it. Regenerate with ci/certify_floors.py after harness changes.",
+ "floors": {}
+}

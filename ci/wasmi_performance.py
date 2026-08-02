@@ -935,6 +935,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--floors-file",
+        type=Path,
+        default=Path("ci/measurement_floors.json"),
+        help=(
+            "certified per-row measurement floors; a listed row gates at "
+            "1.5x its floor and reports NOISY-FLOOR below that"
+        ),
+    )
+    parser.add_argument(
         "--placement-metric",
         action="append",
         default=[],
@@ -1011,6 +1020,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run only an exact benchmark group; may be repeated",
     )
     return parser
+
+
+def load_metric_floors(path, *, platform: str, engine: str) -> dict[str, float]:
+    """Certified floors for this job, as log-ratios keyed by metric name.
+
+    The file keys rows as "<job>|<metric>"; jobs are matched on platform
+    and engine substrings so one file serves both benchmark families.
+    A missing file or empty table means no per-row floors.
+    """
+    import math as _math
+
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    floors = {}
+    for key, pct in data.get("floors", {}).items():
+        job, _, metric = key.partition("|")
+        if platform in job and engine in job:
+            floors[metric] = _math.log1p(1.5 * float(pct) / 100.0)
+    return floors
 
 
 def main() -> int:
@@ -1282,6 +1312,9 @@ def main() -> int:
                 args.minimum_effect_percent / 100.0
             ),
             placement_metrics=frozenset(args.placement_metric),
+            metric_floor_logs=load_metric_floors(
+                args.floors_file, platform=args.platform, engine=args.engine
+            ),
         )
     except (
         ArithmeticError,

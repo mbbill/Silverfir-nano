@@ -318,6 +318,7 @@ def classify_metrics(
     identical_binaries: bool = False,
     minimum_effect_log: float = 0.0,
     placement_metrics: frozenset[str] = frozenset(),
+    metric_floor_logs: dict[str, float] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Classify only directions frozen by the initial screening stage.
 
@@ -333,22 +334,33 @@ def classify_metrics(
         if measured is None:
             raise ValueError(f"{name}: selected metric has no final sample")
 
+        row_floor_log = minimum_effect_log
+        if metric_floor_logs and name in metric_floor_logs:
+            # A certified measurement floor: identical binaries measure
+            # this far apart on this row, so a regression must be shown
+            # to exceed it before the verdict means anything.
+            row_floor_log = max(row_floor_log, metric_floor_logs[name])
+
         direction = plan["direction"]
         if direction == "regression" and selected:
             if measured["probability_regression"] < regression_probability:
                 status = "RECOVERED"
             elif (
-                minimum_effect_log > 0.0
+                row_floor_log > 0.0
                 and float(measured["mean_log_ratio"]) < 0.0
                 and effect_exceeds_probability(
                     mean_log_ratio=float(measured["mean_log_ratio"]),
                     log_ratio_stddev=float(measured["log_ratio_stddev"]),
                     pair_count=int(measured["pair_count"]),
-                    minimum_effect_log=minimum_effect_log,
+                    minimum_effect_log=row_floor_log,
                 )
                 < regression_probability
             ):
-                status = "NEGLIGIBLE"
+                status = (
+                    "NOISY-FLOOR"
+                    if metric_floor_logs and name in metric_floor_logs
+                    else "NEGLIGIBLE"
+                )
             elif name in placement_metrics:
                 # Evidence (mcts_mem interpreter/dispatch.md, 2026-08-01):
                 # these rows measure the binary's address draw, not its
