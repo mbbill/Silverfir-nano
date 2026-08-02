@@ -198,7 +198,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Test CI implementation
-        run: python3 -m unittest discover -s ci -p 'test_*.py'
+        # Without the env scrub, test fixtures that exercise the summary
+        # writer leak synthetic FAILED tables into the real run summary.
+        run: env -u GITHUB_STEP_SUMMARY python3 -m unittest discover -s ci -p 'test_*.py'
 
       - name: Surface lint suppression debt
         id: lint-policy
