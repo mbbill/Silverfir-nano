@@ -389,6 +389,10 @@ jobs:
           lscpu 2>/dev/null | grep -iE "model name|vendor|bios" || true
           sysctl -n machdep.cpu.brand_string 2>/dev/null || true
 
+      - name: Build the Darwin ASLR pin shim
+        if: runner.os == 'macOS'
+        run: cc -O2 -o /tmp/noaslr ci/noaslr.c && /tmp/noaslr /usr/bin/true
+
       - name: Run benchmark suite
         env:
           BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
@@ -428,8 +432,19 @@ jobs:
             --family-jobs "${{ matrix.family_jobs }}"
             --out-dir "perf-output/${ENGINE}"
           )
+          # Pin each benchmark process's address layout: a score must be a
+          # property of the image, not of the launch draw. Linux inherits
+          # the setarch personality; Darwin pins per spawn via the shim;
+          # Windows is pinned at link time (performance_build).
+          pin=""
+          case "$(uname -s)" in
+            Linux)  pin="setarch $(uname -m) -R" ;;
+            Darwin) pin="/tmp/noaslr" ;;
+          esac
           if [[ -n "$RUNNER_PREFIX" ]]; then
             args+=(--runner-prefix "$RUNNER_PREFIX")
+          elif [[ -n "$pin" ]]; then
+            args+=(--runner-prefix "$pin")
           fi
           if [[ "$MODE" == "correctness" ]]; then
             args+=(--correctness-only)
@@ -571,6 +586,10 @@ jobs:
           lscpu 2>/dev/null | grep -iE "model name|vendor|bios" || true
           sysctl -n machdep.cpu.brand_string 2>/dev/null || true
 
+      - name: Build the Darwin ASLR pin shim
+        if: steps.decide.outputs.confirm == 'true' && runner.os == 'macOS'
+        run: cc -O2 -o /tmp/noaslr ci/noaslr.c && /tmp/noaslr /usr/bin/true
+
       - name: Re-measure the flagged rows on this runner
         if: steps.decide.outputs.confirm == 'true'
         env:
@@ -615,8 +634,15 @@ jobs:
             --family-jobs 1
             --out-dir "perf-output-confirm/${ENGINE}"
           )
+          pin=""
+          case "$(uname -s)" in
+            Linux)  pin="setarch $(uname -m) -R" ;;
+            Darwin) pin="/tmp/noaslr" ;;
+          esac
           if [[ -n "$RUNNER_PREFIX" ]]; then
             args+=(--runner-prefix "$RUNNER_PREFIX")
+          elif [[ -n "$pin" ]]; then
+            args+=(--runner-prefix "$pin")
           fi
           for metric in $FLAGGED; do
             args+=(--only "$metric")
@@ -776,7 +802,10 @@ jobs:
         run: |
           set -euo pipefail
           status=0
-          python3 -m ci.wasmi_performance \
+          # Linux-only jobs: the setarch personality is inherited by every
+          # child, pinning the address layout of the bench processes that
+          # cargo-criterion spawns.
+          setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
             --suite wasmi-benchmarks \
             --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
             --baseline-source baseline \
@@ -983,7 +1012,10 @@ jobs:
           for group in $FLAGGED; do
             only_args+=(--only "$group")
           done
-          python3 -m ci.wasmi_performance \
+          # Linux-only jobs: the setarch personality is inherited by every
+          # child, pinning the address layout of the bench processes that
+          # cargo-criterion spawns.
+          setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
             --suite wasmi-benchmarks \
             --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
             --baseline-source baseline \

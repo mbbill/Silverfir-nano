@@ -121,6 +121,14 @@ def isolated_build_environment(
     # rustup would otherwise honor per working directory. An explicit
     # `cargo +nightly` (the rv32 build-std path) outranks this variable.
     env.setdefault("RUSTUP_TOOLCHAIN", "stable")
+    # Measurement binaries get a fixed image base on Windows, where ASLR
+    # is a link-time property: a benchmark score must be a property of
+    # the image, not of the launch's address draw. Linux and Darwin pin
+    # at spawn time instead (setarch -R and ci/noaslr.c). Applies only
+    # to these perf builds; shipped artifacts keep dynamic bases.
+    if sys.platform == "win32":
+        flags = env.get("RUSTFLAGS", "")
+        env["RUSTFLAGS"] = (flags + " -C link-arg=/DYNAMICBASE:NO").strip()
     return env
 
 
