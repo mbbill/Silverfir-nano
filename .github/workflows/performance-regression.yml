@@ -297,6 +297,25 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning title=Dev CI soft-fail::Action required; this run did not pass."
 
+
+  report:
+    name: run report
+    needs: [prepare, compare, compare-confirm, wasmi, wasmi-confirm]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Collect result artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: run-artifacts
+
+      - name: Write the consolidated report
+        run: |
+          python3 -m ci.summarize_run --artifacts-dir run-artifacts >> "$GITHUB_STEP_SUMMARY"
+
   compare:
     name: ${{ matrix.platform }} / ${{ matrix.engine }}
     needs: prepare
@@ -1081,21 +1100,3 @@ jobs:
             echo "> dev branches, but a preceding step failed. This is not a pass."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning title=Dev CI soft-fail::Action required; this wasmi-confirm job did not pass."
-
-  report:
-    name: run report
-    needs: [prepare, compare, compare-confirm, wasmi, wasmi-confirm]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Collect result artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: run-artifacts
-
-      - name: Write the consolidated report
-        run: |
-          python3 -m ci.summarize_run --artifacts-dir run-artifacts >> "$GITHUB_STEP_SUMMARY"
