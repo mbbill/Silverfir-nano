@@ -23,31 +23,43 @@ from pathlib import Path
 from typing import Any
 
 
-def regression_rows(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Metric rows with status REGRESSION, keyed test:metric."""
+def metric_rows(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Every metric row of either document shape, keyed test:metric."""
     rows: dict[str, dict[str, Any]] = {}
     tests = document.get("tests")
     if isinstance(tests, dict):
         for test_name, test in tests.items():
             for metric_name, metric in test.get("metrics", {}).items():
-                if metric.get("status") == "REGRESSION":
-                    rows[f"{test_name}:{metric_name}"] = metric
+                rows[f"{test_name}:{metric_name}"] = metric
         return rows
     metrics = document.get("metrics")
     if isinstance(metrics, dict):
-        for metric_name, metric in metrics.items():
-            if metric.get("status") == "REGRESSION":
-                rows[metric_name] = metric
-        return rows
+        return dict(metrics)
     raise ValueError("document has neither 'tests' nor 'metrics'")
+
+
+def regression_rows(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Metric rows with status REGRESSION, keyed test:metric."""
+    return {
+        name: metric
+        for name, metric in metric_rows(document).items()
+        if metric.get("status") == "REGRESSION"
+    }
 
 
 def verdict_lines(
     primary_rows: dict[str, dict[str, Any]],
     confirm_rows: dict[str, dict[str, Any]],
+    confirm_cannot_run: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[str], bool]:
+    cannot_run = confirm_cannot_run or {}
     confirmed = sorted(set(primary_rows) & set(confirm_rows))
-    unreproduced = sorted(set(primary_rows) - set(confirm_rows))
+    unadjudicated = sorted(
+        (set(primary_rows) - set(confirmed)) & set(cannot_run)
+    )
+    unreproduced = sorted(
+        set(primary_rows) - set(confirmed) - set(unadjudicated)
+    )
     lines = ["## Cross-run confirmation", ""]
     if not primary_rows:
         lines.append("Primary run flagged nothing; confirmation not needed.")
@@ -63,6 +75,18 @@ def verdict_lines(
             f"{confirm_rows[name]['delta_percent']:+.2f}%"
             for name in confirmed
         )
+    if unadjudicated:
+        lines.append("")
+        lines.append(
+            "The confirmation run crashed measuring these flagged rows, "
+            "so they could not be adjudicated; failing closed:"
+        )
+        lines.extend(
+            f"- **{name}**: primary "
+            f"{primary_rows[name]['delta_percent']:+.2f}%, confirmation "
+            "crashed"
+            for name in unadjudicated
+        )
     if unreproduced:
         lines.append("")
         lines.append(
@@ -73,7 +97,7 @@ def verdict_lines(
             f"- {name}: primary {primary_rows[name]['delta_percent']:+.2f}%"
             for name in unreproduced
         )
-    return lines, bool(confirmed)
+    return lines, bool(confirmed or unadjudicated)
 
 
 def main() -> int:
@@ -85,8 +109,15 @@ def main() -> int:
 
     primary = json.loads(args.primary.read_text(encoding="utf-8"))
     confirm = json.loads(args.confirm.read_text(encoding="utf-8"))
+    confirm_cannot_run = {
+        name: metric
+        for name, metric in metric_rows(confirm).items()
+        if metric.get("status") == "CANNOT-RUN"
+    }
     lines, failed = verdict_lines(
-        regression_rows(primary), regression_rows(confirm)
+        regression_rows(primary),
+        regression_rows(confirm),
+        confirm_cannot_run,
     )
     text = "\n".join(lines) + "\n"
     print(text)
