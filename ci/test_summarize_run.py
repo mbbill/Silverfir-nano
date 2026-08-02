@@ -30,7 +30,7 @@ def wasmi_doc(rows: dict[str, dict]) -> dict:
 
 
 class RenderReportTests(unittest.TestCase):
-    def test_confirm_artifact_annotates_and_is_not_a_job_row(self) -> None:
+    def test_dismissed_row_shows_both_deltas_and_no_job_row(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             write_doc(
@@ -43,17 +43,32 @@ class RenderReportTests(unittest.TestCase):
                 root,
                 "performance-confirm-x64-linux-jit",
                 "comparison.json",
-                native_doc({"c-ray": "PASS"}),
+                {
+                    "tests": {
+                        "c-ray": {
+                            "metrics": {
+                                "c-ray": {
+                                    "status": "PASS",
+                                    "delta_percent": 0.4,
+                                }
+                            }
+                        }
+                    }
+                },
             )
             report = render_report(root)
         self.assertIn(
-            "**c-ray** -5.00% — performance-x64-linux-jit "
-            "— not reproduced on an independent runner",
+            "### Flagged by one runner, not reproduced on re-measure",
+            report,
+        )
+        self.assertIn(
+            "**c-ray** primary -5.00%, re-measure +0.40% "
+            "— performance-x64-linux-jit",
             report,
         )
         self.assertNotIn("| performance-confirm-x64-linux-jit |", report)
 
-    def test_confirmed_and_unconfirmed_regressions_are_labeled(self) -> None:
+    def test_confirmed_and_unadjudicated_rows_get_own_sections(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             write_doc(
@@ -91,15 +106,62 @@ class RenderReportTests(unittest.TestCase):
             )
             report = render_report(root)
         self.assertIn(
-            "**execute/nbody** -8.90% — "
-            "wasmi-performance-x64-linux-jit-execute "
-            "— confirmed on an independent runner",
+            "### Regressions confirmed on an independent runner", report
+        )
+        self.assertIn(
+            "**execute/nbody** primary -8.90%, confirmation -7.10% "
+            "— wasmi-performance-x64-linux-jit-execute",
             report,
         )
+        self.assertIn("### Flagged regressions without a verdict", report)
         self.assertIn(
             "**startup/bz2** -4.00% — "
             "wasmi-performance-arm64-linux-interp-startup "
-            "— not re-measured (confirmation did not run)",
+            "— not re-measured; confirmation did not run",
+            report,
+        )
+        self.assertIn(
+            "| wasmi-performance-x64-linux-jit-execute "
+            "| 0 | 1 | 1 | 0 | 0 | 0 | 0 | 0 |",
+            report,
+        )
+        self.assertIn(
+            "| wasmi-performance-arm64-linux-interp-startup "
+            "| 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |",
+            report,
+        )
+
+    def test_confirm_crash_reads_as_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_doc(
+                root,
+                "wasmi-performance-x64-linux-interp-execute",
+                "comparison.json",
+                wasmi_doc({
+                    "execute/sort": {
+                        "status": "REGRESSION",
+                        "delta_percent": -6.0,
+                    },
+                }),
+            )
+            write_doc(
+                root,
+                "wasmi-performance-confirm-x64-linux-interp-execute",
+                "comparison.json",
+                wasmi_doc({
+                    "execute/sort": {
+                        "status": "CANNOT-RUN",
+                        "failed_version": "candidate",
+                        "error": "boom",
+                    },
+                }),
+            )
+            report = render_report(root)
+        self.assertIn(
+            "**execute/sort** -6.00% — "
+            "wasmi-performance-x64-linux-interp-execute "
+            "— crashed on the confirmation runner; fails closed",
             report,
         )
 
@@ -129,7 +191,7 @@ class RenderReportTests(unittest.TestCase):
             "— wasmi-performance-x64-linux-jit-startup",
             report,
         )
-        self.assertIn("| 1 | 0 | 0 | 1 | 0 | 0 | 0 |", report)
+        self.assertIn("| 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |", report)
 
     def test_failure_documents_list_jobs_with_no_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
