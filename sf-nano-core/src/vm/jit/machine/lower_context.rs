@@ -985,6 +985,11 @@ impl<'a> BlockLowerContext<'a> {
         cache_reg: MachineReg,
         except: &[SsaValue],
     ) -> Result<(), WasmError> {
+        // Reclaim lanes owned by already-dead values first: a dead snapshot
+        // needs no preserving move, and the reclaimed lanes are exactly where
+        // the live ones want to go. Must run before the index loop below —
+        // reclamation swap-removes entries from `values`.
+        self.release_dead_values()?;
         let ty = self
             .cached_cell_storage_type_for_reg(cache_reg)
             .unwrap_or(MachineStorageType::GpWord);
@@ -1017,10 +1022,19 @@ impl<'a> BlockLowerContext<'a> {
         value: SsaValue,
         ty: MachineStorageType,
     ) -> Result<MachineReg, WasmError> {
-        let Some(dst) = self.first_free_linear_value_reg(ty) else {
-            return Err(WasmError::internal(
-                "linear-value budget exhausted during cache alias materialization".into(),
-            ));
+        let dst = match self.first_free_linear_value_reg(ty) {
+            Some(reg) => reg,
+            None => {
+                // Same escape hatch as ordinary result allocation:
+                // RegisterOnly ABI params hold dynamic registers until they
+                // are published to their frame homes.
+                self.publish_register_params_to_frame()?;
+                self.first_free_linear_value_reg(ty).ok_or_else(|| {
+                    WasmError::internal(
+                        "linear-value budget exhausted during cache alias materialization".into(),
+                    )
+                })?
+            }
         };
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {

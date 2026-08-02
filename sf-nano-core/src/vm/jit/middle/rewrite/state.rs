@@ -97,6 +97,22 @@ impl DisciplineDriver for EmitDriver<'_> {
         self.ops.push(SsaInst::cell_drop_cache(slot));
     }
 
+    fn on_dealias_cache(&mut self, slot: CellId, ty: ValueType, positions: &[usize]) {
+        // One planned preserving copy of the lane per snapshot: downstream
+        // call lowering requires each live-suffix argument to be a distinct
+        // SSA value, and the engine charges budget per live entry, so
+        // per-position copies keep both models exact. Reading through
+        // CellGetCache keeps the sink planner conservative: it refuses to
+        // sink a producer across a same-slot read.
+        for &pos in positions {
+            let copy = self.values.fresh_typed(ty);
+            self.ops.push(SsaInst::cell_get_cache(slot, copy));
+            if let Some(value) = self.live.get_mut(pos) {
+                *value = copy;
+            }
+        }
+    }
+
     fn on_call_boundary(&mut self) {
         self.live.clear();
     }
