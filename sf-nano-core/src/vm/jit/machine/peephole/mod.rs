@@ -28,6 +28,7 @@
 mod copy_propagate;
 mod deduplicate_constants;
 mod eliminate_dead_params;
+mod fold_induction_offsets;
 mod forward_stored_values;
 mod fuse_compare_branch;
 mod fuse_indexed_memory;
@@ -237,5 +238,10 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks);
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
+    // After compare-branch fusion: the fold reads loop bounds from
+    // `Branch { IntCompare }` latch terminators. The passes since
+    // `analyze_loop_graph` rewrite instructions and conditions but never
+    // CFG targets, so the loop graph is still valid.
+    fold_induction_offsets::fold_induction_offsets(program, &loop_graph);
     recognize_memmove::recognize_memmove(program);
 }
