@@ -220,7 +220,7 @@ impl<'a> X86_64Backend<'a> {
                 width,
                 extension,
             } => {
-                self.lower_indexed_load_decomposed(*dst, *base, *index, *index_extend, *offset, *width, *extension)
+                self.lower_indexed_load(*dst, *base, *index, *index_extend, *offset, *width, *extension)
             }
             MachineInstKind::IndexedStore {
                 base,
@@ -230,7 +230,7 @@ impl<'a> X86_64Backend<'a> {
                 width,
                 src,
             } => {
-                self.lower_indexed_store_decomposed(*base, *index, *index_extend, *offset, *width, *src)
+                self.lower_indexed_store(*base, *index, *index_extend, *offset, *width, *src)
             }
             MachineInstKind::BitfieldExtractU { width, dst, src, lsb, bits } => {
                 self.lower_bitfield_extract_u(*width, *dst, *src, *lsb, *bits)
@@ -901,6 +901,132 @@ impl<'a> X86_64Backend<'a> {
                 return Err(WasmError::invalid(
                     "x86_64 MachineIR backend does not support sign-extending 64-bit loads".into(),
                 ))
+            }
+        };
+        Ok(())
+    }
+
+    /// Load from [base + index + disp]; the indexed twin of
+    /// [`Self::lower_load_from`].
+    fn lower_load_from_idx(
+        &mut self,
+        dst: MachineReg,
+        base: X86Reg,
+        index: X86Reg,
+        disp: i32,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> Result<(), WasmError> {
+        // FP register destination
+        if self.core.is_fp_reg(dst) {
+            let dst_fp = self.map_fp_reg(dst)? as u8;
+            let tracked_width = match width {
+                MachineMemWidth::U32 => MachineFloatWidth::F32,
+                MachineMemWidth::U64 => MachineFloatWidth::F64,
+                _ => return Err(WasmError::invalid(
+                    "x86_64 MachineIR backend does not support narrow integer loads into FP regs"
+                        .into(),
+                )),
+            };
+            match tracked_width {
+                MachineFloatWidth::F32 => {
+                    enc::movss_load_idx(&mut self.core.text, dst_fp, base, index, disp)
+                }
+                MachineFloatWidth::F64 => {
+                    enc::movsd_load_idx(&mut self.core.text, dst_fp, base, index, disp)
+                }
+            };
+            self.core.set_fp_reg_width(dst, tracked_width)?;
+            return Ok(());
+        }
+
+        // GP register destination
+        let dst_gp = self.map_gp_reg(dst)?;
+        match (width, extension) {
+            (MachineMemWidth::U8, MachineLoadExtension::None)
+            | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => {
+                enc::load_u8_idx(&mut self.core.text, dst_gp, base, index, disp);
+            }
+            (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => {
+                enc::load_s8_64_idx(&mut self.core.text, dst_gp, base, index, disp);
+            }
+            (MachineMemWidth::U16, MachineLoadExtension::None)
+            | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => {
+                enc::load_u16_idx(&mut self.core.text, dst_gp, base, index, disp);
+            }
+            (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => {
+                enc::load_s16_64_idx(&mut self.core.text, dst_gp, base, index, disp);
+            }
+            (MachineMemWidth::U32, MachineLoadExtension::None)
+            | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => {
+                enc::load_32_idx(&mut self.core.text, dst_gp, base, index, disp);
+            }
+            (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => {
+                enc::load_s32_64_idx(&mut self.core.text, dst_gp, base, index, disp);
+            }
+            (MachineMemWidth::U64, MachineLoadExtension::None)
+            | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => {
+                enc::load_64_idx(&mut self.core.text, dst_gp, base, index, disp);
+            }
+            (MachineMemWidth::U64, MachineLoadExtension::SignExtend) => {
+                return Err(WasmError::invalid(
+                    "x86_64 MachineIR backend does not support sign-extending 64-bit loads".into(),
+                ))
+            }
+        };
+        Ok(())
+    }
+
+    /// Store to [base + index + disp]; the indexed twin of
+    /// [`Self::lower_store_to_with_scratch`]. `materialize_scratch` must
+    /// differ from both address registers.
+    fn lower_store_to_idx(
+        &mut self,
+        base: X86Reg,
+        index: X86Reg,
+        disp: i32,
+        width: MachineMemWidth,
+        src: MachineValue,
+        materialize_scratch: X86Reg,
+    ) -> Result<(), WasmError> {
+        // FP register source
+        if let MachineValue::Reg(src_reg) = src {
+            if self.core.is_fp_reg(src_reg) {
+                let src_fp = self.map_fp_reg(src_reg)? as u8;
+                match width {
+                    MachineMemWidth::U32 => {
+                        enc::movss_store_idx(&mut self.core.text, base, index, disp, src_fp)
+                    }
+                    MachineMemWidth::U64 => {
+                        enc::movsd_store_idx(&mut self.core.text, base, index, disp, src_fp)
+                    }
+                    _ => {
+                        return Err(WasmError::invalid(
+                            "x86_64 MachineIR backend does not support narrow FP stores".into(),
+                        ))
+                    }
+                };
+                return Ok(());
+            }
+        }
+
+        // Imm64(0) store → store_imm32_64_idx for U64
+        if matches!(src, MachineValue::Imm64(0)) && width == MachineMemWidth::U64 {
+            enc::store_imm32_64_idx(&mut self.core.text, base, index, disp, 0);
+            return Ok(());
+        }
+
+        let src_gp = self.materialize_value(materialize_scratch, src)?;
+        match width {
+            MachineMemWidth::U8 => enc::store_8_idx(&mut self.core.text, base, index, disp, src_gp),
+            MachineMemWidth::U16 => {
+                enc::store_16_idx(&mut self.core.text, base, index, disp, src_gp)
+            }
+            MachineMemWidth::U32 => {
+                enc::store_32_idx(&mut self.core.text, base, index, disp, src_gp)
+            }
+            MachineMemWidth::U64 => {
+                enc::store_64_idx(&mut self.core.text, base, index, disp, src_gp)
             }
         };
         Ok(())
@@ -2627,11 +2753,12 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
-    /// Decomposed indexed load: extend(index) + offset into a backend-owned GP
-    /// scratch, then load from [base + scratch]. Stable-base form for
-    /// store-forwarding.
-    /// TODO: use x86_64 [base + index + disp] addressing for 1-2 instructions.
-    pub(super) fn lower_indexed_load_decomposed(
+    /// Indexed load through one [base + index + disp] instruction. A
+    /// ZeroExtend32 index is first zero-extended into a backend scratch —
+    /// the MachineIR contract leaves its upper half undefined — while a
+    /// full-width index feeds the SIB byte directly. Address arithmetic
+    /// happens in the AGU, off the ALU dependency chain.
+    pub(super) fn lower_indexed_load(
         &mut self,
         dst: MachineReg,
         base: MachineReg,
@@ -2643,31 +2770,26 @@ impl<'a> X86_64Backend<'a> {
     ) -> Result<(), WasmError> {
         let base_x86 = self.map_gp_reg(base)?;
         let index_x86 = self.map_gp_reg(index)?;
-        let scratch0 = self.gp_scratch.scoped_alloc().detach();
-        let scratch1 = self.gp_scratch.scoped_alloc().detach();
-        let addr_scratch = if base_x86 == *scratch0 {
-            *scratch1
-        } else {
-            *scratch0
-        };
-        // Step 1: copy/extend index into the address scratch.
-        if index_extend == MachineIndexExtend::ZeroExtend32 {
-            enc::mov_rr_32(&mut self.core.text, addr_scratch, index_x86);
-        } else {
-            enc::mov_rr_64(&mut self.core.text, addr_scratch, index_x86);
+        match index_extend {
+            MachineIndexExtend::None => {
+                self.lower_load_from_idx(dst, base_x86, index_x86, offset, width, extension)
+            }
+            MachineIndexExtend::ZeroExtend32 => {
+                let scratch0 = self.gp_scratch.scoped_alloc().detach();
+                let scratch1 = self.gp_scratch.scoped_alloc().detach();
+                let idx = if base_x86 == *scratch0 {
+                    *scratch1
+                } else {
+                    *scratch0
+                };
+                enc::mov_rr_32(&mut self.core.text, idx, index_x86);
+                self.lower_load_from_idx(dst, base_x86, idx, offset, width, extension)
+            }
         }
-        // Step 2: add offset
-        if offset != 0 {
-            enc::add_ri_64(&mut self.core.text, addr_scratch, offset);
-        }
-        // Step 3: add base -> addr_scratch = base + extended_index + offset.
-        enc::add_rr_64(&mut self.core.text, addr_scratch, base_x86);
-        // Step 4: load from [scratch + 0]
-        self.lower_load_from(dst, addr_scratch, 0, width, extension)
     }
 
-    /// Decomposed indexed store.
-    pub(super) fn lower_indexed_store_decomposed(
+    /// Indexed store; same addressing as [`Self::lower_indexed_load`].
+    pub(super) fn lower_indexed_store(
         &mut self,
         base: MachineReg,
         index: MachineReg,
@@ -2680,21 +2802,45 @@ impl<'a> X86_64Backend<'a> {
         let index_x86 = self.map_gp_reg(index)?;
         let scratch0 = self.gp_scratch.scoped_alloc().detach();
         let scratch1 = self.gp_scratch.scoped_alloc().detach();
-        let addr_scratch = if base_x86 == *scratch0 {
-            *scratch1
-        } else {
-            *scratch0
+        // Freed on drop at end of function, like scratch0/scratch1.
+        let mut extra_scratch = None;
+        let (idx, materialize_scratch) = match index_extend {
+            MachineIndexExtend::None => {
+                // The index register carries the address as-is; either
+                // scratch may materialize the source, away from the base.
+                let materialize = if base_x86 == *scratch0 {
+                    *scratch1
+                } else {
+                    *scratch0
+                };
+                (index_x86, materialize)
+            }
+            MachineIndexExtend::ZeroExtend32 => {
+                // One scratch holds the extended index; the other
+                // materializes the source. Neither may be the base, and
+                // the three-register pool minus at most one base overlap
+                // always leaves two free.
+                let (idx, materialize) = if base_x86 == *scratch0 {
+                    let scratch2 = self.gp_scratch.scoped_alloc().detach();
+                    let pair = (*scratch1, *scratch2);
+                    extra_scratch = Some(scratch2);
+                    pair
+                } else if base_x86 == *scratch1 {
+                    let scratch2 = self.gp_scratch.scoped_alloc().detach();
+                    let pair = (*scratch0, *scratch2);
+                    extra_scratch = Some(scratch2);
+                    pair
+                } else {
+                    (*scratch0, *scratch1)
+                };
+                enc::mov_rr_32(&mut self.core.text, idx, index_x86);
+                (idx, materialize)
+            }
         };
-        if index_extend == MachineIndexExtend::ZeroExtend32 {
-            enc::mov_rr_32(&mut self.core.text, addr_scratch, index_x86);
-        } else {
-            enc::mov_rr_64(&mut self.core.text, addr_scratch, index_x86);
-        }
-        if offset != 0 {
-            enc::add_ri_64(&mut self.core.text, addr_scratch, offset);
-        }
-        enc::add_rr_64(&mut self.core.text, addr_scratch, base_x86);
-        self.lower_store_to_with_scratch(addr_scratch, 0, width, src, *scratch0, *scratch1)
+        let result =
+            self.lower_store_to_idx(base_x86, idx, offset, width, src, materialize_scratch);
+        drop(extra_scratch);
+        result
     }
 
     fn lower_memory_grow(
