@@ -45,7 +45,9 @@ unsafe extern "C" {
 pub(super) fn open_tracking_file(path: &Path) -> io::Result<File> {
     let c_path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "jitdump path contains NUL"))?;
-    let file_ptr = unsafe { fopen(c_path.as_ptr(), c"wb".as_ptr()) };
+    // "w+b", not "wb": the marker mapping below needs a readable fd —
+    // mmap(PROT_READ) of an O_WRONLY descriptor fails with EACCES.
+    let file_ptr = unsafe { fopen(c_path.as_ptr(), c"w+b".as_ptr()) };
     if file_ptr.is_null() {
         return Err(io::Error::last_os_error());
     }
@@ -91,7 +93,7 @@ pub(super) fn mark_for_perf(file: &File) {
 
     // Length 1 maps a single page. The header was already written, so
     // the range is backed; nothing ever reads through this mapping.
-    let _ = unsafe {
+    let mapped = unsafe {
         mmap(
             core::ptr::null_mut(),
             1,
@@ -101,6 +103,13 @@ pub(super) fn mark_for_perf(file: &File) {
             0,
         )
     };
+    if mapped as isize == -1 {
+        // SF_JITDUMP is an explicit request to feed perf; a silent
+        // marker failure leaves every profile unsymbolized with no clue.
+        std::eprintln!(
+            "[jitdump] marker mapping failed; perf inject --jit will not resolve symbols"
+        );
+    }
 }
 
 /// The 32-bit Linux targets run under qemu-user in CI, which perf does
