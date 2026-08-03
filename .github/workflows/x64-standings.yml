@@ -25,10 +25,12 @@
 
 name: x64-standings
 
+# Dispatch-only: the cross-engine ratios are a reference measured once
+# (and re-measured to confirm a closed gap), not a per-push gate. Daily
+# iteration uses the accurate nano-vs-nano performance-regression CI
+# against the targets recorded in ci/x64_targets.md. Trigger with:
+#   gh workflow run x64-standings.yml --ref dev/x64-tuning
 on:
-  push:
-    branches:
-      - "dev/x64-**"
   workflow_dispatch:
 
 concurrency:
