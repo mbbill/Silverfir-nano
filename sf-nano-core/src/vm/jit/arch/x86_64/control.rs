@@ -122,8 +122,12 @@ impl<'a> X86_64Backend<'a> {
                 MachineValue::Reg(reg) => {
                     let reg = self.map_gp_reg(reg)?;
                     // Wasm branch conditions are i32 values; ignore any stale
-                    // upper half that may remain in a GpWord carrier.
-                    enc::test_rr_32(&mut self.core.text, reg, reg);
+                    // upper half that may remain in a GpWord carrier. Skip
+                    // the test when EFLAGS already carries this register's
+                    // 32-bit result, letting the ALU op and jcc macro-fuse.
+                    if !self.flags32_current(reg) {
+                        enc::test_rr_32(&mut self.core.text, reg, reg);
+                    }
                     if else_fallthrough {
                         if let Some(label) = then_label {
                             self.emit_jcc(Cc::NE, label);
@@ -210,8 +214,12 @@ impl<'a> X86_64Backend<'a> {
                 MachineValue::Reg(reg) => {
                     let reg = self.map_gp_reg(reg)?;
                     // Wasm branch conditions are i32 values; ignore any stale
-                    // upper half that may remain in a GpWord carrier.
-                    enc::test_rr_32(&mut self.core.text, reg, reg);
+                    // upper half that may remain in a GpWord carrier. Skip
+                    // the test when EFLAGS already carries this register's
+                    // 32-bit result.
+                    if !self.flags32_current(reg) {
+                        enc::test_rr_32(&mut self.core.text, reg, reg);
+                    }
                     self.emit_jcc(Cc::NE, trap_label);
                 }
                 MachineValue::ReservedReg(_reg) => {
@@ -269,7 +277,11 @@ impl<'a> X86_64Backend<'a> {
                 }
                 MachineValue::Reg(reg) => {
                     let reg = self.map_gp_reg(reg)?;
-                    enc::test_rr_32(&mut self.core.text, reg, reg);
+                    // Same flags reuse as lower_branch: skip the test when
+                    // EFLAGS already carries this register's 32-bit result.
+                    if !self.flags32_current(reg) {
+                        enc::test_rr_32(&mut self.core.text, reg, reg);
+                    }
                     let cc = match jump_when {
                         TemplateBranchSense::IfTrue => Cc::E,
                         TemplateBranchSense::IfFalse => Cc::NE,
