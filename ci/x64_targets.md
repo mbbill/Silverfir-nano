@@ -270,9 +270,18 @@ for lz4's wildcopy — NARROWED: the pointers ARE locals (func17 slots 3
 and 15 of 19), the region solver already trip-weights per wasm-loop
 regions (SF_CACHE_POLICY=algorithm4:trip=N), and a trip sweep
 (8/32/128) leaves func17's 122 spill ops IDENTICAL — the exclusion is
-structural, not weight-based. Next step is solver decision-trace
-instrumentation on func17 (which candidates reached the solver for the
-wildcopy region and what priced them out), a fresh-session unit. Then:
+structural, not weight-based. RESOLVED by solver trace (2026-08-03,
+local diagnostic, reverted): LZ4_decompress_safe's main-loop region
+(45 blocks) has gp_capacity 3 = budget 7 minus headroom 4 (the region
+capacity subtracts the WORST owned block's SSA transient peak), while
+six locals carry benefit >=120 — the solver correctly selects the top
+three (l17=256, l2=200, l4=176) and the profiled wildcopy reload
+victims l15=152 and l3=136 rank 4th/5th and lose. Fix class: solver
+granularity — split expression-heavy peak blocks out of hot regions,
+or per-block spill-around so one peak block does not tax 45 blocks'
+residency. This is joint-planner architecture (shared, both ISAs
+benefit; arm64 hides it behind 20+ lanes) — sized for a dedicated
+session with these numbers as the acceptance test. Then:
 the value-stack call ABI (funcref, user decision), fibonacci-rec's v8
 gap (inlining class), and the two documented tradeoffs
 (regex_redux/AMD, fibonacci-rec lane trade).
