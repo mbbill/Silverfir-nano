@@ -289,6 +289,11 @@ ARCH_CONFIGS: Dict[str, Dict[str, str]] = {
         "elf_format": "elf32-littlearm",
         "llvm_triple": "thumbv7",
     },
+    "x86_64": {
+        "objdump_machine": "i386:x86-64",
+        "elf_format": "elf64-x86-64",
+        "llvm_triple": "x86_64",
+    },
 }
 
 
