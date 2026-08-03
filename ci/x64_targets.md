@@ -235,6 +235,26 @@ Adoption plan (mechanical but frame-protocol-wide; fresh session):
    (Win64 check builds), A/B watch on lz4-decompress / argon2 / lua /
    sqlite rows and startup lanes.
 
+### 2026-08-03 — fix 8 (preserved dynamic lanes, c1bc0c1d + 5213a917)
+
+x86_64 adopts arm64's preserved-lane design: R14/R15 reclassified from
+volatile to preserved, bodies lazy-save exactly what they clobber, all
+four frame paths share one save/shim plan. A/B: lua-json +12-14%,
+lua-fib +11.3-11.6%, sqlite +12.9%, sha256 +8.9%, c-ray/bzip2 +5.4%,
+funcref-exported-table up to +5.4% — call-crossing residency working.
+
+Calibrations from the confirm lanes (5213a917): the induction fold now
+pre-scans loops for its pattern (arm64 startup cost cured — no arm64
+failures in run 30835024499), and the x64 preserved-save overhead price
+is 5 (solver declines nomination in tiny bodies; fibonacci-rec's
+prelude verified push-free).
+
+Documented tradeoff #2: **fibonacci-rec −3.4%** on x64 — not the lazy
+save (verified absent) but the volatile-lane reduction 7→5 pressuring
+a tiny recursive call-tree's arg staging. Bounded and acceptable:
+fibonacci-rec remains ahead of cranelift (≈0.97 after this), and the
+same reclassification funds the Lua/sqlite/sha256/funcref gains.
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
