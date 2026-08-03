@@ -91,6 +91,32 @@ The rows where the M4 reference says "led/over" are the purest x64-backend
 signal: same engine, same suite, opposite outcome by ISA — sha256, bzip2,
 coremark, and the STREAM arithmetic kernels.
 
+## Checkpoint history
+
+### 2026-08-03 — after fix 1 (x86_64 [base+index+disp] addressing, 03089696)
+
+A/B verdicts (AMD, run 30800951711): native suite 14/17 IMPROVEMENT —
+coremark +17.5%, sqlite +18.7%, stream Scale/Add/Triad +21/+29/+19%,
+lz4 +17/+9%, lua +7-8% (all three), funcref-exported-table +6.9%,
+c-ray +3.6%, sha256 +3.5%, bzip2 +2.3%. wasmi corpus: sort +15.6%,
+nbody +8.8%, spectralnorm +8.1%, word_count +8.1%, json_parse +7.7%,
+compression +7.3%, reverse_complement +4.8%, tiny_keccak +2.6%.
+regex_redux flagged −16.6% on the primary runner but showed +12.5%
+IMPROVEMENT on the independent confirm runner — dismissed as a
+layout/draw artifact.
+
+Standings checkpoint (run 30800992673): wasi suite landed on
+**Intel Xeon 8370C** (first Intel datapoint) — geomean 1.36 cranelift /
+1.50 v8. wasmi stayed on AMD: geomean 1.19 cranelift / 1.31 v8
+(from 1.21/1.34).
+
+Remaining top rows, Intel wasi: funcref 2.2-2.4x, lz4/decompress 1.80,
+stream/Triad ~1.46, lua/sunfish 1.55(v8)/1.33(cl), lua/json ~1.4,
+sqlite 1.40(v8), bzip2 1.40(v8). Remaining top rows, AMD wasmi:
+counter-local/param and fibonacci-tail ~2.0x (untouched by addressing —
+different cause), fibonacci-rec 3.7x vs v8 (likely inlining), argon2
+1.5-1.6x (unmoved).
+
 ## Interpreter
 
 Second phase per the goal ordering; snapshot with the same lanes after
