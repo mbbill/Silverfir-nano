@@ -36,6 +36,9 @@ pub(super) fn monotonic_timestamp_nanos() -> u64 {
     }
 }
 
+/// No marker on Windows: there is no perf here to read it.
+pub(super) fn mark_for_perf(_file: &File) {}
+
 pub(super) fn elf_machine_arch() -> u32 {
     EM_NONE
 }
