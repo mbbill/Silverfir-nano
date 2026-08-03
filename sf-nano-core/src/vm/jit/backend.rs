@@ -53,11 +53,11 @@ pub(crate) struct BackendConfig {
 
 impl BackendConfig {
     /// Constructor for backends whose ABI does not split the dynamic bank
-    /// by volatility (x86-64, riscv), and for synthetic test configurations
-    /// on any host. Arm targets reach `BackendConfig` only through
+    /// by volatility (riscv), and for synthetic test configurations on any
+    /// host. Arm targets and x86-64 reach `BackendConfig` only through
     /// [`Self::with_volatility`].
-    #[cfg(any(sf_backend_x64, sf_backend_riscv32, sf_backend_riscv64, test))]
     #[inline]
+    #[cfg(any(sf_backend_riscv32, sf_backend_riscv64, test))]
     pub(crate) const fn new(
         gp_unit_bytes: u8,
         gp_dynamic_budget: u8,
@@ -118,7 +118,13 @@ impl BackendConfig {
     /// field docs). Chainable after `with_volatility` by backends with a lazy
     /// per-body preserved save.
     #[inline]
-    #[cfg(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_thumbm, test))]
+    #[cfg(any(
+        sf_backend_arm64,
+        sf_backend_armv7a,
+        sf_backend_thumbm,
+        sf_backend_x64,
+        test
+    ))]
     pub(crate) const fn with_preserved_lane_save_overhead(mut self, overhead: u8) -> Self {
         self.preserved_lane_save_overhead = overhead;
         self
@@ -177,7 +183,7 @@ const fn min_u8(lhs: u8, rhs: u8) -> u8 {
 }
 
 #[inline]
-#[cfg(any(sf_backend_x64, sf_backend_riscv32, sf_backend_riscv64, test))]
+#[cfg(any(sf_backend_riscv32, sf_backend_riscv64, test))]
 const fn default_gp_internal_scratch(gp_unit_bytes: u8, gp_dynamic_budget: u8) -> u8 {
     let preferred = if gp_unit_bytes == 4 { 2 } else { 1 };
     let max_reserve = gp_dynamic_budget.saturating_sub(1);
@@ -189,13 +195,13 @@ const fn default_gp_internal_scratch(gp_unit_bytes: u8, gp_dynamic_budget: u8) -
 }
 
 #[inline]
-#[cfg(any(sf_backend_x64, sf_backend_riscv32, sf_backend_riscv64, test))]
+#[cfg(any(sf_backend_riscv32, sf_backend_riscv64, test))]
 const fn default_gp_arg_lanes(gp_volatile_dynamic: u8) -> u8 {
     min_u8(gp_volatile_dynamic, 4)
 }
 
 #[inline]
-#[cfg(any(sf_backend_x64, sf_backend_riscv32, sf_backend_riscv64, test))]
+#[cfg(any(sf_backend_riscv32, sf_backend_riscv64, test))]
 const fn default_fp_arg_lanes(fp_volatile_dynamic: u8) -> u8 {
     min_u8(fp_volatile_dynamic, 4)
 }

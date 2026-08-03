@@ -53,17 +53,20 @@ const REG_PLAN: RegPlan = RegPlan {
 
     gp_unit_bytes: 8,
 
-    // Prefer caller-saved GP regs first for short-lived SSA traffic, then
-    // callee-saved dynamic regs for longer-lived residency.
+    // Positional lane classes: [volatile | preserved | internal scratch].
+    // Caller-saved GP regs first for short-lived SSA traffic; R14/R15 are
+    // callee-saved in both SysV and Win64 and form the preserved lanes —
+    // values in them survive C helper calls, and SF->SF bodies lazy-save
+    // them (`body_frame_plan`).
     gp_dynamic: &[
         X86Reg::RSI,
         X86Reg::RDI,
         X86Reg::R8,
         X86Reg::R9,
         X86Reg::R10,
-        X86Reg::R11,
         X86Reg::R14,
         X86Reg::R15,
+        X86Reg::R11,
     ],
     // x86_64 ordinary lowering sometimes requires these exact registers.
     // They are backend-owned and tracked locally, not handed out by regalloc.
@@ -105,14 +108,36 @@ pub(super) use super::callconv::{C_ARG0, C_ARG1, C_ARG2, C_RET0};
 
 const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
 
+// Lane-class widths over `REG_PLAN.gp_dynamic`, in positional order.
+const GP_VOLATILE_DYNAMIC: u8 = 5;
+const GP_PRESERVED_DYNAMIC: u8 = 2;
+const GP_INTERNAL_SCRATCH: u8 = 1;
+const GP_ARG_LANES: u8 = 4;
+const FP_ARG_LANES: u8 = 4;
+
+const _: () = assert!(
+    GP_VOLATILE_DYNAMIC as usize + GP_PRESERVED_DYNAMIC as usize + GP_INTERNAL_SCRATCH as usize
+        == REG_PLAN.gp_dynamic.len(),
+    "x86_64 GP volatility counts must match gp_dynamic"
+);
+
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new(
+    BackendConfig::with_volatility(
         REG_PLAN.gp_unit_bytes,
-        REG_PLAN.gp_dynamic.len() as u8,
+        GP_VOLATILE_DYNAMIC,
+        GP_PRESERVED_DYNAMIC,
+        GP_INTERNAL_SCRATCH,
         REG_PLAN.fp_dynamic.len() as u8,
+        0,
+        GP_ARG_LANES,
+        FP_ARG_LANES,
+        false,
         SCALAR_CALL_SCRATCH_SLOTS,
     )
+    // Lazy per-body preserved save: one push in the body prelude plus one
+    // pop at each return path.
+    .with_preserved_lane_save_overhead(3)
 }
 
 // ── Scratch pool construction ────────────────────────────────────────────────
