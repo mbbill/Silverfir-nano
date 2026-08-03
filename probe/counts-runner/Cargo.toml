@@ -1,0 +1,9 @@
+[package]
+name = "counts-runner"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+sf-nano-core = { path = "../../sf-nano-core", default-features = false, features = ["jit"] }

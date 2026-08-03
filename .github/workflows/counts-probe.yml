@@ -1,0 +1,73 @@
+name: counts-probe
+on:
+  push:
+    branches: ["dev/probe-counts"]
+permissions:
+  contents: read
+concurrency:
+  group: counts-probe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  counts:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          path: baseline
+      - uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install valgrind
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
+      - name: Build both runners
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path probe/counts-runner/Cargo.toml
+          cp probe/counts-runner/target/release/counts-runner /tmp/runner-candidate
+          cp -r probe baseline/probe
+          cargo build --release --manifest-path baseline/probe/counts-runner/Cargo.toml
+          cp baseline/probe/counts-runner/target/release/counts-runner /tmp/runner-baseline
+      - name: Record runner CPU
+        run: lscpu | grep -iE "model name|vendor" || true
+      - name: Wall reference (no instrumentation)
+        run: |
+          set -euo pipefail
+          WASM=wasmi-benchmarks/res/rust/cases/nbody/out.wasm
+          for side in baseline candidate; do
+            echo "=== wall $side: 3x runs of 500 reps ==="
+            for i in 1 2 3; do
+              taskset -c 1 setarch "$(uname -m)" -R /usr/bin/time -f "%e s" "/tmp/runner-$side" "$WASM" 500 2>&1 | tail -1
+            done
+          done
+      - name: Cachegrind counts
+        run: |
+          set -euo pipefail
+          WASM=wasmi-benchmarks/res/rust/cases/nbody/out.wasm
+          for side in baseline candidate; do
+            for reps in 0 20; do
+              valgrind --tool=cachegrind --branch-sim=yes --I1=65536,4,64 --D1=65536,4,64 \
+                --cachegrind-out-file="/tmp/cg-$side-$reps.out" \
+                "/tmp/runner-$side" "$WASM" "$reps" 2> "/tmp/cg-$side-$reps.log"
+              echo "=== $side reps=$reps ==="
+              grep -E "I[[:space:]]+refs|I1[[:space:]]+misses|LLi misses|D[[:space:]]+refs|D1[[:space:]]+misses|Branches|Mispredicts" "/tmp/cg-$side-$reps.log"
+            done
+          done
+          {
+            echo "## Counts probe: nbody arm64 JIT, baseline=main vs candidate=branch"
+            echo
+            echo '```'
+            for side in baseline candidate; do
+              for reps in 0 20; do
+                echo "=== $side reps=$reps ==="
+                grep -E "I[[:space:]]+refs|I1[[:space:]]+misses|LLi misses|D[[:space:]]+refs|D1[[:space:]]+misses|Branches|Mispredicts" "/tmp/cg-$side-$reps.log"
+              done
+            done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
