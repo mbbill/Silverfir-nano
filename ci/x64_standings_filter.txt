@@ -1,0 +1,11 @@
+# Criterion invocations for the x64 standings lane, one per line.
+# Each line is passed verbatim to
+#   cargo bench --bench criterion -- <line> --noplot
+# so a line is a benchmark-name filter plus optional Criterion flags,
+# e.g. a fast iteration loop on two gap cases:
+#   execute/coremark --measurement-time 2
+#   execute/matrix_mul --measurement-time 2
+# Narrow this while iterating on specific gaps; restore the full corpus
+# line below for a complete standings run.
+# Branch-only file, deleted together with the workflow before merge.
+execute/
