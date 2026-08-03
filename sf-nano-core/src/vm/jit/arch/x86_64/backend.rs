@@ -112,6 +112,38 @@ pub(super) struct PendingJumpTable {
 }
 
 impl X86_64Backend<'_> {
+    /// The body's preserved-lane save set and the alignment shim paired
+    /// with it. Body entry has rsp ≡ 8 (mod 16) and internal calls need
+    /// rsp ≡ 0, so the shim is 8 bytes for an even save count and 0 for
+    /// an odd one. Deterministic per function: the prelude and every
+    /// exit path (return, error tail, tail call) consume the same plan.
+    pub(super) fn body_frame_plan(&self) -> (collections::Vec<X86Reg>, u8) {
+        let mut saves = collections::Vec::new();
+        for reg in self.core.preserved_clobbers() {
+            debug_assert!(
+                !self.core.is_fp_reg(*reg),
+                "x86_64 declares no preserved FP lanes"
+            );
+            if let Ok(mapped) = map_reg(*reg) {
+                saves.push(mapped);
+            }
+        }
+        let shim = if saves.len() % 2 == 0 { 8 } else { 0 };
+        (saves, shim)
+    }
+
+    /// Undo the body frame: the shim, then the preserved-lane saves in
+    /// reverse push order.
+    pub(super) fn lower_body_frame_undo(&mut self) {
+        let (saves, shim) = self.body_frame_plan();
+        if shim != 0 {
+            enc::add_rsp_imm8(&mut self.core.text, shim);
+        }
+        for reg in saves.iter().rev() {
+            enc::pop(&mut self.core.text, *reg);
+        }
+    }
+
     /// Record that EFLAGS now reflects `reg`'s 32-bit result.
     pub(super) fn note_flags32(&mut self, reg: X86Reg) {
         self.flags32 = Some((reg, self.core.text.len()));
@@ -305,7 +337,13 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     /// The body's unified Return and `body_local_error_label` both `add
     /// rsp, 8` before popping the call record, mirroring this shim.
     fn lower_body_prelude(&mut self) {
-        enc::sub_rsp_imm8(&mut self.core.text, 8);
+        let (saves, shim) = self.body_frame_plan();
+        for reg in &saves {
+            enc::push(&mut self.core.text, *reg);
+        }
+        if shim != 0 {
+            enc::sub_rsp_imm8(&mut self.core.text, shim);
+        }
     }
 
     /// Body-local error tail (`body_local_error_label`). Reached from trap
@@ -325,8 +363,9 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     /// ```
     fn lower_body_local_error_tail(&mut self) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        // Undo body prelude alignment shim.
-        enc::add_rsp_imm8(&mut self.core.text, 8);
+        // Undo the body frame (alignment shim + preserved-lane saves);
+        // afterwards the layout above matches the documented offsets.
+        self.lower_body_frame_undo();
         // Load caller_fp from [rsp+16] into fp_reg.
         enc::load_64(&mut self.core.text, fp_reg, X86Reg::RSP, 16);
         // ret 16 — pops return address, then releases the 16-byte call

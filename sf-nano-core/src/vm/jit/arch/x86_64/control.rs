@@ -473,9 +473,10 @@ impl<'a> X86_64Backend<'a> {
         let fp = map_fixed_reg(MACHINE_FP_REG);
         let result_base = self.gp_scratch.scoped_alloc().detach();
         let temp = self.gp_scratch.scoped_alloc().detach();
-        // 1. Undo the body prelude alignment shim. After this, [rsp+0] =
-        //    return address, [rsp+8] = caller_result_base, [rsp+16] = caller_fp.
-        enc::add_rsp_imm8(&mut self.core.text, 8);
+        // 1. Undo the body frame (shim + preserved saves). After this,
+        //    [rsp+0] = return address, [rsp+8] = caller_result_base,
+        //    [rsp+16] = caller_fp.
+        self.lower_body_frame_undo();
 
         // 2. Load caller_result_base into a scratch register held across
         //    the copy loop.
@@ -592,41 +593,37 @@ impl<'a> X86_64Backend<'a> {
 
         emit_call_arg_lanes::<Self>(self, args)?;
 
-        let scratch_idx = match target {
+        // Materialize the callee entry into a backend-owned scratch BEFORE
+        // undoing the body frame: the undo pops preserved lanes, and an
+        // indirect entry value could live in one of them. Pool scratches
+        // are never popped.
+        let scratch_idx = self.gp_scratch.alloc();
+        let scratch = self.gp_scratch.reg(scratch_idx);
+        match target {
             MachineCallTarget::Direct(callee) => {
-                let scratch_idx = self.gp_scratch.alloc();
-                let scratch = self.gp_scratch.reg(scratch_idx);
                 enc::movabs_ri_64(&mut self.core.text, scratch, 0);
                 let callee_imm_offset = self.core.text.len() - 8;
                 self.core
                     .direct_call_patches
                     .push(DirectCallPatch::address_literal(callee_imm_offset, *callee));
-                Some(scratch_idx)
             }
-            MachineCallTarget::Indirect { .. } => None,
-        };
+            MachineCallTarget::Indirect { callee_entry, .. } => {
+                let callee_entry = self.map_gp_reg(*callee_entry)?;
+                if callee_entry != scratch {
+                    enc::mov_rr_64(&mut self.core.text, scratch, callee_entry);
+                }
+            }
+        }
 
-        enc::add_rsp_imm8(&mut self.core.text, 8);
+        // Undo the body frame so the callee sees the entry-state stack
+        // (its own prelude re-establishes shim and saves).
+        self.lower_body_frame_undo();
         // Tail-call arguments have already been repacked to the current frame
         // prefix, so the callee reuses the current MACHINE_FP_REG value.
         let _ = fp_reg;
 
-        match target {
-            MachineCallTarget::Direct(_) => {
-                let scratch = self
-                    .gp_scratch
-                    .reg(scratch_idx.expect("direct tail-call scratch"));
-                enc::jmp_reg(&mut self.core.text, scratch);
-            }
-            MachineCallTarget::Indirect { callee_entry, .. } => {
-                let callee_entry = self.map_gp_reg(*callee_entry)?;
-                enc::jmp_reg(&mut self.core.text, callee_entry);
-            }
-        }
-
-        if let Some(scratch_idx) = scratch_idx {
-            self.gp_scratch.free_index(scratch_idx);
-        }
+        enc::jmp_reg(&mut self.core.text, scratch);
+        self.gp_scratch.free_index(scratch_idx);
         Ok(())
     }
 

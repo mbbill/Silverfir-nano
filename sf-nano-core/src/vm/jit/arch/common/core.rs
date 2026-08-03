@@ -198,7 +198,7 @@ impl<'a> CompilerCore<'a> {
             .ok_or_else(|| WasmError::internal("template emission does not have a MachineFunction"))
     }
 
-    #[cfg(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_thumbm))]
+    #[cfg(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_thumbm, sf_backend_x64))]
     #[inline]
     pub(crate) fn preserved_clobbers(&self) -> &[MachineReg] {
         self.body
