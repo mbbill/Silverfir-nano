@@ -255,6 +255,23 @@ a tiny recursive call-tree's arg staging. Bounded and acceptable:
 fibonacci-rec remains ahead of cranelift (≈0.97 after this), and the
 same reclassification funds the Lua/sqlite/sha256/funcref gains.
 
+### 2026-08-03 — closing standings for this stretch (run 30837737428)
+
+Same-SKU trajectory (EPYC 7763, matched to the campaign baseline):
+wasi geomean **1.51 → 1.39 → 1.34** vs cranelift (1.65 → 1.51 → 1.46
+vs v8); wasmi corpus **1.21 → 1.11 → 1.10** vs cranelift (1.34 → 1.23
+→ 1.22 vs v8). The 1.01-parity and 1.27 readings earlier came from
+Zen4 and Intel draws respectively — the ratios are SKU-dependent, so
+standings claims are per-SKU; the improvement holds on every SKU
+measured.
+
+Remaining open work, all with evidence dossiers: local-cache SELECTION
+scoring for call-free hot loops (lz4 wildcopy pointers not selected —
+loop-depth weighting in the joint planner), the value-stack call ABI
+(funcref, user decision), fibonacci-rec's v8 gap (inlining class), and
+the two documented tradeoffs (regex_redux/AMD, fibonacci-rec lane
+trade).
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
