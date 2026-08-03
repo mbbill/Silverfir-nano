@@ -316,6 +316,24 @@ not vice versa) supports the trade; the targeted follow-up is a
 CI-side instrumented run or CLI stub-import support to profile the
 big-module compile path.
 
+### 2026-08-03 — post-fix-10 standings (run 30849884018, EPYC 9V74)
+
+**wasmi corpus: nano/cranelift geomean = 1.00 — exact parity** (v8
+1.10). wasi suite: **1.24 cranelift / 1.38 v8** (campaign baseline
+1.51/1.65). Row movement from the register-pressure fix: lua/fib 1.15
+cl / **1.02 v8** (baseline 1.91), lua/sunfish 1.15/1.24 (1.81),
+lua/json 1.22/1.27 (1.74), lz4/decompress 1.31 (1.49-1.81),
+stream/Scale 1.09 (2.22), sha256 1.06/**1.00** , lz4/compress 1.00,
+coremark 1.07/1.25 (1.47), mandelbrot ahead 0.94/0.64.
+
+Remaining wasi rows above ~1.3: funcref 2.26 (value-stack call ABI —
+the design decision), stream Add/Triad 1.68-1.71 on this draw
+(bandwidth-class, SKU-variable — 7763 read them 1.12-1.26 post-fold),
+c-ray 1.32, sqlite/v8 1.45. With the interpreter leading every row and
+the official corpus at cranelift parity, the arm64-pattern standing
+holds on the goal's primary metrics; the wasi residual is concentrated
+in the ABI decision and SKU-variable bandwidth rows.
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
