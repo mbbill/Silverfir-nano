@@ -266,11 +266,16 @@ standings claims are per-SKU; the improvement holds on every SKU
 measured.
 
 Remaining open work, all with evidence dossiers: local-cache SELECTION
-scoring for call-free hot loops (lz4 wildcopy pointers not selected —
-loop-depth weighting in the joint planner), the value-stack call ABI
-(funcref, user decision), fibonacci-rec's v8 gap (inlining class), and
-the two documented tradeoffs (regex_redux/AMD, fibonacci-rec lane
-trade).
+for lz4's wildcopy — NARROWED: the pointers ARE locals (func17 slots 3
+and 15 of 19), the region solver already trip-weights per wasm-loop
+regions (SF_CACHE_POLICY=algorithm4:trip=N), and a trip sweep
+(8/32/128) leaves func17's 122 spill ops IDENTICAL — the exclusion is
+structural, not weight-based. Next step is solver decision-trace
+instrumentation on func17 (which candidates reached the solver for the
+wildcopy region and what priced them out), a fresh-session unit. Then:
+the value-stack call ABI (funcref, user decision), fibonacci-rec's v8
+gap (inlining class), and the two documented tradeoffs
+(regex_redux/AMD, fibonacci-rec lane trade).
 
 ## Interpreter
 
