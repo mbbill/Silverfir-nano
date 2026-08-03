@@ -17,9 +17,10 @@ use super::{
     reg::X86Reg,
 };
 
+use crate::collections;
 use crate::vm::jit::arch::common::helpers::is_fallthrough_edge;
 use crate::vm::jit::arch::common::helpers::trap_code;
-use crate::vm::jit::arch::common::pipeline::emit_call_arg_lanes;
+use crate::vm::jit::arch::common::pipeline::{emit_call_arg_lanes, emit_parallel_moves};
 use crate::vm::jit::arch::common::template::{
     decode_template_chain_next, encode_template_chain_next, TemplateBranchSense,
 };
@@ -56,9 +57,13 @@ impl<'a> X86_64Backend<'a> {
                 ) {
                     return Ok(());
                 }
-                let label = self.core.emit_edge(edge.target, &edge.args)?;
-                self.emit_jmp(label);
-                Ok(())
+                // An unconditional edge's moves run in every execution, so
+                // emit them inline and jump straight to the target instead
+                // of round-tripping through an out-of-line stub — a loop
+                // latch through a stub costs a second taken jump per
+                // iteration. Conditional edges keep stubs: their moves are
+                // taken-path-only.
+                self.emit_jump_edge_inline(edge, fallthrough)
             }
             MachineTerminator::Branch {
                 cond,
@@ -85,6 +90,44 @@ impl<'a> X86_64Backend<'a> {
             } => self.lower_call(target, *frame_delta, args, results, success, fallthrough),
             MachineTerminator::TailCall { target, args } => self.lower_tail_call(target, args),
         }
+    }
+
+    /// Emit an unconditional jump edge's parallel moves inline, then a
+    /// single jump to the target (or nothing when the target is the
+    /// fallthrough block). Identity moves emit no code, so this subsumes
+    /// the direct-label shortcut of `emit_edge`.
+    fn emit_jump_edge_inline(
+        &mut self,
+        edge: &MachineEdge,
+        fallthrough: Option<MachineBlockId>,
+    ) -> Result<(), WasmError> {
+        let blocks = self.core.mir_blocks()?;
+        // Identity first, before any width lookup: identity edges emit no
+        // moves and their FP args may legitimately carry values (v128)
+        // outside the scalar width tracking. This mirrors `emit_edge`.
+        if !self.core.is_identity_edge(blocks, edge.target, &edge.args) {
+            let block = blocks
+                .get(edge.target.as_usize())
+                .ok_or_else(|| WasmError::internal("jump edge target block is out of range"))?;
+            let arg_float_widths = edge
+                .args
+                .iter()
+                .map(|arg| match arg {
+                    MachineValue::Reg(reg) if self.core.is_fp_reg(*reg) => {
+                        self.core.fp_reg_width(*reg).map(Some)
+                    }
+                    MachineValue::ReservedReg(_)
+                    | MachineValue::Reg(_)
+                    | MachineValue::Imm64(_) => Ok(None),
+                })
+                .collect::<Result<collections::Vec<_>, _>>()?;
+            emit_parallel_moves::<Self>(self, &block.params, &edge.args, &arg_float_widths)?;
+        }
+        if fallthrough != Some(edge.target) {
+            let label = self.core.block_label(edge.target)?;
+            self.emit_jmp(label);
+        }
+        Ok(())
     }
 
     // ── Branch / branch_if ─────────────────────────────────────────────────
