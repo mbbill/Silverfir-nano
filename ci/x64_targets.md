@@ -186,3 +186,19 @@ this is not a general FP weakness; spectralnorm leans on f64 division
 and int→f64 conversion in its inner loop. Mechanism unidentified yet;
 first experiment: same-engine arm64-vs-x64 comparison to classify
 x64-specific vs engine-general.
+
+### 2026-08-03 — interpreter fix 1 (inline u64→f64 conversion, 55aeeeaa)
+
+Root cause: the x86_64 interp generator declined F64_ConvertI64U (no
+SSE2 instruction), so every execution fell back to the interpreter
+core; spectralnorm converts once per matrix element. Native arm64
+measurement (same engine 2.8x AHEAD of wasmi there) proved the ISA
+split. Fixed with the branch-free split-halves sequence (exact halves,
+one final rounding).
+
+A/B: **execute/spectralnorm interp +246.2%** (99.99%+). Standings
+re-run (run 30823393515, EPYC 7763): spectralnorm now 0.68 vs stitch,
+0.59 vs wasm3, **1.00 vs wasmi-v2**; interpreter geomeans 0.60 / 0.52 /
+0.68 — **nano-interp leads or ties every peer on every row. The
+interpreter phase is at its arm64-level standing.** (bulk-ops wobbled
+1.10-1.22 on this draw; single-run noise on a parity row.)
