@@ -82,6 +82,11 @@ fn find_inductions(
 ) -> collections::Vec<Induction> {
     let mut found = collections::Vec::new();
     let header_id = blocks[header].id;
+    // One walk over the loop body serves every param below: register
+    // definition counts, plus the site and operands of each register's
+    // last const-add definition. Startup pays for this pass on every
+    // compile, so the analysis must stay linear in the loop size.
+    let defs = LoopDefs::collect(blocks, loop_nodes, header);
     for (position, param) in blocks[header].params.iter().enumerate() {
         let candidate = param.reg;
         let Some(latch_arg) = edge_arg_for(&blocks[latch].terminator, header_id, position) else {
@@ -97,9 +102,7 @@ fn find_inductions(
         // In-place counters bound every candidate site BEFORE the
         // increment; the compare still tests the post-increment value.
         let in_place = step_reg == candidate;
-        let Some((stride, increment)) =
-            single_loop_def_as_const_add(blocks, loop_nodes, header, step_reg, candidate)
-        else {
+        let Some((stride, increment)) = defs.single_const_add(step_reg, candidate) else {
             continue;
         };
         if in_place {
@@ -113,7 +116,7 @@ fn find_inductions(
             }
         } else {
             // The candidate itself must stay unwritten inside the loop.
-            if reg_defined_in_loop(blocks, loop_nodes, candidate, header) {
+            if defs.defined(candidate) {
                 continue;
             }
         }
@@ -164,52 +167,102 @@ fn edge_arg_for(
     }
 }
 
-/// If `reg` has exactly one definition inside the loop and it is
-/// `i32.Add reg <- base, #stride`, return the stride and the site.
-/// A header param definition of `reg` is expected for the in-place form
-/// (`reg == base`) and does not count against single-def tracking; any
-/// other param definition disqualifies.
-fn single_loop_def_as_const_add(
-    blocks: &[MachineBlock],
-    loop_nodes: &[usize],
-    header: usize,
-    reg: MachineReg,
-    base: MachineReg,
-) -> Option<(u64, (usize, usize))> {
-    let mut stride = None;
-    let mut site = None;
-    let mut defs = 0usize;
-    for &node in loop_nodes {
-        for param in &blocks[node].params {
-            if param.reg == reg && !(reg == base && node == header) {
-                defs += 2; // a non-header param def disqualifies tracking
-            }
-        }
-        for (op_index, inst) in blocks[node].ops.iter().enumerate() {
-            if !inst_defines(&inst.kind, reg) {
-                continue;
-            }
-            defs += 1;
-            if let MachineInstKind::IntBinary {
-                width: MachineIntWidth::I32,
-                op: MachineIntBinaryOp::Add,
-                dst,
-                lhs,
-                rhs,
-            } = &inst.kind
-            {
-                if *dst == reg {
-                    stride = const_add_operand(*lhs, *rhs, base);
-                    site = Some((node, op_index));
+/// Per-loop register definition summary, collected in one walk.
+struct LoopDefs {
+    /// reg -> (instruction def count, non-header param seen, last
+    /// const-add definition as (source reg, imm, site)).
+    map: collections::Vec<(MachineReg, LoopDefEntry)>,
+}
+
+#[derive(Clone, Copy)]
+struct LoopDefEntry {
+    inst_defs: usize,
+    non_header_param: bool,
+    const_add: Option<(MachineReg, u64, (usize, usize))>,
+}
+
+impl LoopDefs {
+    fn collect(blocks: &[MachineBlock], loop_nodes: &[usize], header: usize) -> Self {
+        let mut map: collections::Vec<(MachineReg, LoopDefEntry)> = collections::Vec::new();
+        let entry_for =
+            |map: &mut collections::Vec<(MachineReg, LoopDefEntry)>, reg: MachineReg| -> usize {
+                if let Some(index) = map.iter().position(|(r, _)| *r == reg) {
+                    return index;
+                }
+                map.push((
+                    reg,
+                    LoopDefEntry {
+                        inst_defs: 0,
+                        non_header_param: false,
+                        const_add: None,
+                    },
+                ));
+                map.len() - 1
+            };
+        for &node in loop_nodes {
+            if node != header {
+                for param in &blocks[node].params {
+                    let index = entry_for(&mut map, param.reg);
+                    map[index].1.non_header_param = true;
                 }
             }
+            for (op_index, inst) in blocks[node].ops.iter().enumerate() {
+                each_defined_reg(&inst.kind, |dst| {
+                    let index = entry_for(&mut map, dst);
+                    map[index].1.inst_defs += 1;
+                    map[index].1.const_add = match &inst.kind {
+                        MachineInstKind::IntBinary {
+                            width: MachineIntWidth::I32,
+                            op: MachineIntBinaryOp::Add,
+                            dst: add_dst,
+                            lhs,
+                            rhs,
+                        } if *add_dst == dst => any_const_add_operand(*lhs, *rhs)
+                            .map(|(reg, imm)| (reg, imm, (node, op_index))),
+                        _ => None,
+                    };
+                });
+            }
         }
+        Self { map }
     }
-    if defs == 1 {
-        Some((stride.filter(|&s| s > 0)?, site?))
-    } else {
-        None
+
+    fn entry(&self, reg: MachineReg) -> Option<&LoopDefEntry> {
+        self.map.iter().find(|(r, _)| *r == reg).map(|(_, e)| e)
     }
+
+    /// True when `reg` is written anywhere in the loop body.
+    fn defined(&self, reg: MachineReg) -> bool {
+        self.entry(reg)
+            .is_some_and(|e| e.inst_defs > 0 || e.non_header_param)
+    }
+
+    /// `Some((stride, site))` when `reg`'s only loop definition is
+    /// `i32.Add reg <- base, #stride`.
+    fn single_const_add(&self, reg: MachineReg, base: MachineReg) -> Option<(u64, (usize, usize))> {
+        let entry = self.entry(reg)?;
+        if entry.inst_defs != 1 || entry.non_header_param {
+            return None;
+        }
+        let (src, imm, site) = entry.const_add?;
+        (src == base && imm > 0).then_some((imm, site))
+    }
+}
+
+/// The registers an instruction defines, each reported to the closure.
+fn each_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
+    kind.for_each_defined_reg(|reg| f(reg));
+}
+
+/// For `add lhs, rhs` with a register and a u32 immediate in either
+/// order, return them.
+fn any_const_add_operand(lhs: MachineValue, rhs: MachineValue) -> Option<(MachineReg, u64)> {
+    let (reg, imm) = match (lhs, rhs) {
+        (MachineValue::Reg(reg), MachineValue::Imm64(imm))
+        | (MachineValue::Imm64(imm), MachineValue::Reg(reg)) => (reg, imm),
+        _ => return None,
+    };
+    (imm <= u64::from(u32::MAX)).then_some((reg, imm))
 }
 
 /// True when every edge of the latch terminator either re-enters the
@@ -244,27 +297,6 @@ fn const_add_operand(lhs: MachineValue, rhs: MachineValue, base: MachineReg) -> 
         _ => return None,
     };
     (imm <= u64::from(u32::MAX)).then_some(imm)
-}
-
-fn reg_defined_in_loop(
-    blocks: &[MachineBlock],
-    loop_nodes: &[usize],
-    reg: MachineReg,
-    header: usize,
-) -> bool {
-    for &node in loop_nodes {
-        if node != header && blocks[node].params.iter().any(|param| param.reg == reg) {
-            return true;
-        }
-        if blocks[node]
-            .ops
-            .iter()
-            .any(|inst| inst_defines(&inst.kind, reg))
-        {
-            return true;
-        }
-    }
-    false
 }
 
 /// The largest constant any loop-entry edge supplies for the header param
