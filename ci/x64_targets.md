@@ -334,6 +334,27 @@ the official corpus at cranelift parity, the arm64-pattern standing
 holds on the goal's primary metrics; the wasi residual is concentrated
 in the ABI decision and SKU-variable bandwidth rows.
 
+### 2026-08-03 — terminal decomposition of the wasi tail (profiles
+### 30850932814/34495/36342)
+
+- **sha256 (1.06 cl / 1.00 v8)**: hot round block = 41 ops, 16 state
+  spills — the irreducible floor: 8-word state + 16-word schedule
+  exceeds 15 GPRs for every x64 engine; the capacity raise correctly
+  declines (every round block equally dense, second-peak == peak) and
+  load+ALU fusion correctly declines (loads feed multi-use Ch/Maj).
+  Cranelift pays the same physics; we tie V8. The M4 "+16% lead" was
+  cranelift-arm64 relative weakness, not headroom we are missing.
+- **bzip2 (1.14)**: flat profile, hottest block 4.8% — no dominant
+  mechanism; scheduling-quality territory.
+- **c-ray (1.32)**: heat spread across FP blocks at 8-13% — no
+  concentration; same territory.
+
+These three are diminishing-returns rows for a baseline JIT's toolkit:
+no single mechanism remains, and the residual is optimizing-tier
+scheduling/CSE quality. The wasi geomean's substantive remaining
+levers are exactly funcref (ABI decision) and the SKU-variable stream
+bandwidth rows.
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
