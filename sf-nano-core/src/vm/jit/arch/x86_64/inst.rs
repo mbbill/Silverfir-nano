@@ -906,6 +906,66 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
+    /// Emit one fused `dst <- dst OP [mem]` instruction for a proven
+    /// load + ALU pair. The loaded transient is never written; the ALU
+    /// reads memory directly at the same program point, so trap order
+    /// and flags behavior match the unfused sequence.
+    pub(super) fn lower_load_alu(
+        &mut self,
+        fusion: &super::fusion::LoadAluFusion,
+    ) -> Result<(), WasmError> {
+        use super::fusion::LoadAluMem;
+        let dst = self.map_gp_reg(fusion.dst)?;
+        match &fusion.mem {
+            LoadAluMem::Base(addr) => {
+                let base = self.map_gp_reg(addr.base)?;
+                if fusion.w32 {
+                    enc::alu_rm_32(&mut self.core.text, fusion.op, dst, base, addr.offset);
+                } else {
+                    enc::alu_rm_64(&mut self.core.text, fusion.op, dst, base, addr.offset);
+                }
+            }
+            LoadAluMem::Indexed {
+                base,
+                index,
+                extend,
+                offset,
+            } => {
+                let base_x86 = self.map_gp_reg(*base)?;
+                let index_x86 = self.map_gp_reg(*index)?;
+                // Scratch guards live to the end of the function; the
+                // ZeroExtend32 path zero-extends into one of them.
+                let scratch0 = self.gp_scratch.scoped_alloc().detach();
+                let scratch1 = self.gp_scratch.scoped_alloc().detach();
+                let idx = match extend {
+                    MachineIndexExtend::None => index_x86,
+                    MachineIndexExtend::ZeroExtend32 => {
+                        let idx = if base_x86 == *scratch0 {
+                            *scratch1
+                        } else {
+                            *scratch0
+                        };
+                        debug_assert!(
+                            idx != dst,
+                            "x86_64 load+ALU fusion scratch must not alias the ALU destination"
+                        );
+                        enc::mov_rr_32(&mut self.core.text, idx, index_x86);
+                        idx
+                    }
+                };
+                if fusion.w32 {
+                    enc::alu_rm_32_idx(&mut self.core.text, fusion.op, dst, base_x86, idx, *offset);
+                } else {
+                    enc::alu_rm_64_idx(&mut self.core.text, fusion.op, dst, base_x86, idx, *offset);
+                }
+            }
+        }
+        if fusion.w32 {
+            self.note_flags32(dst);
+        }
+        Ok(())
+    }
+
     /// Load from [base + index + disp]; the indexed twin of
     /// [`Self::lower_load_from`].
     fn lower_load_from_idx(

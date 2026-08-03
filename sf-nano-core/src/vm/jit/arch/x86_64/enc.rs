@@ -1033,6 +1033,75 @@ pub(crate) fn store_imm32_64_idx(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ALU with memory source — reg <- reg OP [mem]
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Integer ALU ops with an r/m source form (the reg <- r/m direction).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemAluOp {
+    Add,
+    Or,
+    And,
+    Sub,
+    Xor,
+}
+
+impl MemAluOp {
+    /// Opcode of the `reg, r/m` direction.
+    const fn opcode(self) -> u8 {
+        match self {
+            Self::Add => 0x03,
+            Self::Or => 0x0B,
+            Self::And => 0x23,
+            Self::Sub => 0x2B,
+            Self::Xor => 0x33,
+        }
+    }
+}
+
+/// OP r64, [base + disp]
+pub(crate) fn alu_rm_64(e: &mut TextEmitter, op: MemAluOp, dst: X86Reg, base: X86Reg, disp: i32) {
+    emit_rex(e, true, dst, base);
+    e.emit_u8(op.opcode());
+    emit_modrm_mem(e, dst, base, disp);
+}
+
+/// OP r32, [base + disp]
+pub(crate) fn alu_rm_32(e: &mut TextEmitter, op: MemAluOp, dst: X86Reg, base: X86Reg, disp: i32) {
+    emit_rex(e, false, dst, base);
+    e.emit_u8(op.opcode());
+    emit_modrm_mem(e, dst, base, disp);
+}
+
+/// OP r64, [base + index + disp]
+pub(crate) fn alu_rm_64_idx(
+    e: &mut TextEmitter,
+    op: MemAluOp,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, true, dst.needs_rex_ext(), index, base);
+    e.emit_u8(op.opcode());
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// OP r32, [base + index + disp]
+pub(crate) fn alu_rm_32_idx(
+    e: &mut TextEmitter,
+    op: MemAluOp,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, false, dst.needs_rex_ext(), index, base);
+    e.emit_u8(op.opcode());
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Padding
 // ═══════════════════════════════════════════════════════════════════════════════
 
