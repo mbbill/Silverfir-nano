@@ -4,13 +4,14 @@ use crate::{
     error::WasmError,
     vm::jit::machine::machine_ir::{
         MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
-        MachineCompareKind, MachineConstId, MachineEdge, MachineTerminator, MachineTrapKind,
-        MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+        MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineResultDst,
+        MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator,
+        MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
     },
 };
 
 use super::{
-    abi::{map_fixed_reg, C_ARG0, C_ARG1, C_ARG2},
+    abi::{map_fixed_reg, C_ARG0, C_ARG1, C_ARG2, W2W_FP_RET0, W2W_GP_RET0},
     backend::{PendingJumpTable, X86_64Backend},
     enc::{self, Cc},
     fusion::map_int_cond,
@@ -27,16 +28,9 @@ use crate::vm::jit::arch::common::template::{
 use crate::vm::jit::arch::common::types::DirectCallPatch;
 use crate::vm::jit::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
 
-fn caller_results_base_delta(results: &MachineCallResults) -> u32 {
-    match results {
-        MachineCallResults::FrameFallback { caller_results, .. } => {
-            u32::from(caller_results.base_slot) * 8
-        }
-        MachineCallResults::None
-        | MachineCallResults::ScalarGp { .. }
-        | MachineCallResults::ScalarGpPair { .. }
-        | MachineCallResults::ScalarFp { .. } => 0,
-    }
+fn scalar_fp_width(ty: MachineStorageType) -> Result<MachineFloatWidth, WasmError> {
+    ty.float_width()
+        .ok_or_else(|| WasmError::internal("x86_64 scalar FP return uses non-FP storage"))
 }
 
 impl<'a> X86_64Backend<'a> {
@@ -70,9 +64,8 @@ impl<'a> X86_64Backend<'a> {
                 then_edge,
                 else_edge,
             } => self.lower_branch(cond, then_edge, else_edge, fallthrough),
-            MachineTerminator::Return | MachineTerminator::ReturnScalar { .. } => {
-                self.lower_return_sequence()
-            }
+            MachineTerminator::Return => self.lower_return_sequence(None),
+            MachineTerminator::ReturnScalar { value } => self.lower_return_sequence(Some(value)),
             MachineTerminator::Trap { kind } => {
                 let trap_label = self.core.ensure_trap_label(*kind);
                 self.emit_jmp(trap_label);
@@ -450,69 +443,115 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Return sequence ──────────────────────────────────────────────────────
 
-    /// Unified Return lowering. Undoes the body prelude alignment shim,
-    /// pops the caller's call record from the host stack, copies the
-    /// function's `return_results` region into `*caller_result_base`,
-    /// restores `MACHINE_FP_REG` to the caller's frame pointer, sets
-    /// `C_RET0 = 0` (the success status), and executes a native `ret`.
-    ///
-    /// Stack layout at entry to this sequence (after the body prelude's
-    /// `sub rsp, 8`):
-    ///
-    /// ```text
-    ///   [rsp +  0] = alignment shim (body prelude)
-    ///   [rsp +  8] = return address (pushed by `call internal_entry`)
-    ///   [rsp + 16] = caller_result_base  (low slot of call record)
-    ///   [rsp + 24] = caller_fp           (high slot of call record)
-    /// ```
+    /// Unified Return lowering, mirroring the arm64 reference sequence.
+    /// Scalar returns travel in the wasm-to-wasm return lanes; frame-
+    /// fallback results were already canonicalized into the callee's
+    /// fixed fallback slots `[0, result_count)` by return canonical-
+    /// ization, and the *caller* copies them out after the call. The
+    /// callee undoes its body frame, sets `C_RET0 = 0`, and `ret`s with
+    /// `MACHINE_FP_REG` still pointing at its own frame — the caller
+    /// restores its frame pointer by delta after the call returns.
     ///
     /// The matching error path is `body_local_error_label` (see
     /// `lower_body_local_error_tail` in `x86_64/backend.rs`).
-    fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
-        let runtime = self.core.runtime_for(self.core.func_id)?.clone();
-        let fp = map_fixed_reg(MACHINE_FP_REG);
-        let result_base = self.gp_scratch.scoped_alloc().detach();
-        let temp = self.gp_scratch.scoped_alloc().detach();
-        // 1. Undo the body frame (shim + preserved saves). After this,
-        //    [rsp+0] = return address, [rsp+8] = caller_result_base,
-        //    [rsp+16] = caller_fp.
+    fn lower_return_sequence(
+        &mut self,
+        value: Option<&MachineReturnValue>,
+    ) -> Result<(), WasmError> {
+        if let Some(value) = value {
+            self.lower_return_value_to_lanes(value)?;
+        }
+        // Undo the body frame (shim + preserved saves); [rsp+0] is then
+        // the return address.
         self.lower_body_frame_undo();
 
-        // 2. Load caller_result_base into a scratch register held across
-        //    the copy loop.
-        enc::load_64(&mut self.core.text, *result_base, X86Reg::RSP, 8);
+        // Success status: C_RET0 = 0. (xor eax, eax)
+        enc::xor_rr_32(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
+        enc::ret(&mut self.core.text);
+        Ok(())
+    }
 
-        // 3. Copy each return slot from the callee frame to *result_base.
-        if let Some(results) = runtime.return_results {
-            for index in 0..results.slots as i32 {
+    fn lower_return_value_to_lanes(&mut self, value: &MachineReturnValue) -> Result<(), WasmError> {
+        match value {
+            MachineReturnValue::ScalarGp { src, .. } => {
+                self.move_gp_result_src_to_reg(src, W2W_GP_RET0)
+            }
+            MachineReturnValue::ScalarFp { src, ty } => {
+                self.move_fp_result_src_to_reg(src, W2W_FP_RET0, scalar_fp_width(*ty)?)
+            }
+            MachineReturnValue::ScalarGpPair { .. } => Err(WasmError::internal(
+                "x86_64 cannot lower 32-bit GP pair scalar return".into(),
+            )),
+        }
+    }
+
+    fn move_gp_result_src_to_reg(
+        &mut self,
+        src: &MachineResultSrc,
+        dst: X86Reg,
+    ) -> Result<(), WasmError> {
+        let fp = map_fixed_reg(MACHINE_FP_REG);
+        match *src {
+            MachineResultSrc::Reg(reg) => {
+                let src = self.map_gp_reg(reg)?;
+                if src != dst {
+                    enc::mov_rr_64(&mut self.core.text, dst, src);
+                }
+            }
+            MachineResultSrc::FrameSlot(slot) => {
+                enc::load_64(&mut self.core.text, dst, fp, i32::from(slot.0) * 8);
+            }
+            MachineResultSrc::FrameSlotOffset { slot, byte_offset } => {
                 enc::load_64(
                     &mut self.core.text,
-                    *temp,
+                    dst,
                     fp,
-                    (results.base_slot as i32 + index) * 8,
+                    i32::from(slot.0) * 8 + i32::from(byte_offset),
                 );
-                enc::store_64(&mut self.core.text, *result_base, index * 8, *temp);
             }
         }
+        Ok(())
+    }
 
-        // 4. Load caller_fp into fp_reg (MACHINE_FP_REG).
-        enc::load_64(&mut self.core.text, fp, X86Reg::RSP, 16);
-
-        // 5. Success status: C_RET0 = 0. (xor eax, eax)
-        enc::xor_rr_32(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
-
-        // 6. Native return. `ret 16` pops the return address and then
-        //    releases the 16-byte call record sitting just above it.
-        enc::ret_imm16(&mut self.core.text, 16);
+    fn move_fp_result_src_to_reg(
+        &mut self,
+        src: &MachineResultSrc,
+        dst: u32,
+        width: MachineFloatWidth,
+    ) -> Result<(), WasmError> {
+        let fp = map_fixed_reg(MACHINE_FP_REG);
+        let dst = dst as enc::Xmm;
+        match *src {
+            MachineResultSrc::Reg(reg) => {
+                let src = self.map_fp_reg(reg)? as enc::Xmm;
+                if src != dst {
+                    enc::movaps_rr(&mut self.core.text, dst, src);
+                }
+            }
+            MachineResultSrc::FrameSlot(slot) => {
+                let offset = i32::from(slot.0) * 8;
+                match width {
+                    MachineFloatWidth::F32 => enc::movss_load(&mut self.core.text, dst, fp, offset),
+                    MachineFloatWidth::F64 => enc::movsd_load(&mut self.core.text, dst, fp, offset),
+                }
+            }
+            MachineResultSrc::FrameSlotOffset { slot, byte_offset } => {
+                let offset = i32::from(slot.0) * 8 + i32::from(byte_offset);
+                match width {
+                    MachineFloatWidth::F32 => enc::movss_load(&mut self.core.text, dst, fp, offset),
+                    MachineFloatWidth::F64 => enc::movsd_load(&mut self.core.text, dst, fp, offset),
+                }
+            }
+        }
         Ok(())
     }
 
     // ── Compiled call ────────────────────────────────────────────────────────
 
-    /// Lower a compiled SF->SF call. The only target-specific part is how the
-    /// callee entry address is materialized; the call-record protocol,
-    /// frame-pointer switch, post-call status check, and continuation handling
-    /// are shared.
+    /// Lower a compiled SF->SF call, mirroring the arm64 reference
+    /// sequence: caller-side frame-pointer switch by delta, a native near
+    /// call, caller-side frame-pointer restore, status check, and
+    /// caller-side result placement. No call record is pushed.
     fn lower_call(
         &mut self,
         target: &MachineCallTarget,
@@ -522,48 +561,25 @@ impl<'a> X86_64Backend<'a> {
         success: &MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let body_local_error_label = self.core.body_local_error_label;
         let continuation_label = self.core.block_label(success.target)?;
         let continuation_is_fallthrough = fallthrough == Some(success.target);
 
         emit_call_arg_lanes::<Self>(self, args)?;
 
-        let callee_fp_idx = self.gp_scratch.alloc();
-        let callee_fp = self.gp_scratch.reg(callee_fp_idx);
-        self.materialize_frame_addr(callee_fp, fp_reg, frame_delta);
-
-        let caller_result_base_idx = self.gp_scratch.alloc();
-        let caller_result_base = self.gp_scratch.reg(caller_result_base_idx);
-        self.materialize_frame_addr(
-            caller_result_base,
-            fp_reg,
-            caller_results_base_delta(results),
-        );
-
-        // Push the call record: caller_fp at higher slot, caller_result_base
-        // at lower slot. Matches the layout consumed by the body's unified
-        // Return and body_local_error_tail.
-        enc::push(&mut self.core.text, fp_reg);
-        enc::push(&mut self.core.text, caller_result_base);
-        self.gp_scratch.free_index(caller_result_base_idx);
-
-        // Switch fp_reg to the callee's frame base.
-        enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
-        self.gp_scratch.free_index(callee_fp_idx);
+        // Switch MACHINE_FP_REG to the callee frame. The callee returns
+        // with fp still pointing at its own frame; the caller restores it
+        // below before observing status or fallback results.
+        self.adjust_frame_pointer_by_delta(frame_delta, true)?;
 
         match target {
             MachineCallTarget::Direct(callee) => {
-                let call_scratch = self.gp_scratch.claim_rax().detach();
-                // Load the callee's internal entry address via patchable movabs.
-                enc::movabs_ri_64(&mut self.core.text, *call_scratch, 0);
-                let callee_imm_offset = self.core.text.len() - 8;
+                // Near call; the rel32 displacement is patched at link
+                // time once every callee address is known.
+                let rel32_offset = enc::call_rel32(&mut self.core.text);
                 self.core
                     .direct_call_patches
-                    .push(DirectCallPatch::address_literal(callee_imm_offset, *callee));
-                // CALL scratch — pushes the return address (= this call site's
-                // fall-through) onto the host stack.
-                enc::call_reg(&mut self.core.text, *call_scratch);
+                    .push(DirectCallPatch::x64_rel32(rel32_offset, *callee));
             }
             MachineCallTarget::Indirect { callee_entry, .. } => {
                 let callee_entry = self.map_gp_reg(*callee_entry)?;
@@ -571,15 +587,135 @@ impl<'a> X86_64Backend<'a> {
             }
         }
 
-        // --- callee returns here. C_RET0 holds 0 (success) or trap kind
-        //     (error). Status check propagates to body_local_error_label.
+        // --- callee returns here. Restore the caller frame before status
+        // propagation; the caller's error tail expects its own frame.
+        self.adjust_frame_pointer_by_delta(frame_delta, false)?;
+
+        // C_RET0 holds 0 (success) or trap kind (error). Status check
+        // propagates to body_local_error_label.
         enc::test_rr_64(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
         self.emit_jcc(Cc::NE, body_local_error_label);
+
+        self.lower_call_result_placement(frame_delta, results)?;
 
         // Continuation: branch only if the next emitted block is not the
         // continuation block.
         if !continuation_is_fallthrough {
             self.emit_jmp(continuation_label);
+        }
+        Ok(())
+    }
+
+    fn adjust_frame_pointer_by_delta(&mut self, delta: u32, add: bool) -> Result<(), WasmError> {
+        if delta == 0 {
+            return Ok(());
+        }
+        let delta = i32::try_from(delta)
+            .map_err(|_| WasmError::internal("x86_64 call frame delta exceeds i32".into()))?;
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let delta = if add { delta } else { -delta };
+        enc::add_ri_64(&mut self.core.text, fp_reg, delta);
+        Ok(())
+    }
+
+    fn lower_call_result_placement(
+        &mut self,
+        frame_delta: u32,
+        results: &MachineCallResults,
+    ) -> Result<(), WasmError> {
+        match results {
+            MachineCallResults::None => Ok(()),
+            MachineCallResults::ScalarGp { dst, .. } => {
+                self.place_gp_call_result(*dst, W2W_GP_RET0)
+            }
+            MachineCallResults::ScalarFp { dst, ty } => {
+                self.place_fp_call_result(*dst, W2W_FP_RET0, scalar_fp_width(*ty)?)
+            }
+            MachineCallResults::ScalarGpPair { .. } => Err(WasmError::internal(
+                "x86_64 cannot lower 32-bit GP pair scalar call result".into(),
+            )),
+            MachineCallResults::FrameFallback {
+                callee_results,
+                caller_results,
+            } => {
+                if callee_results.slots != caller_results.slots {
+                    return Err(WasmError::internal(
+                        "x86_64 frame-fallback result slot count mismatch",
+                    ));
+                }
+                let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+                let temp = self.gp_scratch.scoped_alloc().detach();
+                for index in 0..i32::from(callee_results.slots) {
+                    let src_offset = i32::try_from(frame_delta)
+                        .ok()
+                        .and_then(|delta| {
+                            delta.checked_add((i32::from(callee_results.base_slot) + index) * 8)
+                        })
+                        .ok_or_else(|| {
+                            WasmError::internal("x86_64 result source offset overflow")
+                        })?;
+                    let dst_offset = (i32::from(caller_results.base_slot) + index) * 8;
+                    if src_offset == dst_offset {
+                        continue;
+                    }
+                    enc::load_64(&mut self.core.text, *temp, fp_reg, src_offset);
+                    enc::store_64(&mut self.core.text, fp_reg, dst_offset, *temp);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn place_gp_call_result(
+        &mut self,
+        dst: MachineResultDst,
+        src: X86Reg,
+    ) -> Result<(), WasmError> {
+        match dst {
+            MachineResultDst::Reg(reg) => {
+                let dst = self.map_gp_reg(reg)?;
+                if dst != src {
+                    enc::mov_rr_64(&mut self.core.text, dst, src);
+                }
+            }
+            MachineResultDst::FrameSlot(slot) => {
+                enc::store_64(
+                    &mut self.core.text,
+                    map_fixed_reg(MACHINE_FP_REG),
+                    i32::from(slot.0) * 8,
+                    src,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn place_fp_call_result(
+        &mut self,
+        dst: MachineResultDst,
+        src: u32,
+        width: MachineFloatWidth,
+    ) -> Result<(), WasmError> {
+        let src = src as enc::Xmm;
+        match dst {
+            MachineResultDst::Reg(reg) => {
+                let dst = self.map_fp_reg(reg)? as enc::Xmm;
+                if dst != src {
+                    enc::movaps_rr(&mut self.core.text, dst, src);
+                }
+            }
+            MachineResultDst::FrameSlot(slot) => {
+                let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+                let offset = i32::from(slot.0) * 8;
+                match width {
+                    MachineFloatWidth::F32 => {
+                        enc::movss_store(&mut self.core.text, fp_reg, offset, src)
+                    }
+                    MachineFloatWidth::F64 => {
+                        enc::movsd_store(&mut self.core.text, fp_reg, offset, src)
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -593,47 +729,38 @@ impl<'a> X86_64Backend<'a> {
 
         emit_call_arg_lanes::<Self>(self, args)?;
 
-        // Materialize the callee entry into a backend-owned scratch BEFORE
-        // undoing the body frame: the undo pops preserved lanes, and an
-        // indirect entry value could live in one of them. Pool scratches
-        // are never popped.
-        let scratch_idx = self.gp_scratch.alloc();
-        let scratch = self.gp_scratch.reg(scratch_idx);
         match target {
             MachineCallTarget::Direct(callee) => {
-                enc::movabs_ri_64(&mut self.core.text, scratch, 0);
-                let callee_imm_offset = self.core.text.len() - 8;
+                // Undo the body frame so the callee sees the entry-state
+                // stack (its own prelude re-establishes shim and saves),
+                // then enter via a patched near jump.
+                self.lower_body_frame_undo();
+                let rel32_offset = enc::jmp_rel32(&mut self.core.text);
                 self.core
                     .direct_call_patches
-                    .push(DirectCallPatch::address_literal(callee_imm_offset, *callee));
+                    .push(DirectCallPatch::x64_rel32(rel32_offset, *callee));
             }
             MachineCallTarget::Indirect { callee_entry, .. } => {
+                // Materialize the callee entry into a backend-owned scratch
+                // BEFORE undoing the body frame: the undo pops preserved
+                // lanes, and an indirect entry value could live in one of
+                // them. Pool scratches are never popped.
+                let scratch_idx = self.gp_scratch.alloc();
+                let scratch = self.gp_scratch.reg(scratch_idx);
                 let callee_entry = self.map_gp_reg(*callee_entry)?;
                 if callee_entry != scratch {
                     enc::mov_rr_64(&mut self.core.text, scratch, callee_entry);
                 }
+                self.lower_body_frame_undo();
+                enc::jmp_reg(&mut self.core.text, scratch);
+                self.gp_scratch.free_index(scratch_idx);
             }
         }
 
-        // Undo the body frame so the callee sees the entry-state stack
-        // (its own prelude re-establishes shim and saves).
-        self.lower_body_frame_undo();
         // Tail-call arguments have already been repacked to the current frame
         // prefix, so the callee reuses the current MACHINE_FP_REG value.
         let _ = fp_reg;
-
-        enc::jmp_reg(&mut self.core.text, scratch);
-        self.gp_scratch.free_index(scratch_idx);
         Ok(())
-    }
-
-    fn materialize_frame_addr(&mut self, dst: X86Reg, base: X86Reg, delta: u32) {
-        if dst != base {
-            enc::mov_rr_64(&mut self.core.text, dst, base);
-        }
-        if delta != 0 {
-            enc::add_ri_64(&mut self.core.text, dst, delta as i32);
-        }
     }
 
     // ── Call runtime ─────────────────────────────────────────────────────────

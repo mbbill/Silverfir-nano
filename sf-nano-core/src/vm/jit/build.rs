@@ -358,12 +358,28 @@ fn patch_direct_call_code_buffer(
     callee_addr: usize,
 ) -> Result<(), WasmError> {
     match patch.site {
-        #[cfg(not(sf_backend_arm64))]
+        #[cfg(not(any(sf_backend_arm64, sf_backend_x64)))]
         DirectCallPatchSite::AddressLiteral { offset } => {
             let code_offset = function_base
                 .checked_add(offset)
                 .ok_or_else(|| WasmError::internal("direct-call patch offset overflow"))?;
             patch_code_buffer_word(executable, code_offset, callee_addr);
+            Ok(())
+        }
+        #[cfg(sf_backend_x64)]
+        DirectCallPatchSite::X64Rel32 { rel32_offset } => {
+            let code_offset = function_base
+                .checked_add(rel32_offset)
+                .ok_or_else(|| WasmError::internal("direct-call patch offset overflow"))?;
+            let next_inst_addr = (executable.as_ptr() as usize)
+                .checked_add(code_offset)
+                .and_then(|addr| addr.checked_add(4))
+                .ok_or_else(|| WasmError::internal("direct-call patch address overflow"))?;
+            let rel = (callee_addr as i64) - (next_inst_addr as i64);
+            let rel32 = i32::try_from(rel).map_err(|_| {
+                WasmError::internal("x86_64 direct-call target is out of rel32 range")
+            })?;
+            executable.patch_u32(code_offset, rel32 as u32);
             Ok(())
         }
         #[cfg(sf_backend_arm64)]

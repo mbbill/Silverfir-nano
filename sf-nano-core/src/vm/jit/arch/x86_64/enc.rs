@@ -1206,13 +1206,6 @@ pub(crate) fn ret(e: &mut TextEmitter) {
     e.emit_u8(0xC3);
 }
 
-/// RET imm16 (C2 iw). Pops the return IP, then adds `imm16` to RSP —
-/// used to release the caller's stack arguments / call record.
-pub(crate) fn ret_imm16(e: &mut TextEmitter, imm16: u16) {
-    e.emit_u8(0xC2);
-    e.emit_bytes(&imm16.to_le_bytes());
-}
-
 /// Patch a rel32 fixup. `fixup_offset` is where the 4-byte displacement lives.
 /// `target_offset` is the absolute byte offset of the target in the text.
 pub(crate) fn patch_rel32(e: &mut TextEmitter, fixup_offset: usize, target_offset: usize) {

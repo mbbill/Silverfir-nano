@@ -104,6 +104,16 @@ pub(super) fn callee_saved_gp_regs() -> &'static [X86Reg] {
 
 pub(super) use super::callconv::{C_ARG0, C_ARG1, C_ARG2, C_RET0};
 
+// ── Wasm-to-wasm return lanes ────────────────────────────────────────────────
+//
+// SF->SF scalar returns travel in registers, not through the frame. Status
+// stays in `C_RET0` (RAX); the scalar payload uses lanes that are dead at
+// every SF->SF boundary: RDX is backend-owned (never allocated), and XMM0 is
+// the first FP scratch (never in the dynamic bank).
+
+pub(super) const W2W_GP_RET0: X86Reg = X86Reg::RDX;
+pub(super) const W2W_FP_RET0: u32 = REG_PLAN.fp_scratch[0];
+
 // ── Derived config ───────────────────────────────────────────────────────────
 
 const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
@@ -132,7 +142,7 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
         0,
         GP_ARG_LANES,
         FP_ARG_LANES,
-        false,
+        true,
         SCALAR_CALL_SCRATCH_SLOTS,
     )
     // Lazy per-body preserved save: pushes in the body prelude, pops at
