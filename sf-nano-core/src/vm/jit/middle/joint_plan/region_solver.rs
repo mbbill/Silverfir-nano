@@ -264,6 +264,17 @@ pub(super) fn solve_public_cache_sets(
         barrier_call_weight[region_id] += weight * f64::from(call_counts.barrier[block_index]);
     }
 
+    raise_starved_capacities(
+        &mut regions,
+        &cell_meta,
+        &benefit,
+        block_local_summaries,
+        &block_weights,
+        peak_gp,
+        usize::from(gp_dynamic_budget),
+        &policy_params,
+    );
+
     let preferred_preserved = nominate_preserved(
         &cell_meta,
         &benefit,
@@ -310,7 +321,7 @@ pub(super) fn solve_public_cache_sets(
         &mut selected,
     );
 
-    let block_residents = cfg
+    let mut block_residents: collections::Vec<collections::Vec<CellId>> = cfg
         .blocks
         .iter()
         .enumerate()
@@ -325,9 +336,158 @@ pub(super) fn solve_public_cache_sets(
             slots
         })
         .collect();
+    clamp_block_residents(
+        &mut block_residents,
+        &regions,
+        &benefit,
+        &cell_meta,
+        peak_gp,
+        usize::from(gp_dynamic_budget),
+    );
     ResidencySolution {
         block_residents,
         preferred_preserved,
+    }
+}
+
+/// Raise a region's residency capacity past its transient-peak blocks
+/// when the extra residents pay for riding around them.
+///
+/// A region's capacity subtracts the WORST owned block's SSA transient
+/// peak — one expression-heavy block can tax the residency of a whole
+/// hot loop (LZ4_decompress_safe: one peak-4 block held a 45-block
+/// loop region at capacity 3 while six locals carried near-equal
+/// benefit). Whole-block demotion is usually a bad trade because peak
+/// blocks are often hot and the incumbent residents earn real benefit
+/// inside them; instead the capacity is raised so the solver may admit
+/// more residents, and `clamp_block_residents` afterwards evicts the
+/// lowest-value residents ONLY in the specific blocks whose transient
+/// peak cannot host them — the rewrite layer's edge repair reconciles
+/// the per-block difference. An extra resident is only worth admitting
+/// when its benefit outside the peak blocks exceeds the per-execution
+/// spill/reload crossings around them; the greedy accepts extras
+/// individually on that account.
+fn raise_starved_capacities(
+    regions: &mut RegionTree,
+    cell_meta: &[CellMeta],
+    benefit: &[collections::Vec<f64>],
+    block_local_summaries: &[BlockCellSummary],
+    block_weights: &[f64],
+    peak_gp: &[usize],
+    gp_budget: usize,
+    params: &Algorithm4Params,
+) {
+    for region_id in 1..regions.nodes.len() {
+        let node = &regions.nodes[region_id];
+        let peak = node
+            .owned_blocks
+            .iter()
+            .map(|&b| peak_gp[b])
+            .max()
+            .unwrap_or(0);
+        let capacity = gp_budget.saturating_sub(peak);
+        let peak_blocks: collections::Vec<usize> = node
+            .owned_blocks
+            .iter()
+            .copied()
+            .filter(|&b| peak_gp[b] == peak)
+            .collect();
+        if peak_blocks.is_empty() || peak_blocks.len() == node.owned_blocks.len() {
+            continue;
+        }
+        let second_peak = node
+            .owned_blocks
+            .iter()
+            .map(|&b| peak_gp[b])
+            .filter(|&p| p < peak)
+            .max()
+            .unwrap_or(0);
+        let new_capacity = gp_budget.saturating_sub(second_peak);
+        if new_capacity <= capacity {
+            continue;
+        }
+        let mut ranked: collections::Vec<(usize, f64)> = benefit[region_id]
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(slot, value)| {
+                value > 0.0 && cell_meta[slot].bank == Bank::Gp && !cell_meta[slot].is_ref
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+        // Walk candidates in benefit order past the current capacity and
+        // admit each extra only if it pays for its own crossings.
+        let crossing_weight: f64 = peak_blocks.iter().map(|&b| block_weights[b]).sum();
+        let mut units_used = 0usize;
+        let mut accepted_units = 0usize;
+        for &(slot, value) in &ranked {
+            let units = cell_meta[slot].units;
+            if units_used + units <= capacity {
+                units_used += units;
+                continue;
+            }
+            if units_used + units > new_capacity {
+                continue;
+            }
+            let benefit_in_peaks: f64 = peak_blocks
+                .iter()
+                .map(|&b| {
+                    block_local_summaries[b]
+                        .slot_scores
+                        .iter()
+                        .filter(|score| score.slot.0 as usize == slot)
+                        .map(|score| block_weights[b] * f64::from(score.access_count))
+                        .sum::<f64>()
+                })
+                .sum();
+            let crossings = 2.0 * crossing_weight * units as f64 * params.edge_cost_scale;
+            if value - benefit_in_peaks > crossings {
+                units_used += units;
+                accepted_units += units;
+            }
+        }
+        if accepted_units > 0 {
+            regions.nodes[region_id].gp_capacity = capacity + accepted_units;
+        }
+    }
+}
+
+/// Enforce the per-block correctness envelope after solving: a block can
+/// host only `budget - transient_peak(block)` resident units, so blocks
+/// whose peak exceeds their region's assumption shed their lowest-benefit
+/// residents locally. Edge repair materializes the reload on re-entry.
+fn clamp_block_residents(
+    residents: &mut [collections::Vec<CellId>],
+    regions: &RegionTree,
+    benefit: &[collections::Vec<f64>],
+    cell_meta: &[CellMeta],
+    peak_gp: &[usize],
+    gp_budget: usize,
+) {
+    for (block_index, slots) in residents.iter_mut().enumerate() {
+        let region_id = regions.owner_by_block[block_index];
+        let allowed = gp_budget.saturating_sub(peak_gp[block_index]);
+        let mut gp_units: usize = slots
+            .iter()
+            .filter(|cell| cell_meta[cell.0 as usize].bank == Bank::Gp)
+            .map(|cell| cell_meta[cell.0 as usize].units)
+            .sum();
+        while gp_units > allowed {
+            let Some((drop_index, _)) = slots
+                .iter()
+                .enumerate()
+                .filter(|(_, cell)| cell_meta[cell.0 as usize].bank == Bank::Gp)
+                .min_by(|a, b| {
+                    let va = benefit[region_id][a.1 .0 as usize];
+                    let vb = benefit[region_id][b.1 .0 as usize];
+                    va.partial_cmp(&vb).unwrap_or(core::cmp::Ordering::Equal)
+                })
+            else {
+                break;
+            };
+            gp_units -= cell_meta[slots[drop_index].0 as usize].units;
+            slots.remove(drop_index);
+        }
     }
 }
 
