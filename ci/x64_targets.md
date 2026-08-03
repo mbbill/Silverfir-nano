@@ -165,6 +165,19 @@ fibonacci-tail stays ~1.8-2x vs v8: latch is now single-jump and
 aligned; the residual is uop count in the loop-carried parameter
 rotation (mov shuffle) — regalloc coalescing territory, parked.
 
+### 2026-08-03 — after fix 7 (load+ALU memory-operand fusion, 37987fac)
+
+A/B run 30826610658, zero failed jobs (regex_redux did not reproduce on
+this draw). Cumulative vs main: **stream-Scale +93.3%** (fold + fusion
+compounding), sqlite +22.2%, stream-Add +33.8%, Triad +21.8%, coremark
++19.6%, lz4-compress +14.6%, lua-json +11.4% / sunfish +10.7% / fib
++10.2%, word_count +9.2%, nbody +8.8%, json_parse +7.9%, prime_sieve
++7.8%, **fibonacci-tail +33.2%** (formerly parked; the fusion chain
+reached its latch), counters holding +100%. argon2 +1.7% only: its 600
+fused instructions confirmed front-end pressure is not its binding
+constraint — the state's store→load round-trips are (register-pressure
+design item).
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
