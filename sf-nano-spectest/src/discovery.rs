@@ -282,6 +282,7 @@ pub const INTERPRETER_EXCLUDED: &[(&str, &str)] = &[
     ("ref_cast", "GC"),
     ("ref_eq", "GC"),
     ("ref_test", "GC"),
+    ("regalloc_scratch_saturation", "GC"),
     ("runtime_world_gc_funcref", "GC"),
     ("struct", "GC"),
     ("type-subtyping", "GC"),

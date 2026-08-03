@@ -299,6 +299,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         path: "runtime_world_gc_funcref.wast",
         content: include_str!("../tests/runtime_world_gc_funcref.wast"),
     });
+    wast_inputs.push(WastInput::Embedded {
+        path: "regalloc_scratch_saturation.wast",
+        content: include_str!("../tests/regalloc_scratch_saturation.wast"),
+    });
     wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
     info!("Found {} WAST files", wast_inputs.len());
 
