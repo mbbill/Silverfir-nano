@@ -29,18 +29,25 @@ def collect_cases(criterion_dir: Path) -> dict[str, dict[str, float]]:
         group = parts[0]
         if not group.startswith("execute"):
             continue
-        # <group>/<runtime>/<input...>/new/estimates.json — the runtime is
-        # one path component; anything between it and new/ is a benchmark
-        # input and belongs to the case, not the engine column.
-        runtime = parts[1]
-        if runtime == "report":
+        # <group>/<runtime-and-input>/new/estimates.json — Criterion
+        # flattens "<runtime>/<input>" bench ids into one directory name
+        # joined by "_" (e.g. silverfir-nano.jit_1000000). The numeric
+        # suffix is a benchmark input and belongs to the case, not the
+        # engine column.
+        component = parts[1]
+        if component == "report":
             continue
+        prefix, sep, suffix = component.rpartition("_")
+        if sep and suffix.isdigit():
+            runtime, case_input = prefix, suffix
+        else:
+            runtime, case_input = component, ""
         doc = json.loads(estimates.read_text(encoding="utf-8"))
         mean = (doc.get("mean") or {}).get("point_estimate")
         if mean is None:
             continue
         case = group[len("execute"):].lstrip("_/") or group
-        inputs = "/".join(parts[2:-2])
+        inputs = "/".join(part for part in (case_input, *parts[2:-2]) if part)
         if inputs:
             case = f"{case}/{inputs}"
         cases.setdefault(case, {})[runtime] = float(mean)
