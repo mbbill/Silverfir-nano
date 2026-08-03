@@ -51,6 +51,11 @@ pub(super) fn monotonic_timestamp_nanos() -> u64 {
     }
 }
 
+/// No marker on Darwin: samply resolves the dump by path, and an
+/// executable file mapping would fight the MAP_JIT hardened-runtime
+/// rules for no consumer.
+pub(super) fn mark_for_perf(_file: &File) {}
+
 pub(super) fn elf_machine_arch() -> u32 {
     EM_AARCH64
 }

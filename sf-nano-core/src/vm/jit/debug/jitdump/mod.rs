@@ -30,17 +30,17 @@ use std::{
 #[cfg(sf_os_linux)]
 mod linux;
 #[cfg(sf_os_linux)]
-use linux::{elf_machine_arch, monotonic_timestamp_nanos, open_tracking_file};
+use linux::{elf_machine_arch, mark_for_perf, monotonic_timestamp_nanos, open_tracking_file};
 
 #[cfg(sf_os_macos)]
 mod macos;
 #[cfg(sf_os_macos)]
-use macos::{elf_machine_arch, monotonic_timestamp_nanos, open_tracking_file};
+use macos::{elf_machine_arch, mark_for_perf, monotonic_timestamp_nanos, open_tracking_file};
 
 #[cfg(sf_os_windows)]
 mod windows;
 #[cfg(sf_os_windows)]
-use windows::{elf_machine_arch, monotonic_timestamp_nanos, open_tracking_file};
+use windows::{elf_machine_arch, mark_for_perf, monotonic_timestamp_nanos, open_tracking_file};
 
 // ── Shared ELF machine tag constants ────────────────────────────────────────
 //
@@ -51,7 +51,12 @@ use windows::{elf_machine_arch, monotonic_timestamp_nanos, open_tracking_file};
     sf_os_windows,
     all(
         sf_os_linux,
-        not(any(sf_backend_arm64, sf_backend_riscv64, sf_backend_riscv32))
+        not(any(
+            sf_backend_arm64,
+            sf_backend_riscv64,
+            sf_backend_riscv32,
+            sf_backend_x64
+        ))
     )
 ))]
 pub(super) const EM_NONE: u32 = 0;
@@ -59,6 +64,8 @@ pub(super) const EM_NONE: u32 = 0;
 pub(super) const EM_AARCH64: u32 = 183;
 #[cfg(all(sf_os_linux, any(sf_backend_riscv64, sf_backend_riscv32)))]
 pub(super) const EM_RISCV: u32 = 243;
+#[cfg(all(sf_os_linux, sf_backend_x64))]
+pub(super) const EM_X86_64: u32 = 62;
 
 // ── Public entry point ──────────────────────────────────────────────────────
 
@@ -122,6 +129,9 @@ impl JitDumpWriter {
             elf_machine_arch(),
         )?;
         file.flush()?;
+        // After the header exists on disk: perf pairs the dump with the
+        // profile through the marker mapping, samply through the path.
+        mark_for_perf(&file);
         Ok(Self {
             file,
             pid,
