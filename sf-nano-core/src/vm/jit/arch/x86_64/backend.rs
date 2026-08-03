@@ -92,6 +92,17 @@ pub(crate) struct X86_64Backend<'a> {
     /// sits at the recorded position. Any emission moves the cursor and
     /// invalidates the entry implicitly; nothing ever needs to clear it.
     pub(super) flags32: Option<(X86Reg, usize)>,
+    /// Jump tables pending emission. Entry words flush after the function
+    /// body next to the FP literal pool so table data never sits in the
+    /// instruction stream between a dispatch and its handlers.
+    pub(super) pending_jump_tables: collections::Vec<PendingJumpTable>,
+}
+
+/// One deferred jump table: the movabs immediate to patch with the
+/// table's address, and the resolved edge label for every entry.
+pub(super) struct PendingJumpTable {
+    pub(super) base_imm_offset: usize,
+    pub(super) entry_labels: collections::Vec<usize>,
 }
 
 impl X86_64Backend<'_> {
@@ -141,6 +152,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             fp_literals: collections::Vec::new(),
             fp_literal_fixups: collections::Vec::new(),
             flags32: None,
+            pending_jump_tables: collections::Vec::new(),
         }
     }
 
@@ -167,6 +179,29 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn lower_function_literal_pool(&mut self) -> Result<(), WasmError> {
+        if !self.pending_jump_tables.is_empty() {
+            while self.core.text.len() % 8 != 0 {
+                self.core.text.emit_u8(0);
+            }
+            for table in core::mem::take(&mut self.pending_jump_tables) {
+                let table_offset = self.core.text.len();
+                self.core.resolved_ptr_patches.push(
+                    crate::vm::jit::arch::common::types::LocalPtrPatch {
+                        literal_offset: table.base_imm_offset,
+                        target_offset: table_offset,
+                    },
+                );
+                for label in table.entry_labels {
+                    let literal_offset = self.core.text.emit_u64(0);
+                    self.core.local_ptr_patches.push(
+                        crate::vm::jit::arch::common::types::PendingLocalPtrPatch {
+                            literal_offset,
+                            target_label: label,
+                        },
+                    );
+                }
+            }
+        }
         if self.fp_literals.is_empty() {
             return Ok(());
         }

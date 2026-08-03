@@ -11,7 +11,7 @@ use crate::{
 
 use super::{
     abi::{map_fixed_reg, C_ARG0, C_ARG1, C_ARG2},
-    backend::X86_64Backend,
+    backend::{PendingJumpTable, X86_64Backend},
     enc::{self, Cc},
     fusion::map_int_cond,
     reg::X86Reg,
@@ -24,7 +24,7 @@ use crate::vm::jit::arch::common::pipeline::{emit_call_arg_lanes, emit_parallel_
 use crate::vm::jit::arch::common::template::{
     decode_template_chain_next, encode_template_chain_next, TemplateBranchSense,
 };
-use crate::vm::jit::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
+use crate::vm::jit::arch::common::types::DirectCallPatch;
 use crate::vm::jit::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
 
 fn caller_results_base_delta(results: &MachineCallResults) -> u32 {
@@ -707,32 +707,24 @@ impl<'a> X86_64Backend<'a> {
         enc::cmp_rr_32(&mut self.core.text, *index_scratch, *table_scratch);
         enc::cmovcc_rr_32(&mut self.core.text, Cc::A, *index_scratch, *table_scratch);
 
-        // Load table base address (absolute, patched later)
+        // Load table base address (absolute, patched later), then dispatch
+        // through one scaled memory-indirect jump: the SIB scale replaces
+        // the shift/add/load chain on the indirect-branch critical path.
         enc::movabs_ri_64(&mut self.core.text, *table_scratch, 0);
         let table_base_imm_offset = self.core.text.len() - 8;
+        enc::jmp_mem_index_scale8(&mut self.core.text, *table_scratch, *index_scratch);
 
-        // index * 8 for table entry
-        enc::shl_imm_64(&mut self.core.text, *index_scratch, 3);
-        enc::add_rr_64(&mut self.core.text, *table_scratch, *index_scratch);
-        // Load target address from table
-        enc::load_64(&mut self.core.text, *table_scratch, *table_scratch, 0);
-        enc::jmp_reg(&mut self.core.text, *table_scratch);
-
-        // Emit jump table entries (each is a u64 absolute address, patched later)
-        let table_offset = self.core.text.len();
-        self.core.resolved_ptr_patches.push(LocalPtrPatch {
-            literal_offset: table_base_imm_offset,
-            target_offset: table_offset,
+        // The entry words flush after the function body (next to the FP
+        // literal pool) so ~8 bytes per target of data never sit in the
+        // instruction stream between this dispatch and its handlers.
+        let entry_labels = entries
+            .iter()
+            .map(|entry| self.core.emit_edge(entry.target, &entry.args))
+            .collect::<Result<collections::Vec<_>, _>>()?;
+        self.pending_jump_tables.push(PendingJumpTable {
+            base_imm_offset: table_base_imm_offset,
+            entry_labels,
         });
-
-        for entry in entries {
-            let label = self.core.emit_edge(entry.target, &entry.args)?;
-            let literal_offset = self.core.text.emit_u64(0);
-            self.core.local_ptr_patches.push(PendingLocalPtrPatch {
-                literal_offset,
-                target_label: label,
-            });
-        }
         Ok(())
     }
 }
