@@ -29,9 +29,18 @@ name: x64-standings
 # (and re-measured to confirm a closed gap), not a per-push gate. Daily
 # iteration uses the accurate nano-vs-nano performance-regression CI
 # against the targets recorded in ci/x64_targets.md. Trigger with:
-#   gh workflow run x64-standings.yml --ref dev/x64-tuning
+#   gh workflow run x64-standings.yml --ref dev/x64-tuning [-f tier=interp]
 on:
   workflow_dispatch:
+    inputs:
+      tier:
+        description: "Engine tier to rank"
+        required: true
+        default: "jit"
+        type: choice
+        options:
+          - "jit"
+          - "interp"
 
 concurrency:
   group: x64-standings-${{ github.ref }}
@@ -50,7 +59,9 @@ jobs:
         shell: bash
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/wasmi-target
-      BENCH_FEATURES: silverfir-nano-jit,wasmtime-cranelift,v8
+      # jit ranks against the optimizing tier; interp against the fast
+      # interpreters the M4 reference table uses.
+      BENCH_FEATURES: ${{ (inputs.tier == 'interp' && 'silverfir-nano-interp,wasmi-v2,wasm3,stitch') || 'silverfir-nano-jit,wasmtime-cranelift,v8' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -164,6 +175,9 @@ jobs:
 
   wasi:
     name: x64 standings / wasi suite (nano vs wasmtime vs v8)
+    # The wasi comparison drives compiled-tier CLIs; the interp tier is
+    # ranked on the wasmi corpus above.
+    if: ${{ inputs.tier != 'interp' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
