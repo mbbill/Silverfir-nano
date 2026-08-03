@@ -61,9 +61,14 @@ pub(crate) struct DirectCallPatch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DirectCallPatchSite {
     /// A raw callee address written into the instruction stream. arm64
-    /// patches its `bl`/`b` encodings in place instead.
-    #[cfg(not(sf_backend_arm64))]
+    /// and x86_64 patch their direct branch encodings in place instead.
+    #[cfg(not(any(sf_backend_arm64, sf_backend_x64)))]
     AddressLiteral { offset: usize },
+    /// The rel32 displacement field of an x86_64 near `call`/`jmp`. All
+    /// function text links into one code buffer, so rel32 always reaches;
+    /// the patcher fails loudly if it ever does not.
+    #[cfg(sf_backend_x64)]
+    X64Rel32 { rel32_offset: usize },
     #[cfg(sf_backend_arm64)]
     Arm64Bl {
         inst_offset: usize,
@@ -79,11 +84,19 @@ pub(crate) enum DirectCallPatchSite {
 }
 
 impl DirectCallPatch {
-    #[cfg(not(sf_backend_arm64))]
+    #[cfg(not(any(sf_backend_arm64, sf_backend_x64)))]
     pub(crate) const fn address_literal(offset: usize, callee: MachineFuncId) -> Self {
         Self {
             callee,
             site: DirectCallPatchSite::AddressLiteral { offset },
+        }
+    }
+
+    #[cfg(sf_backend_x64)]
+    pub(crate) const fn x64_rel32(rel32_offset: usize, callee: MachineFuncId) -> Self {
+        Self {
+            callee,
+            site: DirectCallPatchSite::X64Rel32 { rel32_offset },
         }
     }
 

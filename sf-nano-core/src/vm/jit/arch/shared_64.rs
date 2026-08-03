@@ -198,9 +198,22 @@ fn patch_direct_call(
     callee_addr: usize,
 ) -> Result<(), WasmError> {
     match patch.site {
-        #[cfg(not(sf_backend_arm64))]
+        #[cfg(not(any(sf_backend_arm64, sf_backend_x64)))]
         DirectCallPatchSite::AddressLiteral { offset } => {
             text.patch_u64(offset, callee_addr as u64);
+            Ok(())
+        }
+        #[cfg(sf_backend_x64)]
+        DirectCallPatchSite::X64Rel32 { rel32_offset } => {
+            let next_inst_addr = _function_base
+                .checked_add(rel32_offset)
+                .and_then(|addr| addr.checked_add(4))
+                .ok_or_else(|| WasmError::internal("x86_64 direct-call patch address overflow"))?;
+            let rel = (callee_addr as i64) - (next_inst_addr as i64);
+            let rel32 = i32::try_from(rel).map_err(|_| {
+                WasmError::internal("x86_64 direct-call target is out of rel32 range")
+            })?;
+            text.patch_i32(rel32_offset, rel32);
             Ok(())
         }
         #[cfg(sf_backend_arm64)]

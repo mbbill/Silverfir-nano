@@ -13,8 +13,8 @@ use crate::{
     vm::{
         jit::machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
-            MachineIntWidth, MachineReg, MachineStorageType, MachineTerminator, MachineTrapKind,
-            MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MachineIntWidth, MachineReg, MachineReturnAbi, MachineStorageType, MachineTerminator,
+            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
         },
         jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
@@ -112,6 +112,53 @@ pub(super) struct PendingJumpTable {
 }
 
 impl X86_64Backend<'_> {
+    /// Store scalar lane returns (and any frame-fallback region not already
+    /// at slot 0) into public frame slots `[0, result_count)`, where
+    /// `eval.rs::collect_native_results_from_stack` reads them.
+    fn lower_root_result_copy_to_public_slots(&mut self) {
+        let Some(runtime) = self.core.current_runtime() else {
+            return;
+        };
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        match &runtime.return_abi {
+            MachineReturnAbi::ScalarGp { .. } => {
+                enc::store_64(&mut self.core.text, fp_reg, 0, abi::W2W_GP_RET0);
+                return;
+            }
+            MachineReturnAbi::ScalarFp { ty } => {
+                let Some(width) = ty.float_width() else {
+                    return;
+                };
+                let src = abi::W2W_FP_RET0 as enc::Xmm;
+                match width {
+                    MachineFloatWidth::F32 => enc::movss_store(&mut self.core.text, fp_reg, 0, src),
+                    MachineFloatWidth::F64 => enc::movsd_store(&mut self.core.text, fp_reg, 0, src),
+                }
+                return;
+            }
+            MachineReturnAbi::ScalarGpPair => {
+                return;
+            }
+            MachineReturnAbi::None | MachineReturnAbi::FrameFallback { .. } => {}
+        }
+        let Some(results) = runtime.return_results else {
+            return;
+        };
+        if results.slots == 0 || results.base_slot == 0 {
+            return;
+        }
+        let temp = self.gp_scratch.scoped_alloc().detach();
+        for index in 0..i32::from(results.slots) {
+            enc::load_64(
+                &mut self.core.text,
+                *temp,
+                fp_reg,
+                (i32::from(results.base_slot) + index) * 8,
+            );
+            enc::store_64(&mut self.core.text, fp_reg, index * 8, *temp);
+        }
+    }
+
     /// The body's preserved-lane save set and the alignment shim paired
     /// with it. Body entry has rsp ≡ 8 (mod 16) and internal calls need
     /// rsp ≡ 0, so the shim is 8 bytes for an even save count and 0 for
@@ -310,21 +357,22 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         enc::ret(&mut self.core.text);
     }
 
-    /// Public-entry caller stub. Pushes a root call record onto the host
-    /// stack — two 8-byte slots, low = caller_result_base, high = caller_fp,
-    /// both = `fp_reg` (= MACHINE_FP_REG) for the root call — then `call`s
-    /// the internal entry. After the body's unified Return rets, control
-    /// falls through to `lower_epilogue`.
+    /// Public-entry caller stub. Loads the register-passed parameter lanes
+    /// from the public frame and `call`s the internal entry. On success it
+    /// copies scalar lane returns into the public result prefix that the
+    /// runtime reads; on error it falls through with `C_RET0` intact.
+    /// Control then falls through to `lower_epilogue` either way.
     fn lower_root_caller_stub(&mut self) {
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        // push caller_fp (→ higher slot after the next push)
-        enc::push(&mut self.core.text, fp_reg);
-        // push caller_result_base (→ lower slot)
-        enc::push(&mut self.core.text, fp_reg);
         self.lower_root_param_lanes_from_frame();
         // call internal_entry_label (patched by patch_fixups)
         let internal_entry_label = self.core.internal_entry_label;
         self.emit_call_rel32(internal_entry_label);
+
+        let done = self.core.new_label();
+        enc::test_rr_64(&mut self.core.text, abi::C_RET0, abi::C_RET0);
+        self.emit_jcc(Cc::NE, done);
+        self.lower_root_result_copy_to_public_slots();
+        self.core.bind_label(done);
     }
 
     /// Body entry prelude. On x86_64, `call` already pushed the return
@@ -347,30 +395,14 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     /// Body-local error tail (`body_local_error_label`). Reached from trap
-    /// stubs and post-call status checks. Undoes the body prelude, loads
-    /// the caller's `fp_reg` back from the call record, and `ret 16`s —
-    /// releasing the 16-byte call record sitting above the return
-    /// address. `C_RET0` is untouched, preserving the error code set by
-    /// the trap stub or inherited from a trapped descendant's call.
-    ///
-    /// Stack layout at entry:
-    ///
-    /// ```text
-    ///   [rsp +  0] = alignment shim (body prelude)
-    ///   [rsp +  8] = return address
-    ///   [rsp + 16] = caller_result_base (unused in the error path)
-    ///   [rsp + 24] = caller_fp
-    /// ```
+    /// stubs and post-call status checks. Undoes the body prelude and
+    /// `ret`s with `C_RET0` untouched, preserving the error code set by
+    /// the trap stub or inherited from a trapped descendant's call. The
+    /// caller restores its own frame pointer by delta after the call, so
+    /// the tail leaves `MACHINE_FP_REG` alone.
     fn lower_body_local_error_tail(&mut self) {
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        // Undo the body frame (alignment shim + preserved-lane saves);
-        // afterwards the layout above matches the documented offsets.
         self.lower_body_frame_undo();
-        // Load caller_fp from [rsp+16] into fp_reg.
-        enc::load_64(&mut self.core.text, fp_reg, X86Reg::RSP, 16);
-        // ret 16 — pops return address, then releases the 16-byte call
-        // record. C_RET0 untouched — preserves the error code.
-        enc::ret_imm16(&mut self.core.text, 16);
+        enc::ret(&mut self.core.text);
     }
 
     #[cfg(sf_has_guard_pages)]

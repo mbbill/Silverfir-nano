@@ -278,7 +278,7 @@ impl<'a> CompilerCore<'a> {
 
     // ── Runtime metadata ─────────────────────────────────────────────────
 
-    #[cfg(not(sf_backend_arm64))]
+    #[cfg(not(any(sf_backend_arm64, sf_backend_x64)))]
     pub(crate) fn runtime_for(
         &self,
         func_id: MachineFuncId,
