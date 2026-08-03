@@ -166,6 +166,27 @@
   identity cache self-moves dropped the hot MachineIR move count on RV32 Mandelbrot
   from 103 to 25 and restored ESP32-C6 Mandelbrot to 29 fps (sourced).
 
+- 2026-08-03 (1e17b024) pitfall: the lowering-scratch borrower iterated ordinals
+  over the full dynamic bank but resolved each through the allocatable-capped
+  accessor, so the reserved scratch tail past `gp_allocatable_count` was
+  unreachable exactly when linear values and cached cells saturated the
+  allocatable budget; on x86_64's 7-lane bank nine stacked table.get block
+  results reached that point and compilation failed. The borrower must resolve
+  through the full dynamic order (pinned by the embedded
+  regalloc_scratch_saturation.wast) (code).
+
+- 2026-08-03 statement: a residual saturation exposure remains after the
+  1e17b024 fix: several lowering paths hold two concurrently borrowed scratch
+  registers (the explicit stack precheck's frame-base/limit compare, some
+  table and scalarized-SIMD sequences), while the reserved tail guarantees
+  only one free lane at full live+cache saturation. No input is known to
+  reach a two-borrow site at exact saturation — call boundaries publish the
+  live window first — so the failure is theoretical today; if one appears,
+  the candidate fixes weighed were per-op scratch-need headroom enforced by
+  the prep discipline (preferred: keeps the allocatable budget intact
+  elsewhere), widening the reserved tail (costs a residency lane), or
+  narrowing individual sites to one borrow (code).
+
 ## Moves
 
 - 2026-04-09 (c329abab) replaced [[whole-module-borrowed-ssa]]: a borrowed whole-module SSA slice ties every function's prepared SSA to one lifetime so none can be freed until lowering finishes; taking ownership of the lowering inputs lets each function's SSA (and the semantic IR, now taken and dropped) be released as soon as it is lowered, cutting peak compile-time memory (code).

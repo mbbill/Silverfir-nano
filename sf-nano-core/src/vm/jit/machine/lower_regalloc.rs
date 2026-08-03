@@ -761,6 +761,12 @@ impl<'a> BlockLowerContext<'a> {
         // lowering-only scratch borrowing, and it must stay reachable
         // when linear values and cached cells saturate the allocatable
         // budget (small banks like x86_64's reach that in real code).
+        //
+        // Known residual exposure: paths that hold two concurrent
+        // borrows can still fail at exact full saturation, since the
+        // reserved tail guarantees only one lane. No known input
+        // reaches that state; see the 2026-08-03 statement fact on
+        // mcts_mem compiler/machine-lowering before changing budgets.
         for ordinal in 0..regfile.gp_dynamic_count() {
             let Some(reg) = regfile.ordered_gp_dynamic(ordinal) else {
                 continue;
