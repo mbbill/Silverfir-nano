@@ -738,7 +738,6 @@ impl Isa for X86_64 {
                 | I64_TruncF32U
                 | I64_TruncF64U
                 | F32_ConvertI64U
-                | F64_ConvertI64U
         ) {
             return false;
         }
@@ -1118,6 +1117,27 @@ impl Isa for X86_64 {
             F64_PromoteF32 => {
                 let vs = self.src_fp(a, v.a, true, 0, 8, RAX);
                 a.ins(&format!("cvtss2sd {}, {}", xm(self.fp_target(dc)), xm(vs)));
+                self.finish_fp(a, dc, false);
+            }
+            F64_ConvertI64U => {
+                // No SSE2 instruction converts u64 directly. Split into
+                // 32-bit halves: each converts exactly through the signed
+                // form, hi scales by an exact power of two, and the final
+                // add performs the single correct rounding.
+                let ra = self.src(a, v.a, 8, RAX);
+                let vt = self.fp_target(dc);
+                a.ins(&format!("mov rsi, {}", q(ra)));
+                a.ins("shr rsi, 32");
+                a.ins(&format!("mov r8d, {}", d(ra)));
+                a.ins(&format!("pxor {}, {}", xm(vt), xm(vt)));
+                a.ins(&format!("cvtsi2sd {}, rsi", xm(vt)));
+                // 2^32 as an f64 immediate.
+                a.ins("mov rsi, 0x41F0000000000000");
+                a.ins("movq xmm2, rsi");
+                a.ins(&format!("mulsd {}, xmm2", xm(vt)));
+                a.ins("pxor xmm2, xmm2");
+                a.ins("cvtsi2sd xmm2, r8");
+                a.ins(&format!("addsd {}, xmm2", xm(vt)));
                 self.finish_fp(a, dc, false);
             }
             F32_ConvertI32S | F32_ConvertI32U | F32_ConvertI64S | F64_ConvertI32S
