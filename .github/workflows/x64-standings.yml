@@ -93,8 +93,10 @@ jobs:
       - name: Verify the patched dependency resolves locally
         working-directory: wasmi-benchmarks
         run: |
-          cargo tree --no-default-features --features "$BENCH_FEATURES" \
-            -p rt-silverfir-nano | tee /tmp/rt-tree.txt
+          # BENCH_FEATURES belong to the suite's root crate; cargo tree -p
+          # rejects them on the adapter package, and the adapter's own tree
+          # resolves the same either way. The path grep is the real check.
+          cargo tree -p rt-silverfir-nano | tee /tmp/rt-tree.txt
           grep -F "(${GITHUB_WORKSPACE}/sf-nano-core)" /tmp/rt-tree.txt
 
       - name: Run the execute corpus for all three engines
