@@ -321,6 +321,17 @@ pub(super) fn solve_public_cache_sets(
         &mut selected,
     );
 
+    verify_raised_extras(
+        &regions,
+        &cell_meta,
+        &benefit,
+        block_local_summaries,
+        &block_weights,
+        peak_gp,
+        usize::from(gp_dynamic_budget),
+        &policy_params,
+        &mut selected,
+    );
     let mut block_residents: collections::Vec<collections::Vec<CellId>> = cfg
         .blocks
         .iter()
@@ -406,6 +417,20 @@ fn raise_starved_capacities(
         if new_capacity <= capacity {
             continue;
         }
+        // Starvation gate before any ranking work: startup pays for this
+        // pass on every compile, and most regions have fewer live GP
+        // candidates than capacity (ffmpeg measured -4.5% ungated).
+        let candidate_units: usize = benefit[region_id]
+            .iter()
+            .enumerate()
+            .filter(|&(slot, &value)| {
+                value > 0.0 && cell_meta[slot].bank == Bank::Gp && !cell_meta[slot].is_ref
+            })
+            .map(|(slot, _)| cell_meta[slot].units)
+            .sum();
+        if candidate_units <= capacity {
+            continue;
+        }
         let mut ranked: collections::Vec<(usize, f64)> = benefit[region_id]
             .iter()
             .copied()
@@ -448,6 +473,80 @@ fn raise_starved_capacities(
         }
         if accepted_units > 0 {
             regions.nodes[region_id].gp_capacity = capacity + accepted_units;
+        }
+    }
+}
+
+/// Deselect raised extras that the solved plan cannot afford.
+///
+/// The DP prices call taxes but not the peak-block crossings a raised
+/// capacity implies, so it can admit a different extra than the raise
+/// account evaluated. With the final selection known, the check is
+/// exact: in every region whose selected GP units overflow some owned
+/// block's envelope, the overflow set (lowest-benefit selected slots)
+/// must each pay for their peak-block crossings; those that cannot are
+/// deselected region-wide (spectralnorm measured -3.2% without this).
+fn verify_raised_extras(
+    regions: &RegionTree,
+    cell_meta: &[CellMeta],
+    benefit: &[collections::Vec<f64>],
+    block_local_summaries: &[BlockCellSummary],
+    block_weights: &[f64],
+    peak_gp: &[usize],
+    gp_budget: usize,
+    params: &Algorithm4Params,
+    selected: &mut [collections::Vec<bool>],
+) {
+    for region_id in 1..regions.nodes.len() {
+        let node = &regions.nodes[region_id];
+        let peak = node
+            .owned_blocks
+            .iter()
+            .map(|&b| peak_gp[b])
+            .max()
+            .unwrap_or(0);
+        let envelope = gp_budget.saturating_sub(peak);
+        let mut chosen: collections::Vec<(usize, f64)> = selected[region_id]
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(slot, is_selected)| is_selected && cell_meta[slot].bank == Bank::Gp)
+            .map(|(slot, _)| (slot, benefit[region_id][slot]))
+            .collect();
+        let total_units: usize = chosen.iter().map(|&(slot, _)| cell_meta[slot].units).sum();
+        if total_units <= envelope {
+            continue;
+        }
+        let peak_blocks: collections::Vec<usize> = node
+            .owned_blocks
+            .iter()
+            .copied()
+            .filter(|&b| peak_gp[b] == peak)
+            .collect();
+        let crossing_weight: f64 = peak_blocks.iter().map(|&b| block_weights[b]).sum();
+        chosen.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
+        let mut overflow = total_units.saturating_sub(envelope);
+        for &(slot, value) in &chosen {
+            if overflow == 0 {
+                break;
+            }
+            let units = cell_meta[slot].units;
+            let benefit_in_peaks: f64 = peak_blocks
+                .iter()
+                .map(|&b| {
+                    block_local_summaries[b]
+                        .slot_scores
+                        .iter()
+                        .filter(|score| score.slot.0 as usize == slot)
+                        .map(|score| block_weights[b] * f64::from(score.access_count))
+                        .sum::<f64>()
+                })
+                .sum();
+            let crossings = 2.0 * crossing_weight * units as f64 * params.edge_cost_scale;
+            if value - benefit_in_peaks <= crossings {
+                selected[region_id][slot] = false;
+            }
+            overflow = overflow.saturating_sub(units);
         }
     }
 }
