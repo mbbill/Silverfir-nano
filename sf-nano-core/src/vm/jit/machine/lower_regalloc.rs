@@ -755,8 +755,14 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Option<collections::Vec<MachineReg>> {
         let regfile = self.regfile();
         let mut regs = collections::Vec::with_capacity(count);
+        // Scan the FULL dynamic bank, not just the allocatable prefix:
+        // the tail past `gp_allocatable_count` is exactly the reserve
+        // that `allocatable_gp_dynamic_budget` sets aside for
+        // lowering-only scratch borrowing, and it must stay reachable
+        // when linear values and cached cells saturate the allocatable
+        // budget (small banks like x86_64's reach that in real code).
         for ordinal in 0..regfile.gp_dynamic_count() {
-            let Some(reg) = preferred_gp_dynamic_reg(regfile, ordinal) else {
+            let Some(reg) = regfile.ordered_gp_dynamic(ordinal) else {
                 continue;
             };
             if self.dynamic_reg_available(reg) {
