@@ -99,16 +99,33 @@ jobs:
           cargo tree -p rt-silverfir-nano | tee /tmp/rt-tree.txt
           grep -F "(${GITHUB_WORKSPACE}/sf-nano-core)" /tmp/rt-tree.txt
 
-      - name: Run the execute corpus for all three engines
+      - name: Run the selected corpus for all three engines
         working-directory: wasmi-benchmarks
         run: |
-          # Same pinning as the regression jobs: one core, ASLR off, so
-          # the three engines see identical conditions within this run.
-          taskset -c 1 setarch "$(uname -m)" -R cargo bench \
-            --no-default-features \
-            --features "$BENCH_FEATURES" \
-            --bench criterion \
-            -- execute/ --noplot
+          # ci/x64_standings_filter.txt selects what this push measures:
+          # the full corpus for standings, or a narrow gap list for fast
+          # iteration. Same pinning as the regression jobs: one core,
+          # ASLR off, so the three engines see identical conditions
+          # within this run.
+          ran=0
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            [[ -z "${line//[[:space:]]/}" ]] && continue
+            ran=1
+            echo "::group::bench ${line}"
+            # Unquoted ${line}: word-splitting into filter + flags is
+            # intended here.
+            taskset -c 1 setarch "$(uname -m)" -R cargo bench \
+              --no-default-features \
+              --features "$BENCH_FEATURES" \
+              --bench criterion \
+              -- ${line} --noplot
+            echo "::endgroup::"
+          done < ../ci/x64_standings_filter.txt
+          if [[ "$ran" -eq 0 ]]; then
+            echo "ci/x64_standings_filter.txt selected nothing" >&2
+            exit 1
+          fi
 
       - name: Write the standings table
         env:
