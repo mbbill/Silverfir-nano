@@ -41,9 +41,9 @@ on:
         required: true
         default: "10"
 
-concurrency:
-  group: x64-profile-${{ github.ref }}
-  cancel-in-progress: false
+# No concurrency group: profile captures are independent and
+# self-contained, and GitHub's one-pending-slot rule silently cancels
+# batched dispatches if they share a group.
 
 permissions:
   contents: read
