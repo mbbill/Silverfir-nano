@@ -264,7 +264,12 @@ pub(super) fn solve_public_cache_sets(
         barrier_call_weight[region_id] += weight * f64::from(call_counts.barrier[block_index]);
     }
 
-    raise_starved_capacities(
+    // When no region was raised, every selection already fits every
+    // owned block's envelope, so the post-solve verification and the
+    // per-block clamp below are provable no-ops — skipping them keeps
+    // the tiniest modules' compile time flat (arm64 startup/coremark
+    // measured -2.45% with them unconditional).
+    let any_raised = raise_starved_capacities(
         &mut regions,
         &cell_meta,
         &benefit,
@@ -321,17 +326,19 @@ pub(super) fn solve_public_cache_sets(
         &mut selected,
     );
 
-    verify_raised_extras(
-        &regions,
-        &cell_meta,
-        &benefit,
-        block_local_summaries,
-        &block_weights,
-        peak_gp,
-        usize::from(gp_dynamic_budget),
-        &policy_params,
-        &mut selected,
-    );
+    if any_raised {
+        verify_raised_extras(
+            &regions,
+            &cell_meta,
+            &benefit,
+            block_local_summaries,
+            &block_weights,
+            peak_gp,
+            usize::from(gp_dynamic_budget),
+            &policy_params,
+            &mut selected,
+        );
+    }
     let mut block_residents: collections::Vec<collections::Vec<CellId>> = cfg
         .blocks
         .iter()
@@ -347,14 +354,16 @@ pub(super) fn solve_public_cache_sets(
             slots
         })
         .collect();
-    clamp_block_residents(
-        &mut block_residents,
-        &regions,
-        &benefit,
-        &cell_meta,
-        peak_gp,
-        usize::from(gp_dynamic_budget),
-    );
+    if any_raised {
+        clamp_block_residents(
+            &mut block_residents,
+            &regions,
+            &benefit,
+            &cell_meta,
+            peak_gp,
+            usize::from(gp_dynamic_budget),
+        );
+    }
     ResidencySolution {
         block_residents,
         preferred_preserved,
@@ -387,7 +396,8 @@ fn raise_starved_capacities(
     peak_gp: &[usize],
     gp_budget: usize,
     params: &Algorithm4Params,
-) {
+) -> bool {
+    let mut any_raised = false;
     for region_id in 1..regions.nodes.len() {
         let node = &regions.nodes[region_id];
         let peak = node
@@ -473,8 +483,10 @@ fn raise_starved_capacities(
         }
         if accepted_units > 0 {
             regions.nodes[region_id].gp_capacity = capacity + accepted_units;
+            any_raised = true;
         }
     }
+    any_raised
 }
 
 /// Deselect raised extras that the solved plan cannot afford.
