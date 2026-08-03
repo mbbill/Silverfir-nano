@@ -286,6 +286,36 @@ the value-stack call ABI (funcref, user decision), fibonacci-rec's v8
 gap (inlining class), and the two documented tradeoffs
 (regex_redux/AMD, fibonacci-rec lane trade).
 
+### 2026-08-03 — fix 10 (region capacity raising + per-block clamp,
+### 545cc24e + 6bdbcecf + b2c82a03)
+
+The register-pressure class fix, inside the solver's own design: a
+region may exceed its worst-block-peak capacity when an extra
+resident's benefit outside the peak blocks pays its ride-around
+crossings; after solving, each block sheds lowest-benefit residents
+only where its own transient peak demands (edge repair reconciles).
+Calibrations: starvation gate before ranking; post-solve verification
+of raised extras with the DP's actual selection (repricing the shared
+benefit table was rejected by a planner unit test — it distorts
+within-capacity competition); verification/clamp skipped entirely when
+nothing was raised.
+
+A/B confirmed on x64, zero execute regressions in the final run:
+lua-fib +20.7%, lz4-decompress +17.0% (from +6.1 pre-raise), sqlite
++17.3%, lua-sunfish +17.3%, lua-json +13.6%, coremark +19.1%.
+Acceptance: LZ4_decompress_safe spills 122 -> 103.
+
+Open startup question: x64 startup/pulldown-cmark and startup/ffmpeg
+-4.3% (harness-only modules; CLI cannot compile them for local
+analysis — they need stub imports). Local proxies show flat analysis
+cost (lua compile identical pre/post; 73 raises) and arm64-native
+coremark startup measures FASTER at HEAD (+1.6%) contradicting the CI
+runner's -2.26% — the small-module delta is machine-dependent noise at
+the floor. The suite doctrine (execute wins outrank startup costs;
+not vice versa) supports the trade; the targeted follow-up is a
+CI-side instrumented run or CLI stub-import support to profile the
+big-module compile path.
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
