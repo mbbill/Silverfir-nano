@@ -415,7 +415,15 @@ class CoveragePlanTests(unittest.TestCase):
         workflows = ROOT / ".github" / "workflows"
         self.assertEqual(
             {path.name for path in workflows.glob("*.yml")},
-            {"correctness.yml", "performance-regression.yml"},
+            {
+                "correctness.yml",
+                "performance-regression.yml",
+                # dev/x64-** tuning campaign lanes; deleted with the
+                # branch-only files before merging into main, at which
+                # point this inventory entry goes with them.
+                "x64-standings.yml",
+                "x64-profile.yml",
+            },
         )
 
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
