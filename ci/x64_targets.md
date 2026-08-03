@@ -12,9 +12,11 @@ per-case target is the better of wasmtime-cranelift and V8.
 
 ## wasmi-benchmarks execute corpus — JIT
 
-Baseline run: 30797021672 / commit `a1aa2a38` / AMD EPYC 7763 /
+Baseline run: 30798311764 / commit `6a959fde` / AMD EPYC 7763 /
 rustc 1.97.1 / suite 16a3d7c8. Times are single Criterion mean estimates;
-treat gaps under ~5% as parity until re-measured.
+treat gaps under ~5% as parity until re-measured. The full corpus was
+re-measured on a second independent runner draw (run 30797021672) and
+every ratio reproduced within a few percent — the reference is stable.
 
 `gap` = nano time ÷ best competitor time. `cut needed` = time reduction
 on nano to reach that competitor (1 − 1/gap).
@@ -55,8 +57,39 @@ count toward these cuts.
 
 ## benchmarks/wasi suite — JIT
 
-Pending: first CI run of the `wasi` standings job (in flight on this
-branch). Append its reference table here when it lands.
+Baseline run: 30798311764 / commit `6a959fde` / AMD EPYC 7763 /
+wasmtime 47.0.2 (prebuilt) / Node 24.18 (V8). Rates, higher is better;
+`gap` = best competitor rate ÷ nano rate. This suite is the primary goal
+metric: benchmarks/wasi/RESULTS.md holds the arm64 M4 reference where
+nano is at parity with Cranelift (best-of 15 metrics: Cranelift 9,
+nano 4, V8 2). The `M4 reference` column is that standing.
+
+| metric | gap | best competitor | M4 reference |
+|---|---|---|---|
+| funcref/exported-table | 2.62 | cranelift | — |
+| stream/Triad | 2.36 | v8 (cranelift 2.29) | nano ≈ cranelift |
+| stream/Scale | 2.22 | cranelift (v8 2.20) | nano 1.96× OVER v8 |
+| stream/Add | 2.18 | cranelift | nano ≈ cranelift |
+| lua/fib | 1.91 | cranelift | nano −6..9% of cranelift |
+| lua/sunfish | 1.81 | v8 (cranelift 1.75) | nano −6..9% of cranelift |
+| lua/json_bench | 1.74 | cranelift | nano −6..9% of cranelift |
+| c-ray | 1.61 | v8 (cranelift 1.42) | competitive |
+| sqlite | 1.60 | v8 (cranelift 1.30) | competitive |
+| lz4/decompress | 1.49 | cranelift | competitive |
+| bzip2 | 1.47 | v8 (cranelift 1.23) | nano LED +14% |
+| coremark | 1.47 | v8 (cranelift 1.23) | tie for best |
+| lz4/compress | 1.25 | v8 (cranelift 1.01) | competitive |
+| sha256 | 1.21 | cranelift | nano LED +16% |
+| stream/Copy | 1.01 | parity | parity (host memcpy) |
+| mandelbrot | best | — | tie for best |
+
+funcref/direct shows v8 at 8.01× — 3.2e9 calls/s smells like V8 optimizing
+the call away; use the cranelift ratio (1.34) as the actionable reference
+until verified.
+
+The rows where the M4 reference says "led/over" are the purest x64-backend
+signal: same engine, same suite, opposite outcome by ISA — sha256, bzip2,
+coremark, and the STREAM arithmetic kernels.
 
 ## Interpreter
 
