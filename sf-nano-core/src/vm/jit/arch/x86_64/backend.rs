@@ -12,9 +12,10 @@ use crate::{
     error::WasmError,
     vm::{
         jit::machine::machine_ir::{
-            MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst, MachineIntWidth,
-            MachineReg, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
-            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
+            MachineIntWidth, MachineReg, MachineStorageType, MachineTerminator, MachineTrapKind,
+            MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MACHINE_MEM0_SIZE_REG,
         },
         jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -96,6 +97,11 @@ pub(crate) struct X86_64Backend<'a> {
     /// body next to the FP literal pool so table data never sits in the
     /// instruction stream between a dispatch and its handlers.
     pub(super) pending_jump_tables: collections::Vec<PendingJumpTable>,
+    /// 1-slot peephole lookahead, mirroring the arm64 backend: holds a
+    /// fusible load so `emit_inst_at` can try the memory-operand ALU
+    /// form when the next op arrives. Emission order is preserved on
+    /// every path — hit, miss, and block-end drain.
+    pending_op: Option<(&'a MachineInst, usize)>,
 }
 
 /// One deferred jump table: the movabs immediate to patch with the
@@ -153,6 +159,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             fp_literal_fixups: collections::Vec::new(),
             flags32: None,
             pending_jump_tables: collections::Vec::new(),
+            pending_op: None,
         }
     }
 
@@ -336,7 +343,49 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.lower_inst_dispatch(inst)
     }
 
+    fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
+        // Streaming entry: the lookahead never carries across blocks.
+        self.pending_op = None;
+        self.core.current_block = Some(block.id);
+        self.core.current_edge_target = None;
+        self.core.reset_block_fp_state(block)?;
+        Ok(())
+    }
+
     fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+        // Try to fuse the buffered load with this incoming op. On a hit
+        // one instruction consumes both; on a miss the load is emitted
+        // solo first, preserving program order (and trap order).
+        if let Some((prev, prev_index)) = self.pending_op.take() {
+            if let Some(fusion) = super::fusion::load_alu_fusion(prev, inst) {
+                let loaded_dead = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .is_some_and(|block| {
+                        !crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                            &block.ops[index + 1..],
+                            &block.terminator,
+                            fusion.loaded,
+                        )
+                    });
+                if loaded_dead {
+                    self.core.current_op_index = Some(index);
+                    self.lower_load_alu(&fusion)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
+            self.core.current_op_index = Some(prev_index);
+            self.lower_inst(prev)?;
+            self.gp_scratch.assert_all_free();
+            self.fp_scratch.assert_all_free();
+        }
+        if super::fusion::fusible_load(&inst.kind) {
+            self.pending_op = Some((inst, index));
+            return Ok(());
+        }
         self.core.current_op_index = Some(index);
         self.lower_inst(inst)?;
         self.gp_scratch.assert_all_free();
@@ -349,6 +398,12 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         term: &MachineTerminator,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
+        if let Some((prev, prev_index)) = self.pending_op.take() {
+            self.core.current_op_index = Some(prev_index);
+            self.lower_inst(prev)?;
+            self.gp_scratch.assert_all_free();
+            self.fp_scratch.assert_all_free();
+        }
         self.core.current_op_index = None;
         let result = self.lower_terminator(term, fallthrough);
         self.gp_scratch.assert_all_free();
