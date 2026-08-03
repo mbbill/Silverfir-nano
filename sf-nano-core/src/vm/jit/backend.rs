@@ -49,6 +49,10 @@ pub(crate) struct BackendConfig {
     /// resident earns. Backends whose prologue bulk-saves the physical
     /// registers regardless (everyone but arm64 today) would price this 0.
     pub preserved_lane_save_overhead: u8,
+    /// Every 32-bit integer instruction writes a zero-extended destination
+    /// (x86_64 r32 semantics). Lets the shared peephole relax redundant
+    /// `ZeroExtend32` index obligations on indexed memory ops.
+    pub gp32_defs_zero_extend: bool,
 }
 
 impl BackendConfig {
@@ -111,7 +115,20 @@ impl BackendConfig {
             scalar_return_lanes,
             call_scratch_slots,
             preserved_lane_save_overhead: 0,
+            gp32_defs_zero_extend: false,
         }
+    }
+
+    /// Declare that every 32-bit integer instruction writes a zero-extended
+    /// destination (x86_64 r32 semantics), letting the shared peephole relax
+    /// redundant `ZeroExtend32` index obligations. Leave off for backends
+    /// whose 32-bit ops sign-extend (riscv64) or whose addressing modes
+    /// extend for free (arm64 UXTW).
+    #[inline]
+    #[cfg(any(sf_backend_x64, test))]
+    pub(crate) const fn with_gp32_zero_extending_defs(mut self) -> Self {
+        self.gp32_defs_zero_extend = true;
+        self
     }
 
     /// Override the estimated per-lane preserved-nomination cost (see the

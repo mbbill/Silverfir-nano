@@ -24,6 +24,11 @@
 //!    `Int64PairBinary{Mul}` whose operands are both `i64.extend_i32_s`
 //!    with `Int64MulFromSignExt32`, a single signed 32x32 -> 64 multiply.
 //!    Only fires on 32-bit GP backends (where the pair form exists).
+//!
+//! 8. **Index-extend relaxation** (`relax_index_extends`): Drops the
+//!    `ZeroExtend32` obligation from indexed loads/stores whose index was
+//!    defined in-block by a 32-bit-form instruction, on backends where
+//!    those already zero-extend (`gp32_defs_zero_extend`).
 
 mod copy_propagate;
 mod deduplicate_constants;
@@ -37,6 +42,7 @@ mod fuse_smull_sign_ext;
 pub(crate) mod helpers;
 mod hoist_loop_address_bases;
 mod recognize_memmove;
+mod relax_index_extends;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
@@ -170,6 +176,9 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     if ctx.config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
     }
+    if ctx.config.gp32_defs_zero_extend {
+        relax_index_extends::relax_index_extends(block);
+    }
 
     // Keep pass scheduling honest as transformation patterns evolve. Release
     // builds pay nothing; debug builds and tests compare against the original
@@ -209,6 +218,9 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
                 ctx.total_reg_count,
             );
         }
+        if ctx.config.gp32_defs_zero_extend {
+            relax_index_extends::relax_index_extends(&mut unconditional_oracle);
+        }
         assert_eq!(
             block, &unconditional_oracle,
             "feature-gated peephole schedule diverged from unconditional passes"
@@ -243,5 +255,13 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     // `analyze_loop_graph` rewrite instructions and conditions but never
     // CFG targets, so the loop graph is still valid.
     fold_induction_offsets::fold_induction_offsets(program, &loop_graph);
+    // The fold emits ZeroExtend32 indexed forms whose index is the loop
+    // counter; where its in-block def is a 32-bit op the obligation is
+    // vacuous on gp32-zero-extending backends.
+    if config.gp32_defs_zero_extend {
+        for block in &mut program.blocks {
+            relax_index_extends::relax_index_extends(block);
+        }
+    }
     recognize_memmove::recognize_memmove(program);
 }
