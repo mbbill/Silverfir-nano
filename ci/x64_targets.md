@@ -178,6 +178,28 @@ fused instructions confirmed front-end pressure is not its binding
 constraint — the state's store→load round-trips are (register-pressure
 design item).
 
+### 2026-08-03 — consolidated standings after all seven JIT fixes
+### (run 30830020441)
+
+**Official wasmi corpus (AMD EPYC 9V74): nano/cranelift geomean = 1.01
+— statistical parity with wasmtime-cranelift.** nano/v8 = 1.12 (the
+residual is fibonacci-rec 2.30, V8's inlining). nano now BEATS
+cranelift on fibonacci-rec (0.94), fibonacci-tail (0.22), spectralnorm
+(0.54), prime_sieve/json_parse/matrix_mul/compression parity-or-better
+vs v8. Remaining >1.2x rows vs cranelift: regex_redux 1.58 (AMD
+tradeoff), reverse_complement 1.42, argon2 1.41 (latency-bound,
+register-pressure item), prime_sieve 1.29, tiny_keccak 1.26. Combined
+with the interpreter lead on every row, the official-corpus standing
+now matches the arm64 pattern: interpreter first, JIT at
+optimizing-tier parity.
+
+wasi suite (Intel 8370C): geomean 1.27 cranelift / 1.40 v8 (baseline
+1.51/1.65). Remaining drivers, in order: funcref 2.2 (shared call ABI
+— design decision), lz4/decompress 1.81 (Intel-specific residual,
+uninvestigated), lua 1.27-1.37 (register pressure — design decision),
+c-ray 1.29, bzip2 1.25, stream/Triad 1.26 (bandwidth-class now;
+Scale/Add at 1.04-1.12).
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
