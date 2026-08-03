@@ -1,0 +1,133 @@
+# BRANCH-ONLY WORKFLOW — x64 JIT tuning campaign.
+#
+# Exists only on dev/x64-** branches. Runs the pinned wasmi-benchmarks
+# execute corpus with Silverfir-nano JIT, wasmtime-cranelift, and V8 in
+# the SAME job so the three engines share one runner and one CPU, then
+# renders a standings table. It is a snapshot instrument, not a
+# regression gate: no A/B statistics, no pass/fail verdict — the
+# performance-regression workflow remains the gate.
+#
+# ubuntu-latest is a CPU lottery (Intel Xeon or AMD EPYC). The table
+# header records the model; only compare numbers within one run, never
+# across runs.
+#
+# Delete this file and ci/x64_standings_report.py in the final commit
+# before merging the branch into main.
+
+name: x64-standings
+
+on:
+  push:
+    branches:
+      - "dev/x64-**"
+  workflow_dispatch:
+
+concurrency:
+  group: x64-standings-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  standings:
+    name: x64 standings / nano vs cranelift vs v8
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/wasmi-target
+      BENCH_FEATURES: silverfir-nano-jit,wasmtime-cranelift,v8
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Checkout pinned wasmi-benchmarks
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasmi benchmark system dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libfontconfig1-dev
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: x64-standings
+          workspaces: "wasmi-benchmarks -> ../wasmi-target"
+
+      - name: Record runner CPU
+        id: cpu
+        run: |
+          uname -a
+          lscpu | grep -iE "model name|vendor" || true
+          model="$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)"
+          echo "model=${model:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Patch the suite to this checkout
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          core = Path("sf-nano-core").resolve()
+          assert (core / "Cargo.toml").is_file(), core
+          config = Path("wasmi-benchmarks/.cargo/config.toml")
+          config.parent.mkdir(parents=True, exist_ok=True)
+          config.write_text(
+              '[patch."https://github.com/mbbill/Silverfir-nano"]\n'
+              "sf-nano-core = { path = %s }\n" % json.dumps(core.as_posix()),
+              encoding="utf-8",
+              newline="\n",
+          )
+          PY
+
+      - name: Verify the patched dependency resolves locally
+        working-directory: wasmi-benchmarks
+        run: |
+          cargo tree --no-default-features --features "$BENCH_FEATURES" \
+            -p rt-silverfir-nano | tee /tmp/rt-tree.txt
+          grep -F "(${GITHUB_WORKSPACE}/sf-nano-core)" /tmp/rt-tree.txt
+
+      - name: Run the execute corpus for all three engines
+        working-directory: wasmi-benchmarks
+        run: |
+          # Same pinning as the regression jobs: one core, ASLR off, so
+          # the three engines see identical conditions within this run.
+          taskset -c 1 setarch "$(uname -m)" -R cargo bench \
+            --no-default-features \
+            --features "$BENCH_FEATURES" \
+            --bench criterion \
+            -- execute/ --noplot
+
+      - name: Write the standings table
+        env:
+          CPU_MODEL: ${{ steps.cpu.outputs.model }}
+        run: |
+          mkdir -p standings
+          python3 ci/x64_standings_report.py \
+            --criterion-dir wasmi-target/criterion \
+            --out-md standings/standings.md \
+            --out-json standings/standings.json \
+            --note "commit: ${GITHUB_SHA}" \
+            --note "cpu: ${CPU_MODEL}" \
+            --note "rustc: $(rustc -V)" \
+            --note "suite: wasmi-benchmarks@16a3d7c8" \
+            --note "pinning: taskset -c 1, ASLR off (setarch -R)"
+          cat standings/standings.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: x64-standings
+          path: standings/
+          if-no-files-found: warn
+          retention-days: 30
