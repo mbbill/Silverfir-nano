@@ -145,6 +145,26 @@ by loop alignment — next), fibonacci-rec 3.7x vs v8 (inlining-class),
 argon2 ~1.5x, lua/lz4-decompress/sqlite/c-ray/bzip2 residuals pending a
 fresh standings checkpoint.
 
+### 2026-08-03 — after fix 4 (inline jump-edge moves, f6fdb64e) and fix 5
+### (scaled table dispatch + out-of-line tables, 5ce64999)
+
+Fix 5 A/B (run 30811613146, AMD-class): every native row IMPROVEMENT —
+the Lua trio jumped to +10.5/+11.7/+10.8% (fix 5 targeted its 80-way
+dispatch: one-instruction scaled jump, 640 bytes of table data out of
+the hot instruction stream), sqlite +21.6%, coremark +19.0%, stream
+Add +33.5%. Only red row remains regex_redux on AMD (documented above).
+
+Fix 4 forensics: its apparent lua-fib −9.95% did NOT reproduce in a
+controlled same-SKU comparison (EPYC 7763 profiles pre/post fix 4:
+524.4 vs 530.3 fib20/s, statistically identical block heat) — the A/B
+that flagged it drew a Xeon 6973P-C for both primary and confirm, an
+SKU ~40% slower on Lua at baseline. Tracked as SKU sensitivity, not a
+code defect.
+
+fibonacci-tail stays ~1.8-2x vs v8: latch is now single-jump and
+aligned; the residual is uop count in the loop-carried parameter
+rotation (mov shuffle) — regalloc coalescing territory, parked.
+
 ## Interpreter
 
 Second phase per the goal ordering; snapshot with the same lanes after
