@@ -117,6 +117,34 @@ counter-local/param and fibonacci-tail ~2.0x (untouched by addressing —
 different cause), fibonacci-rec 3.7x vs v8 (likely inlining), argon2
 1.5-1.6x (unmoved).
 
+### 2026-08-03 — after fix 2 (flags reuse, 06b8fd52) and fix 3 (loop-header
+### alignment, 85e493c0)
+
+Fix 3 A/B (run 30806530811, AMD primary): **counter-local +99.97% and
+counter-param +100.05%** — both now 312µs, dead even with cranelift/v8;
+their 2.0x rows are CLOSED. prime_sieve +7.1%, fibonacci-iter +0.65%.
+Native suite cumulative vs main, all confirmed, zero regressions:
+stream Add +33.6% / Triad +22.4% / Scale +21.6%, sqlite +17.2%,
+lz4-compress +14.8%, coremark +14.0%, lz4-decompress +9.4%, lua-sunfish
++8.7% / lua-json +8.6% / lua-fib +8.4%, bzip2 +4.1%, sha256 +3.7%,
+c-ray +3.7%, funcref-exported-table +2.3%.
+
+Known tradeoff, documented and accepted: **execute/regex_redux** runs
+~17-20% slower than main on AMD EPYC draws (7763/Zen3 and 9V74/Zen4,
+four consistent measurements across three code layouts) while improving
++12.5% on an Intel Xeon 6973P-C draw. The vendor split matches the
+store-to-load-forwarding constraint the pre-fix lowering's
+"stable-base form" comment guarded: Zen restricts forwarding into
+indexed-address loads; Intel does not (leading hypothesis — PMU
+counters are unavailable on the runners to confirm directly). The
+indexed form wins +2.5-33% on ~27 rows on BOTH vendors and the goal
+prioritizes Intel; no vendor-forked codegen for one row.
+
+Remaining open rows: fibonacci-tail 2.0x (return_call chain, untouched
+by loop alignment — next), fibonacci-rec 3.7x vs v8 (inlining-class),
+argon2 ~1.5x, lua/lz4-decompress/sqlite/c-ray/bzip2 residuals pending a
+fresh standings checkpoint.
+
 ## Interpreter
 
 Second phase per the goal ordering; snapshot with the same lanes after
