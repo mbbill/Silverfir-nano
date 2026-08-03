@@ -355,6 +355,62 @@ scheduling/CSE quality. The wasi geomean's substantive remaining
 levers are exactly funcref (ABI decision) and the SKU-variable stream
 bandwidth rows.
 
+### 2026-08-03 — SUPERSEDED: the tail is not terminal. arm64 reference
+### run + v8-normalized cross-ISA deficits
+
+The decomposition above compared nano-x64 only against competitors on
+x64. Measuring the same wasi suite natively on the arm64 Mac (the
+goal's reference point; wasmtime 42.0.1 / node v25.9.0, no pinning)
+gives the arm64 standing: **nano/cranelift geomean 0.76 (nano leads),
+nano/v8 1.18** — so "arm64 level" on wasi means beating cranelift
+outright, and x64's 1.24 is not there yet.
+
+Normalizing each row by v8's own cross-ISA scaling
+(`deficit = (v8/nano)_x64 ÷ (v8/nano)_arm64`; the cranelift column is
+unusable as a normalizer — wasmtime-42-on-mac is anomalously slow,
+e.g. 585 fib20/s vs 1,170 on x64 CI) isolates what is genuinely
+x64-specific. Geomean deficit **1.17**. Sanity rows mandelbrot,
+lz4/compress, stream/Copy sit at 1.00±0.03; stream/Scale (0.65) and
+funcref/exported-table (0.26) are already better than their arm64
+standing.
+
+The x64-specific worklist, by cluster:
+
+| cluster | row | deficit |
+|---|---|---|
+| call path | funcref/direct | 2.68 |
+| call path | lua/fib | 1.48 |
+| call path | sqlite | 1.40 |
+| call path | coremark | 1.30 |
+| call path | lua/json_bench | 1.23 |
+| call path | lua/sunfish | 1.13 |
+| 2-load stream kernels | stream/Add | 1.83 |
+| 2-load stream kernels | stream/Triad | 1.42 |
+| byte/bit-dense loops | lz4/decompress | 1.40 |
+| byte/bit-dense loops | sha256 | 1.36 |
+| byte/bit-dense loops | c-ray | 1.34 |
+| byte/bit-dense loops | bzip2 | 1.20 |
+
+Corrections to the section above forced by this data:
+
+- **funcref/direct is not design-gated.** nano-arm64 does 1.35B
+  calls/s (~3 cycles/call) with the same value-stack ABI; nano-x64
+  does 355M (~10.5 cycles/call at 3.7 GHz). ~7 cycles per SF->SF call
+  are x64-backend cost, not ABI cost. (exported-table remains the
+  ABI-shaped row: 2.10 on arm64 vs 2.26 on x64.)
+- **sha256's "shared 15-GPR floor" is not the whole story**: nano-arm64
+  beats v8-arm64 1.35x on sha256; on x64 we only tie v8. v8 handles
+  the 15-GPR floor better than nano-x64 does relative to arm64.
+- **stream Add/Triad are not (only) SKU bandwidth rows**: Copy and
+  Scale are clean, arm64 wins Add outright — the 2-load kernels are
+  a codegen gap.
+- bzip2/c-ray "scheduling territory" still carries a 1.20-1.34
+  x64-specific component worth a look before writing it off.
+
+Artifacts: `do_not_scan/x64-standings-test/arm64-ref/standings.{md,json}`
++ `cross_isa.py` beside it. Next: profile the call-path cluster
+(funcref/direct first — smallest reproducer, biggest deficit).
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /

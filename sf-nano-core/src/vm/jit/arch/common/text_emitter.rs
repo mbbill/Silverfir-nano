@@ -83,6 +83,7 @@ impl TextEmitter {
     /// address of the next byte; an owned buffer has no runtime address
     /// yet, so its own length stands in (artifact paths re-base
     /// page-aligned).
+    #[cfg(sf_backend_x64)]
     #[inline]
     pub(crate) fn next_addr_for_alignment(&self) -> usize {
         match &self.storage {
