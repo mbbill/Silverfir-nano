@@ -78,6 +78,19 @@ impl TextEmitter {
         }
     }
 
+    /// Value to align against when padding the next instruction to a
+    /// boundary. For the shared code buffer this is the true runtime
+    /// address of the next byte; an owned buffer has no runtime address
+    /// yet, so its own length stands in (artifact paths re-base
+    /// page-aligned).
+    #[inline]
+    pub(crate) fn next_addr_for_alignment(&self) -> usize {
+        match &self.storage {
+            TextStorage::Owned(text) => text.len(),
+            TextStorage::CodeBuffer { buf, .. } => unsafe { (**buf).next_write_addr() },
+        }
+    }
+
     // ── Emit ─────────────────────────────────────────────────────────────
 
     #[cfg(sf_backend_x64)]

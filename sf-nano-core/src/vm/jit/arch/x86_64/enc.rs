@@ -1020,6 +1020,33 @@ pub(crate) fn store_imm32_64_idx(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Padding
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Multi-byte NOP filler using the SDM-recommended forms (1..=9 bytes per
+/// instruction). Used to align loop headers; the padding sits on the
+/// fallthrough path, so it must decode as few cheap instructions rather
+/// than a run of single-byte NOPs.
+pub(crate) fn emit_nops(e: &mut TextEmitter, mut count: usize) {
+    const NOPS: [&[u8]; 9] = [
+        &[0x90],
+        &[0x66, 0x90],
+        &[0x0F, 0x1F, 0x00],
+        &[0x0F, 0x1F, 0x40, 0x00],
+        &[0x0F, 0x1F, 0x44, 0x00, 0x00],
+        &[0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00],
+        &[0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00],
+        &[0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+        &[0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+    ];
+    while count > 0 {
+        let take = count.min(NOPS.len());
+        e.emit_bytes(NOPS[take - 1]);
+        count -= take;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Push / Pop
 // ═══════════════════════════════════════════════════════════════════════════════
 

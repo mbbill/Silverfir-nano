@@ -83,6 +83,14 @@ impl CodeBuffer {
             .with_ptr(self.base as usize)
     }
 
+    /// Runtime address of the next byte an emit would write. Loop-header
+    /// alignment pads against this: function text starts at arbitrary
+    /// buffer offsets, so no function-relative length can align anything.
+    #[inline]
+    pub(crate) fn next_write_addr(&self) -> usize {
+        self.base as usize + self.offset
+    }
+
     #[inline]
     pub(crate) fn begin_write(&mut self) {
         unsafe { os::begin_write_executable(self.base, self.capacity) };

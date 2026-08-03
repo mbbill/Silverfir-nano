@@ -138,6 +138,12 @@ pub(crate) trait ArchBackend<'a>: Sized {
     // `emit_inst_at` and `end_block` to maintain a small instruction
     // buffer; the default impls emit each instruction immediately.
 
+    /// Pad the text cursor before binding a loop-header block label (a
+    /// back-edge target). Default: nothing — fixed-width ISAs fetch
+    /// alignment-insensitively. x86_64 overrides this to align headers
+    /// to a fetch-window boundary so tight loops do not straddle one.
+    fn align_loop_header(&mut self) {}
+
     /// Begin a new block. Default sets `current_block`, clears
     /// `current_edge_target`, and resets the block-entry FP state.
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
