@@ -200,6 +200,41 @@ uninvestigated), lua 1.27-1.37 (register pressure — design decision),
 c-ray 1.29, bzip2 1.25, stream/Triad 1.26 (bandwidth-class now;
 Scale/Add at 1.04-1.12).
 
+## Next implementation unit: preserved dynamic lanes on x86_64
+
+The register-pressure class (lz4 wildcopy [r1+24]/[r1+120] reloads,
+argon2 state round-trips, lua residuals) is NOT gated on a design
+decision after all — the design already exists and arm64 uses it:
+`BackendConfig::with_volatility` with GP_PRESERVED_DYNAMIC lanes plus
+the backend's lazy body save/restore
+(`lower_preserved_dynamic_body_save/restore` in arm64/backend.rs).
+x86_64 uses plain `BackendConfig::new` = zero preserved lanes, so every
+cached local dies at every call boundary — while R14/R15 (callee-saved,
+already unconditionally pushed by the prologue) sit in the dynamic pool
+classified volatile.
+
+Adoption plan (mechanical but frame-protocol-wide; fresh session):
+1. REG_PLAN.gp_dynamic reorder: [RSI, RDI, R8, R9, R10 | R14, R15 |
+   R11] = volatile 5 | preserved 2 | internal scratch 1, with arm64's
+   compile-time count asserts; add the caller-saved-subset list arm64
+   keeps (`gp_dynamic_caller_saved`).
+2. compile_backend_config → with_volatility(8, 5, 2, 1, 14, 0,
+   /*gp_arg_lanes*/ 4, /*fp*/ 4, /*scalar_return_lanes*/ false,
+   SCALAR_CALL_SCRATCH_SLOTS); keep scalar_return_lanes false (out of
+   scope).
+3. Implement x64 lower_preserved_dynamic_body_save/restore mirroring
+   arm64 (body-prelude save of used preserved lanes, restore on every
+   return path INCLUDING the trap-exit tail); wire where arm64 wires
+   them (body prelude + return sequence).
+4. save_caller_clobbered_gp_dynamic must save only the caller-saved
+   subset (R14/R15 survive C helper calls).
+5. with_preserved_lane_save_overhead: measure; the public prologue
+   already saves R14/R15, but SF→SF bodies pay the lazy save, so
+   arm64's 3 is the honest starting value.
+6. Validate: Rosetta spectest + wasi correctness both callconvs
+   (Win64 check builds), A/B watch on lz4-decompress / argon2 / lua /
+   sqlite rows and startup lanes.
+
 ## Interpreter
 
 Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
