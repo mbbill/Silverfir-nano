@@ -87,9 +87,26 @@ pub(crate) struct X86_64Backend<'a> {
     /// its literal pool and loaded RIP-relatively.
     pub(super) fp_literals: collections::Vec<u64>,
     pub(super) fp_literal_fixups: collections::Vec<FpLiteralFixup>,
+    /// Peephole state: EFLAGS still reflects the 32-bit result of this
+    /// register's most recent ALU write, valid only while the text cursor
+    /// sits at the recorded position. Any emission moves the cursor and
+    /// invalidates the entry implicitly; nothing ever needs to clear it.
+    pub(super) flags32: Option<(X86Reg, usize)>,
 }
 
 impl X86_64Backend<'_> {
+    /// Record that EFLAGS now reflects `reg`'s 32-bit result.
+    pub(super) fn note_flags32(&mut self, reg: X86Reg) {
+        self.flags32 = Some((reg, self.core.text.len()));
+    }
+
+    /// True while EFLAGS still reflects `reg`'s 32-bit value — a
+    /// `test reg, reg` here would be redundant and would break
+    /// ALU/branch macro-fusion.
+    pub(super) fn flags32_current(&self, reg: X86Reg) -> bool {
+        self.flags32 == Some((reg, self.core.text.len()))
+    }
+
     pub(super) fn intern_fp_literal(&mut self, bits: u64) -> usize {
         if let Some(index) = self
             .fp_literals
@@ -123,6 +140,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             fp_scratch: abi::new_fp_scratch_pool(),
             fp_literals: collections::Vec::new(),
             fp_literal_fixups: collections::Vec::new(),
+            flags32: None,
         }
     }
 

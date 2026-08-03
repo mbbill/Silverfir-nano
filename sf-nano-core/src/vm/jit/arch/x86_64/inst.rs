@@ -1225,6 +1225,9 @@ impl<'a> X86_64Backend<'a> {
                             }
                             _ => unreachable!(),
                         };
+                        if width == MachineIntWidth::I32 {
+                            self.note_flags32(dst);
+                        }
                         return Ok(());
                     }
                 }
@@ -1312,6 +1315,12 @@ impl<'a> X86_64Backend<'a> {
                         }
                         _ => unreachable!(),
                     };
+                }
+                // Every path above leaves dst's 32-bit result flags in
+                // EFLAGS: either the ALU op wrote dst last, or its result
+                // was moved into dst and mov does not touch flags.
+                if width == MachineIntWidth::I32 {
+                    self.note_flags32(dst);
                 }
                 Ok(())
             }
