@@ -22,6 +22,7 @@ jobs:
           repository: wasmi-labs/wasmi-benchmarks
           ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
           path: wasmi-benchmarks
+          submodules: recursive
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Install valgrind
@@ -40,10 +41,13 @@ jobs:
         run: |
           set -euo pipefail
           WASM=wasmi-benchmarks/res/rust/cases/nbody/out.wasm
+          ls -la "$WASM"
+          echo "=== smoke: candidate runner, 1 rep, full output ==="
+          /tmp/runner-candidate "$WASM" 1
           for side in baseline candidate; do
             echo "=== wall $side: 3x runs of 500 reps ==="
             for i in 1 2 3; do
-              taskset -c 1 setarch "$(uname -m)" -R /usr/bin/time -f "%e s" "/tmp/runner-$side" "$WASM" 500 2>&1 | tail -1
+              taskset -c 1 setarch "$(uname -m)" -R /usr/bin/time -f "%e s" "/tmp/runner-$side" "$WASM" 500
             done
           done
       - name: Cachegrind counts
