@@ -43,6 +43,12 @@ pub(super) fn fold_induction_offsets(program: &mut MachineProgram, loop_graph: &
         }
         let latch = latches[0];
         let loop_nodes = natural_loop_nodes(header, latches, &loop_graph.predecessors);
+        // Startup pays for this analysis on every compile: skip loops
+        // that cannot contain the pattern (a const add feeding a
+        // zero-extended indexed access) before any per-param work.
+        if !loop_has_fold_pattern(&program.blocks, &loop_nodes) {
+            continue;
+        }
         let inductions = find_inductions(
             &program.blocks,
             header,
@@ -60,6 +66,43 @@ pub(super) fn fold_induction_offsets(program: &mut MachineProgram, loop_graph: &
             }
         }
     }
+}
+
+/// Cheap gate: does any loop block contain both a 32-bit add of an
+/// immediate and a zero-extended indexed access?
+fn loop_has_fold_pattern(blocks: &[MachineBlock], loop_nodes: &[usize]) -> bool {
+    let mut has_add = false;
+    let mut has_access = false;
+    for &node in loop_nodes {
+        for inst in &blocks[node].ops {
+            match &inst.kind {
+                MachineInstKind::IntBinary {
+                    width: MachineIntWidth::I32,
+                    op: MachineIntBinaryOp::Add,
+                    lhs,
+                    rhs,
+                    ..
+                } if matches!(lhs, MachineValue::Imm64(_))
+                    || matches!(rhs, MachineValue::Imm64(_)) =>
+                {
+                    has_add = true;
+                }
+                MachineInstKind::IndexedLoad {
+                    index_extend: MachineIndexExtend::ZeroExtend32,
+                    ..
+                }
+                | MachineInstKind::IndexedStore {
+                    index_extend: MachineIndexExtend::ZeroExtend32,
+                    ..
+                } => has_access = true,
+                _ => {}
+            }
+            if has_add && has_access {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// A header param proven to stay in `[0, max_value]` at every qualifying

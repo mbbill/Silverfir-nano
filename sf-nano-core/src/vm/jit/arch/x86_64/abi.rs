@@ -135,9 +135,12 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
         false,
         SCALAR_CALL_SCRATCH_SLOTS,
     )
-    // Lazy per-body preserved save: one push in the body prelude plus one
-    // pop at each return path.
-    .with_preserved_lane_save_overhead(3)
+    // Lazy per-body preserved save: pushes in the body prelude, pops at
+    // each return path, and the alignment-shim toggle. Priced above
+    // arm64's stp/ldp pair so the solver declines nomination in tiny
+    // call-heavy bodies, where the fixed cost outweighs residency
+    // (fibonacci-rec measured -4.4% at 3).
+    .with_preserved_lane_save_overhead(5)
 }
 
 // ── Scratch pool construction ────────────────────────────────────────────────
