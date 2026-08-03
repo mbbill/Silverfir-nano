@@ -146,6 +146,41 @@ fn emit_modrm_mem(e: &mut TextEmitter, reg: X86Reg, base: X86Reg, disp: i32) {
     }
 }
 
+/// Emit ModR/M + SIB for [base + index*1 + disp]. `reg3` is the low three
+/// bits of the reg field (GP `idx3()` or `xmm & 7`). `index` must not be
+/// RSP: SIB index 100 with REX.X clear means "no index".
+fn emit_modrm_mem_idx(e: &mut TextEmitter, reg3: u8, base: X86Reg, index: X86Reg, disp: i32) {
+    debug_assert!(
+        !(index.idx3() == 0b100 && !index.needs_rex_ext()),
+        "RSP cannot be an x86_64 SIB index"
+    );
+    let base3 = base.idx3();
+    // SIB with base RBP/R13 has no mod=00 form (it reads as disp32 with
+    // no base); use the disp8 row with a zero displacement instead.
+    if disp == 0 && base3 != 5 {
+        e.emit_u8(modrm(0b00, reg3, 0b100));
+        e.emit_u8(sib(0b00, index.idx3(), base3));
+    } else if fits_i8(disp) {
+        e.emit_u8(modrm(0b01, reg3, 0b100));
+        e.emit_u8(sib(0b00, index.idx3(), base3));
+        e.emit_u8(disp as u8);
+    } else {
+        e.emit_u8(modrm(0b10, reg3, 0b100));
+        e.emit_u8(sib(0b00, index.idx3(), base3));
+        emit_i32(e, disp);
+    }
+}
+
+/// Emit REX for a [base + index] memory operand. `r` is the reg-field
+/// extension bit (GP `needs_rex_ext()` or `xmm >= 8`).
+fn emit_rex_idx(e: &mut TextEmitter, w: bool, r: bool, index: X86Reg, base: X86Reg) {
+    let x = index.needs_rex_ext();
+    let b = base.needs_rex_ext();
+    if w || r || x || b {
+        e.emit_u8(rex(w, r, x, b));
+    }
+}
+
 #[inline]
 fn fits_i8(v: i32) -> bool {
     v >= -128 && v <= 127
@@ -804,6 +839,186 @@ pub(crate) fn store_imm32_64(e: &mut TextEmitter, base: X86Reg, disp: i32, imm: 
     emit_i32(e, imm);
 }
 
+// ─── [base + index + disp] forms ────────────────────────────────────────────
+//
+// One instruction per wasm memory access: the AGU folds the linear-memory
+// base, the (extended) index, and the constant offset, keeping address
+// arithmetic off the ALU dependency chain.
+
+/// MOV r64, [base + index + disp]
+pub(crate) fn load_64_idx(
+    e: &mut TextEmitter,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, true, dst.needs_rex_ext(), index, base);
+    e.emit_u8(0x8B);
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// MOV r32, [base + index + disp] (zero extends)
+pub(crate) fn load_32_idx(
+    e: &mut TextEmitter,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, false, dst.needs_rex_ext(), index, base);
+    e.emit_u8(0x8B);
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// MOVZX r32, byte [base + index + disp]
+pub(crate) fn load_u8_idx(
+    e: &mut TextEmitter,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, false, dst.needs_rex_ext(), index, base);
+    e.emit_u8(0x0F);
+    e.emit_u8(0xB6);
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// MOVZX r32, word [base + index + disp]
+pub(crate) fn load_u16_idx(
+    e: &mut TextEmitter,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, false, dst.needs_rex_ext(), index, base);
+    e.emit_u8(0x0F);
+    e.emit_u8(0xB7);
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// MOVSX r64, byte [base + index + disp]
+pub(crate) fn load_s8_64_idx(
+    e: &mut TextEmitter,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, true, dst.needs_rex_ext(), index, base);
+    e.emit_u8(0x0F);
+    e.emit_u8(0xBE);
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// MOVSX r64, word [base + index + disp]
+pub(crate) fn load_s16_64_idx(
+    e: &mut TextEmitter,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, true, dst.needs_rex_ext(), index, base);
+    e.emit_u8(0x0F);
+    e.emit_u8(0xBF);
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// MOVSXD r64, dword [base + index + disp]
+pub(crate) fn load_s32_64_idx(
+    e: &mut TextEmitter,
+    dst: X86Reg,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_rex_idx(e, true, dst.needs_rex_ext(), index, base);
+    e.emit_u8(0x63);
+    emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// MOV [base + index + disp], r64
+pub(crate) fn store_64_idx(
+    e: &mut TextEmitter,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    src: X86Reg,
+) {
+    emit_rex_idx(e, true, src.needs_rex_ext(), index, base);
+    e.emit_u8(0x89);
+    emit_modrm_mem_idx(e, src.idx3(), base, index, disp);
+}
+
+/// MOV [base + index + disp], r32
+pub(crate) fn store_32_idx(
+    e: &mut TextEmitter,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    src: X86Reg,
+) {
+    emit_rex_idx(e, false, src.needs_rex_ext(), index, base);
+    e.emit_u8(0x89);
+    emit_modrm_mem_idx(e, src.idx3(), base, index, disp);
+}
+
+/// MOV word [base + index + disp], r16 (requires 0x66 prefix)
+pub(crate) fn store_16_idx(
+    e: &mut TextEmitter,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    src: X86Reg,
+) {
+    e.emit_u8(0x66); // operand-size override
+    emit_rex_idx(e, false, src.needs_rex_ext(), index, base);
+    e.emit_u8(0x89);
+    emit_modrm_mem_idx(e, src.idx3(), base, index, disp);
+}
+
+/// MOV byte [base + index + disp], r8
+pub(crate) fn store_8_idx(
+    e: &mut TextEmitter,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    src: X86Reg,
+) {
+    // Need REX for extended regs or to ensure low-byte access for RSP/RBP/RSI/RDI
+    let need_rex = src.needs_rex_ext()
+        || base.needs_rex_ext()
+        || index.needs_rex_ext()
+        || (src.idx() >= 4 && src.idx() <= 7);
+    if need_rex {
+        e.emit_u8(rex(
+            false,
+            src.needs_rex_ext(),
+            index.needs_rex_ext(),
+            base.needs_rex_ext(),
+        ));
+    }
+    e.emit_u8(0x88);
+    emit_modrm_mem_idx(e, src.idx3(), base, index, disp);
+}
+
+/// MOV qword [base + index + disp], imm32 (sign-extended to 64-bit)
+pub(crate) fn store_imm32_64_idx(
+    e: &mut TextEmitter,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    imm: i32,
+) {
+    emit_rex_idx(e, true, false, index, base);
+    e.emit_u8(0xC7);
+    emit_modrm_mem_idx(e, 0, base, index, disp); // /0
+    emit_i32(e, imm);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Push / Pop
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1199,6 +1414,70 @@ pub(crate) fn movss_load(e: &mut TextEmitter, dst: Xmm, base: X86Reg, disp: i32)
 /// MOVSS [base + disp], xmm: F3 0F 11
 pub(crate) fn movss_store(e: &mut TextEmitter, base: X86Reg, disp: i32, src: Xmm) {
     emit_xmm_modrm_mem(e, 0xF3, 0x0F, 0x11, src, base, disp);
+}
+
+/// Prefix + REX + opcode + ModR/M + SIB for xmm, [base + index + disp].
+fn emit_xmm_modrm_mem_idx(
+    e: &mut TextEmitter,
+    prefix: u8,
+    op1: u8,
+    op2: u8,
+    xmm: Xmm,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    if prefix != 0 {
+        e.emit_u8(prefix);
+    }
+    emit_rex_idx(e, false, xmm >= 8, index, base);
+    e.emit_u8(op1);
+    e.emit_u8(op2);
+    emit_modrm_mem_idx(e, xmm & 7, base, index, disp);
+}
+
+/// MOVSD xmm, [base + index + disp]: F2 0F 10
+pub(crate) fn movsd_load_idx(
+    e: &mut TextEmitter,
+    dst: Xmm,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_xmm_modrm_mem_idx(e, 0xF2, 0x0F, 0x10, dst, base, index, disp);
+}
+
+/// MOVSD [base + index + disp], xmm: F2 0F 11
+pub(crate) fn movsd_store_idx(
+    e: &mut TextEmitter,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    src: Xmm,
+) {
+    emit_xmm_modrm_mem_idx(e, 0xF2, 0x0F, 0x11, src, base, index, disp);
+}
+
+/// MOVSS xmm, [base + index + disp]: F3 0F 10
+pub(crate) fn movss_load_idx(
+    e: &mut TextEmitter,
+    dst: Xmm,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+) {
+    emit_xmm_modrm_mem_idx(e, 0xF3, 0x0F, 0x10, dst, base, index, disp);
+}
+
+/// MOVSS [base + index + disp], xmm: F3 0F 11
+pub(crate) fn movss_store_idx(
+    e: &mut TextEmitter,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    src: Xmm,
+) {
+    emit_xmm_modrm_mem_idx(e, 0xF3, 0x0F, 0x11, src, base, index, disp);
 }
 
 // --- SSE4.1 rounding (used for floor, ceil, trunc, nearest) ---
