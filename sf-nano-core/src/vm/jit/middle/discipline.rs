@@ -183,6 +183,12 @@ pub(crate) trait DisciplineDriver {
     /// driver does nothing.
     fn on_drop_cache(&mut self, slot: CellId);
 
+    /// Live snapshots of `slot` at `positions` stopped aliasing its cache lane
+    /// and became real transients, one per position. The emitter reads the
+    /// lane into a fresh value per snapshot and repoints each live entry at
+    /// its own copy; the measure driver does nothing.
+    fn on_dealias_cache(&mut self, slot: CellId, ty: ValueType, positions: &[usize]);
+
     /// A call boundary consumed the whole live window (results return in frame
     /// slots). The emitter clears its live-value window; the measure driver does
     /// nothing.
@@ -205,6 +211,7 @@ impl DisciplineDriver for NoEmit {
     fn on_spill(&mut self, _base_slot: FrameSlot, _count: usize) {}
     fn on_fill(&mut self, _base_slot: FrameSlot, _types: &[ValueType]) {}
     fn on_drop_cache(&mut self, _slot: CellId) {}
+    fn on_dealias_cache(&mut self, _slot: CellId, _ty: ValueType, _positions: &[usize]) {}
     fn on_call_boundary(&mut self) {}
     fn on_call_boundary_scalar(&mut self, _result: SsaValue) {}
 }
@@ -473,16 +480,79 @@ impl Window {
         self.spill(driver, frame, count);
     }
 
-    /// Publish every live snapshot of `slot` that would survive an overwrite
-    /// of its cache lane.
+    /// Convert every live snapshot of `slot` into a real transient before its
+    /// cache lane is overwritten, when the bank budget has room.
     ///
     /// A cached `local.get` normally aliases the cache register at zero
     /// transient cost. That discount stops being valid when a later
     /// `local.set`/`local.tee` replaces the lane while an older snapshot is
-    /// still live. Spill the live prefix through the last such snapshot so
-    /// machine lowering never has to find an unplanned register to preserve
-    /// it. The top value is the store source; when it aliases the same slot the
-    /// assignment is an identity and does not overwrite the lane.
+    /// still live. Clearing the alias tags makes the engine charge those
+    /// entries as real values, so machine lowering has a planned register for
+    /// the one preserving copy the driver emits — the register-resident shape
+    /// this code had before alias preservation existed, now budgeted. The top
+    /// value is the store source; when it aliases the same slot the assignment
+    /// is an identity and does not overwrite the lane.
+    ///
+    /// Returns false without changing anything when the de-aliased entries
+    /// would not fit the budget; the caller must publish through the spill
+    /// fallback instead.
+    fn try_dealias_before_cache_overwrite(
+        &mut self,
+        driver: &mut impl DisciplineDriver,
+        resident: &CellSet,
+        cell_types: &[ValueType],
+        budget: BankBudget,
+        slot: CellId,
+    ) -> bool {
+        if self.live_aliases.last().copied().flatten() == Some(slot) {
+            return true;
+        }
+        let positions: collections::Vec<usize> = self
+            .live_aliases
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, alias)| (*alias == Some(slot)).then_some(pos))
+            .collect();
+        if positions.is_empty() {
+            return true;
+        }
+
+        let ty = cell_types
+            .get(slot.0 as usize)
+            .copied()
+            .unwrap_or(ValueType::I64);
+        let (mut extra_gp, mut extra_fp) = (0usize, 0usize);
+        if ty.is_fp() {
+            extra_fp = positions.len();
+        } else {
+            extra_gp =
+                gp_value_budget_units(ty, budget.gp_unit_bytes).saturating_mul(positions.len());
+        }
+        let (gp_live, fp_live) = self.effective_live_units(resident, budget.gp_unit_bytes);
+        let (gp_cache, fp_cache) =
+            count_cached_cell_budget_units(resident, cell_types, budget.gp_unit_bytes);
+        if gp_live + gp_cache + extra_gp > budget.gp_live_budget as usize
+            || fp_live + fp_cache + extra_fp > budget.fp_live_budget as usize
+        {
+            return false;
+        }
+
+        for &pos in &positions {
+            self.live_aliases[pos] = None;
+        }
+        driver.on_dealias_cache(slot, ty, &positions);
+        true
+    }
+
+    /// Publish every live snapshot of `slot` that would survive an overwrite
+    /// of its cache lane — the budget-pressure fallback for
+    /// [`Self::try_dealias_before_cache_overwrite`].
+    ///
+    /// Spill the live prefix through the last such snapshot so machine
+    /// lowering never has to find an unplanned register to preserve it. The
+    /// prefix is wider than the snapshots alone (the spill machinery is
+    /// stack-shaped), which is why the register-preserving de-alias path is
+    /// preferred whenever it fits.
     fn spill_aliases_before_cache_overwrite(
         &mut self,
         driver: &mut impl DisciplineDriver,
@@ -653,7 +723,10 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
     }
     if let SemanticOpKind::LocalSet { idx } | SemanticOpKind::LocalTee { idx } = op {
         let slot = CellId(*idx);
-        if resident.contains(&slot) {
+        if resident.contains(&slot)
+            && !window
+                .try_dealias_before_cache_overwrite(driver, resident, cell_types, budget, slot)
+        {
             window.spill_aliases_before_cache_overwrite(driver, frame, slot);
         }
     }
@@ -742,6 +815,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingDriver {
         spills: collections::Vec<(FrameSlot, usize)>,
+        dealiases: collections::Vec<(CellId, ValueType, collections::Vec<usize>)>,
     }
 
     impl DisciplineDriver for RecordingDriver {
@@ -752,6 +826,10 @@ mod tests {
         fn on_fill(&mut self, _base_slot: FrameSlot, _types: &[ValueType]) {}
 
         fn on_drop_cache(&mut self, _slot: CellId) {}
+
+        fn on_dealias_cache(&mut self, slot: CellId, ty: ValueType, positions: &[usize]) {
+            self.dealiases.push((slot, ty, positions.to_vec().into()));
+        }
 
         fn on_call_boundary(&mut self) {}
 
@@ -790,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_overwrite_spills_older_alias_snapshots_before_local_set() {
+    fn cache_overwrite_spills_older_alias_snapshots_when_budget_is_full() {
         let slot0 = CellId(0);
         let slot1 = CellId(1);
         let mut resident = [slot0, slot1].into_iter().collect::<CellSet>();
@@ -819,9 +897,49 @@ mod tests {
         )
         .expect("cache overwrite discipline");
 
+        assert!(driver.dealiases.is_empty());
         assert_eq!(driver.spills, collections::vec![(frame.operand_slot(0), 2)]);
         assert_eq!(window.spill_depth(), 2);
         assert_eq!(window.live_aliases(), &[Some(slot1)]);
+    }
+
+    #[test]
+    fn cache_overwrite_dealiases_snapshots_when_budget_has_room() {
+        let slot0 = CellId(0);
+        let slot1 = CellId(1);
+        let mut resident = [slot0, slot1].into_iter().collect::<CellSet>();
+        let frame = plan_frame_layout(2, 3, 0);
+        let mut window = Window::new(
+            3,
+            0,
+            collections::vec![ValueType::I32; 3],
+            collections::vec![ValueType::I32; 3],
+            collections::vec![None, Some(slot0), Some(slot1)],
+        );
+        let mut driver = RecordingDriver::default();
+
+        apply_op_discipline(
+            &SemanticOpKind::LocalSet { idx: slot0.0 },
+            &mut window,
+            &mut driver,
+            frame,
+            &mut resident,
+            &[ValueType::I32, ValueType::I32],
+            BankBudget {
+                gp_unit_bytes: 8,
+                gp_live_budget: 8,
+                fp_live_budget: 0,
+            },
+        )
+        .expect("cache overwrite discipline");
+
+        assert!(driver.spills.is_empty());
+        assert_eq!(
+            driver.dealiases,
+            collections::vec![(slot0, ValueType::I32, collections::vec![1])]
+        );
+        assert_eq!(window.spill_depth(), 0);
+        assert_eq!(window.live_aliases(), &[None, None, Some(slot1)]);
     }
 
     #[test]
