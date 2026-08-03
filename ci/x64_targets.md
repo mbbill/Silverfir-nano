@@ -167,5 +167,22 @@ rotation (mov shuffle) — regalloc coalescing territory, parked.
 
 ## Interpreter
 
-Second phase per the goal ordering; snapshot with the same lanes after
-the JIT work.
+Baseline run: 30819701182 / commit `8d7261de` / AMD EPYC 9V74 /
+standings lane `tier=interp` (nano-interp vs stitch, wasm3.eager,
+wasmi-v2.eager.checked on the official corpus).
+
+**nano-interp already leads the x64 interpreter field: geomean 0.64 vs
+stitch, 0.54 vs wasm3, 0.64 vs wasmi-v2 (below 1.00 = nano faster),
+winning 18 of 20 rows** — matching its Apple-Silicon standing except:
+
+| case | vs stitch | vs wasm3 | vs wasmi-v2 |
+|---|---|---|---|
+| spectralnorm | 2.74 | 2.31 | 3.33 |
+| bulk-ops | 1.07 | 1.08 | 0.96 |
+
+spectralnorm is the single real interpreter target (bulk-ops is
+parity-noise). mandelbrot — also FP-heavy — wins at 0.70/0.53/0.86, so
+this is not a general FP weakness; spectralnorm leans on f64 division
+and int→f64 conversion in its inner loop. Mechanism unidentified yet;
+first experiment: same-engine arm64-vs-x64 comparison to classify
+x64-specific vs engine-general.
