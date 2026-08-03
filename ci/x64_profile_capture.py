@@ -95,6 +95,19 @@ def main(argv: list[str] | None = None) -> int:
     if record.returncode != 0:
         raise SystemExit(f"perf record failed: {record.returncode}")
 
+    # Diagnostic: the marker mmap of jit-<pid>.dump must appear here or
+    # inject has nothing to pair the dump with (this exact failure mode
+    # shipped once already).
+    with open(out / "mmap_events.txt", "w", encoding="utf-8") as sink:
+        script = subprocess.run(
+            [args.perf, "script", "-i", str(out / "perf.data"),
+             "--show-mmap-events"],
+            cwd=cwd, capture_output=True, text=True,
+        )
+        for line in script.stdout.splitlines():
+            if "MMAP" in line:
+                sink.write(line + "\n")
+
     inject = run(
         [args.perf, "inject", "--jit", "-i", str(out / "perf.data"),
          "-o", str(out / "perf.jit.data")],
