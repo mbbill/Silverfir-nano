@@ -146,29 +146,42 @@ fn emit_modrm_mem(e: &mut TextEmitter, reg: X86Reg, base: X86Reg, disp: i32) {
     }
 }
 
-/// Emit ModR/M + SIB for [base + index*1 + disp]. `reg3` is the low three
-/// bits of the reg field (GP `idx3()` or `xmm & 7`). `index` must not be
-/// RSP: SIB index 100 with REX.X clear means "no index".
-fn emit_modrm_mem_idx(e: &mut TextEmitter, reg3: u8, base: X86Reg, index: X86Reg, disp: i32) {
+/// Emit ModR/M + SIB for [base + index*(1<<scale2) + disp]. `reg3` is the
+/// low three bits of the reg field (GP `idx3()` or `xmm & 7`). `index`
+/// must not be RSP: SIB index 100 with REX.X clear means "no index".
+fn emit_modrm_mem_idx_scaled(
+    e: &mut TextEmitter,
+    reg3: u8,
+    base: X86Reg,
+    index: X86Reg,
+    scale2: u8,
+    disp: i32,
+) {
     debug_assert!(
         !(index.idx3() == 0b100 && !index.needs_rex_ext()),
         "RSP cannot be an x86_64 SIB index"
     );
+    debug_assert!(scale2 <= 0b11, "SIB scale field is two bits");
     let base3 = base.idx3();
     // SIB with base RBP/R13 has no mod=00 form (it reads as disp32 with
     // no base); use the disp8 row with a zero displacement instead.
     if disp == 0 && base3 != 5 {
         e.emit_u8(modrm(0b00, reg3, 0b100));
-        e.emit_u8(sib(0b00, index.idx3(), base3));
+        e.emit_u8(sib(scale2, index.idx3(), base3));
     } else if fits_i8(disp) {
         e.emit_u8(modrm(0b01, reg3, 0b100));
-        e.emit_u8(sib(0b00, index.idx3(), base3));
+        e.emit_u8(sib(scale2, index.idx3(), base3));
         e.emit_u8(disp as u8);
     } else {
         e.emit_u8(modrm(0b10, reg3, 0b100));
-        e.emit_u8(sib(0b00, index.idx3(), base3));
+        e.emit_u8(sib(scale2, index.idx3(), base3));
         emit_i32(e, disp);
     }
+}
+
+/// Emit ModR/M + SIB for [base + index*1 + disp].
+fn emit_modrm_mem_idx(e: &mut TextEmitter, reg3: u8, base: X86Reg, index: X86Reg, disp: i32) {
+    emit_modrm_mem_idx_scaled(e, reg3, base, index, 0b00, disp);
 }
 
 /// Emit REX for a [base + index] memory operand. `r` is the reg-field
@@ -1109,6 +1122,14 @@ pub(crate) fn jmp_reg(e: &mut TextEmitter, target: X86Reg) {
     }
     e.emit_u8(0xFF);
     e.emit_u8(modrm(0b11, 4, target.idx3()));
+}
+
+/// JMP qword [base + index*8] (FF /4) — table dispatch in one
+/// instruction: the SIB scale replaces the shift/add/load chain.
+pub(crate) fn jmp_mem_index_scale8(e: &mut TextEmitter, base: X86Reg, index: X86Reg) {
+    emit_rex_idx(e, false, false, index, base);
+    e.emit_u8(0xFF);
+    emit_modrm_mem_idx_scaled(e, 4, base, index, 0b11, 0);
 }
 
 /// RET (C3)
