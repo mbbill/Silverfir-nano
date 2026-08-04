@@ -462,9 +462,6 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                             )
                     });
                 if bool_is_dead {
-                    self.core.current_op_index = Some(prev_index);
-                    self.lower_cmp_values(fusion.width, fusion.lhs, fusion.rhs)?;
-                    let cc = super::fusion::map_int_cond(fusion.kind, fusion.sign);
                     let MachineInstKind::Select {
                         ty,
                         dst,
@@ -476,7 +473,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                         unreachable!("validated compare-select fusion");
                     };
                     self.core.current_op_index = Some(index);
-                    self.lower_select_with_cc(ty, dst, on_true, on_false, cc)?;
+                    self.lower_fused_compare_select(&fusion, ty, dst, on_true, on_false)?;
                     self.gp_scratch.assert_all_free();
                     self.fp_scratch.assert_all_free();
                     return Ok(());

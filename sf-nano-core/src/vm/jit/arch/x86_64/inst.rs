@@ -2070,19 +2070,50 @@ impl<'a> X86_64Backend<'a> {
     /// IntCompare + Select). The caller emitted the compare; operand
     /// materialization here must not clobber flags, so immediates use
     /// `mov` forms only (`materialize_value_flags_safe`).
-    pub(super) fn lower_select_with_cc(
+    pub(super) fn lower_fused_compare_select(
         &mut self,
+        fusion: &super::fusion::IntCompareSelect,
         ty: MachineStorageType,
         dst: MachineReg,
         on_true: MachineValue,
         on_false: MachineValue,
-        cc: Cc,
     ) -> Result<(), WasmError> {
         let dst = self.map_gp_reg(dst)?;
+
+        // Pre-materialize one zero immediate while EFLAGS is still dead:
+        // the xor zero idiom is shorter and dependency-breaking but
+        // clobbers flags, so it must precede the compare. Only one
+        // operand can be held across `lower_cmp_values`, which pins two
+        // of the three pool scratches itself.
+        let mut pre_guard = None;
+        let mut pre_true: Option<X86Reg> = None;
+        let mut pre_false: Option<X86Reg> = None;
+        if on_true == MachineValue::Imm64(0) {
+            let guard = self.gp_scratch.scoped_alloc().detach();
+            enc::xor_rr_32(&mut self.core.text, *guard, *guard);
+            pre_true = Some(*guard);
+            pre_guard = Some(guard);
+        } else if on_false == MachineValue::Imm64(0) {
+            let guard = self.gp_scratch.scoped_alloc().detach();
+            enc::xor_rr_32(&mut self.core.text, *guard, *guard);
+            pre_false = Some(*guard);
+            pre_guard = Some(guard);
+        }
+
+        self.lower_cmp_values(fusion.width, fusion.lhs, fusion.rhs)?;
+        let cc = super::fusion::map_int_cond(fusion.kind, fusion.sign);
+
+        // --- flags live from here to the CMOV ---
         let scratch0 = self.gp_scratch.scoped_alloc().detach();
+        let true_reg = match pre_true {
+            Some(reg) => reg,
+            None => self.materialize_value_flags_safe(*scratch0, on_true)?,
+        };
         let scratch1 = self.gp_scratch.scoped_alloc().detach();
-        let true_reg = self.materialize_value_flags_safe(*scratch0, on_true)?;
-        let false_reg = self.materialize_value_flags_safe(*scratch1, on_false)?;
+        let false_reg = match pre_false {
+            Some(reg) => reg,
+            None => self.materialize_value_flags_safe(*scratch1, on_false)?,
+        };
         if dst == true_reg && dst != false_reg {
             self.emit_gp_cmov_ty(ty, cc.invert(), dst, false_reg)?;
         } else if dst == false_reg {
@@ -2091,6 +2122,7 @@ impl<'a> X86_64Backend<'a> {
             self.emit_gp_move_ty(ty, dst, false_reg)?;
             self.emit_gp_cmov_ty(ty, cc, dst, true_reg)?;
         }
+        drop(pre_guard);
         Ok(())
     }
 
