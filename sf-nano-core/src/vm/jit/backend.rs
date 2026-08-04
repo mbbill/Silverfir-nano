@@ -259,5 +259,13 @@ mod tests {
         assert_eq!(config.gp_arg_lanes, 4);
         assert_eq!(config.fp_arg_lanes, 2);
         assert!(config.scalar_return_lanes);
+        assert!(!config.gp32_defs_zero_extend);
+    }
+
+    #[test]
+    fn backend_config_gp32_zero_extending_defs_is_opt_in() {
+        let config = BackendConfig::with_volatility(8, 6, 4, 1, 5, 3, 4, 2, true, 3)
+            .with_gp32_zero_extending_defs();
+        assert!(config.gp32_defs_zero_extend);
     }
 }
