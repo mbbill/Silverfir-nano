@@ -438,10 +438,17 @@ pub(crate) fn movabs_ri_64(e: &mut TextEmitter, dst: X86Reg, imm: u64) {
 /// MOV r32, imm32 (B8+rd id) — zero-extends to 64-bit
 pub(crate) fn mov_ri_32(e: &mut TextEmitter, dst: X86Reg, imm: u32) {
     if imm == 0 {
-        // XOR r32, r32 is smaller and faster
+        // XOR r32, r32 is smaller and faster — but clobbers EFLAGS; use
+        // `mov_ri_32_no_flags` where live flags must survive.
         xor_rr_32(e, dst, dst);
         return;
     }
+    mov_ri_32_no_flags(e, dst, imm);
+}
+
+/// MOV r32, imm32 with no zero-idiom shortcut: never touches EFLAGS, for
+/// materialization between a compare and its flag consumer.
+pub(crate) fn mov_ri_32_no_flags(e: &mut TextEmitter, dst: X86Reg, imm: u32) {
     if dst.needs_rex_ext() {
         e.emit_u8(0x41); // REX.B
     }

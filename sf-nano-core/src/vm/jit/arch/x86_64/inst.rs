@@ -1666,12 +1666,36 @@ impl<'a> X86_64Backend<'a> {
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
-        self.lower_cmp_values(width, lhs, rhs)?;
         let dst = self.map_gp_reg(dst)?;
         let cc = map_int_cond(kind, sign);
+        // Preferred form: zero `dst` before the compare, then bare SETcc —
+        // the xor is a zero idiom (renamed, off the flag/critical path),
+        // kills SETcc's false dependency on the old register value, and
+        // makes the movzx redundant. Requires `dst` to not carry a compare
+        // operand.
+        if !self.value_maps_to_gp(&lhs, dst) && !self.value_maps_to_gp(&rhs, dst) {
+            enc::xor_rr_32(&mut self.core.text, dst, dst);
+            self.lower_cmp_values(width, lhs, rhs)?;
+            enc::setcc(&mut self.core.text, cc, dst);
+            return Ok(());
+        }
+        self.lower_cmp_values(width, lhs, rhs)?;
         enc::setcc(&mut self.core.text, cc, dst);
         enc::movzx_r32_r8(&mut self.core.text, dst, dst);
         Ok(())
+    }
+
+    /// True when `value` is a register operand that maps to the physical
+    /// GP register `phys`. Reserved cache registers are resolved through
+    /// the same mapping; unmappable values conservatively report `true`
+    /// so callers fall back to alias-safe forms.
+    fn value_maps_to_gp(&self, value: &MachineValue, phys: X86Reg) -> bool {
+        match value {
+            MachineValue::Imm64(_) => false,
+            MachineValue::Reg(reg) | MachineValue::ReservedReg(reg) => {
+                self.map_gp_reg(*reg).map(|r| r == phys).unwrap_or(true)
+            }
+        }
     }
 
     pub(super) fn lower_cmp_values(
@@ -1897,6 +1921,12 @@ impl<'a> X86_64Backend<'a> {
     ) -> Result<(), WasmError> {
         let dst = self.map_gp_reg(dst)?;
         let src = self.map_gp_reg(src)?;
+        // Same pre-zeroed SETcc form as `lower_int_compare`: valid when
+        // `dst` carries neither TEST operand.
+        let prezeroed = dst != src && !self.value_maps_to_gp(&mask, dst);
+        if prezeroed {
+            enc::xor_rr_32(&mut self.core.text, dst, dst);
+        }
         let scratch = self.gp_scratch.scoped_alloc().detach();
         // Emit TEST to set flags.
         match mask {
@@ -1938,7 +1968,9 @@ impl<'a> X86_64Backend<'a> {
             _ => return Err(WasmError::internal("TestBits: unsupported compare kind")),
         };
         enc::setcc(&mut self.core.text, cc, dst);
-        enc::movzx_r32_r8(&mut self.core.text, dst, dst);
+        if !prezeroed {
+            enc::movzx_r32_r8(&mut self.core.text, dst, dst);
+        }
         Ok(())
     }
 
@@ -2032,6 +2064,52 @@ impl<'a> X86_64Backend<'a> {
             }
             Ok(())
         }
+    }
+
+    /// GP select consuming an already-live EFLAGS condition (fused
+    /// IntCompare + Select). The caller emitted the compare; operand
+    /// materialization here must not clobber flags, so immediates use
+    /// `mov` forms only (`materialize_value_flags_safe`).
+    pub(super) fn lower_select_with_cc(
+        &mut self,
+        ty: MachineStorageType,
+        dst: MachineReg,
+        on_true: MachineValue,
+        on_false: MachineValue,
+        cc: Cc,
+    ) -> Result<(), WasmError> {
+        let dst = self.map_gp_reg(dst)?;
+        let scratch0 = self.gp_scratch.scoped_alloc().detach();
+        let scratch1 = self.gp_scratch.scoped_alloc().detach();
+        let true_reg = self.materialize_value_flags_safe(*scratch0, on_true)?;
+        let false_reg = self.materialize_value_flags_safe(*scratch1, on_false)?;
+        if dst == true_reg && dst != false_reg {
+            self.emit_gp_cmov_ty(ty, cc.invert(), dst, false_reg)?;
+        } else if dst == false_reg {
+            self.emit_gp_cmov_ty(ty, cc, dst, true_reg)?;
+        } else {
+            self.emit_gp_move_ty(ty, dst, false_reg)?;
+            self.emit_gp_cmov_ty(ty, cc, dst, true_reg)?;
+        }
+        Ok(())
+    }
+
+    /// `materialize_value` variant that never touches EFLAGS: the zero
+    /// immediate uses `mov r32, 0` instead of the xor zero idiom.
+    fn materialize_value_flags_safe(
+        &mut self,
+        scratch: X86Reg,
+        value: MachineValue,
+    ) -> Result<X86Reg, WasmError> {
+        if let MachineValue::Imm64(imm) = value {
+            if imm <= u32::MAX as u64 {
+                enc::mov_ri_32_no_flags(&mut self.core.text, scratch, imm as u32);
+            } else {
+                enc::mov_ri_64(&mut self.core.text, scratch, imm);
+            }
+            return Ok(scratch);
+        }
+        self.materialize_value(scratch, value)
     }
 
     // ── Convert (integer parts only — float conversions are Phase 4) ─────────

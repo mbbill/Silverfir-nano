@@ -13,9 +13,9 @@ use crate::{
     vm::{
         jit::machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
-            MachineIntWidth, MachineReg, MachineReturnAbi, MachineStorageType, MachineTerminator,
-            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
-            MACHINE_MEM0_SIZE_REG,
+            MachineInstKind, MachineIntWidth, MachineReg, MachineReturnAbi, MachineStorageType,
+            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -448,12 +448,48 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                     return Ok(());
                 }
             }
+            if let Some(fusion) = super::fusion::int_compare_select_fusion(prev, inst) {
+                let bool_is_dead = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .is_some_and(|block| {
+                        fusion.bool_reg == fusion.select_result
+                            || !crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                                &block.ops[index + 1..],
+                                &block.terminator,
+                                fusion.bool_reg,
+                            )
+                    });
+                if bool_is_dead {
+                    self.core.current_op_index = Some(prev_index);
+                    self.lower_cmp_values(fusion.width, fusion.lhs, fusion.rhs)?;
+                    let cc = super::fusion::map_int_cond(fusion.kind, fusion.sign);
+                    let MachineInstKind::Select {
+                        ty,
+                        dst,
+                        on_true,
+                        on_false,
+                        cond: _,
+                    } = inst.kind
+                    else {
+                        unreachable!("validated compare-select fusion");
+                    };
+                    self.core.current_op_index = Some(index);
+                    self.lower_select_with_cc(ty, dst, on_true, on_false, cc)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
             self.core.current_op_index = Some(prev_index);
             self.lower_inst(prev)?;
             self.gp_scratch.assert_all_free();
             self.fp_scratch.assert_all_free();
         }
-        if super::fusion::fusible_load(&inst.kind) {
+        if super::fusion::fusible_load(&inst.kind)
+            || matches!(inst.kind, MachineInstKind::IntCompare { .. })
+        {
             self.pending_op = Some((inst, index));
             return Ok(());
         }

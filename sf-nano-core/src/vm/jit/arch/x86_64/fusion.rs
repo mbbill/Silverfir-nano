@@ -4,7 +4,7 @@ use super::enc::{Cc, MemAluOp};
 use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind,
     MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineRegOwner, MachineSign, MachineValue,
+    MachineRegOwner, MachineSign, MachineStorageType, MachineValue,
 };
 
 /// A fused `load + ALU` pair: `dst <- dst OP [mem]` in one instruction,
@@ -133,6 +133,66 @@ fn load_form_matches(width: MachineMemWidth, extension: MachineLoadExtension) ->
         | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => true,
         _ => false,
     }
+}
+
+/// A fusible `IntCompare + Select` pair: the compare's boolean feeds the
+/// select's condition and nothing else, so the select's CMOV can consume
+/// the compare's flags directly — no SETcc materialization and no re-TEST.
+/// The caller must additionally prove `bool_reg` dead after the select.
+pub(super) struct IntCompareSelect {
+    pub width: MachineIntWidth,
+    pub kind: MachineCompareKind,
+    pub sign: MachineSign,
+    pub bool_reg: MachineReg,
+    pub lhs: MachineValue,
+    pub rhs: MachineValue,
+    pub select_result: MachineReg,
+}
+
+pub(super) fn int_compare_select_fusion(
+    compare: &MachineInst,
+    select: &MachineInst,
+) -> Option<IntCompareSelect> {
+    let MachineInstKind::IntCompare {
+        width,
+        kind,
+        sign,
+        dst: bool_reg,
+        lhs,
+        rhs,
+    } = compare.kind
+    else {
+        return None;
+    };
+    let MachineInstKind::Select {
+        ty,
+        dst: select_result,
+        on_true,
+        on_false,
+        cond: MachineValue::Reg(cond),
+    } = select.kind
+    else {
+        return None;
+    };
+    // GP selects only: the FP select path branches and re-tests, and V128
+    // has no CMOV form.
+    if ty.float_width().is_some()
+        || ty == MachineStorageType::V128
+        || cond != bool_reg
+        || on_true == MachineValue::Reg(bool_reg)
+        || on_false == MachineValue::Reg(bool_reg)
+    {
+        return None;
+    }
+    Some(IntCompareSelect {
+        width,
+        kind,
+        sign,
+        bool_reg,
+        lhs,
+        rhs,
+        select_result,
+    })
 }
 
 pub(super) fn map_int_cond(kind: MachineCompareKind, sign: MachineSign) -> Cc {

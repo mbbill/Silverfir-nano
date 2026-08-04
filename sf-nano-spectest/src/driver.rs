@@ -303,6 +303,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         path: "regalloc_scratch_saturation.wast",
         content: include_str!("../tests/regalloc_scratch_saturation.wast"),
     });
+    wast_inputs.push(WastInput::Embedded {
+        path: "fused_select_flags.wast",
+        content: include_str!("../tests/fused_select_flags.wast"),
+    });
     wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
     info!("Found {} WAST files", wast_inputs.len());
 
