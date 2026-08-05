@@ -2151,19 +2151,21 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     if self.dead {
                         continue;
                     }
-                    self.fc_op(fc, &op.imm.clone())?;
+                    self.fc_op(fc, &op.imm)?;
                     continue;
                 }
                 WasmOpcode::FB(fb) => {
                     if self.dead {
                         continue;
                     }
-                    self.fb_op(fb, &op.imm.clone())?;
+                    self.fb_op(fb, &op.imm)?;
                     continue;
                 }
                 other => return Err(unsupported_opcode(other)),
             };
-            let imm = op.imm.clone();
+            // Borrowed, not cloned: the decoded op outlives the iteration
+            // and nothing in the body touches the stream again.
+            let imm = &op.imm;
             if o == Opcode::TRY_TABLE {
                 self.force_canonical_loop_homes = true;
             }
@@ -2173,7 +2175,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
             if self.dead {
                 match o {
                     Opcode::BLOCK | Opcode::LOOP | Opcode::IF => {
-                        let (p, r) = match &imm {
+                        let (p, r) = match imm {
                             Immediate::Block(bt) => block_arity(self.types, bt)?,
                             _ => (0, 0),
                         };
@@ -2203,7 +2205,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         });
                     }
                     Opcode::TRY_TABLE => {
-                        let (bt, catches) = match &imm {
+                        let (bt, catches) = match imm {
                             Immediate::TryTable {
                                 block_type,
                                 catches,
@@ -2274,7 +2276,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.dead = true;
                 }
                 Opcode::BLOCK | Opcode::LOOP => {
-                    let (p, r) = match &imm {
+                    let (p, r) = match imm {
                         Immediate::Block(bt) => block_arity(self.types, bt)?,
                         _ => (0, 0),
                     };
@@ -2350,7 +2352,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     });
                 }
                 Opcode::IF => {
-                    let (p, r) = match &imm {
+                    let (p, r) = match imm {
                         Immediate::Block(bt) => block_arity(self.types, bt)?,
                         _ => (0, 0),
                     };
@@ -2440,7 +2442,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     }
                 }
                 Opcode::BR => {
-                    let d = match imm {
+                    let d = match *imm {
                         Immediate::LabelIndex(d) => d,
                         _ => return Err(desync()),
                     };
@@ -2453,7 +2455,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.dead = true;
                 }
                 Opcode::BR_IF => {
-                    let d = match imm {
+                    let d = match *imm {
                         Immediate::LabelIndex(d) => d,
                         _ => return Err(desync()),
                     };
@@ -2558,7 +2560,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 }
                 Opcode::CALL | Opcode::RETURN_CALL => {
                     let tail = o == Opcode::RETURN_CALL;
-                    let fidx = match imm {
+                    let fidx = match *imm {
                         Immediate::FunctionIndex(i) => i,
                         _ => return Err(desync()),
                     };
@@ -2582,7 +2584,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 }
                 Opcode::CALL_INDIRECT | Opcode::RETURN_CALL_INDIRECT => {
                     let tail = o == Opcode::RETURN_CALL_INDIRECT;
-                    let (tidx, table) = match imm {
+                    let (tidx, table) = match *imm {
                         Immediate::CallIndirectArgs { typeidx, tableidx } => (typeidx, tableidx),
                         _ => return Err(desync()),
                     };
@@ -2637,27 +2639,27 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.push_result_temp(idx);
                 }
                 Opcode::LOCAL_GET => {
-                    if let Immediate::LocalIndex(i) = imm {
+                    if let Immediate::LocalIndex(i) = *imm {
                         self.stack.push(Desc::Local(i));
                     }
                 }
                 Opcode::LOCAL_SET => {
-                    if let Immediate::LocalIndex(i) = imm {
+                    if let Immediate::LocalIndex(i) = *imm {
                         self.local_set(i, false)?;
                     }
                 }
                 Opcode::LOCAL_TEE => {
-                    if let Immediate::LocalIndex(i) = imm {
+                    if let Immediate::LocalIndex(i) = *imm {
                         self.local_set(i, true)?;
                     }
                 }
                 Opcode::I32_CONST => {
-                    if let Immediate::I32(v) = imm {
+                    if let Immediate::I32(v) = *imm {
                         self.stack.push(Desc::ConstV(v as u32 as u64));
                     }
                 }
                 Opcode::I64_CONST => {
-                    if let Immediate::I64(v) = imm {
+                    if let Immediate::I64(v) = *imm {
                         self.stack.push(Desc::ConstV(v as u64));
                     }
                 }
@@ -2668,7 +2670,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     )));
                 }
                 Opcode::REF_FUNC => {
-                    if let Immediate::FunctionIndex(i) = imm {
+                    if let Immediate::FunctionIndex(i) = *imm {
                         let handle =
                             self.function_handles
                                 .get(i as usize)
@@ -2687,7 +2689,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 // a whole feature the engine lacks, not one stray opcode, and
                 // saying so is what tells a reader where the boundary is.
                 Opcode::TRY_TABLE => {
-                    let (bt, catches) = match &imm {
+                    let (bt, catches) = match imm {
                         Immediate::TryTable {
                             block_type,
                             catches,
@@ -2725,7 +2727,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     });
                 }
                 Opcode::THROW => {
-                    let tag_idx = match imm {
+                    let tag_idx = match *imm {
                         Immediate::TagIndex(t) => t,
                         _ => return Err(desync()),
                     };
@@ -2761,7 +2763,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.dead = true;
                 }
                 Opcode::BR_ON_NULL | Opcode::BR_ON_NON_NULL => {
-                    let d = match imm {
+                    let d = match *imm {
                         Immediate::LabelIndex(d) => d,
                         _ => return Err(desync()),
                     };
@@ -2814,7 +2816,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 }
                 Opcode::CALL_REF | Opcode::RETURN_CALL_REF => {
                     let tail = o == Opcode::RETURN_CALL_REF;
-                    let tidx = match imm {
+                    let tidx = match *imm {
                         Immediate::TypeIndex(t) => t,
                         _ => return Err(desync()),
                     };
@@ -2836,7 +2838,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     )?;
                 }
                 Opcode::TABLE_GET => {
-                    let t = match imm {
+                    let t = match *imm {
                         Immediate::TableIndex(t) => t,
                         _ => return Err(desync()),
                     };
@@ -2849,7 +2851,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.push_result_temp(idx);
                 }
                 Opcode::TABLE_SET => {
-                    let t = match imm {
+                    let t = match *imm {
                         Immediate::TableIndex(t) => t,
                         _ => return Err(desync()),
                     };
@@ -2868,17 +2870,17 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.emit(Op::TableSet, flags, a, b, t as u64);
                 }
                 Opcode::F32_CONST => {
-                    if let Immediate::F32(v) = imm {
+                    if let Immediate::F32(v) = *imm {
                         self.stack.push(Desc::ConstV(v.to_bits() as u64));
                     }
                 }
                 Opcode::F64_CONST => {
-                    if let Immediate::F64(v) = imm {
+                    if let Immediate::F64(v) = *imm {
                         self.stack.push(Desc::ConstV(v.to_bits()));
                     }
                 }
                 Opcode::GLOBAL_GET => {
-                    let g = match imm {
+                    let g = match *imm {
                         Immediate::GlobalIndex(g) => g,
                         _ => return Err(desync()),
                     };
@@ -2892,7 +2894,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.push_result_temp(idx);
                 }
                 Opcode::GLOBAL_SET => {
-                    let g = match imm {
+                    let g = match *imm {
                         Immediate::GlobalIndex(g) => g,
                         _ => return Err(desync()),
                     };
@@ -2909,7 +2911,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.emit(Op::GlobalSet, flags, a, 0, g as u64);
                 }
                 Opcode::MEMORY_SIZE => {
-                    let m = match imm {
+                    let m = match *imm {
                         Immediate::MemoryIndex(m) => m as u64,
                         _ => 0,
                     };
@@ -2922,7 +2924,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     let d = self.pop()?;
                     let (a, a_const) = self.operand(d, at);
                     let flags = if a_const { FLAG_A_CONST } else { 0 };
-                    let m = match imm {
+                    let m = match *imm {
                         Immediate::MemoryIndex(m) => m as u64,
                         _ => 0,
                     };
@@ -2931,7 +2933,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.push_result_temp(idx);
                 }
                 Opcode::BR_TABLE => {
-                    let (labels, default) = match &imm {
+                    let (labels, default) = match imm {
                         Immediate::BrLabels(labels, default) => (labels.clone(), *default),
                         _ => return Err(desync()),
                     };
@@ -3033,7 +3035,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     } else if let Some(vop) = wasm_unop(o) {
                         self.value_op(vop, 1)?;
                     } else if let Some(lop) = wasm_load(o) {
-                        let offset = match &imm {
+                        let offset = match imm {
                             Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
                             _ => return Err(desync()),
                         };
@@ -3102,7 +3104,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             self.push_result_temp(idx);
                         }
                     } else if let Some(sop) = wasm_store(o) {
-                        let offset = match &imm {
+                        let offset = match imm {
                             Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
                             _ => return Err(desync()),
                         };
