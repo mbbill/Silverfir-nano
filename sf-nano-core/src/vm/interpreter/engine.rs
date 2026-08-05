@@ -14,15 +14,16 @@
 
 use tracked_alloc::boxed::Box;
 
-use crate::collections::{vec, Vec};
+use crate::collections::Vec;
 
 use super::instr::{
-    operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
-    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
+    operand_is_f32, operand_is_float, result_is_f32, result_is_float, Instr, Op, FLAG_ADDR64,
+    FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
+    FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
 use super::layout::{
-    build_op_base, c_is_branch_target, family, native_guard, op_slot, operand_is_f32,
-    result_is_f32, slot_fields, total_slots, transform_bc, writes_acc, Fam, Pinned, N_OPS,
+    c_is_branch_target, family, native_guard, op_slot, slot_fields, total_slots, transform_bc,
+    writes_acc, Fam, Pinned,
 };
 use super::predecode::PredecodedFunction;
 
@@ -113,6 +114,37 @@ pub(super) struct LinkedFunction {
     pub fp_pinned: bool,
 }
 
+/// Per-function working buffers the linker reuses across a module.
+///
+/// Every one of these is sized by the function being linked and dead the
+/// moment it is done, so a module with 14 k functions otherwise pays 14 k
+/// allocation/free pairs for each of them. The linker owns their contents
+/// only inside one `link` call; nothing here outlives it.
+#[derive(Default)]
+pub(super) struct LinkScratch {
+    /// Link-resolved flags: the predecoder's, with acc hints stripped
+    /// wherever the pair could not be honored.
+    flags: Vec<u16>,
+    /// `handler_for(code[i], flags[i], pin)` for every cell, with 0 for
+    /// "no native form" (the blob base is never a handler address). The
+    /// acc pass reads it for both sides of every candidate pair and the
+    /// cell loop reads it again, so it is computed once and kept in step
+    /// with `flags` at each strip.
+    handler: Vec<usize>,
+    counts: Vec<u64>,
+    wdom: Vec<u8>,
+    rdom: Vec<u8>,
+    f32dom: Vec<bool>,
+    table_byte_off: Vec<u64>,
+    brtable_native: Vec<bool>,
+}
+
+/// Clear `v` and refill it with `n` copies of `fill`, keeping its buffer.
+fn reset<T: Clone>(v: &mut Vec<T>, n: usize, fill: T) {
+    v.clear();
+    v.resize(n, fill);
+}
+
 /// Pick the function's pinned locals — the most- and second-most-
 /// referenced slots, by UNWEIGHTED static count (`u64::MAX` = none).
 ///
@@ -125,22 +157,29 @@ pub(super) struct LinkedFunction {
 /// them anyway. A write-biased score (reads + 2*writes) measured
 /// inconclusive on CoreMark, which the traffic model says cannot show the
 /// effect — it stays open.
-fn select_pinned(func: &PredecodedFunction) -> Pinned {
+fn select_pinned(func: &PredecodedFunction, scratch: &mut LinkScratch) -> Pinned {
     let n = func.n_locals as u64;
     if n == 0 {
         return Pinned::NONE;
     }
-    let mut counts = vec![0u64; func.n_locals as usize];
+    let LinkScratch {
+        counts,
+        wdom,
+        rdom,
+        f32dom,
+        ..
+    } = scratch;
+    reset(counts, func.n_locals as usize, 0u64);
     // Per-slot domain sets (bit 0 = integer/agnostic, bit 1 = float):
     // writers decide the pinned register file; mixed writers make the slot
     // unpinnable (neither file could stay authoritative). Readers only
     // break the tie when no writer exists.
-    let mut wdom = vec![0u8; func.n_locals as usize];
-    let mut rdom = vec![0u8; func.n_locals as usize];
+    reset(wdom, func.n_locals as usize, 0u8);
+    reset(rdom, func.n_locals as usize, 0u8);
     // Whether a slot's float accesses are single-precision. Some backends
     // cannot hold an f32 in a pinned float register (see
     // `INTERP_FLOAT_PIN_F32`), so the width has to be known here.
-    let mut f32dom = vec![false; func.n_locals as usize];
+    reset(f32dom, func.n_locals as usize, false);
     for ins in func.code.iter() {
         let (a_s, b_s, c_d) = slot_fields(ins.op);
         if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
@@ -264,7 +303,6 @@ pub(super) const NATIVE_CALLS: bool = INTERP_NATIVE_CALLS;
 pub(super) struct NativeEngine {
     base: usize,
     handlers: *const u32,
-    op_base: [u32; N_OPS],
     slow_stub: usize,
     call_handler: usize,
     callindirect_handler: usize,
@@ -293,7 +331,6 @@ impl NativeEngine {
         NativeEngine {
             base,
             handlers: unsafe { &sf_interp_handlers as *const u32 },
-            op_base: build_op_base(),
             slow_stub,
             call_handler: base + meta[3] as usize,
             callindirect_handler: base + meta[4] as usize,
@@ -348,13 +385,17 @@ impl NativeEngine {
         if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL) != 0 {
             return None;
         }
-        let slot = op_slot(ins, flags, pin, &self.op_base)?;
+        let slot = op_slot(ins, flags, pin)?;
         self.handler_at(slot)
     }
 
     /// Build the dispatch cells for one predecoded function.
-    pub(super) fn link(&self, func: &PredecodedFunction) -> LinkedFunction {
-        let pin = select_pinned(func);
+    pub(super) fn link(
+        &self,
+        func: &PredecodedFunction,
+        scratch: &mut LinkScratch,
+    ) -> LinkedFunction {
+        let pin = select_pinned(func, scratch);
 
         // Resolve the predecoder's acc hints: an acc consumer's producer
         // is EXACTLY the preceding cell (strict adjacency). Honor the mark
@@ -363,7 +404,21 @@ impl NativeEngine {
         // store again. Lookups are pinning-aware: a pinned operand
         // outranks its acc flag inside `op_slot`, so a stripped flag on
         // such an operand is inert either way.
-        let mut flags: Vec<u16> = func.code.iter().map(|i| i.flags).collect();
+        //
+        // `scratch.handler[i]` mirrors `scratch.flags[i]` from here to the
+        // cell loop: every strip below updates it, so no cell's variant is
+        // classified twice.
+        let flags = &mut scratch.flags;
+        flags.clear();
+        flags.extend(func.code.iter().map(|i| i.flags));
+        let handler = &mut scratch.handler;
+        handler.clear();
+        handler.extend(
+            func.code
+                .iter()
+                .zip(flags.iter())
+                .map(|(ins, &fl)| self.handler_for(ins, fl, &pin).unwrap_or(0)),
+        );
         for j in 0..func.code.len() {
             if flags[j] & (FLAG_A_ACC | FLAG_B_ACC) == 0 {
                 continue;
@@ -375,17 +430,18 @@ impl NativeEngine {
             let prev_is_call = j > 0 && matches!(func.code[j - 1].op, Op::Call | Op::CallIndirect);
             let ok = j > 0
                 && (writes_acc(func.code[j - 1].op) || prev_is_call)
-                && (prev_is_call
-                    || self
-                        .handler_for(&func.code[j - 1], flags[j - 1], &pin)
-                        .is_some())
-                && self.handler_for(&func.code[j], flags[j], &pin).is_some()
+                && (prev_is_call || handler[j - 1] != 0)
+                && handler[j] != 0
                 && native_guard(&func.code[j - 1])
                 && native_guard(&func.code[j]);
             if !ok {
                 flags[j] &= !(FLAG_A_ACC | FLAG_B_ACC);
+                handler[j] = self.handler_for(&func.code[j], flags[j], &pin).unwrap_or(0);
                 if j > 0 {
                     flags[j - 1] &= !FLAG_DST_ACC;
+                    handler[j - 1] = self
+                        .handler_for(&func.code[j - 1], flags[j - 1], &pin)
+                        .unwrap_or(0);
                 }
             }
         }
@@ -396,6 +452,7 @@ impl NativeEngine {
                 && (i + 1 >= func.code.len() || flags[i + 1] & (FLAG_A_ACC | FLAG_B_ACC) == 0)
             {
                 flags[i] &= !FLAG_DST_ACC;
+                handler[i] = self.handler_for(&func.code[i], flags[i], &pin).unwrap_or(0);
             }
         }
 
@@ -403,7 +460,8 @@ impl NativeEngine {
         // into the flat buffer until the final address fixup below.
         let total: usize = func.br_tables.iter().map(|t| t.len()).sum();
         let mut br_flat: Vec<u32> = Vec::with_capacity(total);
-        let mut table_byte_off: Vec<u64> = Vec::with_capacity(func.br_tables.len());
+        let table_byte_off = &mut scratch.table_byte_off;
+        table_byte_off.clear();
         for t in func.br_tables.iter() {
             table_byte_off.push(br_flat.len() as u64 * 4);
             for &target in t.iter() {
@@ -421,10 +479,11 @@ impl NativeEngine {
         // slow stub, so control reaching it exits cleanly rather than
         // jumping through uninitialized memory.
         let mut cells = Vec::with_capacity(func.code.len() + 1);
-        let mut brtable_native = vec![false; func.code.len()];
+        let brtable_native = &mut scratch.brtable_native;
+        reset(brtable_native, func.code.len(), false);
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
-            let mut h = self.handler_for(ins, fl, &pin);
+            let mut h = Some(handler[i]).filter(|&h| h != 0);
             if !native_guard(ins) {
                 h = None;
             }
