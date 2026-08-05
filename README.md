@@ -63,12 +63,7 @@ optimizing JIT and an interpreter behind one API
 
 **[Full benchmark results — every chart, the method, and the caveats →](benchmarks/wasi/README.md)**
 
-Against other engines, both tiers lead their class in the external
-[wasmi-benchmarks](https://github.com/wasmi-labs/wasmi-benchmarks) suite: the
-JIT is the fastest of six JITs across its 20 execution workloads, and the
-interpreter is the fastest interpreter on every case the class completed.
-**[Cross-engine report — 22 engines, 21 workloads, chart per workload →](https://mbbill.github.io/Silverfir-nano/benchmarks/wasmi_benchmarks/report.html)** ·
-[how the run was collected](benchmarks/wasmi_benchmarks/README.md)
+**[Against 21 other engines in wasmi-benchmarks →](https://mbbill.github.io/Silverfir-nano/benchmarks/wasmi_benchmarks/report.html)**
 
 ## Binary size
 
