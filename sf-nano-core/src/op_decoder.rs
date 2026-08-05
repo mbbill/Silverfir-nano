@@ -365,7 +365,9 @@ impl<'a, 'b> Decoder<'a, 'b> {
             return Err(WasmError::malformed("Unexpected end of code"));
         }
         let op_offset = payload.position();
-        let op: Opcode = payload.read_u8()?.try_into()?;
+        let Some(op) = Opcode::from_repr(payload.read_u8()?) else {
+            return Err(WasmError::malformed("invalid opcode"));
+        };
         match op {
             END => {
                 let wasm_op = OP(op);
