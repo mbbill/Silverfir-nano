@@ -1,6 +1,5 @@
 use crate::collections;
 
-use core::cell::{Cell, RefCell};
 use core::fmt;
 
 use crate::{
@@ -286,23 +285,31 @@ pub struct DecodedOp {
 
 pub struct Decoder<'a, 'b> {
     handlers: collections::Vec<&'a mut dyn OpcodeHandler>,
-    // Lazy decode state (interior mutability to avoid borrow conflicts with handlers)
-    payload: RefCell<Payload<'b>>,
-    decoded_ops: RefCell<collections::Vec<DecodedOp>>,
-    decoded_base: Cell<usize>,
-    end_reached: Cell<bool>,
-    retain_decoded_ops: Cell<bool>,
+    code: &'b [u8],
+    payload: Payload<'b>,
+    /// The op most recently decoded. Every consumer in this tree walks the
+    /// body strictly forwards, one op at a time, so there is one slot
+    /// rather than a buffer: a `Vec` of `DecodedOp` cost a push, a
+    /// capacity check and a periodic `drain` memmove per instruction, and
+    /// nothing ever read an op twice. Filled by `decode_one` before any
+    /// reference to it is handed out.
+    current: DecodedOp,
+    end_reached: bool,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
     pub fn new(code: &'b [u8]) -> Self {
         Decoder {
             handlers: collections::Vec::new(),
-            payload: RefCell::new(Payload::from(code)),
-            decoded_ops: RefCell::new(collections::Vec::new()),
-            decoded_base: Cell::new(0),
-            end_reached: Cell::new(false),
-            retain_decoded_ops: Cell::new(false),
+            code,
+            payload: Payload::from(code),
+            current: DecodedOp {
+                wasm_op: WasmOpcode::OP(Opcode::UNREACHABLE),
+                op_offset: 0,
+                next_op_offset: 0,
+                imm: Immediate::None,
+            },
+            end_reached: false,
         }
     }
 
@@ -320,15 +327,17 @@ impl<'a, 'b> Decoder<'a, 'b> {
     pub fn decode_function(&mut self) -> Result<(), WasmError> {
         self.notify_handlers(|h| h.on_decode_begin())?;
 
-        // Drive each handler with a fresh stream that can lazily decode as needed
+        // Drive each handler with its own pass over the body.
         // Move out the handler references to avoid borrow conflicts while streaming over `self`.
         let mut handlers = core::mem::take(&mut self.handlers);
-        self.retain_decoded_ops.set(handlers.len() > 1);
         for handler in handlers.iter_mut() {
-            let mut stream = OpStream {
-                decoder: self,
-                cursor: 0,
-            };
+            // Ops live in one slot, so a second handler re-reads the bytes
+            // instead of replaying a retained vector. Offsets are absolute
+            // positions in `code`, so a restarted pass yields exactly the
+            // same ops; every consumer in this tree registers one handler.
+            self.payload = Payload::from(self.code);
+            self.end_reached = false;
+            let mut stream = OpStream { decoder: self };
             handler.on_stream(&mut stream)?;
         }
         // Put handlers back
@@ -340,13 +349,18 @@ impl<'a, 'b> Decoder<'a, 'b> {
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
-    fn decode_one(&self) -> Result<bool, WasmError> {
+    /// Decode the next op of the body into [`Decoder::current`].
+    fn decode_one(&mut self) -> Result<(), WasmError> {
         use crate::opcodes::{Opcode::*, OpcodeFB::*, OpcodeFC::*, WasmOpcode::*};
 
-        if self.end_reached.get() {
-            return Ok(false);
-        }
-        let mut payload = self.payload.borrow_mut();
+        // Disjoint field borrows: the arms below read through `payload`
+        // while writing the decoded op into `current`.
+        let Decoder {
+            payload,
+            current,
+            end_reached,
+            ..
+        } = self;
         if payload.is_empty() {
             return Err(WasmError::malformed("Unexpected end of code"));
         }
@@ -357,76 +371,76 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let wasm_op = OP(op);
                 let imm = Immediate::None;
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
                 if payload.is_empty() {
-                    self.end_reached.set(true);
+                    *end_reached = true;
                 }
             }
             UNREACHABLE => {
                 let wasm_op = OP(op);
                 let imm = Immediate::None;
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             BLOCK | LOOP | IF => {
-                let block_type = decode_block_type(&mut payload)?;
+                let block_type = decode_block_type(payload)?;
                 let wasm_op = OP(op);
                 let imm = Immediate::Block(block_type.clone());
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             BR | BR_IF => {
                 let imm1 = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::LabelIndex(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             THROW => {
                 let tag_idx = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::TagIndex(tag_idx);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             THROW_REF => {
                 let wasm_op = OP(op);
                 let imm = Immediate::None;
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             TRY_TABLE => {
-                let block_type = decode_block_type(&mut payload)?;
+                let block_type = decode_block_type(payload)?;
                 let n = payload.read_leb128_u32()?;
                 let mut catches: collections::Vec<CatchClause> =
                     collections::Vec::with_capacity(n as usize);
@@ -456,12 +470,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     catches,
                 };
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             BR_TABLE => {
                 let imm1 = payload.read_leb128_u32()?;
@@ -472,169 +486,169 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let wasm_op = OP(op);
                 let imm = Immediate::BrLabels(v_idx.clone(), default_idx);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             MEMORY_SIZE | MEMORY_GROW => {
                 let memidx = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::MemoryIndex(memidx);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             REF_NULL => {
-                let heap_type = HeapType::parse(&mut payload)?;
+                let heap_type = HeapType::parse(payload)?;
                 let ref_type = RefType::new(true, heap_type);
                 let value_type = ValueType::Ref(ref_type);
                 let wasm_op = OP(op);
                 let imm = Immediate::RefType(value_type);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             CALL => {
                 let imm1 = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::FunctionIndex(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             LOCAL_GET | LOCAL_SET | LOCAL_TEE => {
                 let imm1 = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::LocalIndex(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             GLOBAL_GET | GLOBAL_SET => {
                 let imm1 = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::GlobalIndex(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             TABLE_GET | TABLE_SET => {
                 let imm1 = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::TableIndex(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             REF_FUNC => {
                 let imm1 = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::FunctionIndex(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             REF_EQ | REF_AS_NON_NULL => {
                 let wasm_op = OP(op);
                 let imm = Immediate::None;
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             BR_ON_NULL | BR_ON_NON_NULL => {
                 let label = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::LabelIndex(label);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             I32_CONST => {
                 let imm1 = payload.read_leb128_i32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::I32(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             I64_CONST => {
                 let imm1 = payload.read_leb128_i64()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::I64(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             F32_CONST => {
                 let imm1 = payload.read_f32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::F32(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             F64_CONST => {
                 let imm1 = payload.read_f64()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::F64(imm1);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             CALL_INDIRECT => {
                 let typeidx = payload.read_leb128_u32()?;
@@ -642,36 +656,36 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let wasm_op = OP(op);
                 let imm = Immediate::CallIndirectArgs { typeidx, tableidx };
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             CALL_REF => {
                 let typeidx = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::TypeIndex(typeidx);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             RETURN_CALL => {
                 let func_idx = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::FunctionIndex(func_idx);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             RETURN_CALL_INDIRECT => {
                 let typeidx = payload.read_leb128_u32()?;
@@ -679,24 +693,24 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let wasm_op = OP(op);
                 let imm = Immediate::CallIndirectArgs { typeidx, tableidx };
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             RETURN_CALL_REF => {
                 let typeidx = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::TypeIndex(typeidx);
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             SELECT_T => {
                 let len = payload.read_leb128_u32()?;
@@ -709,26 +723,26 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let wasm_op = OP(op);
                 let imm = Immediate::SelectTypes(vec.clone());
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             I32_LOAD | I32_LOAD8_S | I32_LOAD8_U | I32_LOAD16_S | I32_LOAD16_U | I64_LOAD
             | I64_LOAD8_S | I64_LOAD8_U | I64_LOAD16_S | I64_LOAD16_U | I64_LOAD32_S
             | I64_LOAD32_U | F32_LOAD | F64_LOAD | I32_STORE | I32_STORE8 | I32_STORE16
             | I64_STORE | I64_STORE8 | I64_STORE16 | I64_STORE32 | F32_STORE | F64_STORE => {
                 let wasm_op = OP(op);
-                let imm = decode_mem_arg(&mut payload)?;
+                let imm = decode_mem_arg(payload)?;
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
             PREFIX_FB => {
                 let op_ext: OpcodeFB = payload.read_leb128_u32()?.try_into()?;
@@ -739,12 +753,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::TypeIndex(typeidx);
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     STRUCT_GET | STRUCT_SET | STRUCT_GET_S | STRUCT_GET_U => {
                         let typeidx = payload.read_leb128_u32()?;
@@ -752,24 +766,24 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::StructFieldArgs { typeidx, fieldidx };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     ARRAY_GET | ARRAY_SET | ARRAY_GET_S | ARRAY_GET_U => {
                         let typeidx = payload.read_leb128_u32()?;
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::TypeIndex(typeidx);
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     ARRAY_NEW_FIXED => {
                         let typeidx = payload.read_leb128_u32()?;
@@ -777,24 +791,24 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::ArrayNewFixed { typeidx, n };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     ARRAY_LEN | REF_I31 | I31_GET_S | I31_GET_U | ANY_CONVERT_EXTERN
                     | EXTERN_CONVERT_ANY => {
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::None;
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     ARRAY_COPY => {
                         let type1 = payload.read_leb128_u32()?;
@@ -802,12 +816,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::TwoTypeIndices { type1, type2 };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     ARRAY_INIT_DATA | ARRAY_INIT_ELEM | ARRAY_NEW_DATA | ARRAY_NEW_ELEM => {
                         let value1 = payload.read_leb128_u32()?;
@@ -815,26 +829,26 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::TwoU32s { value1, value2 };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     REF_TEST | REF_TEST_NULL | REF_CAST | REF_CAST_NULL => {
-                        let heap_type = HeapType::parse(&mut payload)?;
+                        let heap_type = HeapType::parse(payload)?;
                         let nullable = matches!(op_ext, REF_TEST_NULL | REF_CAST_NULL);
                         let ref_type = RefType::new(nullable, heap_type);
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::RefType(ValueType::Ref(ref_type));
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     BR_ON_CAST | BR_ON_CAST_FAIL => {
                         let flags = payload.read_u8()?;
@@ -842,8 +856,8 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         if flags & !0b11 != 0 {
                             return Err(WasmError::invalid("invalid br_on_cast flags"));
                         }
-                        let from_heap = HeapType::parse(&mut payload)?;
-                        let to_heap = HeapType::parse(&mut payload)?;
+                        let from_heap = HeapType::parse(payload)?;
+                        let to_heap = HeapType::parse(payload)?;
                         let rt1 = ValueType::Ref(RefType::new((flags & 0b01) != 0, from_heap));
                         let rt2 = ValueType::Ref(RefType::new((flags & 0b10) != 0, to_heap));
                         let wasm_op = FB(op_ext);
@@ -854,12 +868,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                             rt2,
                         };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                 }
             }
@@ -872,12 +886,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::MemoryInitArgs { dataidx, memidx };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     MEMORY_COPY => {
                         let dstidx = payload.read_leb128_u32()?;
@@ -885,60 +899,60 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::MemoryCopyArgs { dstidx, srcidx };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     MEMORY_FILL => {
                         let memidx = payload.read_leb128_u32()?;
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::MemoryIndex(memidx);
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     DATA_DROP => {
                         let dataidx = payload.read_leb128_u32()?;
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::DataIndex(dataidx);
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     ELEM_DROP => {
                         let elemidx = payload.read_leb128_u32()?;
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::ElementIndex(elemidx);
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     TABLE_GROW | TABLE_SIZE | TABLE_FILL => {
                         let tableidx = payload.read_leb128_u32()?;
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::TableIndex(tableidx);
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     TABLE_INIT => {
                         let elemidx = payload.read_leb128_u32()?;
@@ -946,12 +960,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::TableInitArgs { elemidx, tableidx };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     TABLE_COPY => {
                         let dstidx = payload.read_leb128_u32()?;
@@ -959,12 +973,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::TableCopyArgs { dstidx, srcidx };
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                     I32_TRUNC_SAT_F32_S | I32_TRUNC_SAT_F32_U | I32_TRUNC_SAT_F64_S
                     | I32_TRUNC_SAT_F64_U | I64_TRUNC_SAT_F32_S | I64_TRUNC_SAT_F32_U
@@ -972,12 +986,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         let wasm_op = FC(op_ext);
                         let imm = Immediate::None;
                         let next_off = payload.position();
-                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                        *current = DecodedOp {
                             wasm_op,
                             op_offset,
                             next_op_offset: next_off,
                             imm,
-                        });
+                        };
                     }
                 }
             }
@@ -991,14 +1005,14 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 #[cfg(sf_has_simd)]
                 {
                     let wasm_op = FD(op_ext);
-                    let imm = decode_fd_immediate(&mut payload, op_ext)?;
+                    let imm = decode_fd_immediate(payload, op_ext)?;
                     let next_off = payload.position();
-                    self.decoded_ops.borrow_mut().push(DecodedOp {
+                    *current = DecodedOp {
                         wasm_op,
                         op_offset,
                         next_op_offset: next_off,
                         imm,
-                    });
+                    };
                 }
             }
             NOP | ELSE | RETURN | DROP | SELECT | I32_EQZ | I32_EQ | I32_NE | I32_LT_S
@@ -1026,15 +1040,15 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let wasm_op = OP(op);
                 let imm = Immediate::None;
                 let next_off = payload.position();
-                self.decoded_ops.borrow_mut().push(DecodedOp {
+                *current = DecodedOp {
                     wasm_op,
                     op_offset,
                     next_op_offset: next_off,
                     imm,
-                });
+                };
             }
         }
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -1194,70 +1208,19 @@ fn decode_block_type(payload: &mut Payload<'_>) -> Result<BlockType, WasmError> 
 
 pub struct OpStream<'d, 'a, 'b> {
     decoder: &'d mut Decoder<'a, 'b>,
-    cursor: usize,
 }
 
 impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
-    const COMPACT_THRESHOLD: usize = 256;
-
-    fn compact_consumed_prefix(&mut self) {
-        if self.decoder.retain_decoded_ops.get() {
-            return;
-        }
-        let base = self.decoder.decoded_base.get();
-        let consumed = self.cursor.saturating_sub(base);
-        if consumed < Self::COMPACT_THRESHOLD {
-            return;
-        }
-        self.decoder.decoded_ops.borrow_mut().drain(..consumed);
-        self.decoder.decoded_base.set(self.cursor);
-    }
-
-    fn ensure(&mut self, need: usize) -> Result<(), WasmError> {
-        self.compact_consumed_prefix();
-        while !self.decoder.end_reached.get()
-            && self.decoder.decoded_base.get() + self.decoder.decoded_ops.borrow().len()
-                < self.cursor + need
-        {
-            self.decoder.decode_one()?;
-        }
-        Ok(())
-    }
-
-    /// Consume and return the next op, advancing the cursor.
+    /// Decode and return the next op, or `None` at the end of the body.
+    ///
+    /// The reference borrows the stream, so it is valid until the next
+    /// call — which is exactly how every consumer reads it.
     pub fn next(&mut self) -> Result<Option<&DecodedOp>, WasmError> {
-        self.ensure(1)?;
-        let base = self.decoder.decoded_base.get();
-        let relative = self.cursor.saturating_sub(base);
-        if relative >= self.decoder.decoded_ops.borrow().len() {
+        if self.decoder.end_reached {
             return Ok(None);
         }
-        let op = unsafe { &*self.decoder.decoded_ops.borrow().as_ptr().add(relative) };
-        self.cursor += 1;
-        Ok(Some(op))
-    }
-
-    /// Peek at current op without consuming it (equivalent to peek_at(0)).
-    pub fn peek(&mut self) -> Result<Option<&DecodedOp>, WasmError> {
-        self.peek_at(0)
-    }
-
-    /// Peek at op at offset from cursor (0 = current, 1 = next, etc.) without consuming.
-    /// Used for lookahead in instruction fusion.
-    pub fn peek_at(&mut self, offset: usize) -> Result<Option<&DecodedOp>, WasmError> {
-        self.ensure(offset + 1)?;
-        let base = self.decoder.decoded_base.get();
-        let relative = self.cursor + offset - base;
-        if relative >= self.decoder.decoded_ops.borrow().len() {
-            return Ok(None);
-        }
-        let op = unsafe { &*self.decoder.decoded_ops.borrow().as_ptr().add(relative) };
-        Ok(Some(op))
-    }
-
-    /// Skip n ops (consume without returning). Used after fusion pattern match.
-    pub fn skip(&mut self, n: usize) {
-        self.cursor += n;
+        self.decoder.decode_one()?;
+        Ok(Some(&self.decoder.current))
     }
 }
 
