@@ -151,10 +151,18 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
     // call-heavy bodies, where the fixed cost outweighs residency
     // (fibonacci-rec measured -4.4% at 3).
     .with_preserved_lane_save_overhead(5)
+    // x86_64 tuning: price region-boundary cache churn at 1.5x. On the
+    // Windows benchmark suite this reduced both frame traffic and code size.
+    .with_residency_edge_cost_percent(150)
     // r32-form instructions clear bits 63:32, so the peephole may drop
     // ZeroExtend32 index obligations whose index was defined by one.
     .with_gp32_zero_extending_defs()
 }
+
+const _: () = assert!(
+    compile_backend_config().residency_edge_cost_percent == 150,
+    "x86_64 residency edge-cost tuning must remain enabled",
+);
 
 // ── Scratch pool construction ────────────────────────────────────────────────
 

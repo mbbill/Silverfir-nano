@@ -545,20 +545,19 @@ end
 
 local TIME_BUDGET = (arg and #arg > 0 and tonumber(arg[#arg])) or 2
 
--- Shared timer. os.clock() returns 0 on some WASI runtimes (wasmtime 47),
--- leaving only whole seconds; bench.align() puts the start of a measurement
--- on a tick edge so a coarse clock is still accurate (see bench.lua).
+-- Shared timer. Some WASI runtimes expose only whole-second os.time();
+-- bench.run aligns to its ticks and samples in small chunks so their reported
+-- integer-second target has only about one chunk of endpoint overshoot.
 local bench = dofile("bench.lua")
 
 local function main()
-   local total_nodes = 0
+   local nodes_per_search = 0
    local last_move
    local last_score
 
    -- One unit is one deterministic search of the same initial position.
    -- Repetition changes only sample duration, never the search problem.
    local function batch(n)
-      total_nodes = 0
       for _ = 1, n do
          tp = {}
          tp_index = {}
@@ -566,11 +565,12 @@ local function main()
          local pos = Position.new(
             initial, 0, {true,true}, {true,true}, 0, 0)
          last_move, last_score = search(pos)
-         total_nodes = total_nodes + nodes
+         nodes_per_search = nodes
       end
    end
 
    local _, searches, elapsed = bench.run(batch, TIME_BUDGET)
+   local total_nodes = searches * nodes_per_search
 
    print("")
    print("=== Sunfish Chess Benchmark ===")
@@ -586,8 +586,6 @@ local function main()
 end
 
 main()
-
-
 
 
 

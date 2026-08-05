@@ -205,14 +205,13 @@ CoreMark 2.37×. Mandelbrot and c-ray, which led this comparison at 2.89× and
 - **The Lua benchmarks on wasmtime run on a 1-second clock.** wasmtime 47
   returns `0.0` from Lua's `os.clock()` (no process-CPU clock), so the scripts
   fall back to `os.time()`. Read naively that is up to 1 s of error — 50% at a
-  2 s target. `bench.lua` therefore aligns the start of every measurement to a
-  tick edge, bounding the error by the check interval instead: Lua fib reads
-  2,863 at a 2 s target vs 2,858 at 10 s, 0.2% apart. A side effect is that
-  **both** wasmtime compilers' Lua scores are quantised and repeat exactly —
-  Cranelift's sunfish came back at 11,558 in two sessions a day apart, and
-  Winch's sunfish and json were identical across both its rounds — so repeated
-  runs cannot estimate their noise. That is a property of the clock, not
-  evidence of unusually stable engines.
+  2 s target. The active `bench.lua` first calibrates an approximately 10 ms
+  work chunk, then uses a separate tick-aligned window and checks the clock
+  after each chunk. Endpoint overshoot is therefore about one chunk rather
+  than one second. The table above predates that change and used one aligned
+  measured batch; its 2 s versus 10 s cross-check happened to agree on the M4,
+  but new Lua results should be collected with the chunked harness rather than
+  mixed with those historical scores.
 - **The sqlite row above is historical speedtest1 data.** The active suite now
   uses `sqlite_bench.wasm`: a fixed in-memory database and a repeatable
   select/update/restore work unit, reported as `iteration/s`. Changing
