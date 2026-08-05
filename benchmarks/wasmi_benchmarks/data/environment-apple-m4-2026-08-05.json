@@ -1,0 +1,16 @@
+{
+  "title": "Silverfir-nano in wasmi-benchmarks — Apple M4",
+  "dek": "A local run of the upstream wasmi-benchmarks suite on an Apple M4: both Silverfir-nano tiers against every other engine the suite builds on macOS arm64, over 21 execution and 7 startup workloads. Each chart holds every engine that ran that workload, with the measured times on the bars.",
+  "facts": {
+    "Host": "Apple M4 (4P + 6E), 16 GB, macOS 26.5.2, on battery",
+    "Silverfir-nano": "1850f2f9 (main)",
+    "wasmi-benchmarks": "ee13941",
+    "Toolchain": "rustc 1.97.1 stable, LLVM 22.1.6",
+    "Profile": "bench — opt-level 3, fat LTO, 1 CGU",
+    "Sampling": "Criterion: 10 samples, 1 s warm-up, 2 s measurement",
+    "Run": "2026-08-05, one process per benchmark group",
+    "Engines": "29 configurations, 22 of them in the execution benchmarks"
+  },
+  "method": "Every bar is a Criterion point estimate — the linear-regression slope where Criterion could fit one, otherwise the mean. The per-case charts show that estimate directly. The two summary charts cannot: absolute times differ by orders of magnitude between workloads, so each engine is first scored against whichever engine won that case, and those ratios are combined with a geometric mean over the cases every engine completed. Engine classes come from the suite's own README. One property of a single-session laptop run is worth knowing before reading the absolute numbers: the machine drifts over the ~80 minutes the suite takes, and comparing this run against an earlier one shows unchanged third-party engines moving by tens of percent purely with their position in the run. Every comparison ON this page is made inside a single workload, where all engines run back-to-back within about two minutes, and the summary charts normalise each engine against that workload's winner before combining — so the drift cancels where it could change a conclusion. It does not cancel in the printed millisecond values, and it does not cancel across runs: to compare two revisions, use ci/wasmi_performance.py, which measures baseline and candidate on one machine minutes apart with a probability gate, not two pages like this one.",
+  "foot": "Generated from the raw cargo-criterion JSON stream stored beside this page in data/."
+}

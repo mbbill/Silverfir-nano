@@ -14,6 +14,11 @@ them into a report, and the rendered report.
 | `data/criterion-<host>-<date>.json` | The raw cargo-criterion stream for one run. |
 | `data/environment-<host>-<date>.json` | Host, toolchain, revisions and sampling parameters for that run. |
 
+`report.html` renders the newest pair (`2026-08-05`, Silverfir-nano `1850f2f9`).
+The `2026-08-04` pair is kept beside it as the last run before the interpreter
+startup rework; see the note at the end of "The recorded run" about what may and
+may not be concluded by comparing the two.
+
 **[Open the report →](https://mbbill.github.io/Silverfir-nano/benchmarks/wasmi_benchmarks/report.html)** — every engine, every workload, in one page.
 That is `report.html` in this directory, served by GitHub Pages; the file is
 self-contained, so a local copy opens the same way with no network.
@@ -24,11 +29,11 @@ only how the recorded runs here were produced and what they say.
 ## The recorded run
 
 Apple M4 (4 P-cores + 6 E-cores), 16 GB, macOS 26.5.2, `rustc` 1.97.1 stable.
-Silverfir-nano `6d26e34c` (tag `0.5`), wasmi-benchmarks `ee13941`, bench profile
+Silverfir-nano `1850f2f9` (main), wasmi-benchmarks `ee13941`, bench profile
 (opt-level 3, fat LTO, one CGU), Criterion at 10 samples with a 1 s warm-up and
 a 2 s measurement window. 29 engine configurations built; 22 of them appear in
 the execution benchmarks, all 29 in startup. 21 execution and 7 startup
-workloads, collected 2026-08-04.
+workloads, collected 2026-08-05.
 
 Execution, both Silverfir-nano tiers lead their class. Each ratio below is the
 geometric mean of the per-case time ratio against the class leader, over the
@@ -36,26 +41,46 @@ cases every engine in the class ran:
 
 | Engine | × the class leader | Cases won |
 |---|---:|---:|
-| `silverfir-nano.jit` | 1.00× | 7/20 |
-| `wasmer.cranelift` | 1.08× | 5/20 |
-| `wasmtime.cranelift` | 1.12× | 4/20 |
-| `v8` | 1.19× | 4/20 |
-| `wasmtime.winch` | 2.86× | 0/20 |
-| `wasmer.singlepass` | 4.32× | 0/20 |
+| `silverfir-nano.jit` | 1.00× | 10/20 |
+| `wasmer.cranelift` | 1.20× | 2/20 |
+| `v8` | 1.20× | 5/20 |
+| `wasmtime.cranelift` | 1.25× | 3/20 |
+| `wasmtime.winch` | 2.93× | 0/20 |
+| `wasmer.singlepass` | 4.36× | 0/20 |
+| `wasmtime.pulley` | 19.09× | 0/20 |
+
+`silverfir-nano.interpreter` is the fastest interpreter on **all 18** cases the
+whole interpreter class completed; `wasm3.eager` averages 1.73× its time,
+`wasmi-v2.eager.checked` 1.94× and `stitch` 2.45×.
 
 Startup (compile + instantiate, serial compilation) is the other side of that
-trade. V8 leads the JIT class because it compiles lazily; `silverfir-nano.jit`
-is 4th of 6 at 34.4× its time, behind `wasmer.singlepass` (4.5×) and
-`wasmtime.winch` (8.2×) — but ahead of both optimizing compilers it competes
-with on execution, `wasmer.cranelift` (48.2×) and `wasmtime.cranelift` (48.4×).
-The interpreter tier is 21st of 23, at 38.3× the fastest interpreter to start
-(`wasmi-v1.lazy.unchecked`). Both Silverfir-nano tiers compile eagerly and
-completely before the first call, while V8 and the `.lazy*` interpreter
-configurations defer function bodies to first use.
+trade, because both Silverfir-nano tiers compile eagerly and completely before
+the first call, while V8 and the `.lazy*` interpreter configurations defer
+function bodies to first use. `silverfir-nano.interpreter` is 20th of 27 at
+21.5× the fastest interpreter to start (`wasmi-v1.lazy.unchecked`), and
+`silverfir-nano.jit` is 5th of 6 in its class.
 
-`silverfir-nano.interpreter` was the fastest interpreter on all 18 cases the
-whole interpreter class completed; `wasm3.eager` averages 1.83× its time,
-`wasmi-v2.eager.checked` 1.96× and `stitch` 2.49×.
+Among the engines that, like this one, translate every function up front, that
+tier now reads:
+
+| Engine | Startup geomean | × Silverfir-nano |
+|---|---:|---:|
+| `wasmi-v1.eager.checked` | 1.270 ms | 0.68× |
+| `wasmi-v2.eager.checked` | 1.742 ms | 0.94× |
+| **`silverfir-nano.interpreter`** | **1.859 ms** | **1.00×** |
+| `wasm3.eager` | 2.283 ms | 1.23× |
+| `wamr` | 3.153 ms | 1.70× |
+
+The interpreter startup path was reworked on 2026-08-05 (PR #30). Comparing
+*absolute* times against the earlier recorded run below would overstate it —
+unchanged third-party engines move by tens of percent between runs with their
+position in the session. Against peers measured in the same run,
+`silverfir-nano.interpreter` went from 1.37× `wasm3.eager`'s startup time to
+0.81×, from 1.74× to 1.07× against `wasmi-v2.eager.checked`, and from 2.46× to
+1.46× against `wasmi-v1.eager.checked` — a consistent ~1.65× peer-relative
+gain. `ci/wasmi_performance.py` measured the same change as +58% to +76% on
+arm64 and +28% to +64% on x64, which is the number to quote: it compares two
+revisions on one machine minutes apart under a probability gate.
 
 `report.html` carries the rest: a per-class summary for execution and for
 startup, then every execution workload as a pair of charts — JITs on one axis,
@@ -109,6 +134,15 @@ WAMR overflows the default 8 MB main-thread stack on `execute/counter-local`
 and the process dies with SIGSEGV part-way through the run. A WAMR-only build
 of the same revision does not. `ulimit -s 65520` before launching.
 
+**5. Do not measure straight after building.** The suite's `target/` is ~11 GB
+and, on a managed Mac, is not in the antivirus exclusion path, so a fresh build
+leaves a scan running through the first groups. One run collected this way had
+28 engines nobody had touched come out 1.1×–2.5× slower than the previous run;
+it was thrown away. Build, let the machine settle, then measure — and record
+the load with each group so the conditions can be checked afterwards instead of
+assumed. Even then, expect the machine to drift over the ~80 minutes the suite
+takes: compare engines *within* a group, never absolute times across runs.
+
 Then:
 
 ```sh
@@ -123,8 +157,8 @@ skips groups already collected, so a crashed group can be retried on its own.
 
 ```sh
 python3 make_report.py \
-    data/criterion-apple-m4-2026-08-04.json \
-    data/environment-apple-m4-2026-08-04.json \
+    data/criterion-apple-m4-2026-08-05.json \
+    data/environment-apple-m4-2026-08-05.json \
     report.html --standalone
 ```
 
