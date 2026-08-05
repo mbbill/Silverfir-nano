@@ -35,7 +35,7 @@ use super::hoist_loop_address_bases::{block_index_for_id, visit_edges};
 // explicit index extensions at block boundaries instead of paying for the
 // whole-CFG fixed point during startup.
 const MAX_CFG_INDEX_PROOF_BLOCKS: usize = 128;
-const MAX_CFG_INDEX_PROOF_OPS: usize = 1024;
+const MAX_CFG_INDEX_PROOF_OPS: usize = 1200;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CleanRegs {
