@@ -1685,10 +1685,18 @@ impl InterpInstance {
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         let engine = NativeEngine::new();
         let mut scratch = LinkScratch::default();
+        // Seeded with every defined function's own type, then extended by
+        // the link pass with each `call_indirect`'s type as it goes.
+        let mut used_types: Vec<u32> = (0..self.funcs.len())
+            .filter_map(|i| self.module.functions().get(i).map(|f| f.type_index()))
+            .collect();
         let mut linked: Vec<Option<LinkedFunction>> = self
             .funcs
             .iter()
-            .map(|f| f.as_ref().map(|f| engine.link(f, &mut scratch)))
+            .map(|f| {
+                f.as_ref()
+                    .map(|f| engine.link(f, &mut scratch, &mut used_types))
+            })
             .collect();
 
         // Cross-function fixup: rewire `Call` cells to the native call
@@ -1726,16 +1734,6 @@ impl InterpInstance {
         // classes densely lets the handler compare one small id. Class
         // representatives are found by linear scan — real modules carry
         // hundreds of types at most.
-        let mut used_types: Vec<u32> = (0..self.funcs.len())
-            .filter_map(|i| self.module.functions().get(i).map(|f| f.type_index()))
-            .collect();
-        for f in self.funcs.iter().flatten() {
-            for ins in f.code.iter() {
-                if ins.op == Op::CallIndirect {
-                    used_types.push(ins.c as u32);
-                }
-            }
-        }
         let max_ti = used_types.iter().max().copied().unwrap_or(0) as usize;
         let mut canon_of: Vec<Option<u64>> = vec![None; max_ti + 1];
         let mut reps: Vec<u32> = Vec::new();
