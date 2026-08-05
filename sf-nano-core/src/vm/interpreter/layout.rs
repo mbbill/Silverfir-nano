@@ -217,12 +217,61 @@ const P_C_DST: u8 = 1 << 2;
 const P_WRITES_ACC: u8 = 1 << 3;
 const P_C_BRANCH_TARGET: u8 = 1 << 4;
 
+/// How a cell's `b` and `c` fields are pre-scaled for its native handler.
+///
+/// One value per op, so [`transform_bc`] reads the shape it must apply
+/// instead of re-deriving it from `family`, `c_is_branch_target` and the
+/// opcode on every cell. The variants name the shape, not the op: several
+/// unrelated ops share one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BcShape {
+    /// b = operand (scaled unless const), c = destination slot. Also the
+    /// shape of every op with no native handler, where it is inert.
+    Plain,
+    /// b = static offset (stays raw), c = destination slot.
+    LoadOffset,
+    /// b = value operand, c = static offset (stays raw).
+    StoreOffset,
+    /// `br` / `br_if` / `br_if_not`: b stays raw, c = target cell.
+    BranchRawB,
+    /// Fused compare-and-branch: b = operand, c = target cell.
+    BranchScaledB,
+    /// b stays raw, c = global index scaled to a byte offset.
+    GlobalIndex,
+    /// b = second source slot, c = two packed destination slots.
+    PackedPairDst,
+    /// b = second operand-pack base slot, c stays raw.
+    OperandPackB,
+    /// b = result count, c unused; both stay raw.
+    RawBoth,
+    /// b = operand, c = condition and destination slots, both packed.
+    PackedCondDst,
+}
+
+/// Which cell field carries a memory index that only memory 0 can satisfy
+/// natively, and hence what [`native_guard`] has to test.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MemGuard {
+    /// Nothing to check.
+    None,
+    /// A load's static offset in `b` packs the memory index above bit 47.
+    OffsetInB,
+    /// A store's static offset in `c` packs it the same way.
+    OffsetInC,
+    /// `b` is the memory index outright (copy: `dst << 32 | src`).
+    IndexInB,
+    /// `c` is the memory index outright.
+    IndexInC,
+}
+
 #[derive(Clone, Copy)]
 struct OpProps {
     fam: Fam,
     /// Base index of this op's handler slots in the packed table.
     base: u32,
     bits: u8,
+    bc: BcShape,
+    guard: MemGuard,
 }
 
 const OP_PROPS: [OpProps; N_OPS] = build_op_props();
@@ -232,6 +281,8 @@ const fn build_op_props() -> [OpProps; N_OPS] {
         fam: Fam::None,
         base: 0,
         bits: 0,
+        bc: BcShape::Plain,
+        guard: MemGuard::None,
     }; N_OPS];
     let mut i = 0;
     let mut next = 0u32;
@@ -259,6 +310,8 @@ const fn build_op_props() -> [OpProps; N_OPS] {
             fam,
             base: next,
             bits,
+            bc: compute_bc_shape(op),
+            guard: compute_mem_guard(op),
         };
         next += fam.slots() as u32;
         i += 1;
@@ -406,15 +459,25 @@ const fn compute_writes_acc(op: Op) -> bool {
 
 /// Ops whose static offset packs a memory index in the high bits can only
 /// run natively against memory 0.
+#[inline]
 pub(crate) fn native_guard(ins: &Instr) -> bool {
-    match family(ins.op) {
-        Fam::Load => ins.b >> 48 == 0,
-        Fam::Store => ins.c >> 48 == 0,
-        // b packs the memory index (copy: dst << 32 | src)
-        _ => match ins.op {
-            Op::MemoryFill | Op::MemoryCopy => ins.b == 0,
-            Op::MemoryFillCopy => ins.c == 0,
-            _ => true,
+    match OP_PROPS[ins.op as usize].guard {
+        MemGuard::None => true,
+        MemGuard::OffsetInB => ins.b >> 48 == 0,
+        MemGuard::OffsetInC => ins.c >> 48 == 0,
+        MemGuard::IndexInB => ins.b == 0,
+        MemGuard::IndexInC => ins.c == 0,
+    }
+}
+
+const fn compute_mem_guard(op: Op) -> MemGuard {
+    match compute_family(op) {
+        Fam::Load => MemGuard::OffsetInB,
+        Fam::Store => MemGuard::OffsetInC,
+        _ => match op {
+            Op::MemoryFill | Op::MemoryCopy => MemGuard::IndexInB,
+            Op::MemoryFillCopy => MemGuard::IndexInC,
+            _ => MemGuard::None,
         },
     }
 }
@@ -436,60 +499,68 @@ const fn compute_c_is_branch_target(op: Op) -> bool {
 /// Per-op `b`/`c` pre-scaling for native handlers (`a` is handled
 /// uniformly at the call site: slot index x8 unless const). `flags` are
 /// the link-resolved flags, with acc hints possibly already stripped.
+#[inline]
 pub(crate) fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
-    use Op::*;
-    let scaled_b = |ins: &Instr| {
-        if flags & FLAG_B_CONST != 0 {
-            ins.b
-        } else {
-            ins.b * 8
-        }
+    // `b` as an operand: a slot index scaled to a byte offset, unless the
+    // field holds an inline constant.
+    let scaled_b = if flags & FLAG_B_CONST != 0 {
+        ins.b
+    } else {
+        ins.b * 8
     };
+    // The packed-slot-pair forms: both halves of `c` are slot indices, so
+    // both are scaled to byte offsets in place.
+    let packed_slots = ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8;
+    let shape = OP_PROPS[ins.op as usize].bc;
     if flags & FLAG_FUSED != 0 {
-        return if family(ins.op) == Fam::Load {
+        // Only the two memory families have a fused bank, so the shape
+        // already says which one this is.
+        return if shape == BcShape::LoadOffset {
             // loads: b = static offset (raw), c = addr2*8 << 32 | dst*8
-            (ins.b, ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8)
+            (ins.b, packed_slots)
         } else {
             // stores: b = value, c = addr2*8 << 32 | static offset (raw)
-            (
-                scaled_b(ins),
-                ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff),
-            )
+            (scaled_b, ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff))
         };
     }
-    if c_is_branch_target(ins.op) {
-        // control: c = target cell byte offset
-        let b = match ins.op {
-            Br | BrIf | BrIfNot => ins.b,
-            _ => scaled_b(ins),
-        };
-        return (b, ins.c * CELL as u64);
+    match shape {
+        BcShape::LoadOffset => (ins.b, ins.c * 8),
+        BcShape::StoreOffset => (scaled_b, ins.c),
+        BcShape::BranchRawB => (ins.b, ins.c * CELL as u64),
+        BcShape::BranchScaledB => (scaled_b, ins.c * CELL as u64),
+        BcShape::GlobalIndex => (ins.b, ins.c * 8),
+        BcShape::PackedPairDst => (ins.b * 8, packed_slots),
+        // MemoryFillCopy: a and b are two operand-pack base slots. The
+        // linker scales a uniformly; scale the second pack here.
+        BcShape::OperandPackB => (ins.b * 8, ins.c),
+        BcShape::RawBoth => (ins.b, ins.c),
+        BcShape::PackedCondDst => (scaled_b, packed_slots),
+        BcShape::Plain => (scaled_b, ins.c * 8),
     }
-    match family(ins.op) {
-        // loads: b = static offset (stays raw), c = dst slot
-        Fam::Load => (ins.b, ins.c * 8),
-        // stores: b = value operand, c = static offset (stays raw)
-        Fam::Store => (scaled_b(ins), ins.c),
-        _ => match ins.op {
-            // GlobalSet: c = global index
-            GlobalSet => (ins.b, ins.c * 8),
-            // MovPair: b = second source slot, c = dst1<<32 | dst2
-            MovPair => (
-                ins.b * 8,
-                ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8,
-            ),
-            // MemoryFillCopy: a and b are two operand-pack base slots.
-            // The linker scales a uniformly; scale the second pack here.
-            MemoryFillCopy => (ins.b * 8, ins.c),
-            // Return: b = result count, c unused — both stay raw
-            Return => (ins.b, ins.c),
-            // Select: c = cond_slot << 32 | dst_slot, both scaled
-            Select => (
-                scaled_b(ins),
-                ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8,
-            ),
-            // plain value ops (incl. GlobalGet): b = operand, c = dst slot
-            _ => (scaled_b(ins), ins.c * 8),
+}
+
+const fn compute_bc_shape(op: Op) -> BcShape {
+    use Op::*;
+    // Control first: a branch target's `c` is scaled by the cell size, not
+    // by the slot size, whatever family the op belongs to.
+    if compute_c_is_branch_target(op) {
+        return match op {
+            Br | BrIf | BrIfNot => BcShape::BranchRawB,
+            _ => BcShape::BranchScaledB,
+        };
+    }
+    match compute_family(op) {
+        Fam::Load => BcShape::LoadOffset,
+        Fam::Store => BcShape::StoreOffset,
+        _ => match op {
+            GlobalSet => BcShape::GlobalIndex,
+            MovPair => BcShape::PackedPairDst,
+            MemoryFillCopy => BcShape::OperandPackB,
+            Return => BcShape::RawBoth,
+            Select => BcShape::PackedCondDst,
+            // Plain value ops, GlobalGet included, and every op with no
+            // native form at all.
+            _ => BcShape::Plain,
         },
     }
 }
@@ -646,5 +717,102 @@ mod tests {
 
         let equal_destinations = Instr::new(Op::MovPair, 0, 3, 4, (1u64 << 32) | 1);
         assert_eq!(op_slot(&equal_destinations, 0, &pin), None);
+    }
+
+    /// `BcShape` is a packed restatement of a derivation that used to run
+    /// per cell, from `family`, `c_is_branch_target` and the opcode. A
+    /// mis-assigned shape is silent: the cell still links to a real
+    /// handler, which then reads a field the linker scaled the wrong way.
+    /// So check the packed answer against the structural one for every op.
+    #[test]
+    fn packed_bc_shape_matches_the_structural_derivation() {
+        fn reference(ins: &Instr, flags: u16) -> (u64, u64) {
+            use Op::*;
+            let scaled_b = |ins: &Instr| {
+                if flags & FLAG_B_CONST != 0 {
+                    ins.b
+                } else {
+                    ins.b * 8
+                }
+            };
+            if flags & FLAG_FUSED != 0 {
+                return if family(ins.op) == Fam::Load {
+                    (ins.b, ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8)
+                } else {
+                    (
+                        scaled_b(ins),
+                        ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff),
+                    )
+                };
+            }
+            if c_is_branch_target(ins.op) {
+                let b = match ins.op {
+                    Br | BrIf | BrIfNot => ins.b,
+                    _ => scaled_b(ins),
+                };
+                return (b, ins.c * CELL as u64);
+            }
+            match family(ins.op) {
+                Fam::Load => (ins.b, ins.c * 8),
+                Fam::Store => (scaled_b(ins), ins.c),
+                _ => match ins.op {
+                    GlobalSet => (ins.b, ins.c * 8),
+                    MovPair => (
+                        ins.b * 8,
+                        ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8,
+                    ),
+                    MemoryFillCopy => (ins.b * 8, ins.c),
+                    Return => (ins.b, ins.c),
+                    Select => (
+                        scaled_b(ins),
+                        ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8,
+                    ),
+                    _ => (scaled_b(ins), ins.c * 8),
+                },
+            }
+        }
+
+        for i in 0..N_OPS {
+            let op = op_from_index(i);
+            // Distinct values in every field, so a swapped or unscaled one
+            // cannot coincide with the right answer.
+            let ins = Instr::new(op, 0, 3, 5, (7u64 << 32) | 9);
+            for flags in [0, FLAG_B_CONST, FLAG_FUSED, FLAG_FUSED | FLAG_B_CONST] {
+                assert_eq!(
+                    transform_bc(&ins, flags),
+                    reference(&ins, flags),
+                    "{op:?} flags={flags:#x}"
+                );
+            }
+        }
+    }
+
+    /// Same check for the memory-index guard: which field a cell packs its
+    /// memory index into, and hence whether it may run natively at all.
+    #[test]
+    fn packed_memory_guard_matches_the_structural_derivation() {
+        fn reference(ins: &Instr) -> bool {
+            match family(ins.op) {
+                Fam::Load => ins.b >> 48 == 0,
+                Fam::Store => ins.c >> 48 == 0,
+                _ => match ins.op {
+                    Op::MemoryFill | Op::MemoryCopy => ins.b == 0,
+                    Op::MemoryFillCopy => ins.c == 0,
+                    _ => true,
+                },
+            }
+        }
+
+        for i in 0..N_OPS {
+            let op = op_from_index(i);
+            for (b, c) in [(0, 0), (1 << 48, 0), (0, 1 << 48), (1, 0), (0, 1), (1, 1)] {
+                let ins = Instr::new(op, 0, 0, b, c);
+                assert_eq!(
+                    native_guard(&ins),
+                    reference(&ins),
+                    "{op:?} b={b:#x} c={c:#x}"
+                );
+            }
+        }
     }
 }
