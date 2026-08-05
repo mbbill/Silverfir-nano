@@ -27,7 +27,7 @@ pub mod x86_64;
 use asm::{Asm, ObjFmt};
 use instr::{op_from_index, Op};
 use isa::{Isa, PairDstSplit, Stubs, Variant};
-use layout::{build_op_base, family, total_slots, Cls, DstCls, Fam, PairDstCls, N_OPS};
+use layout::{family, op_base, total_slots, Cls, DstCls, Fam, PairDstCls, N_OPS};
 
 /// One emission group: a run of ops sharing a shape, in the order the
 /// engine wants them laid out.
@@ -337,7 +337,6 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
     let caps = isa.caps();
     let mut a = Asm::new(fmt, thumb);
     let st = stubs(&a);
-    let op_base = build_op_base();
     let n_slots = total_slots();
     let mut slot_label: Vec<Option<String>> = vec![None; n_slots];
 
@@ -388,7 +387,7 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
                 let Some(idx) = fam.index_of(ac, bc, dc, pair_dc, group.fused) else {
                     continue;
                 };
-                let slot = op_base[op as usize] as usize + idx;
+                let slot = op_base(op) as usize + idx;
                 assert!(
                     slot_label[slot].is_none(),
                     "duplicate handler slot for {op:?} ({ac:?},{bc:?},{dc:?},{pair_dc:?},fused={})",
@@ -448,8 +447,8 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
             a.comment(&format!(
                 "{:?}: slots {}..{}",
                 op,
-                op_base[i],
-                op_base[i] as usize + fam.slots()
+                op_base(op),
+                op_base(op) as usize + fam.slots()
             ));
         }
     }

@@ -17,49 +17,13 @@ use super::instr::{
     op_from_index, operand_is_float, result_is_float, Instr, Op, FLAG_A_ACC, FLAG_A_CONST,
     FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
 };
-
-/// Whether a float-domain RESULT is 32 bits wide. Only meaningful where
-/// [`result_is_float`] holds.
-pub(crate) fn result_is_f32(op: Op) -> bool {
-    use Op::*;
-    let d = op as u16;
-    (d >= F32_Abs as u16 && d <= F32_Copysign as u16)
-        || (d >= F32_ConvertI32S as u16 && d <= F32_DemoteF64 as u16)
-        || matches!(op, F32_ReinterpretI32 | F32_Load)
-}
-
-/// Whether a float-domain OPERAND is 32 bits wide. Only meaningful where
-/// [`operand_is_float`] holds.
-pub(crate) fn operand_is_f32(op: Op, is_b: bool) -> bool {
-    use Op::*;
-    let d = op as u16;
-    if d >= F32_Abs as u16 && d <= F32_Ge as u16 {
-        return true;
-    }
-    if is_b {
-        return op == F32_Store;
-    }
-    matches!(
-        op,
-        I32_TruncF32S
-            | I32_TruncF32U
-            | I64_TruncF32S
-            | I64_TruncF32U
-            | I32_TruncSatF32S
-            | I32_TruncSatF32U
-            | I64_TruncSatF32S
-            | I64_TruncSatF32U
-            | F64_PromoteF32
-            | I32_ReinterpretF32
-    )
-}
+// The op count belongs to the instruction set, but every table in this
+// module is that wide, and the generator reaches it through `layout`.
+pub(crate) use super::instr::N_OPS;
 
 /// Bytes per dispatch cell. Two per 64-byte cache line; branch targets and
 /// the pc advance are both denominated in it.
 pub(crate) const CELL: u32 = 32;
-
-/// Number of distinct `Op` discriminants.
-pub(crate) const N_OPS: usize = Op::Unreachable as usize + 1;
 
 /// Operand residency class: where a handler finds one of its inputs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -172,7 +136,7 @@ pub(crate) enum Fam {
 
 impl Fam {
     /// Handler slots this family owns.
-    pub(crate) fn slots(self) -> usize {
+    pub(crate) const fn slots(self) -> usize {
         match self {
             Fam::None => 0,
             Fam::Fixed => 1,
@@ -227,14 +191,94 @@ impl Fam {
     }
 }
 
-fn between(op: Op, lo: Op, hi: Op) -> bool {
+// ---------------------------------------------------------------------------
+// The per-op fact table
+//
+// `family`, `slot_fields`, `writes_acc` and `c_is_branch_target` all answer
+// a question about the opcode alone, and the linker asks them repeatedly
+// for every cell it builds: `op_slot`, `native_guard`, `transform_bc` and
+// `select_pinned` each start by classifying the op again. Walking the
+// discriminant ranges every time cost 13.7% of interpreter instantiation
+// (`family` plus its `between` scans) on a 6 k-function module. The answers
+// fit in six bytes per op, so they are computed once at compile time — in
+// this crate AND in the build script, which compiles this same file — and
+// read by index at run time.
+//
+// The `compute_*` functions below stay the single definition of each fact;
+// nothing outside this table calls them.
+// ---------------------------------------------------------------------------
+
+/// `slot_fields().0` — cell field `a` holds a frame-slot operand.
+const P_A_SLOT: u8 = 1 << 0;
+/// `slot_fields().1` — cell field `b` holds a frame-slot operand.
+const P_B_SLOT: u8 = 1 << 1;
+/// `slot_fields().2` — cell field `c` holds a plain value destination.
+const P_C_DST: u8 = 1 << 2;
+const P_WRITES_ACC: u8 = 1 << 3;
+const P_C_BRANCH_TARGET: u8 = 1 << 4;
+
+#[derive(Clone, Copy)]
+struct OpProps {
+    fam: Fam,
+    /// Base index of this op's handler slots in the packed table.
+    base: u32,
+    bits: u8,
+}
+
+const OP_PROPS: [OpProps; N_OPS] = build_op_props();
+
+const fn build_op_props() -> [OpProps; N_OPS] {
+    let mut props = [OpProps {
+        fam: Fam::None,
+        base: 0,
+        bits: 0,
+    }; N_OPS];
+    let mut i = 0;
+    let mut next = 0u32;
+    while i < N_OPS {
+        let op = op_from_index(i);
+        let fam = compute_family(op);
+        let (a_s, b_s, c_d) = compute_slot_fields(op);
+        let mut bits = 0u8;
+        if a_s {
+            bits |= P_A_SLOT;
+        }
+        if b_s {
+            bits |= P_B_SLOT;
+        }
+        if c_d {
+            bits |= P_C_DST;
+        }
+        if compute_writes_acc(op) {
+            bits |= P_WRITES_ACC;
+        }
+        if compute_c_is_branch_target(op) {
+            bits |= P_C_BRANCH_TARGET;
+        }
+        props[i] = OpProps {
+            fam,
+            base: next,
+            bits,
+        };
+        next += fam.slots() as u32;
+        i += 1;
+    }
+    props
+}
+
+const fn between(op: Op, lo: Op, hi: Op) -> bool {
     (op as u16) >= (lo as u16) && (op as u16) <= (hi as u16)
 }
 
 /// The variant family of an op. Every backend emits exactly the
 /// combinations this enumerates (minus the ones its ISA declines), and the
 /// linker looks them up the same way.
+#[inline]
 pub(crate) fn family(op: Op) -> Fam {
+    OP_PROPS[op as usize].fam
+}
+
+const fn compute_family(op: Op) -> Fam {
     use Op::*;
     // Integer and float binary value ops: both sources and a destination.
     if between(op, I32_Add, I32_Rotr)
@@ -282,25 +326,17 @@ pub(crate) fn family(op: Op) -> Fam {
     }
 }
 
-/// Base index of an op's handler slots in the packed table. Both the
-/// generator and the linker build this the same way, from `family`.
-pub(crate) fn build_op_base() -> [u32; N_OPS] {
-    let mut base = [0u32; N_OPS];
-    let mut next = 0u32;
-    for (i, slot) in base.iter_mut().enumerate() {
-        *slot = next;
-        next += family(op_from_index(i)).slots() as u32;
-    }
-    base
+/// Base index of an op's handler slots in the packed table. The generator
+/// lays the table out in this order and the linker indexes it the same way.
+#[inline]
+pub(crate) fn op_base(op: Op) -> u32 {
+    OP_PROPS[op as usize].base
 }
 
 /// Total packed handler slots across every op.
-pub(crate) fn total_slots() -> usize {
-    let mut n = 0usize;
-    for i in 0..N_OPS {
-        n += family(op_from_index(i)).slots();
-    }
-    n
+pub(crate) const fn total_slots() -> usize {
+    let last = OP_PROPS[N_OPS - 1];
+    last.base as usize + last.fam.slots()
 }
 
 /// Which cell fields are frame-slot references for this op:
@@ -311,11 +347,21 @@ pub(crate) fn total_slots() -> usize {
 /// This is deliberately independent of [`family`] where packed fields
 /// disagree with a family's generic shape: `Select`, `MovPair`, and fused
 /// memory ops do not carry one plain destination in `c`.
+#[inline]
 pub(crate) fn slot_fields(op: Op) -> (bool, bool, bool) {
+    let bits = OP_PROPS[op as usize].bits;
+    (
+        bits & P_A_SLOT != 0,
+        bits & P_B_SLOT != 0,
+        bits & P_C_DST != 0,
+    )
+}
+
+const fn compute_slot_fields(op: Op) -> (bool, bool, bool) {
     use Op::*;
-    match family(op) {
+    match compute_family(op) {
         Fam::SrcABDst => {
-            if op == Select {
+            if matches!(op, Select) {
                 // Select packs the destination and condition in c.
                 (true, true, false)
             } else {
@@ -342,7 +388,12 @@ pub(crate) fn slot_fields(op: Op) -> (bool, bool, bool) {
 /// (every value producer computes into it; see the backend's `finish`).
 /// Ops that are never native are harmlessly included — the linker's
 /// handler-table lookup is the real gate.
+#[inline]
 pub(crate) fn writes_acc(op: Op) -> bool {
+    OP_PROPS[op as usize].bits & P_WRITES_ACC != 0
+}
+
+const fn compute_writes_acc(op: Op) -> bool {
     use Op::*;
     let d = op as u16;
     (d >= MovSlot as u16 && d <= F64_ReinterpretI64 as u16)
@@ -372,7 +423,12 @@ pub(crate) fn native_guard(ins: &Instr) -> bool {
 /// link pass turns into an absolute cell address. Must list exactly the
 /// ops [`transform_bc`] multiplies by [`CELL`] — a missed one would leave
 /// a relative offset and the handler would branch into hyperspace.
+#[inline]
 pub(crate) fn c_is_branch_target(op: Op) -> bool {
+    OP_PROPS[op as usize].bits & P_C_BRANCH_TARGET != 0
+}
+
+const fn compute_c_is_branch_target(op: Op) -> bool {
     use Op::*;
     matches!(op, Br | BrIf | BrIfNot) || between(op, I32_BrEq, I64_SubBrIf)
 }
@@ -463,17 +519,17 @@ impl Pinned {
 /// over acc hints on the same operand; a `const` flag wins over both.
 ///
 /// Returns `None` when the op has no handler family at all.
-pub(crate) fn op_slot(
-    ins: &Instr,
-    flags: u16,
-    pin: &Pinned,
-    op_base: &[u32; N_OPS],
-) -> Option<usize> {
-    let fam = family(ins.op);
+pub(crate) fn op_slot(ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
+    let props = OP_PROPS[ins.op as usize];
+    let fam = props.fam;
     if fam == Fam::None {
         return None;
     }
-    let (a_s, b_s, c_d) = slot_fields(ins.op);
+    let (a_s, b_s, c_d) = (
+        props.bits & P_A_SLOT != 0,
+        props.bits & P_B_SLOT != 0,
+        props.bits & P_C_DST != 0,
+    );
     // Domain demotion: a pinned class is taken only when the access's
     // value domain matches the slot's pinned register file; otherwise the
     // access falls back to the (write-through, hence current) slot.
@@ -550,7 +606,7 @@ pub(crate) fn op_slot(
         DstCls::Mem
     };
     let idx = fam.index_of(a, b, d, pair_d, flags & FLAG_FUSED != 0)?;
-    Some(op_base[ins.op as usize] as usize + idx)
+    Some(op_base(ins.op) as usize + idx)
 }
 
 #[cfg(test)]
@@ -559,7 +615,6 @@ mod tests {
 
     #[test]
     fn mov_pair_classifies_every_ordered_pinned_destination_state() {
-        let op_base = build_op_base();
         let pin = Pinned {
             l0: 1,
             l1: 2,
@@ -578,18 +633,18 @@ mod tests {
 
         for ((dst1, dst2), pair_d) in cases {
             let ins = Instr::new(Op::MovPair, 0, 3, 4, (dst1 << 32) | dst2);
-            let expected = op_base[Op::MovPair as usize] as usize
+            let expected = op_base(Op::MovPair) as usize
                 + family(Op::MovPair)
                     .index_of(Cls::Slot, Cls::Slot, DstCls::Mem, pair_d, false)
                     .unwrap();
             assert_eq!(
-                op_slot(&ins, 0, &pin, &op_base),
+                op_slot(&ins, 0, &pin),
                 Some(expected),
                 "dst1={dst1}, dst2={dst2}"
             );
         }
 
         let equal_destinations = Instr::new(Op::MovPair, 0, 3, 4, (1u64 << 32) | 1);
-        assert_eq!(op_slot(&equal_destinations, 0, &pin, &op_base), None);
+        assert_eq!(op_slot(&equal_destinations, 0, &pin), None);
     }
 }

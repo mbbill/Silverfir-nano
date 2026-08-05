@@ -41,8 +41,8 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use super::engine::{
-    DCell, EnterState, LinkedFunction, NativeEngine, EXIT_RETURN, EXIT_SLOW, EXIT_TRAP_BASE,
-    NATIVE_CALLS, RET_RECORD, TRAP_KINDS,
+    DCell, EnterState, LinkScratch, LinkedFunction, NativeEngine, EXIT_RETURN, EXIT_SLOW,
+    EXIT_TRAP_BASE, NATIVE_CALLS, RET_RECORD, TRAP_KINDS,
 };
 use super::fmath;
 use super::instr::{op_from_index, Op};
@@ -1684,10 +1684,11 @@ impl InterpInstance {
     /// mapped here — the engine is already in `.text`.
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         let engine = NativeEngine::new();
+        let mut scratch = LinkScratch::default();
         let mut linked: Vec<Option<LinkedFunction>> = self
             .funcs
             .iter()
-            .map(|f| f.as_ref().map(|f| engine.link(f)))
+            .map(|f| f.as_ref().map(|f| engine.link(f, &mut scratch)))
             .collect();
 
         // Cross-function fixup: rewire `Call` cells to the native call

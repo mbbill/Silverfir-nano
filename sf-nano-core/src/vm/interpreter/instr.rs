@@ -53,11 +53,64 @@ pub(crate) const FLAG_SHARED_TABLE: u16 = 1 << 7;
 /// byte offset -- cannot reach it.
 pub(crate) const FLAG_SHARED_GLOBAL: u16 = 1 << 8;
 
+/// Number of distinct `Op` discriminants.
+pub(crate) const N_OPS: usize = Op::Unreachable as usize + 1;
+
 /// Recover an `Op` from its dense `#[repr(u16)]` discriminant — the same
 /// invariant the packed handler-slot key relies on.
-pub(crate) fn op_from_index(i: usize) -> Op {
+pub(crate) const fn op_from_index(i: usize) -> Op {
     debug_assert!(i <= Op::Unreachable as usize);
     unsafe { core::mem::transmute(i as u16) }
+}
+
+// ---------------------------------------------------------------------------
+// Value-domain facts
+//
+// Each of the four below is a pure function of the opcode, and the linker
+// asks for several of them on every cell it builds — `select_pinned` alone
+// makes up to five calls per instruction. Answering by scanning
+// discriminant ranges made those scans 1.2% of instantiation on their own
+// and kept the whole cluster hot; the answer space is `N_OPS` bytes wide,
+// so it is computed once at compile time and read by index instead.
+// ---------------------------------------------------------------------------
+
+const DOM_A_FLOAT: u8 = 1 << 0;
+const DOM_B_FLOAT: u8 = 1 << 1;
+const DOM_RESULT_FLOAT: u8 = 1 << 2;
+const DOM_A_F32: u8 = 1 << 3;
+const DOM_B_F32: u8 = 1 << 4;
+const DOM_RESULT_F32: u8 = 1 << 5;
+
+const OP_DOMAIN: [u8; N_OPS] = build_op_domain();
+
+const fn build_op_domain() -> [u8; N_OPS] {
+    let mut table = [0u8; N_OPS];
+    let mut i = 0;
+    while i < N_OPS {
+        let op = op_from_index(i);
+        let mut bits = 0u8;
+        if compute_operand_is_float(op, false) {
+            bits |= DOM_A_FLOAT;
+        }
+        if compute_operand_is_float(op, true) {
+            bits |= DOM_B_FLOAT;
+        }
+        if compute_result_is_float(op) {
+            bits |= DOM_RESULT_FLOAT;
+        }
+        if compute_operand_is_f32(op, false) {
+            bits |= DOM_A_F32;
+        }
+        if compute_operand_is_f32(op, true) {
+            bits |= DOM_B_F32;
+        }
+        if compute_result_is_f32(op) {
+            bits |= DOM_RESULT_F32;
+        }
+        table[i] = bits;
+        i += 1;
+    }
+    table
 }
 
 /// Value-domain classification for accumulator pairing: the accumulator
@@ -66,7 +119,35 @@ pub(crate) fn op_from_index(i: usize) -> Op {
 /// produced value's domain matches the register the consumer reads.
 /// Domain-agnostic bit movers (MovSlot, Select, globals) classify as
 /// integer: float values flowing through them simply fall back to slots.
+#[inline]
 pub(crate) fn result_is_float(op: Op) -> bool {
+    OP_DOMAIN[op as usize] & DOM_RESULT_FLOAT != 0
+}
+
+/// Whether the a (is_b = false) or b (is_b = true) operand of `op` is
+/// read in the float domain.
+#[inline]
+pub(crate) fn operand_is_float(op: Op, is_b: bool) -> bool {
+    let want = if is_b { DOM_B_FLOAT } else { DOM_A_FLOAT };
+    OP_DOMAIN[op as usize] & want != 0
+}
+
+/// Whether a float-domain RESULT is 32 bits wide. Only meaningful where
+/// [`result_is_float`] holds.
+#[inline]
+pub(crate) fn result_is_f32(op: Op) -> bool {
+    OP_DOMAIN[op as usize] & DOM_RESULT_F32 != 0
+}
+
+/// Whether a float-domain OPERAND is 32 bits wide. Only meaningful where
+/// [`operand_is_float`] holds.
+#[inline]
+pub(crate) fn operand_is_f32(op: Op, is_b: bool) -> bool {
+    let want = if is_b { DOM_B_F32 } else { DOM_A_F32 };
+    OP_DOMAIN[op as usize] & want != 0
+}
+
+const fn compute_result_is_float(op: Op) -> bool {
     use Op::*;
     let d = op as u16;
     (d >= F32_Abs as u16 && d <= F32_Copysign as u16)
@@ -78,9 +159,7 @@ pub(crate) fn result_is_float(op: Op) -> bool {
         )
 }
 
-/// Whether the a (is_b = false) or b (is_b = true) operand of `op` is
-/// read in the float domain.
-pub(crate) fn operand_is_float(op: Op, is_b: bool) -> bool {
+const fn compute_operand_is_float(op: Op, is_b: bool) -> bool {
     use Op::*;
     let d = op as u16;
     // float arithmetic, unary, and compares read float operands
@@ -96,6 +175,38 @@ pub(crate) fn operand_is_float(op: Op, is_b: bool) -> bool {
             op,
             F32_DemoteF64 | F64_PromoteF32 | I32_ReinterpretF32 | I64_ReinterpretF64
         )
+}
+
+const fn compute_result_is_f32(op: Op) -> bool {
+    use Op::*;
+    let d = op as u16;
+    (d >= F32_Abs as u16 && d <= F32_Copysign as u16)
+        || (d >= F32_ConvertI32S as u16 && d <= F32_DemoteF64 as u16)
+        || matches!(op, F32_ReinterpretI32 | F32_Load)
+}
+
+const fn compute_operand_is_f32(op: Op, is_b: bool) -> bool {
+    use Op::*;
+    let d = op as u16;
+    if d >= F32_Abs as u16 && d <= F32_Ge as u16 {
+        return true;
+    }
+    if is_b {
+        return matches!(op, F32_Store);
+    }
+    matches!(
+        op,
+        I32_TruncF32S
+            | I32_TruncF32U
+            | I64_TruncF32S
+            | I64_TruncF32U
+            | I32_TruncSatF32S
+            | I32_TruncSatF32U
+            | I64_TruncSatF32S
+            | I64_TruncSatF32U
+            | F64_PromoteF32
+            | I32_ReinterpretF32
+    )
 }
 
 /// Semantic operations. One dispatch each; routing opcodes never appear.
