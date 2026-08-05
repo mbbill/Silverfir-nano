@@ -15,18 +15,34 @@ macro_rules! define_opcodes {
             $($name = $value,)*
         }
 
-        impl TryFrom<$type> for $enum_name {
-            type Error = WasmError;
-
-            fn try_from(value: $type) -> Result<Self, Self::Error> {
+        impl $enum_name {
+            /// The opcode for `value`, or `None` when it is not a declared
+            /// discriminant.
+            ///
+            /// The decoder reads one of these per instruction, and
+            /// `WasmError` is wide enough that `Result<Self, WasmError>`
+            /// comes back through memory — 5% of interpreter instantiation
+            /// went into writing that return slot. An `Option` of a
+            /// repr-backed enum stays in a register; `TryFrom` below adds
+            /// the error for the paths that want one.
+            #[inline]
+            pub fn from_repr(value: $type) -> Option<Self> {
                 match value {
                     $($value)|* => {
                         // SAFETY: the match above accepts exactly the
                         // discriminants declared by this repr-backed enum.
-                        Ok(unsafe { core::mem::transmute::<$type, $enum_name>(value) })
+                        Some(unsafe { core::mem::transmute::<$type, $enum_name>(value) })
                     }
-                    _ => Err(WasmError::malformed("invalid opcode")),
+                    _ => None,
                 }
+            }
+        }
+
+        impl TryFrom<$type> for $enum_name {
+            type Error = WasmError;
+
+            fn try_from(value: $type) -> Result<Self, Self::Error> {
+                Self::from_repr(value).ok_or(WasmError::malformed("invalid opcode"))
             }
         }
 
