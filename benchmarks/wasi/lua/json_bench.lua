@@ -508,9 +508,9 @@ end
 -- may precede it.
 local TIME_BUDGET = (arg and #arg > 0 and tonumber(arg[#arg])) or 2
 
--- Shared timer. os.clock() returns 0 on some WASI runtimes (wasmtime 47),
--- leaving only whole seconds; bench.align() puts the start of a measurement
--- on a tick edge so a coarse clock is still accurate (see bench.lua).
+-- Shared timer. Some WASI runtimes expose only whole-second os.time();
+-- bench.run aligns to its ticks and samples in small chunks so their reported
+-- integer-second target has only about one chunk of endpoint overshoot.
 local bench = dofile("bench.lua")
 
 local decode = newdecoder()
@@ -534,17 +534,17 @@ print("JSON roundtrip validates")
 -- Check time every `batch` iterations to amortize gettime() overhead.
 print(string.format("Target time:   %.1fs\n", TIME_BUDGET))
 
-local total_bytes = 0
+local bytes_per_roundtrip = 0
 local function batch(n)
-    total_bytes = 0
     for _ = 1, n do
         local obj = decode(json_str, 1)
         local out = encode(obj)
-        total_bytes = total_bytes + #json_str + #out
+        bytes_per_roundtrip = #json_str + #out
     end
 end
 
 local _, iters_done, elapsed = bench.run(batch, TIME_BUDGET)
+local total_bytes = iters_done * bytes_per_roundtrip
 
 print("=== JSON Benchmark Results ===")
 print(string.format("Round-trips:    %d", iters_done))

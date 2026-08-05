@@ -12,10 +12,11 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 // Mirrors run_tests.py: adjustable benchmarks take the wall-clock target in
-// seconds as their LAST argument and calibrate only a repeat count for their
-// fixed work unit. CoreMark preserves its official invocation and duration.
-// The patterns and validation strings are kept identical so the two harnesses
-// report the same normalized rate.
+// seconds as their LAST argument and calibrate fixed work units. Most choose
+// one total repeat count; Lua's whole-second fallback chooses a small chunk
+// and repeats it in a tick-aligned measurement window. CoreMark preserves its
+// official invocation and duration. The patterns and validation strings stay
+// identical so the two harnesses report the same normalized rate.
 const DEFAULT_TARGET = 2.0;
 const TARGET = (() => {
   const i = process.argv.indexOf('--time');

@@ -8,12 +8,13 @@ Usage:
     python3 run_tests.py --exec PATH    # run with a different runtime
 
 Most benchmarks are self-timing: they take a wall-clock target in seconds as
-their LAST argument and calibrate how many identical work units fit it. The
-work unit, data size, algorithm, and working set stay fixed; only the repeat
-count changes. Calibration is not a performance sample: a fresh batch is
-timed after calibration and reports work/second. This keeps run time bounded
-across native JITs, interpreters, and qemu without comparing different
-problem sizes. See common/bench.h for the shared contract.
+their LAST argument and calibrate fixed work units to fit it. High-resolution
+paths choose one total repeat count; the Lua whole-second fallback chooses a
+small chunk and repeats it in a tick-aligned measurement window. In both cases
+calibration is not the performance sample, and the work unit, data size,
+algorithm, and working set stay fixed. This keeps run time bounded across
+native JITs, interpreters, and qemu without comparing different problem sizes.
+See common/bench.h and lua/bench.lua for the two timing paths.
 
 CoreMark's bare invocation still follows the upstream EEMBC benchmark,
 including its 10-second-minimum calibration. This regression harness uses
