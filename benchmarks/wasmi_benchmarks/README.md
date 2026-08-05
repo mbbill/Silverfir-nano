@@ -14,9 +14,9 @@ them into a report, and the rendered report.
 | `data/criterion-<host>-<date>.json` | The raw cargo-criterion stream for one run. |
 | `data/environment-<host>-<date>.json` | Host, toolchain, revisions and sampling parameters for that run. |
 
-**[Open the report → `report.html`](report.html)** — every engine, every
-workload, in one self-contained page. GitHub will not render it in the browser;
-clone the repository, or download the raw file and open it locally.
+**[Open the report →](https://mbbill.github.io/Silverfir-nano/benchmarks/wasmi_benchmarks/report.html)** — every engine, every workload, in one page.
+That is `report.html` in this directory, served by GitHub Pages; the file is
+self-contained, so a local copy opens the same way with no network.
 
 `WASMI_BENCHMARKS.md` is the reference for the suite itself. This file covers
 only how the recorded runs here were produced and what they say.
