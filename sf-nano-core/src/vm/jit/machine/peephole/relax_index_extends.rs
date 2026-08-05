@@ -32,7 +32,11 @@ use super::hoist_loop_address_bases::{block_index_for_id, visit_edges};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CleanRegs {
-    regs: collections::Vec<MachineReg>,
+    // Every production GP register fits here (x86_64 currently uses ids
+    // 0..12). Keep an exact sparse overflow for synthetic tests and future
+    // register plans rather than folding high ids onto low bits.
+    low: u64,
+    overflow: collections::Vec<MachineReg>,
 }
 
 impl CleanRegs {
@@ -51,18 +55,28 @@ impl CleanRegs {
 
     #[inline]
     fn contains(&self, reg: MachineReg) -> bool {
-        self.regs.contains(&reg)
+        if let Some(bit) = Self::low_bit(reg) {
+            self.low & bit != 0
+        } else {
+            self.overflow.contains(&reg)
+        }
     }
 
     fn insert(&mut self, reg: MachineReg) {
-        if !self.contains(reg) {
-            self.regs.push(reg);
+        if let Some(bit) = Self::low_bit(reg) {
+            self.low |= bit;
+        } else if !self.overflow.contains(&reg) {
+            self.overflow.push(reg);
         }
     }
 
     fn remove(&mut self, reg: MachineReg) -> bool {
-        if let Some(index) = self.regs.iter().position(|candidate| *candidate == reg) {
-            self.regs.remove(index);
+        if let Some(bit) = Self::low_bit(reg) {
+            let was_present = self.low & bit != 0;
+            self.low &= !bit;
+            was_present
+        } else if let Some(index) = self.overflow.iter().position(|candidate| *candidate == reg) {
+            self.overflow.remove(index);
             true
         } else {
             false
@@ -70,7 +84,19 @@ impl CleanRegs {
     }
 
     fn clear(&mut self) {
-        self.regs.clear();
+        self.low = 0;
+        self.overflow.clear();
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.low == 0 && self.overflow.is_empty()
+    }
+
+    #[inline]
+    fn low_bit(reg: MachineReg) -> Option<u64> {
+        let shift = u32::from(reg.0);
+        (shift < u64::BITS).then(|| 1u64 << shift)
     }
 }
 
@@ -124,6 +150,18 @@ fn def_zero_extends(kind: &MachineInstKind) -> Option<MachineReg> {
     }
 }
 
+fn clean_preserving_reg_move(kind: &MachineInstKind) -> Option<(MachineReg, MachineReg)> {
+    match kind {
+        MachineInstKind::Move {
+            ty: MachineStorageType::GpWord | MachineStorageType::GpI64,
+            dst,
+            src: MachineValue::Reg(src),
+            ..
+        } => Some((*dst, *src)),
+        _ => None,
+    }
+}
+
 fn advance_clean_state(kind: &MachineInstKind, clean: &mut CleanRegs) {
     // Runtime calls are semantically opaque here. Native backends preserve
     // live MachineIR values around them, but clearing the proof is the safer
@@ -135,21 +173,17 @@ fn advance_clean_state(kind: &MachineInstKind, clean: &mut CleanRegs) {
 
     // A full-width move preserves an already-zero upper half. Capture this
     // before killing the destination so self-copies remain clean.
-    let clean_move = match kind {
-        MachineInstKind::Move {
-            ty: MachineStorageType::GpWord | MachineStorageType::GpI64,
-            dst,
-            src: MachineValue::Reg(src),
-            ..
-        } if clean.contains(*src) => Some(*dst),
-        MachineInstKind::Move {
-            ty: MachineStorageType::GpWord | MachineStorageType::GpI64,
-            dst,
-            src: MachineValue::Imm64(value),
-            ..
-        } if *value <= u64::from(u32::MAX) => Some(*dst),
-        _ => None,
-    };
+    let clean_move = clean_preserving_reg_move(kind)
+        .and_then(|(dst, src)| clean.contains(src).then_some(dst))
+        .or_else(|| match kind {
+            MachineInstKind::Move {
+                ty: MachineStorageType::GpWord | MachineStorageType::GpI64,
+                dst,
+                src: MachineValue::Imm64(value),
+                ..
+            } if *value <= u64::from(u32::MAX) => Some(*dst),
+            _ => None,
+        });
     let clean_def = def_zero_extends(kind).or(clean_move);
 
     kind.for_each_defined_reg(|reg| {
@@ -157,6 +191,27 @@ fn advance_clean_state(kind: &MachineInstKind, clean: &mut CleanRegs) {
     });
     if let Some(dst) = clean_def {
         clean.insert(dst);
+    }
+}
+
+fn advance_entry_dependence(kind: &MachineInstKind, dependent: &mut CleanRegs) {
+    // The clean-state transfer forgets every incoming fact at a runtime call,
+    // so no later obligation can depend on a block-entry fact through it.
+    if matches!(kind, MachineInstKind::CallRuntime(_)) {
+        dependent.clear();
+        return;
+    }
+
+    // Only a full-width register move can make an instruction's cleanliness
+    // depend on a different block-entry register. Capture self-copies before
+    // killing the destination, exactly as in `advance_clean_state`.
+    let dependent_move = clean_preserving_reg_move(kind)
+        .and_then(|(dst, src)| dependent.contains(src).then_some(dst));
+    kind.for_each_defined_reg(|reg| {
+        dependent.remove(reg);
+    });
+    if let Some(dst) = dependent_move {
+        dependent.insert(dst);
     }
 }
 
@@ -207,8 +262,10 @@ fn reachable_blocks(program: &MachineProgram) -> collections::Vec<bool> {
     reachable
 }
 
-fn block_entry_clean_states(program: &MachineProgram) -> collections::Vec<CleanRegs> {
-    let reachable = reachable_blocks(program);
+fn block_entry_clean_states(
+    program: &MachineProgram,
+    reachable: &[bool],
+) -> collections::Vec<CleanRegs> {
     let entry = block_index_for_id(&program.blocks, program.entry);
 
     // Must analyses start reachable non-entry parameters at top and remove a
@@ -232,7 +289,7 @@ fn block_entry_clean_states(program: &MachineProgram) -> collections::Vec<CleanR
     // source once at top, then revisit a block only when one of its entry
     // facts was actually removed. This avoids the quadratic convergence of a
     // synchronous fixed point on long entry-unknown chains.
-    let mut queued = reachable.clone();
+    let mut queued: collections::Vec<bool> = reachable.iter().copied().collect();
     let mut worklist: collections::Vec<usize> = reachable
         .iter()
         .enumerate()
@@ -276,16 +333,112 @@ fn block_entry_clean_states(program: &MachineProgram) -> collections::Vec<CleanR
     states
 }
 
+fn zero_extend_index(kind: &mut MachineInstKind) -> Option<(MachineReg, &mut MachineIndexExtend)> {
+    match kind {
+        MachineInstKind::IndexedLoad {
+            index,
+            index_extend: index_extend @ MachineIndexExtend::ZeroExtend32,
+            ..
+        }
+        | MachineInstKind::IndexedStore {
+            index,
+            index_extend: index_extend @ MachineIndexExtend::ZeroExtend32,
+            ..
+        } => Some((*index, index_extend)),
+        _ => None,
+    }
+}
+
+fn has_zero_extend_index(kind: &MachineInstKind) -> bool {
+    matches!(
+        kind,
+        MachineInstKind::IndexedLoad {
+            index_extend: MachineIndexExtend::ZeroExtend32,
+            ..
+        } | MachineInstKind::IndexedStore {
+            index_extend: MachineIndexExtend::ZeroExtend32,
+            ..
+        }
+    )
+}
+
+/// Relax facts established within this block and report whether any remaining
+/// obligation could change when whole-CFG block-entry facts are supplied.
+fn relax_index_extends_locally(block: &mut MachineBlock, seed_entry_params: bool) -> bool {
+    if !block
+        .ops
+        .iter()
+        .any(|inst| has_zero_extend_index(&inst.kind))
+    {
+        return false;
+    }
+
+    let mut clean = CleanRegs::default();
+    let mut entry_dependent = if seed_entry_params {
+        CleanRegs::block_param_top(block)
+    } else {
+        CleanRegs::default()
+    };
+    let mut needs_cfg = false;
+
+    for inst in &mut block.ops {
+        if let Some((index, index_extend)) = zero_extend_index(&mut inst.kind) {
+            if clean.contains(index) {
+                *index_extend = MachineIndexExtend::None;
+            } else if entry_dependent.contains(index) {
+                needs_cfg = true;
+            }
+        }
+
+        advance_clean_state(&inst.kind, &mut clean);
+        if !needs_cfg && !entry_dependent.is_empty() {
+            advance_entry_dependence(&inst.kind, &mut entry_dependent);
+        }
+    }
+
+    needs_cfg
+}
+
 /// Relax index extends using facts proven across the complete MachineIR CFG.
 pub(super) fn relax_index_extends_program(program: &mut MachineProgram) {
-    let entry_states = block_entry_clean_states(program);
-    for (block, entry) in program.blocks.iter_mut().zip(&entry_states) {
-        relax_index_extends_with_entry(block, entry);
+    // Most functions either have no indexed zero-extend obligations, can
+    // discharge them from in-block definitions, or leave obligations whose
+    // index cannot depend on any block-entry fact. Handle those cases before
+    // allocating and solving whole-CFG entry states. Mutating an index
+    // obligation does not affect the clean-state transfer function, so the
+    // entry-dependent blocks can safely continue through the full analysis.
+    let mut unresolved_blocks = collections::Vec::new();
+    let entry = program.entry;
+    for (index, block) in program.blocks.iter_mut().enumerate() {
+        // The public-entry parameters are unknown by definition; only a
+        // non-entry block can receive a clean parameter from a CFG edge.
+        let seed_entry_params = block.id != entry;
+        if relax_index_extends_locally(block, seed_entry_params) {
+            unresolved_blocks.push(index);
+        }
+    }
+    if unresolved_blocks.is_empty() {
+        return;
+    }
+
+    // A malformed or otherwise unreachable block has no incoming proof. Do
+    // this graph walk only after finding a potentially relevant non-entry
+    // candidate, then reuse it in the fixed-point solver.
+    let reachable = reachable_blocks(program);
+    unresolved_blocks.retain(|index| reachable[*index]);
+    if unresolved_blocks.is_empty() {
+        return;
+    }
+
+    let entry_states = block_entry_clean_states(program, &reachable);
+    for index in unresolved_blocks {
+        relax_index_extends_with_entry(&mut program.blocks[index], &entry_states[index]);
     }
 }
 
 pub(super) fn relax_index_extends(block: &mut MachineBlock) {
-    relax_index_extends_with_entry(block, &CleanRegs::default());
+    // Standalone block optimization has no predecessor facts available.
+    relax_index_extends_locally(block, false);
 }
 
 fn relax_index_extends_with_entry(block: &mut MachineBlock, entry: &CleanRegs) {
@@ -294,22 +447,10 @@ fn relax_index_extends_with_entry(block: &mut MachineBlock, entry: &CleanRegs) {
     for inst in &mut block.ops {
         // Uses first: relax this op's own index against the state built
         // by earlier ops.
-        match &mut inst.kind {
-            MachineInstKind::IndexedLoad {
-                index,
-                index_extend: index_extend @ MachineIndexExtend::ZeroExtend32,
-                ..
+        if let Some((index, index_extend)) = zero_extend_index(&mut inst.kind) {
+            if clean.contains(index) {
+                *index_extend = MachineIndexExtend::None;
             }
-            | MachineInstKind::IndexedStore {
-                index,
-                index_extend: index_extend @ MachineIndexExtend::ZeroExtend32,
-                ..
-            } => {
-                if clean.contains(*index) {
-                    *index_extend = MachineIndexExtend::None;
-                }
-            }
-            _ => {}
         }
 
         // Defs second: every redefinition invalidates; whitelisted 32-bit
@@ -326,8 +467,8 @@ mod tests {
     use crate::vm::jit::machine::machine_ir::{
         MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond, MachineCallArgs,
         MachineCallRuntime, MachineCallTarget, MachineConstId, MachineEdge, MachineFuncId,
-        MachineInst, MachineIntBinaryOp, MachineResultDst, MachineStorageType, MachineTerminator,
-        MachineValue,
+        MachineInst, MachineIntBinaryOp, MachineRegOwner, MachineResultDst, MachineStorageType,
+        MachineTerminator, MachineValue,
     };
 
     fn block(ops: collections::Vec<MachineInst>) -> MachineBlock {
@@ -396,6 +537,17 @@ mod tests {
         }
     }
 
+    fn move_gp(dst: u16, src: u16) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::Move {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: MachineReg(dst),
+                src: MachineValue::Reg(MachineReg(src)),
+            },
+        }
+    }
+
     fn extend32s_i32(dst: u16, src: u16) -> MachineInst {
         MachineInst {
             kind: MachineInstKind::IntUnary {
@@ -441,6 +593,31 @@ mod tests {
                 src: MachineValue::Reg(MachineReg(9)),
             },
         }
+    }
+
+    #[test]
+    fn clean_regs_keep_inline_boundary_and_overflow_exact() {
+        let mut clean = CleanRegs::default();
+        assert!(clean.is_empty());
+        clean.insert(MachineReg(63));
+        clean.insert(MachineReg(64));
+        clean.insert(MachineReg(130));
+        assert!(!clean.is_empty());
+
+        assert!(clean.contains(MachineReg(63)));
+        assert!(clean.contains(MachineReg(64)));
+        assert!(clean.contains(MachineReg(130)));
+        assert!(!clean.contains(MachineReg(0)));
+        assert!(!clean.contains(MachineReg(66)));
+
+        assert!(clean.remove(MachineReg(63)));
+        assert!(clean.remove(MachineReg(64)));
+        assert!(!clean.remove(MachineReg(64)));
+        assert!(clean.contains(MachineReg(130)));
+
+        clean.clear();
+        assert!(clean.is_empty());
+        assert!(!clean.contains(MachineReg(130)));
     }
 
     #[test]
@@ -512,6 +689,67 @@ mod tests {
     }
 
     #[test]
+    fn local_prepass_reports_when_all_obligations_are_resolved() {
+        let mut b = block(collections::vec![add32(5, 5), indexed_load(5)]);
+
+        let needs_cfg = relax_index_extends_locally(&mut b, false);
+
+        assert!(!needs_cfg);
+        assert_eq!(extend_of(&b, 1), MachineIndexExtend::None);
+    }
+
+    #[test]
+    fn local_prepass_skips_block_without_index_obligations() {
+        let mut b = block(collections::vec![add32(5, 5)]);
+
+        assert!(!relax_index_extends_locally(&mut b, false));
+        assert_eq!(b.ops.len(), 1);
+    }
+
+    #[test]
+    fn local_prepass_skips_cfg_for_nonparam_unknown_index() {
+        let mut b = block(collections::vec![indexed_load(5)]);
+
+        let needs_cfg = relax_index_extends_locally(&mut b, false);
+
+        assert!(!needs_cfg);
+        assert_eq!(extend_of(&b, 0), MachineIndexExtend::ZeroExtend32);
+    }
+
+    #[test]
+    fn entry_block_param_is_unknown_and_does_not_request_cfg() {
+        let mut entry = cfg_block(
+            0,
+            &[MachineReg(5)],
+            collections::vec![indexed_load(5)],
+            MachineTerminator::Return,
+        );
+
+        let needs_cfg = relax_index_extends_locally(&mut entry, false);
+        assert!(!needs_cfg);
+        assert_eq!(extend_of(&entry, 0), MachineIndexExtend::ZeroExtend32);
+
+        let mut p = program(collections::vec![entry]);
+        relax_index_extends_program(&mut p);
+        assert_eq!(extend_of(&p.blocks[0], 0), MachineIndexExtend::ZeroExtend32);
+    }
+
+    #[test]
+    fn local_prepass_skips_cfg_after_param_is_overwritten_dirty() {
+        let mut b = cfg_block(
+            0,
+            &[MachineReg(5)],
+            collections::vec![add64(5, 5), indexed_load(5)],
+            MachineTerminator::Return,
+        );
+
+        let needs_cfg = relax_index_extends_locally(&mut b, true);
+
+        assert!(!needs_cfg);
+        assert_eq!(extend_of(&b, 1), MachineIndexExtend::ZeroExtend32);
+    }
+
+    #[test]
     fn relaxes_clean_block_parameter_across_edge() {
         let mut p = program(collections::vec![
             cfg_block(
@@ -533,6 +771,64 @@ mod tests {
 
         relax_index_extends_program(&mut p);
         assert_eq!(extend_of(&p.blocks[1], 0), MachineIndexExtend::None);
+    }
+
+    #[test]
+    fn local_prepass_keeps_cross_edge_work_for_cfg_analysis() {
+        let mut p = program(collections::vec![
+            cfg_block(
+                0,
+                &[],
+                collections::vec![add32(5, 4)],
+                MachineTerminator::Jump(edge(
+                    1,
+                    collections::vec![MachineValue::Reg(MachineReg(5))],
+                )),
+            ),
+            cfg_block(
+                1,
+                &[MachineReg(6)],
+                collections::vec![add32(7, 7), indexed_load(7), indexed_load(6)],
+                MachineTerminator::Return,
+            ),
+        ]);
+
+        let needs_cfg = relax_index_extends_locally(&mut p.blocks[1], true);
+        assert!(needs_cfg);
+        assert_eq!(extend_of(&p.blocks[1], 1), MachineIndexExtend::None);
+        assert_eq!(extend_of(&p.blocks[1], 2), MachineIndexExtend::ZeroExtend32);
+
+        relax_index_extends_program(&mut p);
+        assert_eq!(extend_of(&p.blocks[1], 1), MachineIndexExtend::None);
+        assert_eq!(extend_of(&p.blocks[1], 2), MachineIndexExtend::None);
+    }
+
+    #[test]
+    fn local_prepass_follows_entry_dependence_through_move_chain() {
+        let mut p = program(collections::vec![
+            cfg_block(
+                0,
+                &[],
+                collections::vec![add32(4, 4)],
+                MachineTerminator::Jump(edge(
+                    1,
+                    collections::vec![MachineValue::Reg(MachineReg(4))],
+                )),
+            ),
+            cfg_block(
+                1,
+                &[MachineReg(5)],
+                collections::vec![move_gp(6, 5), move_gp(7, 6), indexed_load(7)],
+                MachineTerminator::Return,
+            ),
+        ]);
+
+        let needs_cfg = relax_index_extends_locally(&mut p.blocks[1], true);
+        assert!(needs_cfg);
+        assert_eq!(extend_of(&p.blocks[1], 2), MachineIndexExtend::ZeroExtend32);
+
+        relax_index_extends_program(&mut p);
+        assert_eq!(extend_of(&p.blocks[1], 2), MachineIndexExtend::None);
     }
 
     #[test]
