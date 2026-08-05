@@ -63,6 +63,12 @@ optimizing JIT and an interpreter behind one API
 
 **[Full benchmark results — every chart, the method, and the caveats →](benchmarks/wasi/README.md)**
 
+Against other engines, both tiers lead their class in the external
+[wasmi-benchmarks](https://github.com/wasmi-labs/wasmi-benchmarks) suite: the
+JIT is the fastest of six JITs across its 20 execution workloads, and the
+interpreter is the fastest interpreter on every case the class completed.
+**[Cross-engine results — 22 engines, 21 workloads, with the report page →](benchmarks/wasmi_benchmarks/README.md)**
+
 ## Binary size
 
 Measured on real firmware, not a synthetic link: the Pico 2 demo host built

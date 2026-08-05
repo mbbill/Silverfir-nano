@@ -1,0 +1,16 @@
+{
+  "title": "Silverfir-nano in wasmi-benchmarks — Apple M4",
+  "dek": "A local run of the upstream wasmi-benchmarks suite on an Apple M4: both Silverfir-nano tiers against every other engine the suite builds on macOS arm64, over 21 execution and 7 startup workloads. Each chart holds every engine that ran that workload, with the measured times on the bars.",
+  "facts": {
+    "Host": "Apple M4 (4P + 6E), 16 GB, macOS 26.5.2",
+    "Silverfir-nano": "6d26e34c (tag 0.5)",
+    "wasmi-benchmarks": "ee13941",
+    "Toolchain": "rustc 1.97.1 stable, LLVM 22.1.6",
+    "Profile": "bench — opt-level 3, fat LTO, 1 CGU",
+    "Sampling": "Criterion: 10 samples, 1 s warm-up, 2 s measurement",
+    "Run": "2026-08-04, one process per benchmark group",
+    "Engines": "29 configurations, 22 of them in the execution benchmarks"
+  },
+  "method": "Every bar is a Criterion point estimate — the linear-regression slope where Criterion could fit one, otherwise the mean. The per-case charts show that estimate directly. The two summary charts cannot: absolute times differ by orders of magnitude between workloads, so each engine is first scored against whichever engine won that case, and those ratios are combined with a geometric mean over the cases every engine completed. Engine classes come from the suite's own README. This is a single-machine, single-session run on a laptop with a live desktop, not the alternating A/B pilot with confirmation runs that ci/wasmi_performance.py performs — read a few percent as noise, and use the CI pipeline before calling anything a regression.",
+  "foot": "Generated from the raw cargo-criterion JSON stream stored beside this page in data/."
+}
