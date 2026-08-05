@@ -134,6 +134,24 @@ class PerformanceBuildTests(unittest.TestCase):
         self.assertEqual(pinned["RUSTUP_TOOLCHAIN"], "stable")
         self.assertEqual(overridden["RUSTUP_TOOLCHAIN"], "beta")
 
+    def test_windows_fixed_image_flag_survives_encoded_path_remapping(self) -> None:
+        source = Path("checkout").resolve()
+        with patch.object(performance_build.sys, "platform", "win32"):
+            env = performance_build.isolated_build_environment(
+                source,
+                label="candidate",
+                target="",
+                environ={},
+            )
+
+        self.assertNotIn("RUSTFLAGS", env)
+        flags = env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+        self.assertEqual(flags[-2:], ["-C", "link-arg=/DYNAMICBASE:NO"])
+        self.assertIn(
+            f"--remap-path-prefix={source}={performance_build.VIRTUAL_SOURCE_ROOT}",
+            flags,
+        )
+
     def test_sha256_file_records_the_copied_binary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "cli"
