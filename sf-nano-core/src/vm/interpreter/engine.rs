@@ -496,7 +496,34 @@ impl NativeEngine {
         // and one padding cell removes the dependency. Its handler is the
         // slow stub, so control reaching it exits cleanly rather than
         // jumping through uninitialized memory.
-        let mut cells = Vec::with_capacity(func.code.len() + 1);
+        let off_of = |slot: u64| {
+            if slot == u64::MAX {
+                0
+            } else {
+                (slot * 8) as u32
+            }
+        };
+        let mut lf = LinkedFunction {
+            cells: Vec::with_capacity(func.code.len() + 1),
+            br_flat,
+            l0_off: off_of(pin.l0),
+            l1_off: off_of(pin.l1),
+            fp_pinned: (pin.l0 != u64::MAX && pin.l0_float) || (pin.l1 != u64::MAX && pin.l1_float),
+        };
+        // Both relocations are applied as each cell is built rather than in
+        // a second sweep over the finished block: both buffers have their
+        // final allocation from `with_capacity`, and neither is ever grown,
+        // so the base addresses here are the ones the handlers will see.
+        //
+        // A branch target becomes absolute for the same reason the JIT
+        // prefers absolute targets: it removes one link from the taken
+        // path's dependency chain and lets the target's handler word be
+        // loaded at handler entry rather than after the branch resolves —
+        // measured -4.80% of CoreMark cycles. A BrTable cell's `b` becomes
+        // the absolute base of its slice of the flat table buffer.
+        let cells_base = lf.cells.as_ptr() as u64;
+        let br_base = lf.br_flat.as_ptr() as u64;
+        let cells = &mut lf.cells;
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
             let mut h = Some(handler[i]).filter(|&h| h != 0);
@@ -513,7 +540,7 @@ impl NativeEngine {
                     cells.push(DCell {
                         h: h as u64,
                         a: ins.a * 8,
-                        b: table_byte_off[ins.c as usize],
+                        b: br_base + table_byte_off[ins.c as usize],
                         c: (table.len() - 1) as u64,
                     });
                 }
@@ -523,7 +550,10 @@ impl NativeEngine {
                     } else {
                         ins.a * 8
                     };
-                    let (b, c) = transform_bc(ins, fl);
+                    let (b, mut c) = transform_bc(ins, fl);
+                    if c_is_branch_target(ins.op) {
+                        c += cells_base;
+                    }
                     cells.push(DCell {
                         h: h as u64,
                         a,
@@ -546,46 +576,6 @@ impl NativeEngine {
             b: 0,
             c: 0,
         });
-
-        let off_of = |slot: u64| {
-            if slot == u64::MAX {
-                0
-            } else {
-                (slot * 8) as u32
-            }
-        };
-        let mut lf = LinkedFunction {
-            cells,
-            br_flat,
-            l0_off: off_of(pin.l0),
-            l1_off: off_of(pin.l1),
-            fp_pinned: (pin.l0 != u64::MAX && pin.l0_float) || (pin.l1 != u64::MAX && pin.l1_float),
-        };
-        // Both buffers have their final allocations now, so the two
-        // relocations can be resolved in one pass. They are disjoint:
-        // `BrTable` is not one of the ops whose `c` is a branch target.
-        //
-        // BrTable cells carry a byte offset into the flat table buffer;
-        // a cell that took the slow stub keeps the raw operands instead,
-        // and no handler address equals the stub.
-        //
-        // Branch targets become absolute for the same reason the JIT
-        // prefers them: it removes one link from the taken path's
-        // dependency chain and lets the target's handler word be loaded at
-        // handler entry rather than after the branch resolves — measured
-        // -4.80% of CoreMark cycles. Moving the Vec is safe: absolute
-        // addresses point into its heap buffer, which does not move with
-        // it.
-        let br_base = lf.br_flat.as_ptr() as u64;
-        let cells_base = lf.cells.as_ptr() as u64;
-        let slow_stub = self.slow_stub as u64;
-        for (i, ins) in func.code.iter().enumerate() {
-            if c_is_branch_target(ins.op) {
-                lf.cells[i].c += cells_base;
-            } else if ins.op == Op::BrTable && lf.cells[i].h != slow_stub {
-                lf.cells[i].b += br_base;
-            }
-        }
         lf
     }
 
