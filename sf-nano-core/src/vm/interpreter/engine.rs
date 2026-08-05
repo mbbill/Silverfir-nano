@@ -131,18 +131,36 @@ pub(super) struct LinkScratch {
     /// cell loop reads it again, so it is computed once and kept in step
     /// with `flags` at each strip.
     handler: Vec<usize>,
-    counts: Vec<u64>,
-    wdom: Vec<u8>,
-    rdom: Vec<u8>,
-    f32dom: Vec<bool>,
+    slots: Vec<SlotStat>,
     table_byte_off: Vec<u64>,
-    brtable_native: Vec<bool>,
 }
 
 /// Clear `v` and refill it with `n` copies of `fill`, keeping its buffer.
 fn reset<T: Clone>(v: &mut Vec<T>, n: usize, fill: T) {
     v.clear();
     v.resize(n, fill);
+}
+
+/// What `select_pinned` records about one frame slot.
+///
+/// One array rather than four parallel ones: the pass touches every field
+/// of a slot together, and four arrays put each access on its own cache
+/// line.
+#[derive(Clone, Copy, Default)]
+struct SlotStat {
+    /// Static reference count, unweighted — see [`select_pinned`].
+    count: u32,
+    /// Domain set of this slot's WRITERS: bit 0 integer/agnostic, bit 1
+    /// float. Writers decide the pinned register file; a mixed set makes
+    /// the slot unpinnable, because neither file could stay authoritative.
+    wdom: u8,
+    /// Domain set of this slot's READERS, same bits. Breaks the tie only
+    /// when the slot has no writer.
+    rdom: u8,
+    /// Whether the slot's float accesses are single-precision. Some
+    /// backends cannot hold an f32 in a pinned float register (see
+    /// `INTERP_FLOAT_PIN_F32`), so the width has to be known here.
+    f32dom: bool,
 }
 
 /// Pick the function's pinned locals — the most- and second-most-
@@ -162,51 +180,38 @@ fn select_pinned(func: &PredecodedFunction, scratch: &mut LinkScratch) -> Pinned
     if n == 0 {
         return Pinned::NONE;
     }
-    let LinkScratch {
-        counts,
-        wdom,
-        rdom,
-        f32dom,
-        ..
-    } = scratch;
-    reset(counts, func.n_locals as usize, 0u64);
-    // Per-slot domain sets (bit 0 = integer/agnostic, bit 1 = float):
-    // writers decide the pinned register file; mixed writers make the slot
-    // unpinnable (neither file could stay authoritative). Readers only
-    // break the tie when no writer exists.
-    reset(wdom, func.n_locals as usize, 0u8);
-    reset(rdom, func.n_locals as usize, 0u8);
-    // Whether a slot's float accesses are single-precision. Some backends
-    // cannot hold an f32 in a pinned float register (see
-    // `INTERP_FLOAT_PIN_F32`), so the width has to be known here.
-    reset(f32dom, func.n_locals as usize, false);
+    let slots = &mut scratch.slots;
+    reset(slots, func.n_locals as usize, SlotStat::default());
     for ins in func.code.iter() {
         let (a_s, b_s, c_d) = slot_fields(ins.op);
         if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
-            counts[ins.a as usize] += 1;
+            let slot = &mut slots[ins.a as usize];
+            slot.count += 1;
             if operand_is_float(ins.op, false) {
-                rdom[ins.a as usize] |= 2;
-                f32dom[ins.a as usize] |= operand_is_f32(ins.op, false);
+                slot.rdom |= 2;
+                slot.f32dom |= operand_is_f32(ins.op, false);
             } else {
-                rdom[ins.a as usize] |= 1;
+                slot.rdom |= 1;
             }
         }
         if b_s && ins.flags & FLAG_B_CONST == 0 && ins.b < n {
-            counts[ins.b as usize] += 1;
+            let slot = &mut slots[ins.b as usize];
+            slot.count += 1;
             if operand_is_float(ins.op, true) {
-                rdom[ins.b as usize] |= 2;
-                f32dom[ins.b as usize] |= operand_is_f32(ins.op, true);
+                slot.rdom |= 2;
+                slot.f32dom |= operand_is_f32(ins.op, true);
             } else {
-                rdom[ins.b as usize] |= 1;
+                slot.rdom |= 1;
             }
         }
         if c_d && ins.c < n {
-            counts[ins.c as usize] += 1;
+            let slot = &mut slots[ins.c as usize];
+            slot.count += 1;
             if result_is_float(ins.op) {
-                wdom[ins.c as usize] |= 2;
-                f32dom[ins.c as usize] |= result_is_f32(ins.op);
+                slot.wdom |= 2;
+                slot.f32dom |= result_is_f32(ins.op);
             } else {
-                wdom[ins.c as usize] |= 1;
+                slot.wdom |= 1;
             }
         }
         if matches!(ins.op, Op::I32_SubBrIf | Op::I64_SubBrIf) && ins.a < n {
@@ -214,13 +219,14 @@ fn select_pinned(func: &PredecodedFunction, scratch: &mut LinkScratch) -> Pinned
             // `a`. Count both halves of the read/modify/write so pin
             // selection and register-domain authority match the unfused
             // subtraction it replaces.
-            counts[ins.a as usize] += 1;
-            wdom[ins.a as usize] |= 1;
+            let slot = &mut slots[ins.a as usize];
+            slot.count += 1;
+            slot.wdom |= 1;
         }
         if ins.op == Op::Select {
             let dslot = ins.c & 0xffff_ffff;
             if dslot < n {
-                wdom[dslot as usize] |= 1;
+                slots[dslot as usize].wdom |= 1;
             }
         }
         if ins.op == Op::MovPair {
@@ -230,23 +236,25 @@ fn select_pinned(func: &PredecodedFunction, scratch: &mut LinkScratch) -> Pinned
             // both frame slots and both authoritative registers.
             for dslot in [ins.c >> 32, ins.c & 0xffff_ffff] {
                 if dslot < n {
-                    counts[dslot as usize] += 1;
-                    wdom[dslot as usize] |= 1;
+                    let slot = &mut slots[dslot as usize];
+                    slot.count += 1;
+                    slot.wdom |= 1;
                 }
             }
         }
     }
     // Whether slot `i` could live in the float register file at all.
-    let float_ok = |i: usize| INTERP_HAS_FLOAT_REGS && (INTERP_FLOAT_PIN_F32 || !f32dom[i]);
-    let mut best = (usize::MAX, 0u64);
-    let mut second = (usize::MAX, 0u64);
-    for (i, &c) in counts.iter().enumerate() {
+    let float_ok = |i: usize| INTERP_HAS_FLOAT_REGS && (INTERP_FLOAT_PIN_F32 || !slots[i].f32dom);
+    let mut best = (usize::MAX, 0u32);
+    let mut second = (usize::MAX, 0u32);
+    for (i, stat) in slots.iter().enumerate() {
+        let (c, wdom) = (stat.count, stat.wdom);
         // A slot is pinnable only when ONE register file can stay
         // authoritative for it. Mixed-domain writers rule that out, and so
         // does a float writer on a backend (or a width) that cannot pin a
         // float: the write would land in the slot alone and leave the
         // integer pinned register stale for the next integer-domain read.
-        if wdom[i] == 3 || (wdom[i] & 2 != 0 && !float_ok(i)) {
+        if wdom == 3 || (wdom & 2 != 0 && !float_ok(i)) {
             continue;
         }
         if c > best.1 {
@@ -257,11 +265,13 @@ fn select_pinned(func: &PredecodedFunction, scratch: &mut LinkScratch) -> Pinned
         }
     }
     // Byte offsets must fit the 16-bit packing in call cells / records.
-    let ok = |(i, c): (usize, u64)| c > 0 && i * 8 < 1 << 16;
+    let ok = |(i, c): (usize, u32)| c > 0 && i * 8 < 1 << 16;
     // A slot's authoritative register file: float only when it has a
     // float writer (or, with no writer at all, only float readers) AND
     // this backend has float twins for the pinned registers.
-    let mode = |i: usize| float_ok(i) && (wdom[i] == 2 || (wdom[i] == 0 && rdom[i] == 2));
+    let mode = |i: usize| {
+        float_ok(i) && (slots[i].wdom == 2 || (slots[i].wdom == 0 && slots[i].rdom == 2))
+    };
     let (l0, l0f) = if ok(best) {
         (best.0 as u64, mode(best.0))
     } else {
@@ -487,8 +497,6 @@ impl NativeEngine {
         // slow stub, so control reaching it exits cleanly rather than
         // jumping through uninitialized memory.
         let mut cells = Vec::with_capacity(func.code.len() + 1);
-        let brtable_native = &mut scratch.brtable_native;
-        reset(brtable_native, func.code.len(), false);
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
             let mut h = Some(handler[i]).filter(|&h| h != 0);
@@ -502,7 +510,6 @@ impl NativeEngine {
             match h {
                 Some(h) if ins.op == Op::BrTable => {
                     let table = &func.br_tables[ins.c as usize];
-                    brtable_native[i] = true;
                     cells.push(DCell {
                         h: h as u64,
                         a: ins.a * 8,
@@ -554,24 +561,29 @@ impl NativeEngine {
             l1_off: off_of(pin.l1),
             fp_pinned: (pin.l0 != u64::MAX && pin.l0_float) || (pin.l1 != u64::MAX && pin.l1_float),
         };
-        // The flat buffer has its final allocation now; resolve BrTable
-        // base offsets to absolute addresses.
-        let base = lf.br_flat.as_ptr() as u64;
-        for i in 0..func.code.len() {
-            if brtable_native[i] {
-                lf.cells[i].b += base;
-            }
-        }
-        // Same reasoning for branch targets: an absolute target removes
-        // one link from the taken path's dependency chain and lets the
-        // target's handler word be loaded at handler entry rather than
-        // after the branch resolves — measured -4.80% of CoreMark cycles.
-        // Moving the Vec is safe: absolute addresses point into its heap
-        // buffer, which does not move with it.
+        // Both buffers have their final allocations now, so the two
+        // relocations can be resolved in one pass. They are disjoint:
+        // `BrTable` is not one of the ops whose `c` is a branch target.
+        //
+        // BrTable cells carry a byte offset into the flat table buffer;
+        // a cell that took the slow stub keeps the raw operands instead,
+        // and no handler address equals the stub.
+        //
+        // Branch targets become absolute for the same reason the JIT
+        // prefers them: it removes one link from the taken path's
+        // dependency chain and lets the target's handler word be loaded at
+        // handler entry rather than after the branch resolves — measured
+        // -4.80% of CoreMark cycles. Moving the Vec is safe: absolute
+        // addresses point into its heap buffer, which does not move with
+        // it.
+        let br_base = lf.br_flat.as_ptr() as u64;
         let cells_base = lf.cells.as_ptr() as u64;
-        for i in 0..func.code.len() {
-            if c_is_branch_target(func.code[i].op) {
+        let slow_stub = self.slow_stub as u64;
+        for (i, ins) in func.code.iter().enumerate() {
+            if c_is_branch_target(ins.op) {
                 lf.cells[i].c += cells_base;
+            } else if ins.op == Op::BrTable && lf.cells[i].h != slow_stub {
+                lf.cells[i].b += br_base;
             }
         }
         lf
