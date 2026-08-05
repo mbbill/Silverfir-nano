@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tomllib
@@ -22,6 +23,7 @@ from typing import Sequence
 
 RV32_LINUX = "riscv32gc-unknown-linux-musl"
 VIRTUAL_SOURCE_ROOT = "/workspace"
+IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE = 0x0040
 
 
 def cargo_command(*, engine: str, target: str) -> list[str]:
@@ -152,6 +154,31 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def pe_image_metadata(path: Path) -> dict[str, object]:
+    """Read the image base and ASLR bit from a PE32/PE32+ executable."""
+    data = path.read_bytes()
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise ValueError(f"{path}: missing DOS header")
+    pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
+    optional = pe_offset + 24
+    if optional + 72 > len(data) or data[pe_offset : pe_offset + 4] != b"PE\0\0":
+        raise ValueError(f"{path}: missing PE optional header")
+    magic = struct.unpack_from("<H", data, optional)[0]
+    if magic == 0x20B:
+        image_base = struct.unpack_from("<Q", data, optional + 24)[0]
+    elif magic == 0x10B:
+        image_base = struct.unpack_from("<I", data, optional + 28)[0]
+    else:
+        raise ValueError(f"{path}: unsupported PE optional-header magic 0x{magic:04x}")
+    characteristics = struct.unpack_from("<H", data, optional + 70)[0]
+    return {
+        "image_base": f"0x{image_base:016x}",
+        "dynamic_base": bool(
+            characteristics & IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE
+        ),
+    }
+
+
 def build_one(
     *,
     label: str,
@@ -185,11 +212,17 @@ def build_one(
     shutil.copy2(artifact, output)
     digest = sha256_file(output)
     size = output.stat().st_size
+    image = pe_image_metadata(output) if sys.platform == "win32" else {}
+    if image.get("dynamic_base"):
+        raise RuntimeError(
+            f"{output}: performance image still enables DYNAMIC_BASE"
+        )
     print(f"[build {label}] sha256={digest} size={size}", flush=True)
     return {
         "sha256": digest,
         "size": size,
         "virtual_source_root": VIRTUAL_SOURCE_ROOT,
+        **image,
     }
 
 
@@ -237,6 +270,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "builds": builds,
         "identical_binaries": builds["baseline"]["sha256"] == builds["candidate"]["sha256"],
     }
+    if sys.platform == "win32":
+        bases = {build["image_base"] for build in builds.values()}
+        if len(bases) != 1:
+            raise RuntimeError(
+                "baseline and candidate performance images use different image bases: "
+                + ", ".join(sorted(bases))
+            )
     metadata_path = out_dir / "build-metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     print(

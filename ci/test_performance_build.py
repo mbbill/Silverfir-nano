@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -161,6 +162,95 @@ class PerformanceBuildTests(unittest.TestCase):
                 hashlib.sha256(b"same runtime").hexdigest(),
             )
 
+    def test_pe_metadata_reads_image_base_and_dynamic_base_bit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "cli.exe"
+            data = bytearray(0x200)
+            data[:2] = b"MZ"
+            struct.pack_into("<I", data, 0x3C, 0x80)
+            data[0x80:0x84] = b"PE\0\0"
+            optional = 0x80 + 24
+            struct.pack_into("<H", data, optional, 0x20B)
+            struct.pack_into("<Q", data, optional + 24, 0x140000000)
+            struct.pack_into(
+                "<H",
+                data,
+                optional + 70,
+                performance_build.IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE,
+            )
+            binary.write_bytes(data)
+
+            dynamic = performance_build.pe_image_metadata(binary)
+            struct.pack_into("<H", data, optional + 70, 0)
+            binary.write_bytes(data)
+            fixed = performance_build.pe_image_metadata(binary)
+
+        self.assertEqual(dynamic["image_base"], "0x0000000140000000")
+        self.assertTrue(dynamic["dynamic_base"])
+        self.assertEqual(fixed["image_base"], "0x0000000140000000")
+        self.assertFalse(fixed["dynamic_base"])
+
+    def test_pe_metadata_reads_pe32_image_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "cli.exe"
+            data = bytearray(0x200)
+            data[:2] = b"MZ"
+            struct.pack_into("<I", data, 0x3C, 0x80)
+            data[0x80:0x84] = b"PE\0\0"
+            optional = 0x80 + 24
+            struct.pack_into("<H", data, optional, 0x10B)
+            struct.pack_into("<I", data, optional + 28, 0x400000)
+            binary.write_bytes(data)
+
+            metadata = performance_build.pe_image_metadata(binary)
+
+        self.assertEqual(metadata["image_base"], "0x0000000000400000")
+        self.assertFalse(metadata["dynamic_base"])
+
+    def test_windows_main_rejects_different_image_bases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temp_path = Path(directory)
+            out_dir = temp_path / "out"
+            builds = [
+                {
+                    "sha256": "a" * 64,
+                    "size": 123,
+                    "virtual_source_root": "/workspace",
+                    "image_base": "0x0000000140000000",
+                    "dynamic_base": False,
+                },
+                {
+                    "sha256": "b" * 64,
+                    "size": 456,
+                    "virtual_source_root": "/workspace",
+                    "image_base": "0x0000000150000000",
+                    "dynamic_base": False,
+                },
+            ]
+            with (
+                patch.object(performance_build.sys, "platform", "win32"),
+                patch.object(performance_build, "build_one", side_effect=builds),
+                self.assertRaisesRegex(RuntimeError, "different image bases"),
+            ):
+                performance_build.main([
+                    "--baseline-source",
+                    str(temp_path / "baseline"),
+                    "--candidate-source",
+                    str(temp_path / "candidate"),
+                    "--out-dir",
+                    str(out_dir),
+                    "--engine",
+                    "jit",
+                    "--platform",
+                    "x64-windows",
+                    "--baseline-sha",
+                    "base",
+                    "--candidate-sha",
+                    "head",
+                ])
+
+            self.assertFalse((out_dir / "build-metadata.json").exists())
+
     def test_main_writes_versioned_build_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             temp_path = Path(directory)
@@ -174,11 +264,15 @@ class PerformanceBuildTests(unittest.TestCase):
                         "sha256": "a" * 64,
                         "size": 123,
                         "virtual_source_root": "/workspace",
+                        "image_base": "0x0000000140000000",
+                        "dynamic_base": False,
                     },
                     {
                         "sha256": "b" * 64,
                         "size": 456,
                         "virtual_source_root": "/workspace",
+                        "image_base": "0x0000000140000000",
+                        "dynamic_base": False,
                     },
                 ],
             ):
