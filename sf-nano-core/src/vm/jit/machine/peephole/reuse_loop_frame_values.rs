@@ -238,8 +238,10 @@ fn loop_preserves_frame_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::jit::backend::BackendConfig;
     use crate::vm::jit::machine::machine_ir::{
-        MachineBranchCond, MachineEdge, MachineInst, MachineIntBinaryOp, MachineIntWidth,
+        MachineBranchCond, MachineEdge, MachineIndexExtend, MachineInst, MachineIntBinaryOp,
+        MachineIntWidth, MachineProgram, MACHINE_MEM0_BASE_REG,
     };
 
     fn edge(target: u32, args: &[MachineReg]) -> MachineEdge {
@@ -356,5 +358,98 @@ mod tests {
             panic!("expected loop branch");
         };
         assert_eq!(then_edge.args.last(), Some(&MachineValue::Reg(carried)));
+    }
+
+    #[test]
+    fn final_index_relaxation_observes_reused_unknown_frame_value() {
+        let source = MachineReg(6);
+        let cond = MachineReg(7);
+        let carried = MachineReg(5);
+        let addr = MachineAddr {
+            base: MACHINE_FP_REG,
+            offset: 16,
+        };
+        let blocks = collections::vec![
+            MachineBlock {
+                id: crate::vm::jit::machine::machine_ir::MachineBlockId(0),
+                params: collections::vec![
+                    MachineBlockParam::gp_word(source),
+                    MachineBlockParam::gp_word(cond),
+                ],
+                ops: collections::vec![MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr,
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(source),
+                    },
+                }],
+                terminator: MachineTerminator::Jump(edge(1, &[cond])),
+            },
+            MachineBlock {
+                id: crate::vm::jit::machine::machine_ir::MachineBlockId(1),
+                params: collections::vec![MachineBlockParam::gp_word(cond)],
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Reg(cond)),
+                    then_edge: edge(3, &[]),
+                    else_edge: edge(2, &[cond]),
+                },
+            },
+            MachineBlock {
+                id: crate::vm::jit::machine::machine_ir::MachineBlockId(2),
+                params: collections::vec![MachineBlockParam::gp_word(cond)],
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Jump(edge(1, &[cond])),
+            },
+            MachineBlock {
+                id: crate::vm::jit::machine::machine_ir::MachineBlockId(3),
+                params: collections::Vec::new(),
+                ops: collections::vec![
+                    MachineInst {
+                        kind: MachineInstKind::Load {
+                            owner: MachineRegOwner::CachedCell,
+                            ty: MachineStorageType::GpWord,
+                            dst: carried,
+                            addr,
+                            width: MachineMemWidth::U32,
+                            extension: MachineLoadExtension::None,
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::IndexedLoad {
+                            dst: MachineReg(8),
+                            base: MACHINE_MEM0_BASE_REG,
+                            index: carried,
+                            index_extend: MachineIndexExtend::ZeroExtend32,
+                            offset: 0,
+                            width: MachineMemWidth::U32,
+                            extension: MachineLoadExtension::None,
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Return,
+            },
+        ];
+        let mut program = MachineProgram {
+            entry: crate::vm::jit::machine::machine_ir::MachineBlockId(0),
+            fp_reg_init_widths: collections::Vec::new(),
+            blocks,
+        };
+
+        super::super::optimize(
+            &mut program,
+            BackendConfig::new(8, 8, 0, 0).with_gp32_zero_extending_defs(),
+        );
+
+        let exit = &program.blocks[3];
+        assert_eq!(exit.ops.len(), 1, "the exit reload should be reused");
+        assert!(matches!(
+            exit.ops[0].kind,
+            MachineInstKind::IndexedLoad {
+                index_extend: MachineIndexExtend::ZeroExtend32,
+                ..
+            }
+        ));
     }
 }

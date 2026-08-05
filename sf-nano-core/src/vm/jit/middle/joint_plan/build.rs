@@ -69,7 +69,7 @@ pub(crate) fn build_plan(
     }
     let block_local_summaries = analyze_block_local_summaries(semantic, cfg);
 
-    let policy = ResidencyPolicy::from_env(config.residency_edge_cost_percent)?;
+    let policy = ResidencyPolicy::from_env()?;
     let solution = solve_public_cache_sets(
         semantic,
         cfg,

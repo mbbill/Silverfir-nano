@@ -228,11 +228,7 @@ entry_freq(root) = 1
 per-iteration benefit and per-entry transition cost, and nothing else; it
 does not need to be accurate.
 
-**Transition cost.** `trans_cost(L) = edge_scale * units(L)`. The backend
-default is `edge_scale = 1.0`, except on x86_64 where benchmark tuning uses
-`1.5` to account for the extra frame traffic and cache-repair instructions
-caused by region-boundary residency changes. An explicit
-`SF_CACHE_POLICY=algorithm4:edge=...` value replaces the backend default.
+**Transition cost.** `trans_cost(L) = units(L)`.
 
 **Capacity.**
 

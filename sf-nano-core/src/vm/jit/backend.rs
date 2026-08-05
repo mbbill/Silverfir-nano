@@ -49,11 +49,6 @@ pub(crate) struct BackendConfig {
     /// resident earns. Backends whose prologue bulk-saves the physical
     /// registers regardless (everyone but arm64 today) would price this 0.
     pub preserved_lane_save_overhead: u8,
-    /// Backend default for the residency solver's region-boundary edge cost,
-    /// expressed as an integer percentage so this configuration remains
-    /// equality-comparable. `SF_CACHE_POLICY=algorithm4:edge=...` overrides
-    /// this default when specified explicitly.
-    pub residency_edge_cost_percent: u16,
     /// Every 32-bit integer instruction writes a zero-extended destination
     /// (x86_64 r32 semantics). Lets the shared peephole relax redundant
     /// `ZeroExtend32` index obligations on indexed memory ops.
@@ -120,17 +115,8 @@ impl BackendConfig {
             scalar_return_lanes,
             call_scratch_slots,
             preserved_lane_save_overhead: 0,
-            residency_edge_cost_percent: 100,
             gp32_defs_zero_extend: false,
         }
-    }
-
-    /// Override the residency solver's region-boundary edge-cost default.
-    #[inline]
-    #[cfg(any(sf_backend_x64, test))]
-    pub(crate) const fn with_residency_edge_cost_percent(mut self, percent: u16) -> Self {
-        self.residency_edge_cost_percent = percent;
-        self
     }
 
     /// Declare that every 32-bit integer instruction writes a zero-extended
@@ -273,15 +259,7 @@ mod tests {
         assert_eq!(config.gp_arg_lanes, 4);
         assert_eq!(config.fp_arg_lanes, 2);
         assert!(config.scalar_return_lanes);
-        assert_eq!(config.residency_edge_cost_percent, 100);
         assert!(!config.gp32_defs_zero_extend);
-    }
-
-    #[test]
-    fn backend_config_allows_residency_edge_cost_override() {
-        let config = BackendConfig::with_volatility(8, 6, 4, 1, 5, 3, 4, 2, true, 3)
-            .with_residency_edge_cost_percent(150);
-        assert_eq!(config.residency_edge_cost_percent, 150);
     }
 
     #[test]
