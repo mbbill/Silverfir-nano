@@ -127,8 +127,9 @@ def isolated_build_environment(
     # at spawn time instead (setarch -R and ci/noaslr.c). Applies only
     # to these perf builds; shipped artifacts keep dynamic bases.
     if sys.platform == "win32":
-        flags = env.get("RUSTFLAGS", "")
-        env["RUSTFLAGS"] = (flags + " -C link-arg=/DYNAMICBASE:NO").strip()
+        flags = env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+        flags.extend(["-C", "link-arg=/DYNAMICBASE:NO"])
+        env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
     return env
 
 
