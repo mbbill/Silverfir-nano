@@ -412,10 +412,17 @@ impl NativeEngine {
     }
 
     /// Build the dispatch cells for one predecoded function.
+    ///
+    /// Every `call_indirect` type index is appended to `call_indirect_types`
+    /// on the way past. The caller needs them to number the canonical type
+    /// classes for the native indirect-call check, and this pass already
+    /// reads every instruction — collecting them separately cost a second
+    /// sweep of the whole module's instruction stream.
     pub(super) fn link(
         &self,
         func: &PredecodedFunction,
         scratch: &mut LinkScratch,
+        call_indirect_types: &mut Vec<u32>,
     ) -> LinkedFunction {
         let pin = select_pinned(func, scratch);
 
@@ -525,6 +532,9 @@ impl NativeEngine {
         let br_base = lf.br_flat.as_ptr() as u64;
         let cells = &mut lf.cells;
         for (i, ins) in func.code.iter().enumerate() {
+            if ins.op == Op::CallIndirect {
+                call_indirect_types.push(ins.c as u32);
+            }
             let fl = flags[i];
             let mut h = Some(handler[i]).filter(|&h| h != 0);
             // A 32-bit host reads a cell's static offset as one machine
