@@ -30,6 +30,13 @@ use crate::vm::jit::machine::machine_ir::{
 
 use super::hoist_loop_address_bases::{block_index_for_id, visit_edges};
 
+// Keep the cross-block proof proportional to the function being compiled.
+// Local facts are still relaxed above these limits; larger functions retain
+// explicit index extensions at block boundaries instead of paying for the
+// whole-CFG fixed point during startup.
+const MAX_CFG_INDEX_PROOF_BLOCKS: usize = 128;
+const MAX_CFG_INDEX_PROOF_OPS: usize = 1024;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CleanRegs {
     // Every production GP register fits here (x86_64 currently uses ids
@@ -408,8 +415,10 @@ pub(super) fn relax_index_extends_program(program: &mut MachineProgram) {
     // obligation does not affect the clean-state transfer function, so the
     // entry-dependent blocks can safely continue through the full analysis.
     let mut unresolved_blocks = collections::Vec::new();
+    let mut op_count = 0usize;
     let entry = program.entry;
     for (index, block) in program.blocks.iter_mut().enumerate() {
+        op_count = op_count.saturating_add(block.ops.len());
         // The public-entry parameters are unknown by definition; only a
         // non-entry block can receive a clean parameter from a CFG edge.
         let seed_entry_params = block.id != entry;
@@ -418,6 +427,9 @@ pub(super) fn relax_index_extends_program(program: &mut MachineProgram) {
         }
     }
     if unresolved_blocks.is_empty() {
+        return;
+    }
+    if program.blocks.len() > MAX_CFG_INDEX_PROOF_BLOCKS || op_count > MAX_CFG_INDEX_PROOF_OPS {
         return;
     }
 
@@ -511,6 +523,39 @@ mod tests {
             fp_reg_init_widths: collections::Vec::new(),
             blocks,
         }
+    }
+
+    fn clean_cfg_chain(block_count: usize) -> MachineProgram {
+        assert!(block_count >= 2);
+        let mut blocks = collections::Vec::new();
+        blocks.push(cfg_block(
+            0,
+            &[],
+            collections::vec![add32(4, 4)],
+            MachineTerminator::Jump(edge(1, collections::vec![MachineValue::Reg(MachineReg(4))])),
+        ));
+        for index in 1..block_count {
+            let id = u32::try_from(index).expect("test block count fits u32");
+            let last = index + 1 == block_count;
+            blocks.push(cfg_block(
+                id,
+                &[MachineReg(5)],
+                if last {
+                    collections::vec![indexed_load(5)]
+                } else {
+                    collections::Vec::new()
+                },
+                if last {
+                    MachineTerminator::Return
+                } else {
+                    MachineTerminator::Jump(edge(
+                        id + 1,
+                        collections::vec![MachineValue::Reg(MachineReg(5))],
+                    ))
+                },
+            ));
+        }
+        program(blocks)
     }
 
     fn add32(dst: u16, lhs: u16) -> MachineInst {
@@ -829,6 +874,85 @@ mod tests {
 
         relax_index_extends_program(&mut p);
         assert_eq!(extend_of(&p.blocks[1], 2), MachineIndexExtend::None);
+    }
+
+    #[test]
+    fn cfg_proof_runs_at_op_budget() {
+        let mut entry_ops = collections::Vec::new();
+        for _ in 0..MAX_CFG_INDEX_PROOF_OPS - 1 {
+            entry_ops.push(add32(4, 4));
+        }
+        let mut p = program(collections::vec![
+            cfg_block(
+                0,
+                &[],
+                entry_ops,
+                MachineTerminator::Jump(edge(
+                    1,
+                    collections::vec![MachineValue::Reg(MachineReg(4))],
+                )),
+            ),
+            cfg_block(
+                1,
+                &[MachineReg(5)],
+                collections::vec![indexed_load(5)],
+                MachineTerminator::Return,
+            ),
+        ]);
+
+        relax_index_extends_program(&mut p);
+        assert_eq!(extend_of(&p.blocks[1], 0), MachineIndexExtend::None);
+    }
+
+    #[test]
+    fn op_budget_keeps_cross_block_extend_and_local_relaxation() {
+        let mut entry_ops = collections::Vec::new();
+        for _ in 0..MAX_CFG_INDEX_PROOF_OPS - 2 {
+            entry_ops.push(add32(4, 4));
+        }
+        let mut p = program(collections::vec![
+            cfg_block(
+                0,
+                &[],
+                entry_ops,
+                MachineTerminator::Jump(edge(
+                    1,
+                    collections::vec![MachineValue::Reg(MachineReg(4))],
+                )),
+            ),
+            cfg_block(
+                1,
+                &[MachineReg(5)],
+                collections::vec![add32(6, 6), indexed_load(6), indexed_load(5)],
+                MachineTerminator::Return,
+            ),
+        ]);
+
+        relax_index_extends_program(&mut p);
+        assert_eq!(extend_of(&p.blocks[1], 1), MachineIndexExtend::None);
+        assert_eq!(extend_of(&p.blocks[1], 2), MachineIndexExtend::ZeroExtend32);
+    }
+
+    #[test]
+    fn cfg_proof_runs_at_block_budget() {
+        let mut p = clean_cfg_chain(MAX_CFG_INDEX_PROOF_BLOCKS);
+
+        relax_index_extends_program(&mut p);
+        assert_eq!(
+            extend_of(p.blocks.last().expect("chain has a tail"), 0),
+            MachineIndexExtend::None
+        );
+    }
+
+    #[test]
+    fn block_budget_keeps_cross_block_extend() {
+        let mut p = clean_cfg_chain(MAX_CFG_INDEX_PROOF_BLOCKS + 1);
+
+        relax_index_extends_program(&mut p);
+        assert_eq!(
+            extend_of(p.blocks.last().expect("chain has a tail"), 0),
+            MachineIndexExtend::ZeroExtend32
+        );
     }
 
     #[test]
