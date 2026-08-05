@@ -56,14 +56,6 @@ impl Default for Algorithm4Params {
 
 impl Algorithm4Params {
     #[inline]
-    fn with_edge_cost_percent(percent: u16) -> Self {
-        Self {
-            edge_cost_scale: f64::from(percent) / 100.0,
-            ..Self::default()
-        }
-    }
-
-    #[inline]
     const fn benefit_scale(&self) -> f64 {
         1.0
     }
@@ -75,33 +67,27 @@ pub(super) enum ResidencyPolicy {
 }
 
 impl ResidencyPolicy {
-    pub(super) fn from_env(backend_edge_cost_percent: u16) -> Result<Self, WasmError> {
+    pub(super) fn from_env() -> Result<Self, WasmError> {
         #[cfg(any(sf_has_std, test))]
         {
             match std::env::var("SF_CACHE_POLICY") {
-                Ok(spec) => Self::parse(&spec, backend_edge_cost_percent),
-                Err(std::env::VarError::NotPresent) => {
-                    Ok(Self::with_edge_cost_percent(backend_edge_cost_percent))
-                }
+                Ok(spec) => Self::parse(&spec),
+                Err(std::env::VarError::NotPresent) => Ok(Self::default()),
                 Err(_) => Err(WasmError::internal("invalid SF_CACHE_POLICY")),
             }
         }
 
         #[cfg(not(any(sf_has_std, test)))]
         {
-            Ok(Self::with_edge_cost_percent(backend_edge_cost_percent))
+            Ok(Self::default())
         }
     }
 
-    fn with_edge_cost_percent(percent: u16) -> Self {
-        Self::Algorithm4(Algorithm4Params::with_edge_cost_percent(percent))
-    }
-
     #[cfg(any(sf_has_std, test))]
-    fn parse(spec: &str, backend_edge_cost_percent: u16) -> Result<Self, WasmError> {
+    fn parse(spec: &str) -> Result<Self, WasmError> {
         let trimmed = spec.trim();
         if trimmed.is_empty() || trimmed == "algorithm4" {
-            return Ok(Self::with_edge_cost_percent(backend_edge_cost_percent));
+            return Ok(Self::default());
         }
         // Only `algorithm4` and its parameterized form (`algorithm4:trip/
         // edge/call=…`) are supported; the named diagnostic shorthands were
@@ -109,7 +95,7 @@ impl ResidencyPolicy {
         let Some(params) = trimmed.strip_prefix("algorithm4:") else {
             return Err(WasmError::internal("unknown SF_CACHE_POLICY"));
         };
-        let mut cfg = Algorithm4Params::with_edge_cost_percent(backend_edge_cost_percent);
+        let mut cfg = Algorithm4Params::default();
         for part in params.split(',') {
             let Some((key, value)) = part.split_once('=') else {
                 return Err(WasmError::internal("invalid SF_CACHE_POLICY option"));
@@ -1083,32 +1069,6 @@ fn compute_block_call_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn policy_params(policy: ResidencyPolicy) -> Algorithm4Params {
-        let ResidencyPolicy::Algorithm4(params) = policy;
-        params
-    }
-
-    #[test]
-    fn policy_parser_starts_from_backend_edge_cost_default() {
-        let bare = ResidencyPolicy::parse("algorithm4", 150).expect("bare policy");
-        assert_eq!(policy_params(bare).edge_cost_scale, 1.5);
-
-        let parameterized =
-            ResidencyPolicy::parse("algorithm4:trip=4", 150).expect("parameterized policy");
-        let params = policy_params(parameterized);
-        assert_eq!(params.edge_cost_scale, 1.5);
-        assert_eq!(params.assumed_trip_count, 4.0);
-    }
-
-    #[test]
-    fn explicit_policy_edge_cost_overrides_backend_default() {
-        let policy = ResidencyPolicy::parse("algorithm4:trip=4,edge=0.25", 150)
-            .expect("explicit edge policy");
-        let params = policy_params(policy);
-        assert_eq!(params.edge_cost_scale, 0.25);
-        assert_eq!(params.assumed_trip_count, 4.0);
-    }
 
     #[test]
     fn feasible_extraction_backtracks_the_best_capacity_choice() {

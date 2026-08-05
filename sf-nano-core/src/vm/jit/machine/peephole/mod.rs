@@ -27,8 +27,9 @@
 //!
 //! 8. **Index-extend relaxation** (`relax_index_extends`): Drops the
 //!    `ZeroExtend32` obligation from indexed loads/stores whose index was
-//!    defined in-block by a 32-bit-form instruction, on backends where
-//!    those already zero-extend (`gp32_defs_zero_extend`).
+//!    defined by a 32-bit-form instruction, including facts proven across
+//!    every incoming CFG edge, on backends where those definitions already
+//!    zero-extend (`gp32_defs_zero_extend`).
 
 mod copy_propagate;
 mod deduplicate_constants;
@@ -111,6 +112,7 @@ struct TrackedLoad {
 /// streamed block sequence) and reuse with `optimize_block`.
 pub(crate) struct BlockOptCtx {
     pub config: BackendConfig,
+    defer_index_extend_relaxation: bool,
     first_fp_reg: u16,
     total_reg_count: usize,
     cp_scratch: copy_propagate::CopyPropagateScratch,
@@ -123,6 +125,7 @@ impl BlockOptCtx {
         let total_reg_count = config.total_reg_count() as usize;
         Self {
             config,
+            defer_index_extend_relaxation: false,
             first_fp_reg: config.first_fp_reg(),
             total_reg_count,
             cp_scratch: copy_propagate::CopyPropagateScratch::new(total_reg_count),
@@ -176,7 +179,7 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     if ctx.config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
     }
-    if ctx.config.gp32_defs_zero_extend {
+    if ctx.config.gp32_defs_zero_extend && !ctx.defer_index_extend_relaxation {
         relax_index_extends::relax_index_extends(block);
     }
 
@@ -218,7 +221,7 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
                 ctx.total_reg_count,
             );
         }
-        if ctx.config.gp32_defs_zero_extend {
+        if ctx.config.gp32_defs_zero_extend && !ctx.defer_index_extend_relaxation {
             relax_index_extends::relax_index_extends(&mut unconditional_oracle);
         }
         assert_eq!(
@@ -235,6 +238,13 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
 /// MachineIR metadata, not from register-number layout.
 pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     let mut ctx = BlockOptCtx::new(config);
+    // The materialized pipeline performs whole-program rewrites after its
+    // block-local phase. Defer this irreversible relaxation until those
+    // rewrites have finished: a later pass can replace a proven-clean index
+    // definition or edge argument, and `None` carries no obligation that the
+    // final analysis could restore. Standalone streaming block optimization
+    // has no later MachineIR rewrites and retains its local relaxation.
+    ctx.defer_index_extend_relaxation = true;
     for block in &mut program.blocks {
         optimize_block(&mut ctx, block);
     }
@@ -255,13 +265,14 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     // `analyze_loop_graph` rewrite instructions and conditions but never
     // CFG targets, so the loop graph is still valid.
     fold_induction_offsets::fold_induction_offsets(program, &loop_graph);
-    // The fold emits ZeroExtend32 indexed forms whose index is the loop
-    // counter; where its in-block def is a 32-bit op the obligation is
-    // vacuous on gp32-zero-extending backends.
-    if config.gp32_defs_zero_extend {
-        for block in &mut program.blocks {
-            relax_index_extends::relax_index_extends(block);
-        }
-    }
+    // Memmove recognition deliberately matches the still-explicit
+    // ZeroExtend32 memory sequence, so it must precede the irreversible
+    // relaxation below.
     recognize_memmove::recognize_memmove(program);
+    // Run this exactly once after every materialized MachineIR rewrite. The
+    // fold may have emitted new ZeroExtend32 forms, and clean block parameters
+    // (including loop-carried values) can now use the direct indexed form.
+    if config.gp32_defs_zero_extend {
+        relax_index_extends::relax_index_extends_program(program);
+    }
 }
