@@ -378,15 +378,27 @@ impl NativeEngine {
         }
     }
 
-    /// Handler address for one cell under a given pinned-local choice.
-    fn handler_for(&self, ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
+    /// Handler address for one cell under a given pinned-local choice, or
+    /// 0 when the cell has no native form and must take the slow stub.
+    ///
+    /// The blob base is never a handler address, so 0 doubles as the
+    /// sentinel — the same convention `handler_at` uses for an unemitted
+    /// slot. `native_guard` is folded in here rather than tested beside
+    /// every use: a cell that fails it has no native form either way, and
+    /// the acc pass would otherwise ask the same question twice per pair.
+    fn handler_for(&self, ins: &Instr, flags: u16, pin: &Pinned) -> usize {
         // The generated handlers zero-extend a 32-bit address, so a 64-bit
         // memory access has no native form and takes the shared executor.
         if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL) != 0 {
-            return None;
+            return 0;
         }
-        let slot = op_slot(ins, flags, pin)?;
-        self.handler_at(slot)
+        if !native_guard(ins) {
+            return 0;
+        }
+        match op_slot(ins, flags, pin) {
+            Some(slot) => self.handler_at(slot).unwrap_or(0),
+            None => 0,
+        }
     }
 
     /// Build the dispatch cells for one predecoded function.
@@ -417,7 +429,7 @@ impl NativeEngine {
             func.code
                 .iter()
                 .zip(flags.iter())
-                .map(|(ins, &fl)| self.handler_for(ins, fl, &pin).unwrap_or(0)),
+                .map(|(ins, &fl)| self.handler_for(ins, fl, &pin)),
         );
         for j in 0..func.code.len() {
             if flags[j] & (FLAG_A_ACC | FLAG_B_ACC) == 0 {
@@ -431,17 +443,13 @@ impl NativeEngine {
             let ok = j > 0
                 && (writes_acc(func.code[j - 1].op) || prev_is_call)
                 && (prev_is_call || handler[j - 1] != 0)
-                && handler[j] != 0
-                && native_guard(&func.code[j - 1])
-                && native_guard(&func.code[j]);
+                && handler[j] != 0;
             if !ok {
                 flags[j] &= !(FLAG_A_ACC | FLAG_B_ACC);
-                handler[j] = self.handler_for(&func.code[j], flags[j], &pin).unwrap_or(0);
+                handler[j] = self.handler_for(&func.code[j], flags[j], &pin);
                 if j > 0 {
                     flags[j - 1] &= !FLAG_DST_ACC;
-                    handler[j - 1] = self
-                        .handler_for(&func.code[j - 1], flags[j - 1], &pin)
-                        .unwrap_or(0);
+                    handler[j - 1] = self.handler_for(&func.code[j - 1], flags[j - 1], &pin);
                 }
             }
         }
@@ -452,7 +460,7 @@ impl NativeEngine {
                 && (i + 1 >= func.code.len() || flags[i + 1] & (FLAG_A_ACC | FLAG_B_ACC) == 0)
             {
                 flags[i] &= !FLAG_DST_ACC;
-                handler[i] = self.handler_for(&func.code[i], flags[i], &pin).unwrap_or(0);
+                handler[i] = self.handler_for(&func.code[i], flags[i], &pin);
             }
         }
 
@@ -484,9 +492,6 @@ impl NativeEngine {
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
             let mut h = Some(handler[i]).filter(|&h| h != 0);
-            if !native_guard(ins) {
-                h = None;
-            }
             // A 32-bit host reads a cell's static offset as one machine
             // word, so a wasm offset that does not fit in 32 bits cannot
             // run natively — the handler would silently use the truncated
