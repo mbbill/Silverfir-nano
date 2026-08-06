@@ -2630,10 +2630,18 @@ impl<'a> X86_64Backend<'a> {
                     }
                 };
                 let nan_path = self.core.new_label();
+                let equal_path = self.core.new_label();
                 let done = self.core.new_label();
                 // PF=1 means unordered (NaN) — jump to NaN path.
                 self.emit_jcc(Cc::P, nan_path);
-                // Ordered fast path: minsd / maxsd directly.
+                // ZF=1 with PF=0 means equal, where minsd/maxsd return the
+                // SECOND operand — wrong for a (-0.0, +0.0) pair, which
+                // compares equal but must produce -0.0 for min and +0.0
+                // for max. Bitwise OR (min) / AND (max) of the operands is
+                // the identity when they are the same value and selects
+                // the required zero sign when they differ only in sign.
+                self.emit_jcc(Cc::E, equal_path);
+                // Strictly-ordered fast path: minsd / maxsd are exact.
                 match (width, is_min) {
                     (MachineFloatWidth::F32, true) => {
                         enc::minss(&mut self.core.text, result_fp, actual_rhs)
@@ -2648,6 +2656,16 @@ impl<'a> X86_64Backend<'a> {
                         enc::maxsd(&mut self.core.text, result_fp, actual_rhs)
                     }
                 };
+                self.emit_jmp(done);
+                // Equal path: result_fp already holds lhs; the full-width
+                // register op is fine because only lane 0 is live for
+                // scalars.
+                self.core.bind_label(equal_path);
+                if is_min {
+                    enc::orpd(&mut self.core.text, result_fp, actual_rhs);
+                } else {
+                    enc::andpd(&mut self.core.text, result_fp, actual_rhs);
+                }
                 self.emit_jmp(done);
                 // NaN path: result_fp already holds lhs, so addsd
                 // propagates any NaN from either operand.
