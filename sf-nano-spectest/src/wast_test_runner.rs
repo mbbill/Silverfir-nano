@@ -99,6 +99,11 @@ pub enum WastValue {
     I64(i64),
     F32(f32),
     F64(f64),
+    /// `nan:canonical` / `nan:arithmetic` result expectation: any NaN
+    /// matches, mirroring `f32_matches_nan_pattern` on the V128 lane path.
+    /// Literal float expectations stay in `F32`/`F64` and compare bit-exact.
+    F32AnyNan,
+    F64AnyNan,
     V128([u8; 16]),
     V128Pattern(V128Pattern),
     Either(Vec<WastValue>),
@@ -125,6 +130,9 @@ impl From<WastValue> for Value {
             WastValue::V128(v) => Value::from_v128_bytes(v),
             WastValue::V128Pattern(_) => {
                 panic!("V128Pattern should not be converted to Value")
+            }
+            WastValue::F32AnyNan | WastValue::F64AnyNan => {
+                panic!("NaN result patterns should not be converted to Value")
             }
             WastValue::Either(_) => {
                 panic!("Either should not be converted to Value")
@@ -701,7 +709,16 @@ impl WastTestRunner {
                 let module_name = module.as_ref().map(|id| id.name());
                 self.execute_wast_module_instance(instance_name, module_name, index)
             }
-            _ => Ok(()),
+            // No silent skipping: a directive kind this runner does not
+            // drive (AssertSuspension / Thread / Wait today) is a failure,
+            // not a vacuous pass.
+            other => {
+                let mut kind = format!("{other:?}");
+                kind.truncate(80);
+                Err(TestError::infrastructure(format!(
+                    "Directive {index}: no handler for {kind}; the runner does not skip directives"
+                )))
+            }
         }
     }
 
@@ -1720,15 +1737,15 @@ impl WastTestRunner {
                 wast::core::NanPattern::Value(f32_val) => {
                     Some(WastValue::F32(f32::from_bits(f32_val.bits)))
                 }
-                wast::core::NanPattern::CanonicalNan => Some(WastValue::F32(f32::NAN)),
-                wast::core::NanPattern::ArithmeticNan => Some(WastValue::F32(f32::NAN)),
+                wast::core::NanPattern::CanonicalNan => Some(WastValue::F32AnyNan),
+                wast::core::NanPattern::ArithmeticNan => Some(WastValue::F32AnyNan),
             },
             WastRetCore::F64(nan_pattern) => match nan_pattern {
                 wast::core::NanPattern::Value(f64_val) => {
                     Some(WastValue::F64(f64::from_bits(f64_val.bits)))
                 }
-                wast::core::NanPattern::CanonicalNan => Some(WastValue::F64(f64::NAN)),
-                wast::core::NanPattern::ArithmeticNan => Some(WastValue::F64(f64::NAN)),
+                wast::core::NanPattern::CanonicalNan => Some(WastValue::F64AnyNan),
+                wast::core::NanPattern::ArithmeticNan => Some(WastValue::F64AnyNan),
             },
             WastRetCore::V128(pattern) => Some(WastValue::V128Pattern(pattern.clone())),
             WastRetCore::Either(cases) => Some(WastValue::Either(
@@ -1827,20 +1844,12 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
     match (actual, expected) {
         (Value::I32(a), WastValue::I32(e)) => a == e,
         (Value::I64(a), WastValue::I64(e)) => a == e,
-        (Value::F32(a), WastValue::F32(e)) => {
-            if a.is_nan() && e.is_nan() {
-                true
-            } else {
-                a == e
-            }
-        }
-        (Value::F64(a), WastValue::F64(e)) => {
-            if a.is_nan() && e.is_nan() {
-                true
-            } else {
-                a == e
-            }
-        }
+        // Bit-exact: `==` would accept -0.0 for +0.0 (and vice versa),
+        // leaving every signed-zero assertion in the suite vacuous.
+        (Value::F32(a), WastValue::F32(e)) => a.to_bits() == e.to_bits(),
+        (Value::F64(a), WastValue::F64(e)) => a.to_bits() == e.to_bits(),
+        (Value::F32(a), WastValue::F32AnyNan) => a.is_nan(),
+        (Value::F64(a), WastValue::F64AnyNan) => a.is_nan(),
         (Value::Ref(actual_ref, ref_type), WastValue::FuncRef(expected_ref))
             if ref_type.is_funcref() =>
         {
