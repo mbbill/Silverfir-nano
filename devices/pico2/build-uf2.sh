@@ -7,7 +7,7 @@
 # core type to start, and the UF2 file declares its family ID
 # accordingly:
 #   ARM (thumbv8m.main-none-eabihf)        → family rp2350-arm-s,  0xE48BFF59
-#   RV  (riscv32imac-unknown-none-elf)     → family rp2350-riscv,  0x1C40F63F
+#   RV  (riscv32imac-unknown-none-elf)     → family rp2350-riscv,  0xE48BFF5A
 #
 # Converter preference: picotool > elf2uf2-rs. picotool is the
 # reference tool from pico-sdk and understands the `.bi_entries`
@@ -34,7 +34,7 @@
 set -euo pipefail
 
 RP2350_ARM_S_FAMILY_HEX="0xE48BFF59"
-RP2350_RISCV_FAMILY_HEX="0x1C40F63F"
+RP2350_RISCV_FAMILY_HEX="0xE48BFF5A"
 
 find_python() {
     if command -v python3 &>/dev/null; then
