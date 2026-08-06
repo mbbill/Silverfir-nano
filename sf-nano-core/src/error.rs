@@ -112,6 +112,16 @@ impl WasmError {
         Self::Unlinkable("memory exceeds runtime configured limit (wasm_memory_max_pages)")
     }
 
+    /// Constructed when native compilation outgrows the configured
+    /// executable arena (`code_arena_bytes`). Same taxonomy as
+    /// [`Self::memory_exceeds_runtime_limit`]: the module is valid, this
+    /// configuration just cannot hold its compiled code.
+    #[cold]
+    #[inline(never)]
+    pub const fn code_arena_exhausted() -> Self {
+        Self::Unlinkable("native code arena exhausted (code_arena_bytes)")
+    }
+
     pub const fn is_malformed(&self) -> bool {
         matches!(self, WasmError::Malformed(_))
     }

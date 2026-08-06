@@ -47,10 +47,17 @@ pub(crate) fn compile_module(
     }
     let function_info_table_offset = running_offset;
 
+    // The whole layout is known while it is still integers: reject a
+    // module the arena cannot hold before any offset becomes a pointer.
     let base_ptr = {
         let executable = module
             .native_code_buffer()
             .map_err(|err| WasmError::internal(err))?;
+        let needed = function_info_table_offset
+            .saturating_add(compiled.abi().functions.len() * RISCV32_FUNCTION_INFO_SIZE);
+        if needed > executable.capacity() {
+            return Err(WasmError::code_arena_exhausted());
+        }
         executable.as_ptr()
     };
 
