@@ -68,6 +68,21 @@ fn test_fibonacci() {
     }
 }
 
+/// A module that outgrows the configured native code arena must fail
+/// instantiation with an error, not panic the process — on a device the
+/// arena is a few KiB and one large guest function used to abort firmware.
+#[cfg(feature = "jit")]
+#[test]
+fn test_code_arena_exhaustion_is_an_error() {
+    let config = sf_nano_core::Config::new().code_arena_bytes(64);
+    let engine = sf_nano_core::Engine::new(config).expect("engine config rejected");
+    let result = Instance::new(&engine, FIB_WASM, &[]);
+    assert!(
+        result.is_err(),
+        "a 64-byte arena must fail instantiation cleanly"
+    );
+}
+
 /// One engine on this target's defaults, for the tests in this file.
 fn engine() -> sf_nano_core::Engine {
     sf_nano_core::Engine::with_defaults()

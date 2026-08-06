@@ -993,6 +993,13 @@ fn link_streaming_artifact(
         function_base
     };
 
+    // Bail before any patch address is formed: past this point offsets are
+    // turned into pointers inside the arena, which is only sound while
+    // every emit above actually landed.
+    if executable.exhausted() {
+        return Err(WasmError::code_arena_exhausted());
+    }
+
     for patch in &local_ptr_patches {
         let target_addr = unsafe { base_ptr.add(function_base + patch.target_offset) } as usize;
         #[cfg(sf_arm32_isa_thumb)]
@@ -1236,6 +1243,9 @@ fn finish_native_compile_streaming(
     let function_info_table_offset = executable.len();
     let function_info_bytes = emit_function_info_bytes(backend, &compiled_view.abi, &emitted);
     executable.emit_bytes(&function_info_bytes);
+    if executable.exhausted() {
+        return Err(WasmError::code_arena_exhausted());
+    }
     let written_len = executable.len();
     executable.finish_write(0, written_len);
     let function_info_base = unsafe { executable.as_ptr().add(function_info_table_offset) };

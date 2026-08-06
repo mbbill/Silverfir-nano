@@ -61,13 +61,20 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
     }
     let function_info_table_offset = running_offset;
 
-    let mut internal_entry_addrs = collections::Vec::with_capacity(artifacts.len());
+    // The whole layout is known while it is still integers: reject a
+    // module the arena cannot hold before any offset becomes a pointer.
     let base_ptr = {
         let executable = module
             .native_code_buffer()
             .map_err(|err| WasmError::internal(err))?;
+        let needed = function_info_table_offset
+            .saturating_add(compiled.abi().functions.len() * NATIVE_FUNCTION_INFO64_SIZE);
+        if needed > executable.capacity() {
+            return Err(WasmError::code_arena_exhausted());
+        }
         executable.as_ptr()
     };
+    let mut internal_entry_addrs = collections::Vec::with_capacity(artifacts.len());
     for (i, base_offset) in base_offsets.iter().enumerate() {
         internal_entry_addrs.push(unsafe {
             base_ptr.add(*base_offset + artifacts[i].internal_entry_offset)
