@@ -24,7 +24,7 @@ so later optimization has less work and lower risk".
 
 | Stage | Main job | Main optimization value |
 | --- | --- | --- |
-| Wasm -> Semantic IR | Preserve Wasm structure and types | Keep the frontend structured enough that cheap global-ish choices are still possible (dormant leaf-inliner slot lives here) |
+| Wasm -> Semantic IR | Preserve Wasm structure and types | Keep the frontend structured enough that cheap global-ish choices are still possible |
 | Semantic IR -> Prepared SSA-IR | Make slots, transient budget, and call barriers explicit | Joint cache/transient planning, constant folding, sink planning, and low-cost CFG cleanup |
 | SSA-IR -> Machine IR | Map bounded SSA live ranges into a fixed register partition | One-pass lowering, cached-local aliasing, dead-input register reuse, cheap call handling |
 | Machine IR optimize | Recover native patterns from the fixed-shape lowering | Addressing-mode fusion, copy propagation, load/store forwarding, branch fusion |
@@ -51,8 +51,6 @@ Main code:
 - `sf-nano-core/src/vm/jit/wasm/decode.rs`
 - `sf-nano-core/src/vm/jit/wasm/sir/semantic_ir.rs`
 - `sf-nano-core/src/vm/jit/wasm/sir/primitive_op.rs`
-- `sf-nano-core/src/vm/jit/wasm/inline.rs` (dormant — retained but not wired
-  into the current pipeline)
 
 ### Optimization-enabling representation
 
@@ -73,67 +71,6 @@ Why it lives here:
 - No frame slots, cache registers, or transient budgets exist yet.
 - Later passes can reason about loops, calls, and locals without reverse
   engineering them from low-level code.
-
-### Optimization: small leaf inlining (dormant)
-
-`inline_calls_in_function()` in `wasm/inline.rs` replaces eligible
-`CallDirect` sites with the callee body. The module currently has no live
-callers — it is retained under `#![allow(dead_code)]` so it can be re-wired
-after the middle-layer rewrite settles, but the production pipeline in
-`build.rs` does not invoke it today.
-
-Current policy (when re-enabled):
-
-- callee must be a straight-line leaf (no nested calls, no structured
-  control flow — only primitives and local ops)
-- at most `MAX_INLINE_OPS = 12` semantic ops at non-loop call sites, or
-  `MAX_INLINE_OPS * LOOP_INLINE_MULTIPLIER = 120` ops at call sites inside
-  a loop
-- at most `MAX_INLINE_PARAMS = 16` parameters
-- one pass over the caller; transitive chains are not re-expanded after
-  substitution
-
-Simple example:
-
-```wat
-(func $inc (param i32) (result i32)
-  local.get 0
-  i32.const 1
-  i32.add)
-
-(func $twice_inc (param i32) (result i32)
-  local.get 0
-  call $inc
-  call $inc)
-```
-
-After inlining, `$twice_inc` becomes the straight-line equivalent of:
-
-```wat
-local.get 0
-i32.const 1
-i32.add
-i32.const 1
-i32.add
-```
-
-What this optimizes:
-
-- removes call/return overhead
-- exposes more constant folding and local forwarding opportunities
-- exposes larger straight-line regions to the later single-pass lowerer
-
-Why it belongs here instead of later:
-
-- inlining before frame layout avoids repairing slot assignments
-- inlining before cached-local analysis improves hot-local scoring
-- inlining before SSA lowering avoids rebuilding CFG and value mappings
-
-How the pipeline design enables it:
-
-- Semantic IR still expresses locals and control flow directly
-- decode stores complete callee bodies, so inlining is just structured splice +
-  retargeting, not machine-code surgery
 
 ## 2. Semantic IR -> Prepared SSA-IR
 
