@@ -274,13 +274,27 @@ impl TableEntries {
         Ok(())
     }
 
-    fn resize(&mut self, n: usize, v: u64) {
+    /// Fallible grow, mirroring the JIT's `do_table_grow`: a failed host
+    /// allocation becomes the caller's -1 result, not an abort.
+    fn try_resize(&mut self, n: usize, v: u64) -> Result<(), ()> {
         match self {
-            Self::Private(vec) => vec.resize(n, v),
-            Self::Shared(t) => t
-                .elements_mut()
-                .resize(n, machine_raw_to_ref(v, SLOT_GP_UNIT_BYTES)),
+            Self::Private(vec) => {
+                let additional = n.saturating_sub(vec.len());
+                if vec.try_reserve(additional).is_err() {
+                    return Err(());
+                }
+                vec.resize(n, v);
+            }
+            Self::Shared(t) => {
+                let mut elements = t.elements_mut();
+                let additional = n.saturating_sub(elements.len());
+                if elements.try_reserve(additional).is_err() {
+                    return Err(());
+                }
+                elements.resize(n, machine_raw_to_ref(v, SLOT_GP_UNIT_BYTES));
+            }
         }
+        Ok(())
     }
 
     fn fill(&mut self, at: usize, n: usize, v: u64) {
@@ -3794,6 +3808,7 @@ impl InterpInstance {
                 frame[ins.c as usize] = pages as u64;
             }
             Op::MemoryGrow => {
+                let runtime_cap = self.config.get_wasm_memory_max_pages() as u64;
                 let mem = self
                     .memories
                     .get_mut(ins.b as usize)
@@ -3808,11 +3823,30 @@ impl InterpInstance {
                 };
                 let cur = (mem.len() / PAGE) as u64;
                 let want = cur.saturating_add(delta);
-                if want > mem.max_pages || want > cap {
-                    frame[ins.c as usize] = fail;
-                } else {
-                    mem.inst.backing_mut().data.resize(want as usize * PAGE, 0);
-                    frame[ins.c as usize] = cur;
+                // The declared maximum is a type-level ceiling; the engine's
+                // configured cap applies at grow time (`check_memory_quota`
+                // states this split), and a failed host allocation is the
+                // spec's -1 result, not an abort. Sizes are computed in u64:
+                // `want as usize * PAGE` would truncate a memory64 request
+                // on a 32-bit host before any check could reject it.
+                let new_len = want.checked_mul(PAGE as u64);
+                match new_len {
+                    Some(new_len)
+                        if want <= mem.max_pages
+                            && want <= cap
+                            && want <= runtime_cap
+                            && new_len <= usize::MAX as u64 =>
+                    {
+                        let data = &mut mem.inst.backing_mut().data;
+                        let additional = (new_len as usize).saturating_sub(data.len());
+                        if data.try_reserve(additional).is_err() {
+                            frame[ins.c as usize] = fail;
+                        } else {
+                            data.resize(new_len as usize, 0);
+                            frame[ins.c as usize] = cur;
+                        }
+                    }
+                    _ => frame[ins.c as usize] = fail,
                 }
             }
             Op::MemoryFill => {
@@ -4113,13 +4147,16 @@ impl InterpInstance {
                 let cur = t.entries.len() as u64;
                 if cur + delta > t.max || cur + delta > u32::MAX as u64 {
                     frame[dst] = u32::MAX as u64;
+                } else if delta > 0 {
+                    let init = self.table_slot_for_storage(tidx, init);
+                    frame[dst] = match self.tables[tidx]
+                        .entries
+                        .try_resize((cur + delta) as usize, init)
+                    {
+                        Ok(()) => cur,
+                        Err(()) => u32::MAX as u64,
+                    };
                 } else {
-                    if delta > 0 {
-                        let init = self.table_slot_for_storage(tidx, init);
-                        self.tables[tidx]
-                            .entries
-                            .resize((cur + delta) as usize, init);
-                    }
                     frame[dst] = cur;
                 }
             }
