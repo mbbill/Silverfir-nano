@@ -12,9 +12,9 @@
 
 use crate::collections;
 use crate::vm::jit::machine::machine_ir::{
-    MachineAddr, MachineBlock, MachineBlockParam, MachineInstKind, MachineLoadExtension,
-    MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType, MachineTerminator,
-    MachineValue, MACHINE_FP_REG,
+    MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineInstKind,
+    MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType,
+    MachineTerminator, MachineValue, MACHINE_FP_REG,
 };
 
 use super::helpers::store_may_alias;
@@ -33,7 +33,11 @@ struct FrameLoad {
     extension: MachineLoadExtension,
 }
 
-pub(super) fn reuse_loop_frame_values(blocks: &mut [MachineBlock], loop_graph: &LoopGraph) {
+pub(super) fn reuse_loop_frame_values(
+    blocks: &mut [MachineBlock],
+    loop_graph: &LoopGraph,
+    entry: MachineBlockId,
+) {
     if blocks.len() < 3 {
         return;
     }
@@ -46,7 +50,10 @@ pub(super) fn reuse_loop_frame_values(blocks: &mut [MachineBlock], loop_graph: &
             continue;
         }
         let loop_nodes = natural_loop_nodes(header, &latches_by_header[header], predecessors);
-        try_reuse_one_frame_value(blocks, header, &loop_nodes, predecessors);
+        if loop_nodes.iter().any(|&index| blocks[index].id == entry) {
+            continue;
+        }
+        try_reuse_one_frame_value(blocks, header, &loop_nodes, predecessors, entry);
     }
 }
 
@@ -55,6 +62,7 @@ fn try_reuse_one_frame_value(
     header: usize,
     loop_nodes: &[usize],
     predecessors: &[collections::Vec<usize>],
+    entry: MachineBlockId,
 ) {
     let mut in_loop = collections::vec![false; blocks.len()];
     for &block in loop_nodes {
@@ -75,6 +83,12 @@ fn try_reuse_one_frame_value(
     let Some(&first_exit) = exit_targets.first() else {
         return;
     };
+    if exit_targets
+        .iter()
+        .any(|&target| blocks[target].id == entry)
+    {
+        return;
+    }
     let Some(load) = blocks[first_exit].ops.first().and_then(frame_load) else {
         return;
     };
@@ -251,8 +265,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn carries_preheader_frame_store_through_multiblock_loop() {
+    fn reusable_frame_loop() -> collections::Vec<MachineBlock> {
         let source = MachineReg(6);
         let cond = MachineReg(7);
         let carried = MachineReg(5);
@@ -260,9 +273,9 @@ mod tests {
             base: MACHINE_FP_REG,
             offset: 16,
         };
-        let mut blocks = collections::vec![
+        collections::vec![
             MachineBlock {
-                id: crate::vm::jit::machine::machine_ir::MachineBlockId(0),
+                id: MachineBlockId(0),
                 params: collections::vec![
                     MachineBlockParam::gp_i64(source),
                     MachineBlockParam::gp_word(cond),
@@ -278,7 +291,7 @@ mod tests {
                 terminator: MachineTerminator::Jump(edge(1, &[cond])),
             },
             MachineBlock {
-                id: crate::vm::jit::machine::machine_ir::MachineBlockId(1),
+                id: MachineBlockId(1),
                 params: collections::vec![MachineBlockParam::gp_word(cond)],
                 ops: collections::Vec::new(),
                 terminator: MachineTerminator::Branch {
@@ -288,13 +301,13 @@ mod tests {
                 },
             },
             MachineBlock {
-                id: crate::vm::jit::machine::machine_ir::MachineBlockId(2),
+                id: MachineBlockId(2),
                 params: collections::vec![MachineBlockParam::gp_word(cond)],
                 ops: collections::Vec::new(),
                 terminator: MachineTerminator::Jump(edge(1, &[cond])),
             },
             MachineBlock {
-                id: crate::vm::jit::machine::machine_ir::MachineBlockId(3),
+                id: MachineBlockId(3),
                 params: collections::Vec::new(),
                 ops: collections::vec![
                     MachineInst {
@@ -319,14 +332,21 @@ mod tests {
                 ],
                 terminator: MachineTerminator::Return,
             },
-        ];
+        ]
+    }
+
+    #[test]
+    fn carries_preheader_frame_store_through_multiblock_loop() {
+        let source = MachineReg(6);
+        let carried = MachineReg(5);
+        let mut blocks = reusable_frame_loop();
 
         let loop_graph =
             crate::vm::jit::machine::peephole::hoist_loop_address_bases::analyze_loop_graph(
                 &blocks,
-                crate::vm::jit::machine::machine_ir::MachineBlockId(0),
+                MachineBlockId(0),
             );
-        reuse_loop_frame_values(&mut blocks, &loop_graph);
+        reuse_loop_frame_values(&mut blocks, &loop_graph, MachineBlockId(0));
 
         assert_eq!(
             blocks[1].params.last().map(|param| param.reg),
@@ -358,6 +378,43 @@ mod tests {
             panic!("expected loop branch");
         };
         assert_eq!(then_edge.args.last(), Some(&MachineValue::Reg(carried)));
+    }
+
+    #[test]
+    fn does_not_add_frame_value_param_to_function_entry_loop() {
+        let mut blocks = reusable_frame_loop();
+        let before = blocks.clone();
+        let entry = MachineBlockId(1);
+        let loop_graph =
+            crate::vm::jit::machine::peephole::hoist_loop_address_bases::analyze_loop_graph(
+                &blocks, entry,
+            );
+
+        reuse_loop_frame_values(&mut blocks, &loop_graph, entry);
+
+        assert_eq!(blocks, before);
+    }
+
+    #[test]
+    fn does_not_add_frame_value_param_to_function_entry_exit() {
+        let source = MachineReg(6);
+        let cond = MachineReg(7);
+        let mut blocks = reusable_frame_loop();
+        let entry = MachineBlockId(3);
+        blocks[3].params = collections::vec![
+            MachineBlockParam::gp_i64(source),
+            MachineBlockParam::gp_word(cond),
+        ];
+        blocks[3].terminator = MachineTerminator::Jump(edge(0, &[source, cond]));
+        let before = blocks.clone();
+        let loop_graph =
+            crate::vm::jit::machine::peephole::hoist_loop_address_bases::analyze_loop_graph(
+                &blocks, entry,
+            );
+
+        reuse_loop_frame_values(&mut blocks, &loop_graph, entry);
+
+        assert_eq!(blocks, before);
     }
 
     #[test]

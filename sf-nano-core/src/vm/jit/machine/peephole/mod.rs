@@ -42,6 +42,7 @@ mod fuse_isel;
 mod fuse_smull_sign_ext;
 pub(crate) mod helpers;
 mod hoist_loop_address_bases;
+mod promote_self_loop_globals;
 mod recognize_memmove;
 mod relax_index_extends;
 mod reuse_loaded_values;
@@ -260,10 +261,17 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     // Address hoisting changes instructions, block parameters, and edge
     // arguments, but not CFG targets, so frame-value reuse can consume the
     // same predecessor/dominance analysis.
-    let loop_graph = hoist_loop_address_bases::analyze_loop_graph(&program.blocks, program.entry);
+    let entry = program.entry;
+    let loop_graph = hoist_loop_address_bases::analyze_loop_graph(&program.blocks, entry);
     hoist_loop_address_bases::hoist_loop_address_bases(program, config, &loop_graph);
-    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks, &loop_graph);
-    reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks);
+    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks, &loop_graph, entry);
+    reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks, entry);
+    promote_self_loop_globals::promote_self_loop_globals(
+        &mut program.blocks,
+        &loop_graph,
+        entry,
+        config,
+    );
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
     // After compare-branch fusion: the fold reads loop bounds from

@@ -83,6 +83,36 @@ fn test_code_arena_exhaustion_is_an_error() {
     );
 }
 
+#[test]
+fn test_global_counter_loop_writes_back() {
+    let wasm = wat::parse_str(
+        r#"(module
+            (global $count (export "count") (mut i32) (i32.const 0))
+            (func (export "run") (param $n i32) (result i32)
+                (global.set $count (local.get $n))
+                (loop $continue
+                    (br_if $continue
+                        (global.set $count
+                            (i32.sub (global.get $count) (i32.const 1)))
+                        (global.get $count)))
+                (global.get $count)))"#,
+    )
+    .expect("counter WAT should parse");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
+
+    for input in [1, 2, 17, 1_000] {
+        let result = instance
+            .invoke("run", &[Value::I32(input)])
+            .expect("counter invoke failed");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], Value::I32(0));
+        assert_eq!(
+            instance.get_global("count").expect("global lookup failed"),
+            Some(Value::I32(0))
+        );
+    }
+}
+
 /// One engine on this target's defaults, for the tests in this file.
 fn engine() -> sf_nano_core::Engine {
     sf_nano_core::Engine::with_defaults()
