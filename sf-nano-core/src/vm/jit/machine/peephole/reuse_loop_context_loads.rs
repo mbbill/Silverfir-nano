@@ -25,8 +25,13 @@ struct ContextLoad {
     extension: MachineLoadExtension,
 }
 
-pub(super) fn reuse_loop_context_loads(blocks: &mut [MachineBlock]) {
+pub(super) fn reuse_loop_context_loads(blocks: &mut [MachineBlock], entry: MachineBlockId) {
     for block_index in 0..blocks.len() {
+        // The root-to-entry transfer is implicit and cannot supply an edge
+        // argument introduced here.
+        if blocks[block_index].id == entry {
+            continue;
+        }
         let Some(load) = blocks[block_index].ops.first().and_then(context_load) else {
             continue;
         };
@@ -212,5 +217,68 @@ fn append_edge_arg(terminator: &mut MachineTerminator, target: MachineBlockId, a
         | MachineTerminator::Return
         | MachineTerminator::ReturnScalar { .. }
         | MachineTerminator::Trap { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::jit::machine::machine_ir::{MachineBranchCond, MachineEdge, MachineInst};
+
+    fn edge(target: u32) -> MachineEdge {
+        MachineEdge {
+            target: MachineBlockId(target),
+            args: collections::Vec::new(),
+        }
+    }
+
+    fn context_pointer_load(dst: MachineReg) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst,
+                addr: MachineAddr {
+                    base: MACHINE_CTX_REG,
+                    offset: 16,
+                },
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        }
+    }
+
+    #[test]
+    fn does_not_reuse_context_load_at_function_entry() {
+        let pointer = MachineReg(4);
+        let mut blocks = collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![context_pointer_load(pointer)],
+                terminator: MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Imm64(1)),
+                    then_edge: edge(0),
+                    else_edge: edge(2),
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::Vec::new(),
+                ops: collections::vec![context_pointer_load(pointer)],
+                terminator: MachineTerminator::Jump(edge(0)),
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ];
+        let before = blocks.clone();
+
+        reuse_loop_context_loads(&mut blocks, MachineBlockId(0));
+
+        assert_eq!(blocks, before);
     }
 }

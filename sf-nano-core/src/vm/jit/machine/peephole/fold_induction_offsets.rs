@@ -37,6 +37,11 @@ use super::hoist_loop_address_bases::{natural_loop_nodes, visit_edges, LoopGraph
 
 pub(super) fn fold_induction_offsets(program: &mut MachineProgram, loop_graph: &LoopGraph) {
     for header in 0..program.blocks.len() {
+        // The function's initial value arrives over an implicit root edge, so
+        // explicit CFG predecessors alone cannot prove its entry range.
+        if program.blocks[header].id == program.entry {
+            continue;
+        }
         let latches = &loop_graph.latches_by_header[header];
         if latches.len() != 1 {
             continue;
@@ -724,6 +729,17 @@ mod tests {
             load_idx(DATA, COUNTER, 0x1000).kind,
             "the load must index the counter with the folded displacement"
         );
+    }
+
+    #[test]
+    fn does_not_fold_function_entry_loop_from_unreachable_seed() {
+        let body = collections::vec![add32(TEMP, COUNTER, 0x1000), load_idx(DATA, TEMP, 0)];
+        let mut program = counter_loop(0x200000, 32, body.clone());
+        program.entry = MachineBlockId(0);
+
+        run(&mut program);
+
+        assert_eq!(program.blocks[0].ops[..2], body[..]);
     }
 
     #[test]
