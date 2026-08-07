@@ -291,6 +291,11 @@ fn wasm_f32_nearest_bits(bits: u32) -> u64 {
     } else {
         floor + 1.0
     };
+    if rounded == 0.0 {
+        // A zero result keeps the operand's sign: rounding -0.4 must give
+        // -0.0, but the floor + 1.0 path above lands on +0.0.
+        return u64::from(bits & 0x8000_0000);
+    }
     from_f32(rounded)
 }
 
@@ -310,6 +315,11 @@ fn wasm_f64_nearest_bits(bits: u64) -> u64 {
     } else {
         floor + 1.0
     };
+    if rounded == 0.0 {
+        // A zero result keeps the operand's sign: rounding -0.4 must give
+        // -0.0, but the floor + 1.0 path above lands on +0.0.
+        return bits & 0x8000_0000_0000_0000;
+    }
     from_f64(rounded)
 }
 
