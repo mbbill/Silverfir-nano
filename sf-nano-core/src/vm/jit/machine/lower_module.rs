@@ -21,6 +21,7 @@ use crate::{
             MachineModuleAbi, MachineParamLoc, MachineProgram, MachineReg, MachineRegOwner,
             MachineResultSrc, MachineReturnAbi, MachineReturnValue, MachineSign,
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            NonRefCachedBinding,
         },
         jit::middle::{
             cell::CellId,
@@ -379,6 +380,167 @@ fn internal_call_arg_budget(
     }
 }
 
+fn cached_cell_has_non_ref_identity(
+    program: &SsaProgram,
+    explicit_cache: &[CachedCell],
+    cached: &CachedCell,
+) -> bool {
+    !cached.value_ty.is_ref()
+        && program
+            .cell_types
+            .get(cached.cell.0 as usize)
+            .is_some_and(|ty| !ty.is_ref())
+        && program
+            .cell_homes
+            .iter()
+            .enumerate()
+            .filter(|(_, home)| **home == cached.home)
+            .all(|(cell_index, _)| {
+                program
+                    .cell_types
+                    .get(cell_index)
+                    .is_some_and(|ty| !ty.is_ref())
+            })
+        && explicit_cache
+            .iter()
+            .filter(|alias| alias.home == cached.home)
+            .all(|alias| {
+                !alias.value_ty.is_ref()
+                    && program
+                        .cell_types
+                        .get(alias.cell.0 as usize)
+                        .is_some_and(|ty| !ty.is_ref())
+            })
+}
+
+pub(super) fn derive_non_ref_cached_bindings(
+    program: &SsaProgram,
+    explicit_cache: &[CachedCell],
+    entry_cache_params: &[collections::Vec<EntryCacheParam>],
+    self_tail_entry_params: Option<&[EntryCacheParam]>,
+    gp_reg_width: u8,
+) -> collections::Vec<NonRefCachedBinding> {
+    if gp_reg_width != 8 {
+        return collections::Vec::new();
+    }
+
+    let mut bindings = collections::Vec::new();
+    for (block_index, block) in program.blocks.iter().enumerate() {
+        let params = if block.id == program.entry {
+            let Some(params) = self_tail_entry_params else {
+                continue;
+            };
+            params
+        } else {
+            let Some(params) = entry_cache_params.get(block_index) else {
+                continue;
+            };
+            params.as_slice()
+        };
+        for entry in params {
+            if !entry.needs_value || entry.regs.hi.is_some() {
+                continue;
+            }
+            let Some(cached) = explicit_cache.get(usize::from(entry.cached_index)) else {
+                continue;
+            };
+            if !matches!(
+                cached.ty,
+                MachineStorageType::GpWord | MachineStorageType::GpI64
+            ) || !cached_cell_has_non_ref_identity(program, explicit_cache, cached)
+            {
+                continue;
+            }
+            bindings.push(NonRefCachedBinding {
+                block: MachineBlockId(block.id.as_u32()),
+                reg: entry.regs.lo,
+                home: cached.home,
+                ty: cached.ty,
+            });
+        }
+    }
+    bindings.sort_by_key(|binding| {
+        (
+            binding.block.as_usize(),
+            binding.reg.0,
+            binding.home.0,
+            match binding.ty {
+                MachineStorageType::GpWord => 0,
+                MachineStorageType::GpI64 => 1,
+                MachineStorageType::Fp32 => 2,
+                MachineStorageType::Fp64 => 3,
+                MachineStorageType::V128 => 4,
+            },
+        )
+    });
+    bindings.dedup();
+    bindings
+}
+
+fn finalize_non_ref_cached_bindings(
+    mut bindings: collections::Vec<NonRefCachedBinding>,
+) -> collections::Vec<NonRefCachedBinding> {
+    bindings.sort_by_key(|binding| {
+        (
+            binding.block.as_usize(),
+            binding.reg.0,
+            binding.home.0,
+            match binding.ty {
+                MachineStorageType::GpWord => 0,
+                MachineStorageType::GpI64 => 1,
+                MachineStorageType::Fp32 => 2,
+                MachineStorageType::Fp64 => 3,
+                MachineStorageType::V128 => 4,
+            },
+        )
+    });
+
+    let mut unique = collections::Vec::new();
+    let mut start = 0;
+    while start < bindings.len() {
+        let first = bindings[start];
+        let mut end = start + 1;
+        while end < bindings.len()
+            && bindings[end].block == first.block
+            && bindings[end].reg == first.reg
+        {
+            end += 1;
+        }
+        if bindings[start..end].iter().all(|binding| *binding == first) {
+            unique.push(first);
+        }
+        start = end;
+    }
+    unique
+}
+
+pub(super) fn retain_final_non_ref_cached_bindings(
+    program: &MachineProgram,
+    mut bindings: collections::Vec<NonRefCachedBinding>,
+) -> collections::Vec<NonRefCachedBinding> {
+    bindings.retain(|binding| {
+        let Some(block) = program.blocks.get(binding.block.as_usize()) else {
+            return false;
+        };
+        if block.id != binding.block {
+            return false;
+        }
+        let mut params = block.params.iter().filter(|param| param.reg == binding.reg);
+        matches!(
+            (params.next(), params.next()),
+            (
+                Some(MachineBlockParam {
+                    ty,
+                    owner: MachineRegOwner::CachedCell,
+                    ..
+                }),
+                None,
+            ) if *ty == binding.ty
+        )
+    });
+    finalize_non_ref_cached_bindings(bindings)
+}
+
 fn lower_function(
     input: &mut LowerFunctionInput,
     config: BackendConfig,
@@ -433,6 +595,13 @@ fn lower_function(
     let self_tail_entry_params = (has_direct_self_tail_call && entry_has_no_ssa_params)
         .then(|| derive_self_tail_entry_params(regfile, current_abi, &explicit_cache))
         .flatten();
+    let planned_non_ref_cached_bindings = derive_non_ref_cached_bindings(
+        &input.ssa,
+        &explicit_cache,
+        &entry_cache_params,
+        self_tail_entry_params.as_deref(),
+        gp_reg_width,
+    );
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(
         &input.ssa,
         &explicit_cache,
@@ -500,7 +669,6 @@ fn lower_function(
                 .unwrap_or_default();
             lower.emit_zero_init_locals(&init_locals)?;
         }
-
         for inst_idx in 0..block.ops.len() {
             let inst = block.ops[inst_idx];
             match block.view(inst_idx, &input.ssa) {
@@ -956,10 +1124,13 @@ fn lower_function(
         blocks,
     };
     program.validate(config)?;
+    let non_ref_cached_bindings =
+        retain_final_non_ref_cached_bindings(&program, planned_non_ref_cached_bindings);
 
     Ok(MachineFunction {
         id: input.id,
         program,
+        non_ref_cached_bindings,
         // Final optimization is the single authority for this derived ABI
         // metadata because peepholes may add or remove register definitions.
         preserved_clobbers: collections::Vec::new(),
@@ -1132,6 +1303,7 @@ fn stub_machine_function(id: MachineFuncId) -> MachineFunction {
                 },
             }],
         },
+        non_ref_cached_bindings: collections::Vec::new(),
         preserved_clobbers: collections::Vec::new(),
     }
 }
@@ -3383,23 +3555,12 @@ fn build_call_indirect_local_prepare_block(
     let call_info = runtime_layout.local_call_info;
     let temps = call_indirect_gp_temps(lower)?;
     let callee_target = temps.lane0;
-    let callee_frame_base = temps.lane1;
     let call_info_base = temps.lane2;
     let total_frame_bytes = temps.lane3;
 
     // The local callee reuses the caller operand span as its frame prefix.
     // Non-param local initialization belongs to the callee entry block, matching
     // direct local calls; the caller only performs the optional stack precheck.
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::IntBinary {
-            width: lower.gp_word_int_width(),
-            op: MachineIntBinaryOp::Add,
-            dst: callee_frame_base,
-            lhs: MachineValue::Reg(lower.frame_base_reg()),
-            rhs: MachineValue::Imm64(slot_offset_bytes(args.start)? as u64),
-        },
-    });
-
     if lower.use_explicit_stack_prechecks() {
         emit_local_call_info_entry_addr(lower, callee_target, call_info_base, total_frame_bytes)?;
         lower.emit_machine_inst(MachineInst {
@@ -3416,9 +3577,9 @@ fn build_call_indirect_local_prepare_block(
             },
         });
         lower.emit_dynamic_call_stack_precheck(
-            callee_frame_base,
             call_info_base,
             total_frame_bytes,
+            slot_offset_bytes(args.start)? as u64,
         )?;
     }
 
@@ -3433,18 +3594,8 @@ fn build_tail_call_indirect_local_prepare_block(
     let call_info = runtime_layout.local_call_info;
     let temps = call_indirect_gp_temps(lower)?;
     let callee_target = temps.lane0;
-    let callee_frame_base = temps.lane1;
     let call_info_base = temps.lane2;
     let total_frame_bytes = temps.lane3;
-
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::Move {
-            owner: MachineRegOwner::LinearValue,
-            ty: MachineStorageType::GpWord,
-            dst: callee_frame_base,
-            src: MachineValue::Reg(lower.frame_base_reg()),
-        },
-    });
 
     if lower.use_explicit_stack_prechecks() {
         emit_local_call_info_entry_addr(lower, callee_target, call_info_base, total_frame_bytes)?;
@@ -3461,11 +3612,7 @@ fn build_tail_call_indirect_local_prepare_block(
                 extension: MachineLoadExtension::None,
             },
         });
-        lower.emit_dynamic_call_stack_precheck(
-            callee_frame_base,
-            call_info_base,
-            total_frame_bytes,
-        )?;
+        lower.emit_dynamic_call_stack_precheck(call_info_base, total_frame_bytes, 0)?;
     }
 
     Ok(lower.take_ops())
@@ -3479,7 +3626,6 @@ fn build_call_indirect_local_transfer_block(
     let call_info = runtime_layout.local_call_info;
     let temps = call_indirect_gp_temps(lower)?;
     let callee_target = temps.lane0;
-    // lane1 is `callee_frame_base`, populated by the earlier prepare block.
     let callee_entry = temps.lane2;
     let info_base = temps.lane3;
 

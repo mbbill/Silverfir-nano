@@ -1,12 +1,12 @@
 //! ARM64 terminator emission: branches, calls, traps, jump tables.
 
-use crate::error::WasmError;
 use crate::vm::jit::machine::machine_ir::{
     MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
     MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineResultDst,
     MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator, MachineTrapKind,
     MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
 };
+use crate::{collections, error::WasmError};
 
 use super::abi::map_fixed_reg;
 use super::fusion::map_int_cond;
@@ -22,6 +22,168 @@ use crate::vm::jit::arch::common::template::{
 };
 use crate::vm::jit::arch::common::types::{LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::jit::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
+
+const MAX_DIRECT_JUMP_TABLE_RUNS: usize = 2;
+const MAX_DIRECT_JUMP_TABLE_CASES: usize = 4096;
+const MIN_DIRECT_JUMP_TABLE_SAVINGS: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirectJumpTableRun {
+    start: u32,
+    end: u32,
+    entry_index: usize,
+}
+
+impl DirectJumpTableRun {
+    #[inline]
+    const fn uses_zero_excluded_prefix(self, zero_is_excluded: bool) -> bool {
+        zero_is_excluded && self.start == 1 && self.end < 4095
+    }
+
+    #[inline]
+    const fn index_cmp_imm(self, zero_is_excluded: bool) -> Option<u32> {
+        if self.start == self.end {
+            Some(self.start)
+        } else if self.start == 0 {
+            Some(self.end)
+        } else if self.uses_zero_excluded_prefix(zero_is_excluded) {
+            Some(self.end + 1)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    const fn needs_range_scratch(self, zero_is_excluded: bool) -> bool {
+        self.index_cmp_imm(zero_is_excluded).is_none()
+    }
+
+    #[inline]
+    const fn standalone_instruction_count(self, zero_is_excluded: bool) -> usize {
+        if self.index_cmp_imm(zero_is_excluded).is_some() {
+            2
+        } else {
+            3
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DirectJumpTablePlan {
+    runs: collections::Vec<DirectJumpTableRun>,
+    default_index: usize,
+    zero_uses_default: bool,
+}
+
+impl DirectJumpTablePlan {
+    fn instruction_count(&self) -> usize {
+        // Every conditional edge has a nearby veneer whose wide-range `b`
+        // reaches the real block or edge stub. Case zero shares the final
+        // default branch as its veneer, so it adds only the cbz itself.
+        let mut count = usize::from(self.zero_uses_default) + 1;
+        let mut last_index_cmp = None;
+        for run in &self.runs {
+            if let Some(imm) = run.index_cmp_imm(self.zero_uses_default) {
+                count += usize::from(last_index_cmp != Some(imm)) + 2;
+                last_index_cmp = Some(imm);
+            } else {
+                count += 4;
+                last_index_cmp = None;
+            }
+        }
+        count
+    }
+
+    fn byte_len(&self) -> usize {
+        self.instruction_count() * core::mem::size_of::<u32>()
+    }
+}
+
+fn dense_jump_table_byte_len(entry_count: usize) -> usize {
+    7 * core::mem::size_of::<u32>()
+        + core::mem::size_of::<u64>()
+        + entry_count * core::mem::size_of::<u64>()
+}
+
+/// Select a compact direct-branch lowering for duplicate-heavy tables.
+///
+/// The final entry is Wasm's default edge. Runs equal only when the complete
+/// `MachineEdge` matches, including edge arguments, so compressing them cannot
+/// merge distinct parallel-move semantics. Non-default runs are independent
+/// unsigned membership tests followed by one final default branch.
+fn plan_direct_jump_table(entries: &[MachineEdge]) -> Option<DirectJumpTablePlan> {
+    if entries.len() <= 1 {
+        return None;
+    }
+    let default_index = entries.len() - 1;
+    let case_count = default_index;
+    if case_count > MAX_DIRECT_JUMP_TABLE_CASES {
+        return None;
+    }
+
+    let default = &entries[default_index];
+    let mut zero_uses_default = entries[0] == *default;
+    let mut saw_compression = zero_uses_default;
+    let mut runs = collections::Vec::new();
+    let mut start = 0;
+    while start < case_count {
+        let mut end = start;
+        while end + 1 < case_count && entries[end + 1] == entries[start] {
+            end += 1;
+        }
+        saw_compression |= end != start;
+        if entries[start] == *default {
+            saw_compression = true;
+        } else {
+            runs.push(DirectJumpTableRun {
+                start: start as u32,
+                end: end as u32,
+                entry_index: start,
+            });
+            if runs.len() > MAX_DIRECT_JUMP_TABLE_RUNS {
+                return None;
+            }
+        }
+        start = end + 1;
+    }
+    if !saw_compression {
+        return None;
+    }
+    if runs.is_empty() {
+        // Every case is the default edge. No index test or preparation is
+        // needed; the complete terminator is one direct branch.
+        zero_uses_default = false;
+    }
+
+    // Without profile data, prefer the least expensive membership shape;
+    // singleton enum/tag cases win ties, then lower indices. Runs are disjoint,
+    // so their test order does not affect semantics. The case-zero/default
+    // fast path always precedes these tests.
+    runs.sort_unstable_by(|lhs, rhs| {
+        lhs.standalone_instruction_count(zero_uses_default)
+            .cmp(&rhs.standalone_instruction_count(zero_uses_default))
+            .then((lhs.start != lhs.end).cmp(&(rhs.start != rhs.end)))
+            .then(lhs.start.cmp(&rhs.start))
+    });
+
+    let plan = DirectJumpTablePlan {
+        runs,
+        default_index,
+        zero_uses_default,
+    };
+    let direct_bytes = plan.byte_len();
+
+    // Dense lowering needs at least seven instructions, one 64-bit table-base
+    // literal, and one 64-bit target per entry. Requiring both a fixed saving
+    // and a 2x reduction keeps this specialization on clearly smaller shapes.
+    let dense_bytes = dense_jump_table_byte_len(entries.len());
+    if dense_bytes < direct_bytes + MIN_DIRECT_JUMP_TABLE_SAVINGS || direct_bytes > dense_bytes / 2
+    {
+        return None;
+    }
+
+    Some(plan)
+}
 
 fn checked_arm64_template_words(
     delta: i32,
@@ -1049,6 +1211,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
             self.lower_b(label);
             return Ok(());
         }
+        if let Some(plan) = plan_direct_jump_table(entries) {
+            return self.lower_direct_jump_table(index, entries, &plan);
+        }
 
         let s0 = self.gp_scratch.scoped_alloc().detach();
         let s1 = self.gp_scratch.scoped_alloc().detach();
@@ -1092,6 +1257,99 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 literal_offset,
                 target_label: label,
             });
+        }
+        Ok(())
+    }
+
+    fn lower_direct_jump_table(
+        &mut self,
+        index: MachineValue,
+        entries: &[MachineEdge],
+        plan: &DirectJumpTablePlan,
+    ) -> Result<(), WasmError> {
+        let default = &entries[plan.default_index];
+        let default_label = self.core.emit_edge(default.target, &default.args)?;
+        if plan.runs.is_empty() {
+            self.lower_b(default_label);
+            return Ok(());
+        }
+
+        // MachineIR br_table indices are canonical Wasm i32 values. Truncate
+        // a synthetic immediate here as well so the cbz fast path has the same
+        // semantics as the 32-bit comparisons below.
+        let index = match index {
+            MachineValue::Imm64(value) => MachineValue::Imm64(u64::from(value as u32)),
+            other => other,
+        };
+        let index_reg = prepare_gp(
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            index,
+        )?
+        .detach();
+
+        let mut conditional_veneers = collections::Vec::with_capacity(plan.runs.len());
+        let zero_default_veneer = if plan.zero_uses_default {
+            // MachineIR provides a canonical i32 index here, so the existing
+            // 64-bit cbz helper is an exact zero test. Keep its target local:
+            // the real edge may be a non-identity stub after a >1 MiB body.
+            let veneer = self.core.new_label();
+            self.lower_cbz(*index_reg, veneer);
+            Some(veneer)
+        } else {
+            None
+        };
+
+        let range_scratch = plan
+            .runs
+            .iter()
+            .any(|run| run.needs_range_scratch(plan.zero_uses_default))
+            .then(|| self.gp_scratch.scoped_alloc().detach());
+
+        let mut last_index_cmp = None;
+        for run in &plan.runs {
+            let entry = &entries[run.entry_index];
+            let label = self.core.emit_edge(entry.target, &entry.args)?;
+            if let Some(imm) = run.index_cmp_imm(plan.zero_uses_default) {
+                if last_index_cmp != Some(imm) {
+                    self.core.text.emit_u32(enc::cmp_imm_32(*index_reg, imm));
+                }
+                let cond = if run.start == run.end {
+                    enc::Cond::Eq
+                } else if run.start == 0 {
+                    enc::Cond::Ls
+                } else {
+                    enc::Cond::Lo
+                };
+                let veneer = self.core.new_label();
+                self.lower_b_cond(cond, veneer);
+                conditional_veneers.push((veneer, label));
+                last_index_cmp = Some(imm);
+            } else {
+                let scratch = range_scratch.as_ref().ok_or_else(|| {
+                    WasmError::internal("arm64 direct jump-table range is missing scratch")
+                })?;
+                self.core
+                    .text
+                    .emit_u32(enc::sub_imm_32(**scratch, *index_reg, run.start));
+                self.core
+                    .text
+                    .emit_u32(enc::cmp_imm_32(**scratch, run.end - run.start));
+                let veneer = self.core.new_label();
+                self.lower_b_cond(enc::Cond::Ls, veneer);
+                conditional_veneers.push((veneer, label));
+                last_index_cmp = None;
+            }
+        }
+        if let Some(veneer) = zero_default_veneer {
+            self.core.bind_label(veneer);
+        }
+        self.lower_b(default_label);
+        for (veneer, target) in conditional_veneers {
+            self.core.bind_label(veneer);
+            self.lower_b(target);
         }
         Ok(())
     }
@@ -1207,5 +1465,308 @@ impl<'a> super::backend::Arm64Backend<'a> {
         // propagates upward to the caller through the unified Return tail.
         let body_local_error_label = self.core.body_local_error_label;
         self.lower_b(body_local_error_label);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::jit::{
+        arch::common::pipeline,
+        backend::BackendConfig,
+        machine::machine_ir::{
+            MachineBlock, MachineBlockParam, MachineFunction, MachineInst, MachineInstKind,
+            MachineProgram, MachineReg, MachineRegOwner,
+        },
+        runtime::code::CodegenModuleView,
+    };
+
+    #[derive(Debug)]
+    struct TestCodegenModule {
+        backend: BackendConfig,
+    }
+
+    impl CodegenModuleView for TestCodegenModule {
+        fn backend(&self) -> BackendConfig {
+            self.backend
+        }
+
+        fn runtime_for(
+            &self,
+            _id: crate::vm::jit::machine::machine_ir::MachineFuncId,
+        ) -> Option<&crate::vm::jit::machine::machine_ir::MachineFunctionAbi> {
+            None
+        }
+
+        fn const_ptr(
+            &self,
+            _id: crate::vm::jit::machine::machine_ir::MachineConstId,
+        ) -> Option<*const u8> {
+            None
+        }
+    }
+
+    fn edge(target: u32, args: &[u16]) -> MachineEdge {
+        MachineEdge {
+            target: MachineBlockId(target),
+            args: args
+                .iter()
+                .map(|reg| MachineValue::Reg(MachineReg(*reg)))
+                .collect(),
+        }
+    }
+
+    fn selected_edge<'a>(
+        entries: &'a [MachineEdge],
+        plan: &DirectJumpTablePlan,
+        index: u32,
+    ) -> &'a MachineEdge {
+        if plan.zero_uses_default && index == 0 {
+            return &entries[plan.default_index];
+        }
+        for run in &plan.runs {
+            if index.wrapping_sub(run.start) <= run.end - run.start {
+                return &entries[run.entry_index];
+            }
+        }
+        &entries[plan.default_index]
+    }
+
+    #[test]
+    fn duplicate_heavy_type_switch_uses_zero_fast_path_and_two_runs() {
+        let default = edge(759, &[]);
+        let middle = edge(762, &[]);
+        let case_16 = edge(760, &[]);
+        let mut entries = collections::vec![default.clone()];
+        entries.extend(core::iter::repeat_n(middle.clone(), 15));
+        entries.push(case_16.clone());
+        entries.push(default.clone());
+
+        let plan = plan_direct_jump_table(&entries).expect("duplicate-heavy table should compress");
+        assert!(plan.zero_uses_default);
+        assert_eq!(plan.default_index, 17);
+        assert_eq!(
+            plan.runs,
+            collections::vec![
+                DirectJumpTableRun {
+                    start: 16,
+                    end: 16,
+                    entry_index: 16,
+                },
+                DirectJumpTableRun {
+                    start: 1,
+                    end: 15,
+                    entry_index: 1,
+                },
+            ]
+        );
+        // The singleton and prefix range both compare against 16, so the
+        // second test reuses NZCV. Each non-default conditional has one local
+        // wide-branch veneer; case zero shares the final default branch.
+        assert_eq!(plan.instruction_count(), 7);
+        assert_eq!(plan.byte_len(), 28);
+        assert_eq!(dense_jump_table_byte_len(entries.len()), 180);
+
+        assert_eq!(selected_edge(&entries, &plan, 0), &default);
+        assert_eq!(selected_edge(&entries, &plan, 1), &middle);
+        assert_eq!(selected_edge(&entries, &plan, 15), &middle);
+        assert_eq!(selected_edge(&entries, &plan, 16), &case_16);
+        assert_eq!(selected_edge(&entries, &plan, 17), &default);
+        assert_eq!(selected_edge(&entries, &plan, u32::MAX), &default);
+    }
+
+    #[test]
+    fn complete_edge_identity_controls_run_compression() {
+        let default = edge(7, &[4]);
+        let different_args = edge(7, &[5]);
+        let entries = collections::vec![
+            default.clone(),
+            different_args.clone(),
+            different_args.clone(),
+            default.clone(),
+        ];
+
+        let plan = plan_direct_jump_table(&entries).expect("equal full edges should compress");
+        assert!(plan.zero_uses_default);
+        assert_eq!(
+            plan.runs,
+            collections::vec![DirectJumpTableRun {
+                start: 1,
+                end: 2,
+                entry_index: 1,
+            }]
+        );
+        assert_eq!(selected_edge(&entries, &plan, 0).args, default.args);
+        assert_eq!(selected_edge(&entries, &plan, 1).args, different_args.args);
+        assert_eq!(selected_edge(&entries, &plan, 2).args, different_args.args);
+        assert_eq!(selected_edge(&entries, &plan, 3).args, default.args);
+    }
+
+    #[test]
+    fn same_target_with_different_args_is_not_the_zero_default_edge() {
+        let case_zero = edge(7, &[4]);
+        let repeated = edge(8, &[6]);
+        let default = edge(7, &[5]);
+        let entries = collections::vec![
+            case_zero.clone(),
+            repeated.clone(),
+            repeated,
+            default.clone(),
+        ];
+
+        let plan =
+            plan_direct_jump_table(&entries).expect("repeated non-default run should compress");
+        assert!(!plan.zero_uses_default);
+        assert_eq!(selected_edge(&entries, &plan, 0), &case_zero);
+        assert_eq!(selected_edge(&entries, &plan, u32::MAX), &default);
+    }
+
+    #[test]
+    fn unique_edges_keep_dense_lowering() {
+        let entries = collections::vec![edge(1, &[]), edge(2, &[]), edge(3, &[]), edge(4, &[]),];
+        assert_eq!(plan_direct_jump_table(&entries), None);
+    }
+
+    #[test]
+    fn isolated_default_case_is_a_compression_opportunity() {
+        let default = edge(9, &[]);
+        let entries = collections::vec![edge(1, &[]), default.clone(), edge(2, &[]), default];
+        let plan = plan_direct_jump_table(&entries).expect("default case removes one direct test");
+        assert!(!plan.zero_uses_default);
+        assert_eq!(plan.runs.len(), 2);
+        assert_eq!(selected_edge(&entries, &plan, 1), &entries[3]);
+    }
+
+    #[test]
+    fn all_edges_equal_need_only_the_default_branch() {
+        let same = edge(7, &[4]);
+        let entries = collections::vec![same.clone(), same.clone(), same.clone()];
+        let plan = plan_direct_jump_table(&entries).expect("equal edges should collapse");
+        assert!(plan.runs.is_empty());
+        assert!(!plan.zero_uses_default);
+        assert_eq!(plan.instruction_count(), 1);
+        assert_eq!(plan.byte_len(), 4);
+        assert_eq!(selected_edge(&entries, &plan, 0), &same);
+        assert_eq!(selected_edge(&entries, &plan, u32::MAX), &same);
+    }
+
+    #[test]
+    fn more_than_two_non_default_runs_keep_dense_lowering() {
+        let mut entries = collections::Vec::new();
+        for target in 1..=3 {
+            entries.push(edge(target, &[]));
+            entries.push(edge(target, &[]));
+        }
+        entries.push(edge(99, &[]));
+        assert_eq!(plan_direct_jump_table(&entries), None);
+    }
+
+    #[test]
+    fn immediate_range_limit_preserves_unsigned_default_boundary() {
+        let repeated = edge(1, &[]);
+        let default = edge(2, &[]);
+        let mut entries = collections::vec![repeated.clone(); MAX_DIRECT_JUMP_TABLE_CASES];
+        entries.push(default.clone());
+        let plan = plan_direct_jump_table(&entries).expect("4096 cases fit ARM64 imm12 bounds");
+        assert_eq!(selected_edge(&entries, &plan, 4095), &repeated);
+        assert_eq!(selected_edge(&entries, &plan, 4096), &default);
+        assert_eq!(selected_edge(&entries, &plan, u32::MAX), &default);
+
+        let mut too_large = collections::vec![repeated; MAX_DIRECT_JUMP_TABLE_CASES + 1];
+        too_large.push(default);
+        assert_eq!(plan_direct_jump_table(&too_large), None);
+    }
+
+    #[test]
+    fn far_non_identity_edges_compile_through_local_veneers() {
+        let backend = abi::compile_backend_config();
+        let view = TestCodegenModule { backend };
+        let index = MachineReg(4);
+        let default_param = MachineReg(5);
+        let repeated_param = MachineReg(6);
+        let padding_dst = MachineReg(7);
+        let default_edge = MachineEdge {
+            target: MachineBlockId(1),
+            args: collections::vec![MachineValue::Reg(index)],
+        };
+        let repeated_edge = MachineEdge {
+            target: MachineBlockId(2),
+            args: collections::vec![MachineValue::Reg(index)],
+        };
+        let mut padding = collections::Vec::with_capacity(70_000);
+        for _ in 0..70_000 {
+            padding.push(MachineInst {
+                kind: MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpI64,
+                    dst: padding_dst,
+                    src: MachineValue::Imm64(0x1234_5678_9abc_def0),
+                },
+            });
+        }
+        let function = MachineFunction {
+            id: crate::vm::jit::machine::machine_ir::MachineFuncId(0),
+            program: MachineProgram {
+                entry: MachineBlockId(0),
+                fp_reg_init_widths: collections::vec![
+                    None;
+                    usize::from(backend.fp_dynamic_budget)
+                ],
+                blocks: collections::vec![
+                    MachineBlock {
+                        id: MachineBlockId(0),
+                        params: collections::Vec::new(),
+                        ops: collections::vec![MachineInst {
+                            kind: MachineInstKind::Move {
+                                owner: MachineRegOwner::LinearValue,
+                                ty: MachineStorageType::GpWord,
+                                dst: index,
+                                src: MachineValue::Imm64(0),
+                            },
+                        }],
+                        terminator: MachineTerminator::JumpTable {
+                            index: MachineValue::Reg(index),
+                            entries: collections::vec![
+                                default_edge.clone(),
+                                repeated_edge.clone(),
+                                repeated_edge,
+                                default_edge,
+                            ],
+                        },
+                    },
+                    MachineBlock {
+                        id: MachineBlockId(1),
+                        params: collections::vec![MachineBlockParam::gp_word(default_param)],
+                        ops: collections::Vec::new(),
+                        terminator: MachineTerminator::Jump(MachineEdge {
+                            target: MachineBlockId(3),
+                            args: collections::Vec::new(),
+                        }),
+                    },
+                    MachineBlock {
+                        id: MachineBlockId(2),
+                        params: collections::vec![MachineBlockParam::gp_word(repeated_param)],
+                        ops: collections::Vec::new(),
+                        terminator: MachineTerminator::Jump(MachineEdge {
+                            target: MachineBlockId(3),
+                            args: collections::Vec::new(),
+                        }),
+                    },
+                    MachineBlock {
+                        id: MachineBlockId(3),
+                        params: collections::Vec::new(),
+                        ops: padding,
+                        terminator: MachineTerminator::Return,
+                    },
+                ],
+            },
+            non_ref_cached_bindings: collections::Vec::new(),
+            preserved_clobbers: collections::Vec::new(),
+        };
+
+        let artifact =
+            pipeline::compile_function::<super::super::backend::Arm64Backend>(&view, &function)
+                .expect("local jump-table veneers must keep far edge stubs reachable");
+        assert!(artifact.text.len() > (1 << 20));
     }
 }

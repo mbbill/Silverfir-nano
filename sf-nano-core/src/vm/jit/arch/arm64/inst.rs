@@ -17,7 +17,7 @@ use super::{
 };
 
 use super::backend::BranchFixup;
-use super::fusion::{cmp_imm_inst, int_binary_imm_inst, map_float_cond, map_int_cond};
+use super::fusion::{cmp_imm_inst, int_binary_imm_inst, map_float_cond, map_int_cond, ExactCopy18};
 use crate::vm::jit::arch::common::helpers::convert_result_float_width;
 use crate::vm::jit::arch::common::scratch_pool::ScratchPool;
 use crate::vm::jit::arch::common::text_emitter::TextEmitter;
@@ -1783,6 +1783,61 @@ impl<'a> super::backend::Arm64Backend<'a> {
             }
         };
         self.core.text.emit_u32(inst);
+        Ok(())
+    }
+
+    /// Lower the exact LZ4-style 18-byte copy while preserving the scalar
+    /// memory order `L0,S0,L8,S8,L16,S16` and the stable linear-memory base on
+    /// every load. Only the destination base is shared across the two
+    /// non-zero-offset stores.
+    pub(super) fn lower_exact_copy18(&mut self, copy: ExactCopy18) -> Result<(), WasmError> {
+        self.lower_indexed_load(
+            copy.value,
+            copy.base,
+            copy.src_index,
+            MachineMemWidth::U64,
+            MachineLoadExtension::None,
+            false,
+            false,
+        )?;
+        self.lower_indexed_store(
+            copy.base,
+            copy.dst_index,
+            MachineMemWidth::U64,
+            MachineValue::Reg(copy.value),
+            false,
+            false,
+        )?;
+
+        let base = self.map_gp_reg(copy.base)?;
+        let src_index = self.map_gp_reg(copy.src_index)?;
+        let dst_index = self.map_gp_reg(copy.dst_index)?;
+        let value = self.map_gp_reg(copy.value)?;
+        let dst_addr_index = self.gp_scratch.alloc();
+        let src_addr_index = self.gp_scratch.alloc();
+        let dst_addr = self.gp_scratch.reg(dst_addr_index);
+        let src_addr = self.gp_scratch.reg(src_addr_index);
+
+        self.core
+            .text
+            .emit_u32(enc::add_reg_64(dst_addr, base, dst_index));
+        self.core
+            .text
+            .emit_u32(enc::add_imm_64(src_addr, src_index, 8));
+        self.core
+            .text
+            .emit_u32(enc::ldr_reg_64(value, base, src_addr));
+        self.core.text.emit_u32(enc::str_64(value, dst_addr, 1));
+        self.core
+            .text
+            .emit_u32(enc::add_imm_64(src_addr, src_addr, 8));
+        self.core
+            .text
+            .emit_u32(enc::ldrh_reg(value, base, src_addr));
+        self.core.text.emit_u32(enc::strh_imm(value, dst_addr, 8));
+
+        self.gp_scratch.free_index(src_addr_index);
+        self.gp_scratch.free_index(dst_addr_index);
         Ok(())
     }
 

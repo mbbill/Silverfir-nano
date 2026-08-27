@@ -165,6 +165,10 @@ pub(crate) struct Arm64Backend<'a> {
     /// store/load pair) when the next op arrives. Drained on `end_block`.
     /// `usize` is the block-local op index at the time it was buffered.
     pending_op: Option<(&'a MachineInst, usize)>,
+    /// Remaining MachineIR ops already emitted by the exact 18-byte copy
+    /// fusion. The matcher currently starts only at a block's first op, so no
+    /// buffered instruction can precede the fused sequence.
+    fused_copy_ops_remaining: u8,
     /// Select-condition flags fusion: `Some((reg, cond))` means the NZCV
     /// flags currently encode `reg != 0` as `cond`, set by the immediately
     /// preceding And (emitted as `ands`) or comparison. Consumed by a Select
@@ -724,6 +728,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             helper_fp_candidates: analysis.helper_fp_candidates,
             pending_direct_calls: collections::Vec::new(),
             pending_op: None,
+            fused_copy_ops_remaining: 0,
             select_flags: None,
             recent_stores: [(MachineReg(0), 0, 0, 0); RECENT_STORE_SLOTS],
             recent_store_len: 0,
@@ -950,6 +955,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
 
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         // Streaming entry: clear the lookahead and reset block state.
+        debug_assert_eq!(self.fused_copy_ops_remaining, 0);
         self.pending_op = None;
         self.core.current_block = Some(block.id);
         self.core.current_edge_target = None;
@@ -975,8 +981,34 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     // if the tradeoff is ever revisited on a non-Apple core.
     fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
         self.dispatch_seq = self.dispatch_seq.wrapping_add(1);
+        if self.fused_copy_ops_remaining != 0 {
+            self.fused_copy_ops_remaining -= 1;
+            return Ok(());
+        }
         if let MachineInstKind::Store { addr, width, .. } = &inst.kind {
             self.record_store(addr.base, addr.offset, width.bytes() as u8);
+        }
+        // The short-match LZ4 block starts with the complete six-op copy, so
+        // recognize it before placing op 0 in the one-op lookahead buffer.
+        // Restricting this to block entry keeps skip accounting and pending-op
+        // ordering mechanically simple.
+        if index == 0 && self.pending_op.is_none() {
+            let fusion = match self.core.current_block {
+                Some(block_id) => self
+                    .core
+                    .mir_blocks()?
+                    .get(block_id.as_usize())
+                    .and_then(|block| super::fusion::exact_copy18_fusion(&block.ops)),
+                None => None,
+            };
+            if let Some(fusion) = fusion {
+                self.core.current_op_index = Some(index);
+                self.lower_exact_copy18(fusion)?;
+                self.fused_copy_ops_remaining = 5;
+                self.gp_scratch.assert_all_free();
+                self.fp_scratch.assert_all_free();
+                return Ok(());
+            }
         }
         // Try to fuse the previously buffered op with this incoming op. On a
         // hit, both are consumed by a single emitted instruction. On a miss,
@@ -1272,5 +1304,196 @@ impl<'a> crate::vm::jit::arch::shared_64::ModuleLinkBackend64<'a> for Arm64Backe
             #[cfg(sf_ir_dump)]
             debug_regions: emitted.debug_regions.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::jit::{
+        backend::BackendConfig,
+        machine::machine_ir::{
+            MachineFunction, MachineIndexExtend, MachineLoadExtension, MachineMemWidth,
+            MachineProgram, MachineRegOwner, MachineStorageType,
+        },
+        runtime::code::CodegenModuleView,
+    };
+
+    #[derive(Debug)]
+    struct TestCodegenModule {
+        backend: BackendConfig,
+    }
+
+    impl CodegenModuleView for TestCodegenModule {
+        fn backend(&self) -> BackendConfig {
+            self.backend
+        }
+
+        fn runtime_for(
+            &self,
+            _id: crate::vm::jit::machine::machine_ir::MachineFuncId,
+        ) -> Option<&crate::vm::jit::machine::machine_ir::MachineFunctionAbi> {
+            None
+        }
+
+        fn const_ptr(
+            &self,
+            _id: crate::vm::jit::machine::machine_ir::MachineConstId,
+        ) -> Option<*const u8> {
+            None
+        }
+    }
+
+    fn indexed_load(
+        dst: MachineReg,
+        index: MachineReg,
+        offset: i32,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::IndexedLoad {
+                dst,
+                base: MACHINE_MEM0_BASE_REG,
+                index,
+                index_extend: MachineIndexExtend::None,
+                offset,
+                width,
+                extension,
+            },
+        }
+    }
+
+    fn indexed_store(
+        index: MachineReg,
+        offset: i32,
+        width: MachineMemWidth,
+        src: MachineReg,
+    ) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::IndexedStore {
+                base: MACHINE_MEM0_BASE_REG,
+                index,
+                index_extend: MachineIndexExtend::None,
+                offset,
+                width,
+                src: MachineValue::Reg(src),
+            },
+        }
+    }
+
+    #[test]
+    fn exact_copy18_emits_memory_sequence_and_next_op_once() {
+        let value = MachineReg(4);
+        let next = MachineReg(5);
+        let src = MachineReg(11);
+        let dst = MachineReg(21);
+        let ops = collections::vec![
+            indexed_load(
+                value,
+                src,
+                0,
+                MachineMemWidth::U64,
+                MachineLoadExtension::None,
+            ),
+            indexed_store(dst, 0, MachineMemWidth::U64, value),
+            indexed_load(
+                value,
+                src,
+                8,
+                MachineMemWidth::U64,
+                MachineLoadExtension::None,
+            ),
+            indexed_store(dst, 8, MachineMemWidth::U64, value),
+            indexed_load(
+                value,
+                src,
+                16,
+                MachineMemWidth::U16,
+                MachineLoadExtension::ZeroExtend,
+            ),
+            indexed_store(dst, 16, MachineMemWidth::U16, value),
+            MachineInst {
+                kind: MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpI64,
+                    dst: next,
+                    src: MachineValue::Reg(value),
+                },
+            },
+        ];
+        let function = MachineFunction {
+            id: MachineFuncId(0),
+            program: MachineProgram {
+                entry: MachineBlockId(0),
+                fp_reg_init_widths: collections::vec![
+                    None;
+                    usize::from(abi::compile_backend_config().fp_dynamic_budget)
+                ],
+                blocks: collections::vec![MachineBlock {
+                    id: MachineBlockId(0),
+                    params: collections::vec![
+                        MachineBlockParam::gp_i64(src),
+                        MachineBlockParam::gp_i64(dst),
+                    ],
+                    ops,
+                    terminator: MachineTerminator::Return,
+                }],
+            },
+            non_ref_cached_bindings: collections::Vec::new(),
+            preserved_clobbers: collections::Vec::new(),
+        };
+        let view = TestCodegenModule {
+            backend: abi::compile_backend_config(),
+        };
+        let core = CompilerCore::new(&view, FunctionBody::Mir(&function));
+        let mut backend = Arm64Backend::new(core);
+        let block = &function.program.blocks[0];
+
+        let base = abi::map_reg(MACHINE_MEM0_BASE_REG).unwrap();
+        let value_reg = abi::map_reg(value).unwrap();
+        let src_reg = abi::map_reg(src).unwrap();
+        let dst_reg = abi::map_reg(dst).unwrap();
+        let dst_addr = Arm64Reg::from_raw(16);
+        let src_addr = Arm64Reg::from_raw(17);
+        let expected_copy = [
+            enc::ldr_reg_64(value_reg, base, src_reg),
+            enc::str_reg_64(value_reg, base, dst_reg),
+            enc::add_reg_64(dst_addr, base, dst_reg),
+            enc::add_imm_64(src_addr, src_reg, 8),
+            enc::ldr_reg_64(value_reg, base, src_addr),
+            enc::str_64(value_reg, dst_addr, 1),
+            enc::add_imm_64(src_addr, src_addr, 8),
+            enc::ldrh_reg(value_reg, base, src_addr),
+            enc::strh_imm(value_reg, dst_addr, 8),
+        ];
+
+        backend.begin_block(block).unwrap();
+        backend.emit_inst_at(&block.ops[0], 0).unwrap();
+        assert_eq!(backend.core.text.len(), expected_copy.len() * 4);
+        assert_eq!(backend.fused_copy_ops_remaining, 5);
+        for index in 1..6 {
+            let len_before = backend.core.text.len();
+            backend.emit_inst_at(&block.ops[index], index).unwrap();
+            assert_eq!(backend.core.text.len(), len_before);
+            assert_eq!(backend.fused_copy_ops_remaining, (5 - index) as u8);
+        }
+
+        backend.emit_inst_at(&block.ops[6], 6).unwrap();
+        assert_eq!(backend.core.text.len(), expected_copy.len() * 4);
+        backend.end_block(&block.terminator, None).unwrap();
+
+        let words: collections::Vec<u32> = (0..backend.core.text.len())
+            .step_by(4)
+            .map(|offset| backend.core.text.read_u32(offset))
+            .collect();
+        let next_inst = enc::mov_reg_64(abi::map_reg(next).unwrap(), value_reg);
+        assert_eq!(&words[..expected_copy.len()], &expected_copy);
+        assert_eq!(words[expected_copy.len()], next_inst);
+        assert_eq!(words.iter().filter(|&&word| word == next_inst).count(), 1);
+        assert_eq!(
+            &words[expected_copy.len() + 1..],
+            &[enc::mov_zero_64(abi::C_RET0), enc::ret()]
+        );
     }
 }

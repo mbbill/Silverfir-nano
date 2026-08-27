@@ -36,6 +36,16 @@ Those fixed roles are:
 - `MACHINE_MEM0_BASE_REG`
 - `MACHINE_MEM0_SIZE_REG`
 
+`MACHINE_FP_REG` is also constrained at the MachineIR level: it may only be
+the base of a direct address with a nonnegative offset. It is never a block
+parameter, ordinary source, destination, indexed-address input, or terminator
+value. The only value-form exception is the frame pointer itself as the left
+operand of the exact unsigned native-stack guard comparison; lowering folds
+the prospective callee frame delta into the limit on the right. Direct
+addresses and ABI `FrameSlotOffset` byte suboffsets must be nonnegative. That
+frame-isolation rule prevents a callee from reaching backward into its caller's
+frame.
+
 Each backend must define how these four roles survive both boundary classes:
 
 - **Foreign helper / runtime boundaries**: preferably map them to physical
@@ -453,9 +463,14 @@ Frame slots are the canonical storage for:
 - frame-passed call arguments
 - current frame-fallback call results
 
-Registers are an execution cache over that canonical frame state, with one
-local-call exception: register-passed scalar parameters are entry values whose
-home slots become authoritative only after MachineIR publishes them.
+Registers are an execution cache over that canonical frame state. For local
+calls, register-passed scalar parameters are entry values whose home slots
+become authoritative only after MachineIR publishes them. A strict late
+MachineIR peephole may also reuse a dead preserved cache lane to carry a
+still-live volatile non-ref cache across a call. The carrier must be a unique
+lowering-proven cached binding already published to its own canonical home;
+the rewrite keeps every frame store and exposes the carried value on explicit
+success-edge parameters.
 
 Consequences:
 

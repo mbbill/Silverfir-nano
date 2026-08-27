@@ -59,6 +59,14 @@ pub(crate) enum MachineValue {
 }
 
 /// One explicit machine address.
+///
+/// `MACHINE_FP_REG` is a frame-address capability, not a general-purpose
+/// value. When it is the base, `offset` must be nonnegative so a callee cannot
+/// reach backward into its caller's frame. MachineIR validation enforces that
+/// rule and rejects every other explicit use or definition of the frame
+/// pointer. The sole value-form exception is the frame pointer itself as the
+/// left operand of the exact unsigned native-stack overflow precheck; lowering
+/// adjusts the limit operand for the prospective callee frame delta.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct MachineAddr {
     pub base: MachineReg,

@@ -3,19 +3,24 @@ use crate::collections;
 use crate::opcodes::OpcodeFD;
 use crate::value_type::ValueType;
 
+use super::{
+    lower_context::{CachedCell, EntryCacheParam, ValueRegs},
+    lower_module::{derive_non_ref_cached_bindings, retain_final_non_ref_cached_bindings},
+};
 use crate::vm::{
     jit::backend::BackendConfig,
     jit::machine::{
         lower_module_with_table_dispatch_modes,
         machine_ir::{
-            is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineBlockId, MachineBlockParam,
-            MachineBranchCond, MachineCallLaneArg, MachineCallResults, MachineCallTarget,
-            MachineCompareKind, MachineConvertOp, MachineEdge, MachineFloatWidth,
-            MachineFrameRegion, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
-            MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-            MachineModule, MachineReg, MachineRegOwner, MachineResultDst, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
-            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineBlock, MachineBlockId,
+            MachineBlockParam, MachineBranchCond, MachineCallLaneArg, MachineCallResults,
+            MachineCallTarget, MachineCompareKind, MachineConvertOp, MachineEdge,
+            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction, MachineInst,
+            MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension,
+            MachineMemWidth, MachineModule, MachineProgram, MachineReg, MachineRegOwner,
+            MachineResultDst, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
+            MachineValue, NonRefCachedBinding, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG,
         },
         LowerFunctionInput, LowerModuleInput, LoweredMachineModule,
     },
@@ -282,6 +287,184 @@ fn lowers_register_only_self_tail_call_to_entry_backedge() {
         "self tail backedge must not publish arguments through the frame: {:?}",
         entry.ops
     );
+}
+
+#[test]
+fn lowers_direct_tail_call_stack_precheck_with_direct_frame_pointer_compare() {
+    let backend = host_backend_config(0, 6, 0, 0);
+    let caller_frame = plan_frame_layout(0, 0, 0);
+    let callee_frame = plan_frame_layout(0, 0, 0);
+
+    let mut caller = SsaProgram::default();
+    caller.entry = SsaTarget(0);
+    caller.blocks.push(SsaBlock {
+        id: SsaTarget(0),
+        params: collections::Vec::new(),
+        ops: collections::Vec::new(),
+        extra_args: collections::Vec::new(),
+        terminator: SsaTerminator::TailCallDirect {
+            callee: 1,
+            args: test_i64_call_args(FrameSpan::new(FrameSlot(0), 0)),
+            return_results: None,
+        },
+    });
+
+    let mut callee = SsaProgram::default();
+    callee.entry = SsaTarget(0);
+    callee.blocks.push(SsaBlock {
+        id: SsaTarget(0),
+        params: collections::Vec::new(),
+        ops: collections::Vec::new(),
+        extra_args: collections::Vec::new(),
+        terminator: SsaTerminator::Return { results: None },
+    });
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![
+            LowerFunctionInput {
+                id: MachineFuncId(0),
+                frame: caller_frame,
+                ssa: caller,
+                result_count: 0,
+            },
+            LowerFunctionInput {
+                id: MachineFuncId(1),
+                frame: callee_frame,
+                ssa: callee,
+                result_count: 0,
+            },
+        ],
+    })
+    .expect("direct tail-call lowering should satisfy frame-pointer validation");
+
+    let program = &lowered.module.functions[0].program;
+    assert!(!program
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::IntBinary {
+                    op: MachineIntBinaryOp::Add,
+                    lhs: MachineValue::Reg(MACHINE_FP_REG),
+                    rhs: MachineValue::Imm64(0),
+                    ..
+                }
+            )
+        }));
+    assert!(program
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::StackOverflow,
+                    cond: MachineBranchCond::IntCompare {
+                        kind: MachineCompareKind::Gt,
+                        sign: MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(MACHINE_FP_REG),
+                        rhs: MachineValue::Reg(_),
+                        ..
+                    },
+                }
+            )
+        }));
+    assert!(program.blocks.iter().any(|block| matches!(
+        block.terminator,
+        MachineTerminator::TailCall {
+            target: MachineCallTarget::Direct(MachineFuncId(1)),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn lowers_indirect_tail_call_stack_precheck_with_direct_frame_pointer_compare() {
+    let backend = host_backend_config(0, 8, 0, 0);
+    let frame = plan_frame_layout(0, 1, 0);
+    let mut ssa = SsaProgram::default();
+    ssa.entry = SsaTarget(0);
+    ssa.blocks.push(SsaBlock {
+        id: SsaTarget(0),
+        params: collections::Vec::new(),
+        ops: collections::Vec::new(),
+        extra_args: collections::Vec::new(),
+        terminator: SsaTerminator::TailCallIndirect {
+            type_idx: 0,
+            table_idx: 0,
+            index: SsaCallOperandLoc::Stack {
+                slot: frame.operand_slot(0),
+            },
+            args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 0)),
+            return_results: None,
+        },
+    });
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("indirect tail-call lowering should satisfy frame-pointer validation");
+
+    let program = &lowered.module.functions[0].program;
+    assert!(!program
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::IntBinary {
+                    op: MachineIntBinaryOp::Add,
+                    lhs: MachineValue::Reg(MACHINE_FP_REG),
+                    rhs: MachineValue::Imm64(0),
+                    ..
+                }
+            )
+        }));
+    assert!(program
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::StackOverflow,
+                    cond: MachineBranchCond::IntCompare {
+                        kind: MachineCompareKind::Gt,
+                        sign: MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(MACHINE_FP_REG),
+                        rhs: MachineValue::Reg(_),
+                        ..
+                    },
+                }
+            )
+        }));
+    assert!(program.blocks.iter().any(|block| matches!(
+        block.terminator,
+        MachineTerminator::TailCall {
+            target: MachineCallTarget::Indirect { .. },
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -2443,20 +2626,35 @@ fn lowers_direct_local_call_with_continuation_block() {
         }
         ref other => panic!("expected direct call terminator, got {other:?}"),
     };
-    assert!(matches!(
-        call_block.ops[0].kind,
+    let frame_delta = u64::from(caller_frame.operand_slot(1).0) * 8;
+    let required_bytes = u64::from(callee_frame.total_slots()) * 8 + frame_delta;
+    assert!(call_block.ops.iter().any(|inst| matches!(
+        inst.kind,
         MachineInstKind::IntBinary {
-            lhs: MachineValue::Reg(MachineReg(1)),
-            rhs: MachineValue::Imm64(offset),
+            op: MachineIntBinaryOp::Sub,
+            rhs: MachineValue::Imm64(bytes),
             ..
-        } if offset == u64::from(caller_frame.operand_slot(1).0) * 8
-    ));
+        } if bytes == required_bytes
+    )));
+    assert!(call_block.ops.iter().all(|inst| !matches!(
+        inst.kind,
+        MachineInstKind::IntBinary {
+            lhs: MachineValue::Reg(MACHINE_FP_REG),
+            ..
+        }
+    )));
     assert!(
         call_block.ops.iter().any(|inst| matches!(
             inst.kind,
             MachineInstKind::TrapIf {
                 kind: MachineTrapKind::StackOverflow,
-                ..
+                cond: MachineBranchCond::IntCompare {
+                    kind: MachineCompareKind::Gt,
+                    sign: MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(MACHINE_FP_REG),
+                    rhs: MachineValue::Reg(_),
+                    ..
+                },
             }
         )),
         "direct-call lowering should emit a stack-overflow precheck"
@@ -4935,13 +5133,34 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         })
     ));
     assert_eq!(program.blocks[7].params.len(), 1);
-    assert!(matches!(
-        program.blocks[7].ops[0].kind,
+    assert!(program.blocks[7].ops.iter().all(|inst| !matches!(
+        inst.kind,
         MachineInstKind::IntBinary {
-            op: MachineIntBinaryOp::Add,
+            lhs: MachineValue::Reg(MACHINE_FP_REG),
             ..
         }
-    ));
+    )));
+    assert!(program.blocks[7].ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Sub,
+            rhs: MachineValue::Imm64(delta),
+            ..
+        } if delta == u64::from(call_base.0) * 8
+    )));
+    assert!(program.blocks[7].ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::TrapIf {
+            kind: MachineTrapKind::StackOverflow,
+            cond: MachineBranchCond::IntCompare {
+                kind: MachineCompareKind::Gt,
+                sign: MachineSign::Unsigned,
+                lhs: MachineValue::Reg(MACHINE_FP_REG),
+                rhs: MachineValue::Reg(_),
+                ..
+            },
+        }
+    )));
     assert!(matches!(
         program.blocks[8].terminator,
         MachineTerminator::Call {
@@ -5950,6 +6169,37 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     .expect("call_indirect lowering should stay GP-word-sized on 32-bit targets");
 
     let program = &lowered.module.functions[0].program;
+    let stack_guard_block = program
+        .blocks
+        .iter()
+        .find(|block| {
+            block.ops.iter().any(|inst| {
+                matches!(
+                    inst.kind,
+                    MachineInstKind::TrapIf {
+                        kind: MachineTrapKind::StackOverflow,
+                        cond: MachineBranchCond::IntCompare {
+                            width: MachineIntWidth::I32,
+                            kind: MachineCompareKind::Gt,
+                            sign: MachineSign::Unsigned,
+                            lhs: MachineValue::Reg(MACHINE_FP_REG),
+                            rhs: MachineValue::Reg(_),
+                        },
+                    }
+                )
+            })
+        })
+        .expect("expected a 32-bit direct-FP stack guard");
+    let frame_delta = u64::from(call_base.0) * 8;
+    assert!(stack_guard_block.ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::IntBinary {
+            width: MachineIntWidth::I32,
+            op: MachineIntBinaryOp::Sub,
+            rhs: MachineValue::Imm64(delta),
+            ..
+        } if delta == frame_delta
+    )));
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch {
@@ -7897,4 +8147,243 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
             .map(|i| &i.kind)
             .collect::<collections::Vec<_>>()
     );
+}
+
+fn provenance_cached_cell(cell: u16, home: u16, value_ty: ValueType) -> CachedCell {
+    CachedCell {
+        cell: CellId(cell),
+        home: FrameSlot(home),
+        value_ty,
+        ty: if value_ty == ValueType::I64 {
+            MachineStorageType::GpI64
+        } else {
+            MachineStorageType::GpWord
+        },
+        info: CellInfo::default(),
+    }
+}
+
+fn provenance_program(
+    cell_types: collections::Vec<ValueType>,
+    cell_homes: collections::Vec<FrameSlot>,
+) -> SsaProgram {
+    let mut ssa = SsaProgram::default();
+    ssa.entry = SsaTarget(0);
+    ssa.cell_types = cell_types;
+    ssa.cell_homes = cell_homes;
+    ssa.blocks = collections::vec![
+        SsaBlock {
+            id: SsaTarget(0),
+            params: collections::Vec::new(),
+            ops: collections::Vec::new(),
+            extra_args: collections::Vec::new(),
+            terminator: SsaTerminator::Return { results: None },
+        },
+        SsaBlock {
+            id: SsaTarget(1),
+            params: collections::Vec::new(),
+            ops: collections::Vec::new(),
+            extra_args: collections::Vec::new(),
+            terminator: SsaTerminator::Return { results: None },
+        },
+    ];
+    ssa
+}
+
+fn provenance_entry(cached_index: u16, reg: u16, needs_value: bool) -> EntryCacheParam {
+    EntryCacheParam {
+        cached_index,
+        regs: ValueRegs {
+            lo: MachineReg(reg),
+            hi: None,
+        },
+        needs_value,
+    }
+}
+
+fn provenance_binding(
+    block: u32,
+    reg: u16,
+    home: u16,
+    ty: MachineStorageType,
+) -> NonRefCachedBinding {
+    NonRefCachedBinding {
+        block: MachineBlockId(block),
+        reg: MachineReg(reg),
+        home: FrameSlot(home),
+        ty,
+    }
+}
+
+#[test]
+fn non_ref_cached_binding_provenance_is_sorted_and_deduplicated() {
+    let ssa = provenance_program(
+        collections::vec![ValueType::I32, ValueType::I64, ValueType::I32],
+        collections::vec![FrameSlot(5), FrameSlot(2), FrameSlot(5)],
+    );
+    let explicit = collections::vec![
+        provenance_cached_cell(0, 5, ValueType::I32),
+        provenance_cached_cell(1, 2, ValueType::I64),
+        provenance_cached_cell(2, 5, ValueType::I32),
+    ];
+    let entry_params = collections::vec![
+        collections::Vec::new(),
+        collections::vec![
+            provenance_entry(0, 7, true),
+            provenance_entry(1, 5, true),
+            provenance_entry(2, 6, true),
+            provenance_entry(0, 7, true),
+        ],
+    ];
+
+    assert_eq!(
+        derive_non_ref_cached_bindings(&ssa, &explicit, &entry_params, None, 8),
+        collections::vec![
+            provenance_binding(1, 5, 2, MachineStorageType::GpI64),
+            provenance_binding(1, 6, 5, MachineStorageType::GpWord),
+            provenance_binding(1, 7, 5, MachineStorageType::GpWord),
+        ]
+    );
+}
+
+#[test]
+fn non_ref_cached_binding_provenance_requires_canonical_and_observed_types() {
+    for canonical in [ValueType::funcref(), ValueType::Unknown] {
+        let ssa = provenance_program(
+            collections::vec![canonical],
+            collections::vec![FrameSlot(3)],
+        );
+        let explicit = collections::vec![provenance_cached_cell(0, 3, ValueType::I32)];
+        let params = collections::vec![
+            collections::Vec::new(),
+            collections::vec![provenance_entry(0, 4, true)],
+        ];
+        assert!(derive_non_ref_cached_bindings(&ssa, &explicit, &params, None, 8).is_empty());
+    }
+
+    for observed in [ValueType::funcref(), ValueType::Unknown] {
+        let ssa = provenance_program(
+            collections::vec![ValueType::I32],
+            collections::vec![FrameSlot(3)],
+        );
+        let explicit = collections::vec![provenance_cached_cell(0, 3, observed)];
+        let params = collections::vec![
+            collections::Vec::new(),
+            collections::vec![provenance_entry(0, 4, true)],
+        ];
+        assert!(derive_non_ref_cached_bindings(&ssa, &explicit, &params, None, 8).is_empty());
+    }
+
+    let missing_canonical =
+        provenance_program(collections::Vec::new(), collections::vec![FrameSlot(3)]);
+    let explicit = collections::vec![provenance_cached_cell(0, 3, ValueType::I32)];
+    let params = collections::vec![
+        collections::Vec::new(),
+        collections::vec![provenance_entry(0, 4, true)],
+    ];
+    assert!(
+        derive_non_ref_cached_bindings(&missing_canonical, &explicit, &params, None, 8).is_empty()
+    );
+}
+
+#[test]
+fn non_ref_cached_binding_provenance_rejects_ref_or_unknown_aliases() {
+    for alias_ty in [ValueType::funcref(), ValueType::Unknown] {
+        let ssa = provenance_program(
+            collections::vec![ValueType::I32, alias_ty],
+            collections::vec![FrameSlot(4), FrameSlot(4)],
+        );
+        let explicit = collections::vec![provenance_cached_cell(0, 4, ValueType::I32)];
+        let params = collections::vec![
+            collections::Vec::new(),
+            collections::vec![provenance_entry(0, 4, true)],
+        ];
+        assert!(derive_non_ref_cached_bindings(&ssa, &explicit, &params, None, 8).is_empty());
+    }
+
+    for observed_alias_ty in [ValueType::funcref(), ValueType::Unknown] {
+        let ssa = provenance_program(
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![FrameSlot(4), FrameSlot(4)],
+        );
+        let explicit = collections::vec![
+            provenance_cached_cell(0, 4, ValueType::I32),
+            provenance_cached_cell(1, 4, observed_alias_ty),
+        ];
+        let params = collections::vec![
+            collections::Vec::new(),
+            collections::vec![provenance_entry(0, 4, true)],
+        ];
+        assert!(derive_non_ref_cached_bindings(&ssa, &explicit, &params, None, 8).is_empty());
+    }
+}
+
+#[test]
+fn non_ref_cached_binding_provenance_requires_a_materialized_value() {
+    let ssa = provenance_program(
+        collections::vec![ValueType::I32],
+        collections::vec![FrameSlot(3)],
+    );
+    let explicit = collections::vec![provenance_cached_cell(0, 3, ValueType::I32)];
+    let params = collections::vec![
+        collections::Vec::new(),
+        collections::vec![provenance_entry(0, 4, false)],
+    ];
+
+    assert!(derive_non_ref_cached_bindings(&ssa, &explicit, &params, None, 8).is_empty());
+}
+
+#[test]
+fn non_ref_cached_binding_provenance_excludes_an_ordinary_entry_param() {
+    let ssa = provenance_program(
+        collections::vec![ValueType::I32],
+        collections::vec![FrameSlot(3)],
+    );
+    let explicit = collections::vec![provenance_cached_cell(0, 3, ValueType::I32)];
+    let entry = provenance_entry(0, 4, true);
+    let params = collections::vec![collections::vec![entry], collections::Vec::new()];
+
+    assert!(derive_non_ref_cached_bindings(&ssa, &explicit, &params, None, 8).is_empty());
+    assert_eq!(
+        derive_non_ref_cached_bindings(&ssa, &explicit, &params, Some(&[entry]), 8),
+        collections::vec![provenance_binding(0, 4, 3, MachineStorageType::GpWord)]
+    );
+}
+
+#[test]
+fn final_machine_params_filter_stale_or_non_cached_bindings() {
+    let binding = provenance_binding(0, 4, 3, MachineStorageType::GpWord);
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::Vec::new(),
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::vec![
+                MachineBlockParam::gp_word(MachineReg(4)).with_owner(MachineRegOwner::CachedCell),
+            ],
+            ops: collections::Vec::new(),
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    assert_eq!(
+        retain_final_non_ref_cached_bindings(&program, collections::vec![binding]),
+        collections::vec![binding]
+    );
+
+    program.blocks[0].params.clear();
+    assert!(retain_final_non_ref_cached_bindings(&program, collections::vec![binding]).is_empty());
+
+    program.blocks[0].params = collections::vec![MachineBlockParam::gp_word(MachineReg(4))];
+    assert!(retain_final_non_ref_cached_bindings(&program, collections::vec![binding]).is_empty());
+
+    program.blocks[0].params = collections::vec![
+        MachineBlockParam::gp_word(MachineReg(4)).with_owner(MachineRegOwner::CachedCell),
+    ];
+    let conflicting = provenance_binding(0, 4, 4, MachineStorageType::GpWord);
+    assert!(retain_final_non_ref_cached_bindings(
+        &program,
+        collections::vec![binding, conflicting]
+    )
+    .is_empty());
 }
