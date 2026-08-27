@@ -116,6 +116,43 @@ fn diff_br_table_machine() {
 }
 
 #[test]
+fn diff_duplicate_heavy_br_table_with_edge_values() {
+    // Explicit cases are [D, B x 15, C], followed by D as the default.
+    // All three destinations consume the carried `seed` block result, then
+    // distinguish their paths after the edge transfer. On ARM64 this exercises
+    // the run-compressed emitter, including its case-zero/default cbz path.
+    let src = r#"(module
+        (func (export "switch") (param $sel i32) (param $seed i32) (result i32)
+            (block $D (result i32)
+                (block $C (result i32)
+                    (block $B (result i32)
+                        local.get $seed
+                        local.get $sel
+                        br_table
+                            $D
+                            $B $B $B $B $B
+                            $B $B $B $B $B
+                            $B $B $B $B $B
+                            $C
+                            $D)
+                    i32.const 100
+                    i32.add
+                    br $D)
+                i32.const 200
+                i32.add)))"#;
+    let wasm = wat::parse_str(src).expect("wat");
+    let cases = [(0, 41), (1, 141), (15, 141), (16, 241), (17, 41), (-1, 41)];
+
+    let mut jit = Instance::new(&engine(), &wasm, &[]).expect("jit instantiation");
+    for (selector, expected) in cases {
+        let args = [Value::I32(selector), Value::I32(41)];
+        let result = jit.invoke("switch", &args).expect("jit invoke");
+        assert_eq!(result.as_slice(), &[Value::I32(expected)]);
+        diff(&wasm, "switch", &args);
+    }
+}
+
+#[test]
 fn diff_call_indirect() {
     let src = r#"(module
         (type $t (func (param i32) (result i32)))

@@ -3,7 +3,8 @@
 //! `IndexedLoad`/`IndexedStore` with `MachineIndexExtend::ZeroExtend32`
 //! obligate the backend to zero-extend the 32-bit index before use. On
 //! backends where every 32-bit integer instruction already writes a
-//! zero-extended destination (x86_64: all r32-form ops clear bits 63:32),
+//! zero-extended destination (x86_64 r32 and AArch64 W-register writes clear
+//! bits 63:32),
 //! that obligation is vacuous whenever the index register's most recent
 //! in-block definition is such an instruction — the extend can be relaxed
 //! to `None` and the backend indexes the register directly, saving one
@@ -11,8 +12,10 @@
 //! kernels).
 //!
 //! Gated on `BackendConfig::gp32_defs_zero_extend`; backends whose 32-bit
-//! ops sign-extend (riscv64) or that get the extension for free in the
-//! addressing mode (arm64 UXTW) leave it off.
+//! ops sign-extend (riscv64) leave it off. AArch64 also benefits when an
+//! indexed access has a non-zero offset: its register-offset memory encoding
+//! cannot carry that offset, so proving the index clean avoids a separate
+//! zero-extension before the adjusted-index address calculation.
 //!
 //! Soundness: a register is tracked as clean only from a whitelisted
 //! 32-bit-form definition to its next redefinition. At block boundaries a

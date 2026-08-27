@@ -77,9 +77,14 @@ offset == 0:
   LDR  Wt, [Xbase, Windex, UXTW]           // 1 instruction
 
 offset != 0 (stable-base form):
+  // ZeroExtend32 obligation still present:
   MOV  Wscratch, Windex                      // zero-extend into scratch
   ADD  Xscratch, Xscratch, #offset           // fold offset
   LDR  Wt, [Xbase, Xscratch]                // stable base (3 instructions)
+
+  // Index already proven zero-extended by its W-register definition:
+  ADD  Xscratch, Xindex, #offset             // fold offset directly
+  LDR  Wt, [Xbase, Xscratch]                // stable base (2 instructions)
 ```
 
 **DO NOT** use:
@@ -136,7 +141,7 @@ pool.
 | offset=0, no extend | `LDR [base, index]` (1) | `MOV [base+index]` (1) | `LDR [base, index]` (1) | `ADD+LD [tmp]` (2) |
 | offset=0, UXTW | `LDR [base, W, UXTW]` (1) | `MOVZX+MOV [base+idx]` (2) | N/A (32-bit) | `ZEXT.W+ADD+LD [tmp]` (3) |
 | offset!=0, UXTW | `MOV+ADD+LDR [base,tmp]` (3) | `MOVZX+MOV [base+idx+off]` (2) | `ADD+LDR [base+idx,off]` (2) | fits: `ZEXT.W+ADD+LD off(tmp)`; large: add offset first |
-| offset!=0, no extend | `MOV+ADD+LDR [base,tmp]` (3) | `MOV [base+idx+off]` (1) | `ADD+LDR [base+idx,off]` (2) | fits: `ADD+LD off(tmp)`; large: add offset first |
+| offset!=0, no extend | `ADD+LDR [base,tmp]` (2) | `MOV [base+idx+off]` (1) | `ADD+LDR [base+idx,off]` (2) | fits: `ADD+LD off(tmp)`; large: add offset first |
 
 ---
 

@@ -50,8 +50,9 @@ pub(crate) struct BackendConfig {
     /// registers regardless (everyone but arm64 today) would price this 0.
     pub preserved_lane_save_overhead: u8,
     /// Every 32-bit integer instruction writes a zero-extended destination
-    /// (x86_64 r32 semantics). Lets the shared peephole relax redundant
-    /// `ZeroExtend32` index obligations on indexed memory ops.
+    /// (x86_64 r32 and AArch64 W-register semantics). Lets the shared
+    /// peephole relax redundant `ZeroExtend32` index obligations on indexed
+    /// memory ops.
     pub gp32_defs_zero_extend: bool,
 }
 
@@ -120,12 +121,11 @@ impl BackendConfig {
     }
 
     /// Declare that every 32-bit integer instruction writes a zero-extended
-    /// destination (x86_64 r32 semantics), letting the shared peephole relax
-    /// redundant `ZeroExtend32` index obligations. Leave off for backends
-    /// whose 32-bit ops sign-extend (riscv64) or whose addressing modes
-    /// extend for free (arm64 UXTW).
+    /// destination (x86_64 r32 and AArch64 W-register semantics), letting the
+    /// shared peephole relax redundant `ZeroExtend32` index obligations.
+    /// Leave off for backends whose 32-bit ops sign-extend (riscv64).
     #[inline]
-    #[cfg(any(sf_backend_x64, test))]
+    #[cfg(any(sf_backend_arm64, sf_backend_x64, test))]
     pub(crate) const fn with_gp32_zero_extending_defs(mut self) -> Self {
         self.gp32_defs_zero_extend = true;
         self

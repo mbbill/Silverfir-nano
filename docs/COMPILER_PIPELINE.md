@@ -501,6 +501,18 @@ Fixed registers include:
 - `mem0_base`
 - `mem0_size`
 
+The frame pointer is an address capability rather than a general MachineIR
+value. Instructions may name it only as the base of a direct, nonnegative
+frame address; block parameters, ordinary operands, destinations, indexed
+addresses, and terminator values cannot carry it. The sole value-form exception
+is the frame pointer itself as the left operand of the exact unsigned
+native-stack guard comparison; lowering folds the prospective callee frame
+delta into the limit on the right. Direct frame addresses and the byte
+suboffset of ABI `FrameSlotOffset` sources must both be nonnegative. This
+module-wide invariant keeps each callee inside its own frame and lets late call
+peepholes prove that a caller slot below `frame_delta` cannot be observed or
+changed by the callee.
+
 The GP and FP dynamic banks are ordered pools with an abstract volatility split
 supplied by `BackendConfig`: volatile lanes first, then preserved lanes (plus
 any backend-only scratch tail for GP). Cached-local residency and linear-value
@@ -980,11 +992,16 @@ makes the boundary rules safe:
 - preserved helpers can save caller-clobbered JIT state and then operate on a
   native-stack I/O window
 
-The one intentional exception is a compiled local-call success edge that names a
-non-ref cached local in a preserved dynamic register. That is still explicit
-MachineIR state, not hidden backend preservation. Ref-typed cached locals must
-be frame-visible before any boundary where a callee/runtime helper could need
-root visibility.
+The intentional exceptions are explicit compiled local-call success edges in
+preserved dynamic registers. Normal lowering uses them for non-ref cached
+locals after publishing dirty state. A late MachineIR peephole may also reuse a
+preserved cache lane whose lowering-proven non-ref value has just been
+published to its canonical home and is dead on the success edge. It snapshots
+a still-live volatile non-ref cache into that lane, keeps every frame store for
+the safepoint, follows only a unique identity-edge continuation, and replaces
+the first exact reload before any overlapping access. Ref-typed values remain
+frame-visible before every boundary where a callee or runtime helper could
+need root visibility.
 
 #### 3. Scratch registers must come from the scratch pool
 

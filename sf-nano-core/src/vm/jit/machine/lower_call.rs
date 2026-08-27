@@ -78,7 +78,7 @@ impl<'a> BlockLowerContext<'a> {
 
         let mut load_args_from_frame = false;
         if self.use_explicit_stack_prechecks() {
-            let call_regs = match self.borrow_free_gp_dynamic_regs(2) {
+            let call_regs = match self.borrow_free_gp_dynamic_regs(1) {
                 Ok(regs) => regs,
                 Err(_) => {
                     self.publish_call_args_to_frame(args)?;
@@ -86,25 +86,14 @@ impl<'a> BlockLowerContext<'a> {
                         "prepared SSA-IR call fallback reached native lowering with live linear SSA values; values must be published before the call",
                     )?;
                     load_args_from_frame = true;
-                    self.borrow_free_gp_dynamic_regs(2)?
+                    self.borrow_free_gp_dynamic_regs(1)?
                 }
             };
-            let callee_frame_base = call_regs[0];
-            let stack_limit = call_regs[1];
-
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::IntBinary {
-                    width: self.gp_word_int_width(),
-                    op: MachineIntBinaryOp::Add,
-                    dst: callee_frame_base,
-                    lhs: MachineValue::Reg(self.frame_base_reg()),
-                    rhs: MachineValue::Imm64(slot_offset_bytes(arg_span.start)? as u64),
-                },
-            });
+            let stack_limit = call_regs[0];
 
             self.emit_direct_call_stack_precheck(
-                callee_frame_base,
                 stack_limit,
+                slot_offset_bytes(arg_span.start)? as u64,
                 callee_total_frame_slots,
             )?;
         }
@@ -189,23 +178,10 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_repack_tail_call_args_to_frame_prefix(arg_span)?;
         let param_locs = self.runtime_for_func(callee_id)?.param_locs.clone();
         if self.use_explicit_stack_prechecks() {
-            let call_regs = self.borrow_free_gp_dynamic_regs(2)?;
-            let callee_frame_base = call_regs[0];
-            let stack_limit = call_regs[1];
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: callee_frame_base,
-                    src: MachineValue::Reg(self.frame_base_reg()),
-                },
-            });
+            let call_regs = self.borrow_free_gp_dynamic_regs(1)?;
+            let stack_limit = call_regs[0];
 
-            self.emit_direct_call_stack_precheck(
-                callee_frame_base,
-                stack_limit,
-                callee_total_frame_slots,
-            )?;
+            self.emit_direct_call_stack_precheck(stack_limit, 0, callee_total_frame_slots)?;
         }
         let machine_args =
             self.prepare_internal_call_args_from_frame(args, &param_locs, FrameSlot(0))?;
@@ -831,18 +807,27 @@ impl<'a> BlockLowerContext<'a> {
 
     fn emit_direct_call_stack_precheck(
         &mut self,
-        callee_frame_base: MachineReg,
         stack_limit: MachineReg,
+        frame_delta_bytes: u64,
         callee_total_frame_slots: u16,
     ) -> Result<(), WasmError> {
         if !self.use_explicit_stack_prechecks() {
             return Ok(());
         }
 
-        // Stack growth is downward. Load the stack-end guard, subtract the
-        // callee frame footprint, and trap if the proposed callee frame base
-        // would cross below that limit.
+        // Load the stack-end guard and move both the callee footprint and its
+        // frame delta to the limit side of the comparison:
+        //
+        //   fp + delta > stack_end - callee_bytes
+        //   fp         > stack_end - (callee_bytes + delta)
+        //
+        // This keeps the frame pointer out of the dynamic register bank. The
+        // runtime stack allocation makes stack_end larger than every bounded
+        // frame adjustment, so the unsigned subtraction cannot underflow.
         let callee_total_bytes = slot_offset_bytes(FrameSlot(callee_total_frame_slots))? as u64;
+        let required_bytes = callee_total_bytes
+            .checked_add(frame_delta_bytes)
+            .ok_or_else(|| WasmError::internal("compiled-call stack precheck size overflow"))?;
         let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -854,15 +839,17 @@ impl<'a> BlockLowerContext<'a> {
                 extension: MachineLoadExtension::None,
             },
         });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: self.gp_word_int_width(),
-                op: MachineIntBinaryOp::Sub,
-                dst: stack_limit,
-                lhs: MachineValue::Reg(stack_limit),
-                rhs: MachineValue::Imm64(callee_total_bytes),
-            },
-        });
+        if required_bytes != 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Sub,
+                    dst: stack_limit,
+                    lhs: MachineValue::Reg(stack_limit),
+                    rhs: MachineValue::Imm64(required_bytes),
+                },
+            });
+        }
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::TrapIf {
                 kind: MachineTrapKind::StackOverflow,
@@ -870,7 +857,7 @@ impl<'a> BlockLowerContext<'a> {
                     width: self.gp_word_int_width(),
                     kind: MachineCompareKind::Gt,
                     sign: MachineSign::Unsigned,
-                    lhs: MachineValue::Reg(callee_frame_base),
+                    lhs: MachineValue::Reg(self.frame_base_reg()),
                     rhs: MachineValue::Reg(stack_limit),
                 },
             },
@@ -880,9 +867,9 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn emit_dynamic_call_stack_precheck(
         &mut self,
-        callee_frame_base: MachineReg,
         stack_limit: MachineReg,
         callee_total_frame_bytes: MachineReg,
+        frame_delta_bytes: u64,
     ) -> Result<(), WasmError> {
         if !self.use_explicit_stack_prechecks() {
             return Ok(());
@@ -910,6 +897,17 @@ impl<'a> BlockLowerContext<'a> {
                 rhs: MachineValue::Reg(callee_total_frame_bytes),
             },
         });
+        if frame_delta_bytes != 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Sub,
+                    dst: stack_limit,
+                    lhs: MachineValue::Reg(stack_limit),
+                    rhs: MachineValue::Imm64(frame_delta_bytes),
+                },
+            });
+        }
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::TrapIf {
                 kind: MachineTrapKind::StackOverflow,
@@ -917,7 +915,7 @@ impl<'a> BlockLowerContext<'a> {
                     width: self.gp_word_int_width(),
                     kind: MachineCompareKind::Gt,
                     sign: MachineSign::Unsigned,
-                    lhs: MachineValue::Reg(callee_frame_base),
+                    lhs: MachineValue::Reg(self.frame_base_reg()),
                     rhs: MachineValue::Reg(stack_limit),
                 },
             },

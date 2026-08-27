@@ -5,10 +5,11 @@ use crate::vm::jit::backend::BackendConfig;
 use super::machine_ir::is_fp_reg;
 #[cfg(any(debug_assertions, test))]
 use super::machine_ir::{
-    is_dynamic_reg, MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineCallArgs,
-    MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineConstId, MachineEdge,
-    MachineFloatWidth, MachineFuncId, MachineInst, MachineReg, MachineRegOwner, MachineResultDst,
-    MachineResultSrc, MachineReturnValue, MachineValue,
+    is_dynamic_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBlock,
+    MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineCompareKind,
+    MachineConstId, MachineEdge, MachineFloatWidth, MachineFuncId, MachineInst, MachineReg,
+    MachineRegOwner, MachineResultDst, MachineResultSrc, MachineReturnValue, MachineSign,
+    MachineTrapKind, MachineValue, MACHINE_FP_REG,
 };
 use super::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConvertOp, MachineInstKind,
@@ -16,6 +17,8 @@ use super::machine_ir::{
 };
 #[cfg(any(debug_assertions, test))]
 use super::machine_ir::{MachineIntBinaryOp, MachineIntUnaryOp};
+#[cfg(any(debug_assertions, test))]
+use super::peephole::helpers;
 
 type ValidateResult = Result<(), WasmError>;
 
@@ -81,6 +84,7 @@ impl MachineProgram {
             if block.id.as_usize() != index {
                 return Err(WasmError::internal("machine block has mismatched id"));
             }
+            self.validate_frame_pointer_discipline(block, config)?;
             for param in &block.params {
                 self.validate_param(*param, config)?;
             }
@@ -888,7 +892,10 @@ impl MachineProgram {
     fn validate_result_src(&self, src: &MachineResultSrc, config: BackendConfig) -> ValidateResult {
         match src {
             MachineResultSrc::Reg(reg) => self.validate_reg(*reg, config),
-            MachineResultSrc::FrameSlot(_) | MachineResultSrc::FrameSlotOffset { .. } => Ok(()),
+            MachineResultSrc::FrameSlot(_) => Ok(()),
+            MachineResultSrc::FrameSlotOffset { slot, byte_offset } => {
+                validate_frame_slot_offset(*slot, *byte_offset)
+            }
         }
     }
 
@@ -940,8 +947,12 @@ impl MachineProgram {
 
     #[cfg(any(debug_assertions, test))]
     fn validate_arg_src(&self, src: MachineArgSrc, config: BackendConfig) -> Result<(), WasmError> {
-        if let MachineArgSrc::Reg(reg) = src {
-            self.validate_reg(reg, config)?;
+        match src {
+            MachineArgSrc::Reg(reg) => self.validate_reg(reg, config)?,
+            MachineArgSrc::FrameSlot(_) => {}
+            MachineArgSrc::FrameSlotOffset { slot, byte_offset } => {
+                validate_frame_slot_offset(slot, byte_offset)?;
+            }
         }
         Ok(())
     }
@@ -1050,7 +1061,15 @@ impl MachineProgram {
     fn validate_value(&self, value: MachineValue, config: BackendConfig) -> ValidateResult {
         match value {
             MachineValue::Reg(reg) => self.validate_reg(reg, config),
-            MachineValue::ReservedReg(reg) => self.validate_reg(reg, config),
+            MachineValue::ReservedReg(reg) => {
+                self.validate_reg(reg, config)?;
+                if reg == MACHINE_FP_REG {
+                    return Err(WasmError::internal(
+                        "machine frame pointer cannot be a reserved edge value",
+                    ));
+                }
+                Ok(())
+            }
             MachineValue::Imm64(_) => Ok(()),
         }
     }
@@ -1073,7 +1092,88 @@ impl MachineProgram {
 
     #[cfg(any(debug_assertions, test))]
     fn validate_addr(&self, addr: MachineAddr, config: BackendConfig) -> ValidateResult {
-        self.validate_reg(addr.base, config)
+        self.validate_reg(addr.base, config)?;
+        if addr.base == MACHINE_FP_REG && addr.offset < 0 {
+            return Err(WasmError::internal(
+                "machine frame address cannot use a negative offset",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_frame_pointer_discipline(
+        &self,
+        block: &MachineBlock,
+        config: BackendConfig,
+    ) -> ValidateResult {
+        if block.params.iter().any(|param| param.reg == MACHINE_FP_REG) {
+            return Err(WasmError::internal(
+                "machine frame pointer cannot be a block parameter",
+            ));
+        }
+
+        for inst in &block.ops {
+            let frame_pointer_is_value = match &inst.kind {
+                MachineInstKind::Load { .. } => false,
+                MachineInstKind::Store { src, .. } => machine_value_is_frame_pointer(*src),
+                #[cfg(sf_has_simd)]
+                MachineInstKind::SimdLoad { .. } => false,
+                #[cfg(sf_has_simd)]
+                MachineInstKind::SimdStore { src, .. } => machine_value_is_frame_pointer(*src),
+                #[cfg(sf_has_simd)]
+                MachineInstKind::SimdLoadLane { vector, .. }
+                | MachineInstKind::SimdStoreLane { vector, .. } => {
+                    machine_value_is_frame_pointer(*vector)
+                }
+                _ => {
+                    let mut found = false;
+                    helpers::visit_source_values(&inst.kind, |value| {
+                        found |= machine_value_is_frame_pointer(*value);
+                    });
+                    found
+                }
+            };
+            if frame_pointer_is_value && !is_stack_guard_compare(&inst.kind, config) {
+                return Err(WasmError::internal(
+                    "machine frame pointer can only be the native-stack guard lhs",
+                ));
+            }
+
+            let mut defines_frame_pointer = false;
+            inst.kind
+                .for_each_defined_reg(|reg| defines_frame_pointer |= reg == MACHINE_FP_REG);
+            if defines_frame_pointer {
+                return Err(WasmError::internal(
+                    "machine instruction cannot redefine the frame pointer",
+                ));
+            }
+        }
+
+        if helpers::terminator_uses_reg(&block.terminator, MACHINE_FP_REG) {
+            return Err(WasmError::internal(
+                "machine frame pointer cannot be a terminator value",
+            ));
+        }
+        if let MachineTerminator::Call { results, .. } = &block.terminator {
+            let defines_frame_pointer = match results {
+                MachineCallResults::ScalarGp { dst, .. }
+                | MachineCallResults::ScalarFp { dst, .. } => {
+                    matches!(dst, MachineResultDst::Reg(MACHINE_FP_REG))
+                }
+                MachineCallResults::ScalarGpPair { lo, hi } => {
+                    matches!(lo, MachineResultDst::Reg(MACHINE_FP_REG))
+                        || matches!(hi, MachineResultDst::Reg(MACHINE_FP_REG))
+                }
+                MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
+            };
+            if defines_frame_pointer {
+                return Err(WasmError::internal(
+                    "machine call result cannot redefine the frame pointer",
+                ));
+            }
+        }
+        Ok(())
     }
 
     #[cfg(any(debug_assertions, test))]
@@ -1107,6 +1207,53 @@ impl MachineProgram {
         }
         Ok(())
     }
+}
+
+#[cfg(any(debug_assertions, test))]
+fn machine_value_is_frame_pointer(value: MachineValue) -> bool {
+    matches!(
+        value,
+        MachineValue::Reg(MACHINE_FP_REG) | MachineValue::ReservedReg(MACHINE_FP_REG)
+    )
+}
+
+#[cfg(any(debug_assertions, test))]
+fn is_stack_guard_compare(kind: &MachineInstKind, config: BackendConfig) -> bool {
+    let gp_width = if config.gp_unit_bytes == 4 {
+        MachineIntWidth::I32
+    } else {
+        MachineIntWidth::I64
+    };
+    matches!(
+        kind,
+        MachineInstKind::TrapIf {
+            kind: MachineTrapKind::StackOverflow,
+            cond: MachineBranchCond::IntCompare {
+                width,
+                kind: MachineCompareKind::Gt,
+                sign: MachineSign::Unsigned,
+                lhs: MachineValue::Reg(MACHINE_FP_REG),
+                rhs: MachineValue::Reg(limit),
+            },
+        } if *width == gp_width && is_dynamic_reg(*limit, config) && is_gp_reg(*limit, config)
+    )
+}
+
+#[cfg(any(debug_assertions, test))]
+fn validate_frame_slot_offset(
+    slot: crate::vm::jit::middle::frame::FrameSlot,
+    byte_offset: i8,
+) -> ValidateResult {
+    if byte_offset < 0 {
+        return Err(WasmError::internal(
+            "machine frame slot cannot use a negative byte offset",
+        ));
+    }
+    i32::from(slot.0)
+        .checked_mul(8)
+        .and_then(|base| base.checked_add(i32::from(byte_offset)))
+        .ok_or_else(|| WasmError::internal("machine frame slot offset overflow"))?;
+    Ok(())
 }
 
 impl MachineModule {

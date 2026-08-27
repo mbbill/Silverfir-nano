@@ -5,8 +5,9 @@
 //! instruction encodings. No compiler state is accessed.
 
 use crate::vm::jit::machine::machine_ir::{
-    MachineCompareKind, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
-    MachineMemWidth, MachineReg, MachineSign, MachineStorageType, MachineValue,
+    MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
+    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
+    MachineStorageType, MachineValue, MACHINE_MEM0_BASE_REG,
 };
 
 use super::{
@@ -271,6 +272,133 @@ pub(super) fn zero_store_pair_fusion(
     Some((addr_a.base, imm7))
 }
 
+// â”€â”€ LZ4-style 18-byte copy fusion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/// Exact six-op scalar copy emitted by LZ4's short-match wild-copy path.
+///
+/// The backend keeps the load/store order intact and only reuses the
+/// destination address calculation for the non-zero-offset stores. Loads
+/// continue to use the stable linear-memory base, which avoids the
+/// scratch-base load shape that regressed on Apple Silicon in the removed
+/// generic indexed-memory burst experiment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ExactCopy18 {
+    pub base: MachineReg,
+    pub src_index: MachineReg,
+    pub dst_index: MachineReg,
+    pub value: MachineReg,
+}
+
+/// Match exactly:
+///
+/// `load64/store64 @ 0`, `load64/store64 @ 8`,
+/// `load16_u/store16 @ 16`.
+///
+/// `MachineIndexExtend::None` is required: the whole-CFG index proof has
+/// established that the AArch64 X-register values are already valid
+/// zero-extended Wasm32 addresses. That lets the specialized lowering adjust
+/// the source index with ordinary 64-bit adds without changing semantics.
+pub(super) fn exact_copy18_fusion(ops: &[MachineInst]) -> Option<ExactCopy18> {
+    let [load0, store0, load8, store8, load16, store16, ..] = ops else {
+        return None;
+    };
+
+    let MachineInstKind::IndexedLoad {
+        dst: value,
+        base,
+        index: src_index,
+        index_extend: MachineIndexExtend::None,
+        offset: 0,
+        width: MachineMemWidth::U64,
+        extension: MachineLoadExtension::None,
+    } = load0.kind
+    else {
+        return None;
+    };
+    let MachineInstKind::IndexedStore {
+        base: store_base,
+        index: dst_index,
+        index_extend: MachineIndexExtend::None,
+        offset: 0,
+        width: MachineMemWidth::U64,
+        src: MachineValue::Reg(store_value),
+    } = store0.kind
+    else {
+        return None;
+    };
+
+    if base != MACHINE_MEM0_BASE_REG
+        || store_base != base
+        || store_value != value
+        || src_index == dst_index
+        || value == base
+        || value == src_index
+        || value == dst_index
+    {
+        return None;
+    }
+
+    let matches_load = |inst: &MachineInst,
+                        offset: i32,
+                        width: MachineMemWidth,
+                        extension: MachineLoadExtension| {
+        matches!(
+            inst.kind,
+            MachineInstKind::IndexedLoad {
+                dst,
+                base: candidate_base,
+                index,
+                index_extend: MachineIndexExtend::None,
+                offset: candidate_offset,
+                width: candidate_width,
+                extension: candidate_extension,
+            } if dst == value
+                && candidate_base == base
+                && index == src_index
+                && candidate_offset == offset
+                && candidate_width == width
+                && candidate_extension == extension
+        )
+    };
+    let matches_store = |inst: &MachineInst, offset: i32, width: MachineMemWidth| {
+        matches!(
+            inst.kind,
+            MachineInstKind::IndexedStore {
+                base: candidate_base,
+                index,
+                index_extend: MachineIndexExtend::None,
+                offset: candidate_offset,
+                width: candidate_width,
+                src: MachineValue::Reg(src),
+            } if candidate_base == base
+                && index == dst_index
+                && candidate_offset == offset
+                && candidate_width == width
+                && src == value
+        )
+    };
+
+    if !matches_load(load8, 8, MachineMemWidth::U64, MachineLoadExtension::None)
+        || !matches_store(store8, 8, MachineMemWidth::U64)
+        || !matches_load(
+            load16,
+            16,
+            MachineMemWidth::U16,
+            MachineLoadExtension::ZeroExtend,
+        )
+        || !matches_store(store16, 16, MachineMemWidth::U16)
+    {
+        return None;
+    }
+
+    Some(ExactCopy18 {
+        base,
+        src_index,
+        dst_index,
+        value,
+    })
+}
+
 // ── Bitwise NOT + AND fusion ─────────────────────────────────────────────
 
 /// `(~not_rhs) & lhs`, represented by an XOR-all-ones followed by AND.
@@ -432,6 +560,76 @@ pub(super) fn map_float_cond(kind: MachineCompareKind) -> Cond {
 mod tests {
     use super::*;
 
+    fn indexed_load(
+        dst: MachineReg,
+        index: MachineReg,
+        offset: i32,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::IndexedLoad {
+                dst,
+                base: MACHINE_MEM0_BASE_REG,
+                index,
+                index_extend: MachineIndexExtend::None,
+                offset,
+                width,
+                extension,
+            },
+        }
+    }
+
+    fn indexed_store(
+        index: MachineReg,
+        offset: i32,
+        width: MachineMemWidth,
+        src: MachineReg,
+    ) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::IndexedStore {
+                base: MACHINE_MEM0_BASE_REG,
+                index,
+                index_extend: MachineIndexExtend::None,
+                offset,
+                width,
+                src: MachineValue::Reg(src),
+            },
+        }
+    }
+
+    fn exact_copy18_ops() -> [MachineInst; 6] {
+        let value = MachineReg(4);
+        let src = MachineReg(11);
+        let dst = MachineReg(21);
+        [
+            indexed_load(
+                value,
+                src,
+                0,
+                MachineMemWidth::U64,
+                MachineLoadExtension::None,
+            ),
+            indexed_store(dst, 0, MachineMemWidth::U64, value),
+            indexed_load(
+                value,
+                src,
+                8,
+                MachineMemWidth::U64,
+                MachineLoadExtension::None,
+            ),
+            indexed_store(dst, 8, MachineMemWidth::U64, value),
+            indexed_load(
+                value,
+                src,
+                16,
+                MachineMemWidth::U16,
+                MachineLoadExtension::ZeroExtend,
+            ),
+            indexed_store(dst, 16, MachineMemWidth::U16, value),
+        ]
+    }
+
     fn compare_select() -> (MachineInst, MachineInst) {
         let compare = MachineInst {
             kind: MachineInstKind::IntCompare {
@@ -470,6 +668,80 @@ mod tests {
                 select_result: MachineReg(4),
             })
         );
+    }
+
+    #[test]
+    fn recognizes_exact_18_byte_scalar_copy() {
+        assert_eq!(
+            exact_copy18_fusion(&exact_copy18_ops()),
+            Some(ExactCopy18 {
+                base: MACHINE_MEM0_BASE_REG,
+                src_index: MachineReg(11),
+                dst_index: MachineReg(21),
+                value: MachineReg(4),
+            })
+        );
+    }
+
+    #[test]
+    fn exact_copy_requires_prevalidated_clean_indices() {
+        let mut ops = exact_copy18_ops();
+        let MachineInstKind::IndexedLoad {
+            ref mut index_extend,
+            ..
+        } = ops[2].kind
+        else {
+            unreachable!();
+        };
+        *index_extend = MachineIndexExtend::ZeroExtend32;
+        assert_eq!(exact_copy18_fusion(&ops), None);
+    }
+
+    #[test]
+    fn exact_copy_rejects_a_broken_load_store_chain() {
+        let mut ops = exact_copy18_ops();
+        let MachineInstKind::IndexedStore { ref mut src, .. } = ops[3].kind else {
+            unreachable!();
+        };
+        *src = MachineValue::Reg(MachineReg(5));
+        assert_eq!(exact_copy18_fusion(&ops), None);
+    }
+
+    #[test]
+    fn exact_copy_rejects_wrong_offset_width_or_base() {
+        let mut wrong_offset = exact_copy18_ops();
+        let MachineInstKind::IndexedLoad { ref mut offset, .. } = wrong_offset[4].kind else {
+            unreachable!();
+        };
+        *offset = 15;
+        assert_eq!(exact_copy18_fusion(&wrong_offset), None);
+
+        let mut wrong_width = exact_copy18_ops();
+        let MachineInstKind::IndexedStore { ref mut width, .. } = wrong_width[5].kind else {
+            unreachable!();
+        };
+        *width = MachineMemWidth::U32;
+        assert_eq!(exact_copy18_fusion(&wrong_width), None);
+
+        let mut wrong_base = exact_copy18_ops();
+        let MachineInstKind::IndexedLoad { ref mut base, .. } = wrong_base[2].kind else {
+            unreachable!();
+        };
+        *base = MachineReg(3);
+        assert_eq!(exact_copy18_fusion(&wrong_base), None);
+    }
+
+    #[test]
+    fn exact_copy_rejects_register_aliases() {
+        let mut ops = exact_copy18_ops();
+        for inst in &mut ops {
+            match &mut inst.kind {
+                MachineInstKind::IndexedLoad { index, .. } => *index = MachineReg(4),
+                MachineInstKind::IndexedStore { .. } => {}
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(exact_copy18_fusion(&ops), None);
     }
 
     #[test]

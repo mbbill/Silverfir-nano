@@ -351,6 +351,7 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
         true,
         SCALAR_CALL_SCRATCH_SLOTS,
     )
+    .with_gp32_zero_extending_defs()
     // Lazy per-body preserved save: ~1 store in the body prelude plus 1
     // restore at each return path (typically two).
     .with_preserved_lane_save_overhead(3)

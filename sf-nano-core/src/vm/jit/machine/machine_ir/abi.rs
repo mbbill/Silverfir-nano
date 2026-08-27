@@ -78,7 +78,12 @@ pub(crate) enum MachineCallLaneArg {
 pub(crate) enum MachineArgSrc {
     Reg(MachineReg),
     FrameSlot(FrameSlot),
-    FrameSlotOffset { slot: FrameSlot, byte_offset: i8 },
+    /// `byte_offset` must be nonnegative; MachineIR never reaches backward
+    /// into a caller frame.
+    FrameSlotOffset {
+        slot: FrameSlot,
+        byte_offset: i8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -117,7 +122,12 @@ pub(crate) enum MachineResultDst {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MachineResultSrc {
     FrameSlot(FrameSlot),
-    FrameSlotOffset { slot: FrameSlot, byte_offset: i8 },
+    /// `byte_offset` must be nonnegative; MachineIR never reaches backward
+    /// into a caller frame.
+    FrameSlotOffset {
+        slot: FrameSlot,
+        byte_offset: i8,
+    },
     Reg(MachineReg),
 }
 
