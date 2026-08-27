@@ -251,30 +251,40 @@ fn kill_call_results(results: &MachineCallResults, clean: &mut CleanRegs) {
     }
 }
 
-fn reachable_blocks(program: &MachineProgram) -> collections::Vec<bool> {
-    let mut reachable = collections::vec![false; program.blocks.len()];
-    let Some(entry) = block_index_for_id(&program.blocks, program.entry) else {
-        return reachable;
-    };
-    reachable[entry] = true;
-    let mut worklist = collections::vec![entry];
-    while let Some(source) = worklist.pop() {
+fn reachable_blocks_in_postorder(
+    program: &MachineProgram,
+) -> (collections::Vec<bool>, collections::Vec<usize>) {
+    fn visit(
+        program: &MachineProgram,
+        source: usize,
+        reachable: &mut [bool],
+        postorder: &mut collections::Vec<usize>,
+    ) {
+        if reachable[source] {
+            return;
+        }
+        reachable[source] = true;
         visit_edges(&program.blocks[source].terminator, |edge| {
-            let Some(target) = block_index_for_id(&program.blocks, edge.target) else {
-                return;
-            };
-            if !reachable[target] {
-                reachable[target] = true;
-                worklist.push(target);
+            if let Some(target) = block_index_for_id(&program.blocks, edge.target) {
+                visit(program, target, reachable, postorder);
             }
         });
+        postorder.push(source);
     }
-    reachable
+
+    let mut reachable = collections::vec![false; program.blocks.len()];
+    let mut postorder = collections::Vec::new();
+    let Some(entry) = block_index_for_id(&program.blocks, program.entry) else {
+        return (reachable, postorder);
+    };
+    visit(program, entry, &mut reachable, &mut postorder);
+    (reachable, postorder)
 }
 
 fn block_entry_clean_states(
     program: &MachineProgram,
     reachable: &[bool],
+    mut worklist: collections::Vec<usize>,
 ) -> collections::Vec<CleanRegs> {
     let entry = block_index_for_id(&program.blocks, program.entry);
 
@@ -295,16 +305,15 @@ fn block_entry_clean_states(
         })
         .collect();
 
-    // Facts only ever move from known to unknown. Process every reachable
-    // source once at top, then revisit a block only when one of its entry
-    // facts was actually removed. This avoids the quadratic convergence of a
-    // synchronous fixed point on long entry-unknown chains.
+    // Facts only ever move from known to unknown. `worklist` is DFS
+    // postorder, so popping it visits blocks in forward reverse-postorder:
+    // entry facts normally reach acyclic successors before their first scan.
+    // Process every reachable source once at top, then revisit a block only
+    // when one of its entry facts was actually removed. This avoids both the
+    // quadratic convergence of a synchronous fixed point on long
+    // entry-unknown chains and the redundant tail-first scans caused by
+    // seeding a LIFO worklist in storage order.
     let mut queued: collections::Vec<bool> = reachable.iter().copied().collect();
-    let mut worklist: collections::Vec<usize> = reachable
-        .iter()
-        .enumerate()
-        .filter_map(|(index, is_reachable)| is_reachable.then_some(index))
-        .collect();
     while let Some(source) = worklist.pop() {
         queued[source] = false;
         let mut source_clean = exit_clean_state(&program.blocks[source], &states[source]);
@@ -439,13 +448,13 @@ pub(super) fn relax_index_extends_program(program: &mut MachineProgram) {
     // A malformed or otherwise unreachable block has no incoming proof. Do
     // this graph walk only after finding a potentially relevant non-entry
     // candidate, then reuse it in the fixed-point solver.
-    let reachable = reachable_blocks(program);
+    let (reachable, postorder) = reachable_blocks_in_postorder(program);
     unresolved_blocks.retain(|index| reachable[*index]);
     if unresolved_blocks.is_empty() {
         return;
     }
 
-    let entry_states = block_entry_clean_states(program, &reachable);
+    let entry_states = block_entry_clean_states(program, &reachable, postorder);
     for index in unresolved_blocks {
         relax_index_extends_with_entry(&mut program.blocks[index], &entry_states[index]);
     }
@@ -559,6 +568,70 @@ mod tests {
             ));
         }
         program(blocks)
+    }
+
+    fn scrambled_diamond_loop_program() -> MachineProgram {
+        // Physical storage deliberately differs from block-id / forward CFG
+        // order, so an index-ordered LIFO worklist starts at unrelated tails.
+        program(collections::vec![
+            cfg_block(
+                3,
+                &[MachineReg(9)],
+                collections::vec![indexed_load(9), add32(10, 9)],
+                MachineTerminator::Jump(edge(
+                    4,
+                    collections::vec![MachineValue::Reg(MachineReg(10))],
+                )),
+            ),
+            cfg_block(
+                0,
+                &[],
+                collections::vec![add32(4, 4)],
+                MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Imm64(1)),
+                    then_edge: edge(1, collections::vec![MachineValue::Reg(MachineReg(4))],),
+                    else_edge: edge(2, collections::vec![MachineValue::Reg(MachineReg(4))],),
+                },
+            ),
+            cfg_block(5, &[], collections::Vec::new(), MachineTerminator::Return),
+            cfg_block(
+                2,
+                &[MachineReg(7)],
+                collections::vec![add64(8, 7)],
+                MachineTerminator::Jump(edge(
+                    3,
+                    collections::vec![MachineValue::Reg(MachineReg(8))],
+                )),
+            ),
+            cfg_block(
+                4,
+                &[MachineReg(11)],
+                collections::vec![indexed_load(11), add32(12, 11)],
+                MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Imm64(1)),
+                    then_edge: edge(4, collections::vec![MachineValue::Reg(MachineReg(12))],),
+                    else_edge: edge(5, collections::Vec::new()),
+                },
+            ),
+            cfg_block(
+                1,
+                &[MachineReg(5)],
+                collections::vec![move_gp(6, 5)],
+                MachineTerminator::Jump(edge(
+                    3,
+                    collections::vec![MachineValue::Reg(MachineReg(6))],
+                )),
+            ),
+            cfg_block(
+                6,
+                &[MachineReg(13)],
+                collections::vec![indexed_load(13)],
+                MachineTerminator::Jump(edge(
+                    6,
+                    collections::vec![MachineValue::Reg(MachineReg(13))],
+                )),
+            ),
+        ])
     }
 
     fn add32(dst: u16, lhs: u16) -> MachineInst {
@@ -877,6 +950,59 @@ mod tests {
 
         relax_index_extends_program(&mut p);
         assert_eq!(extend_of(&p.blocks[1], 2), MachineIndexExtend::None);
+    }
+
+    #[test]
+    fn reachable_postorder_pops_entry_first_and_excludes_unreachable_blocks() {
+        let p = scrambled_diamond_loop_program();
+        let (reachable, mut postorder) = reachable_blocks_in_postorder(&p);
+        let entry = block_index_for_id(&p.blocks, p.entry).expect("entry block exists");
+        let unreachable = block_index_for_id(&p.blocks, MachineBlockId(6))
+            .expect("unreachable test block exists");
+
+        assert_eq!(
+            postorder.len(),
+            reachable.iter().filter(|item| **item).count()
+        );
+        assert_eq!(postorder.pop(), Some(entry));
+        assert!(!reachable[unreachable]);
+        assert!(!postorder.contains(&unreachable));
+    }
+
+    #[test]
+    fn rpo_worklist_matches_legacy_order_on_scrambled_diamond_loop() {
+        let p = scrambled_diamond_loop_program();
+        let (reachable, postorder) = reachable_blocks_in_postorder(&p);
+        let legacy_worklist = reachable
+            .iter()
+            .enumerate()
+            .filter_map(|(index, is_reachable)| is_reachable.then_some(index))
+            .collect();
+
+        let rpo_states = block_entry_clean_states(&p, &reachable, postorder);
+        let legacy_states = block_entry_clean_states(&p, &reachable, legacy_worklist);
+        assert_eq!(rpo_states, legacy_states);
+
+        let mut optimized = p;
+        relax_index_extends_program(&mut optimized);
+        let mixed_join =
+            block_index_for_id(&optimized.blocks, MachineBlockId(3)).expect("mixed join exists");
+        let clean_loop =
+            block_index_for_id(&optimized.blocks, MachineBlockId(4)).expect("clean loop exists");
+        let unreachable = block_index_for_id(&optimized.blocks, MachineBlockId(6))
+            .expect("unreachable loop exists");
+        assert_eq!(
+            extend_of(&optimized.blocks[mixed_join], 0),
+            MachineIndexExtend::ZeroExtend32
+        );
+        assert_eq!(
+            extend_of(&optimized.blocks[clean_loop], 0),
+            MachineIndexExtend::None
+        );
+        assert_eq!(
+            extend_of(&optimized.blocks[unreachable], 0),
+            MachineIndexExtend::ZeroExtend32
+        );
     }
 
     #[test]

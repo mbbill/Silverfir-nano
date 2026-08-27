@@ -509,9 +509,8 @@ is the frame pointer itself as the left operand of the exact unsigned
 native-stack guard comparison; lowering folds the prospective callee frame
 delta into the limit on the right. Direct frame addresses and the byte
 suboffset of ABI `FrameSlotOffset` sources must both be nonnegative. This
-module-wide invariant keeps each callee inside its own frame and lets late call
-peepholes prove that a caller slot below `frame_delta` cannot be observed or
-changed by the callee.
+module-wide invariant keeps each callee inside its own frame and makes every
+direct frame-address access statically auditable by the MachineIR validator.
 
 The GP and FP dynamic banks are ordered pools with an abstract volatility split
 supplied by `BackendConfig`: volatile lanes first, then preserved lanes (plus
