@@ -304,7 +304,6 @@ fn rejects_out_of_range_helper_metadata() {
                     terminator: MachineTerminator::Return,
                 }],
             },
-            non_ref_cached_bindings: collections::Vec::new(),
             preserved_clobbers: collections::Vec::new(),
         }],
         consts: collections::vec![MachineConstData {

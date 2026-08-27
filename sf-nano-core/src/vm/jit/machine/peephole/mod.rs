@@ -42,7 +42,6 @@ mod fuse_isel;
 mod fuse_smull_sign_ext;
 pub(crate) mod helpers;
 mod hoist_loop_address_bases;
-mod promote_call_frame_spills;
 mod recognize_memmove;
 mod relax_index_extends;
 mod reuse_loaded_values;
@@ -53,7 +52,6 @@ use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension,
     MachineMemWidth, MachineProgram, MachineReg, MachineStorageType, MachineValue,
-    NonRefCachedBinding,
 };
 
 #[derive(Clone, Copy, Default)]
@@ -238,19 +236,7 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
 /// `config` still defines physical register banks and bank compatibility, but
 /// semantic linear-value versus cached-local ownership now comes from explicit
 /// MachineIR metadata, not from register-number layout.
-#[cfg(test)]
 pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
-    optimize_with_non_ref_cached_bindings(program, config, &[]);
-}
-
-pub(crate) fn optimize_with_non_ref_cached_bindings(
-    program: &mut MachineProgram,
-    config: BackendConfig,
-    non_ref_cached_bindings: &[NonRefCachedBinding],
-) {
-    debug_assert!(non_ref_cached_bindings.windows(2).all(|pair| {
-        (pair[0].block.as_usize(), pair[0].reg.0) <= (pair[1].block.as_usize(), pair[1].reg.0)
-    }));
     let mut ctx = BlockOptCtx::new(config);
     // The materialized pipeline performs whole-program rewrites after its
     // block-local phase. Defer this irreversible relaxation until those
@@ -283,14 +269,6 @@ pub(crate) fn optimize_with_non_ref_cached_bindings(
     // ZeroExtend32 memory sequence, so it must precede the irreversible
     // relaxation below.
     recognize_memmove::recognize_memmove(program);
-    // This binding-safe rewrite runs after block-local copy propagation: its
-    // snapshot of a volatile non-reference cache into a dead preserved cache
-    // lane must remain live across the Call terminator.
-    promote_call_frame_spills::promote_call_frame_spills_with_non_ref_cached_bindings(
-        program,
-        config,
-        non_ref_cached_bindings,
-    );
     // Run this exactly once after every materialized MachineIR rewrite. The
     // fold may have emitted new ZeroExtend32 forms, and clean block parameters
     // (including loop-carried values) can now use the direct indexed form.

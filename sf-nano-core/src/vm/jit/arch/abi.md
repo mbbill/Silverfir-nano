@@ -465,12 +465,7 @@ Frame slots are the canonical storage for:
 
 Registers are an execution cache over that canonical frame state. For local
 calls, register-passed scalar parameters are entry values whose home slots
-become authoritative only after MachineIR publishes them. A strict late
-MachineIR peephole may also reuse a dead preserved cache lane to carry a
-still-live volatile non-ref cache across a call. The carrier must be a unique
-lowering-proven cached binding already published to its own canonical home;
-the rewrite keeps every frame store and exposes the carried value on explicit
-success-edge parameters.
+become authoritative only after MachineIR publishes them.
 
 Consequences:
 

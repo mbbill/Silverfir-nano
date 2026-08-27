@@ -1760,7 +1760,6 @@ mod tests {
                     },
                 ],
             },
-            non_ref_cached_bindings: collections::Vec::new(),
             preserved_clobbers: collections::Vec::new(),
         };
 

@@ -4,7 +4,6 @@ use crate::collections;
 
 use super::types::{MachineBlockId, MachineConstId, MachineFuncId, MachineReg};
 use crate::vm::jit::backend::BackendConfig;
-use crate::vm::jit::middle::frame::FrameSlot;
 
 /// One read-only constant-pool record referenced from machine IR.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -25,27 +24,11 @@ pub(crate) struct MachineProgram {
     pub blocks: collections::Vec<super::cfg::MachineBlock>,
 }
 
-/// Lowering-proven identity of one non-reference cached block parameter.
-///
-/// This fact is deliberately block-local: the same physical register can own
-/// different cached cells at different program points.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NonRefCachedBinding {
-    pub block: MachineBlockId,
-    pub reg: MachineReg,
-    pub home: FrameSlot,
-    pub ty: super::types::MachineStorageType,
-}
-
 /// One machine function inside a machine module.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MachineFunction {
     pub id: MachineFuncId,
     pub program: MachineProgram,
-    /// Non-reference cached block-parameter identities proven by lowering.
-    /// This transient provenance is consumed by final MachineIR optimization
-    /// before the backend sees the function.
-    pub non_ref_cached_bindings: collections::Vec<NonRefCachedBinding>,
     /// Abstract dynamic registers in the preserved JIT-ABI class that this
     /// function body defines. Final MachineIR optimization populates this
     /// derived metadata before backends map the registers to physical lanes

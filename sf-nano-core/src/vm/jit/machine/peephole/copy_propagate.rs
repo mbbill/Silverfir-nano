@@ -152,53 +152,6 @@ pub(super) fn copy_propagate(
     block.ops.truncate(write);
 }
 
-/// Replace uses of `from` at block entry with `to`, stopping after the first
-/// redefinition of `from` (while still rewriting that instruction's inputs).
-///
-/// This is the cross-block counterpart to the alias rewrite above. It is kept
-/// here so the exhaustive MachineIR source traversal has one implementation.
-/// CFG edges and call argument lanes are intentionally not rewritten. The
-/// caller must either prove the entry value does not reach the terminator or
-/// rewrite those terminator uses explicitly first. Keeping that policy at the
-/// call site preserves native Call identity-success-edge contracts and keeps
-/// edge retargeting synchronized with downstream parameter changes.
-pub(super) fn replace_initial_reg_uses(
-    block: &mut MachineBlock,
-    from: MachineReg,
-    to: MachineReg,
-    total_reg_count: usize,
-) -> bool {
-    if from == to || from.0 as usize >= total_reg_count || to.0 as usize >= total_reg_count {
-        return false;
-    }
-
-    let mut has_use = false;
-    let mut reaches_terminator = true;
-    for inst in &block.ops {
-        has_use |= super::helpers::inst_uses_value(&inst.kind, from);
-        if inst_defines(&inst.kind, from) {
-            reaches_terminator = false;
-            break;
-        }
-    }
-    if reaches_terminator && terminator_uses_reg(&block.terminator, from) {
-        return false;
-    }
-    if !has_use {
-        return false;
-    }
-
-    let mut aliases = collections::vec![None; total_reg_count];
-    aliases[from.0 as usize] = Some(to);
-    for inst in &mut block.ops {
-        rewrite_sources(&mut inst.kind, &aliases);
-        if inst_defines(&inst.kind, from) {
-            return true;
-        }
-    }
-    true
-}
-
 fn can_elide_reg_move(
     ops: &[MachineInst],
     terminator: &MachineTerminator,
