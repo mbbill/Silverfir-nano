@@ -1440,7 +1440,6 @@ mod tests {
                     terminator: MachineTerminator::Return,
                 }],
             },
-            non_ref_cached_bindings: collections::Vec::new(),
             preserved_clobbers: collections::Vec::new(),
         };
         let view = TestCodegenModule {

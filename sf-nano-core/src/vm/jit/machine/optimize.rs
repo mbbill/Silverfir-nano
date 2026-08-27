@@ -9,13 +9,7 @@ use crate::vm::{
 use super::call_abi::collect_preserved_clobbers;
 
 pub(crate) fn optimize_function(function: &mut MachineFunction, config: BackendConfig) {
-    peephole::optimize_with_non_ref_cached_bindings(
-        &mut function.program,
-        config,
-        &function.non_ref_cached_bindings,
-    );
-    function.non_ref_cached_bindings.clear();
-    function.non_ref_cached_bindings.shrink_to_fit();
+    peephole::optimize(&mut function.program, config);
     // Derive ABI metadata once from final MachineIR. Peepholes may add or
     // remove definitions, so a pre-optimization scan would be both stale and
     // redundant.
@@ -106,7 +100,6 @@ mod tests {
                     },
                 }],
             },
-            non_ref_cached_bindings: collections::Vec::new(),
             preserved_clobbers: collections::Vec::new(),
         };
 

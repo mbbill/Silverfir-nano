@@ -994,14 +994,9 @@ makes the boundary rules safe:
 
 The intentional exceptions are explicit compiled local-call success edges in
 preserved dynamic registers. Normal lowering uses them for non-ref cached
-locals after publishing dirty state. A late MachineIR peephole may also reuse a
-preserved cache lane whose lowering-proven non-ref value has just been
-published to its canonical home and is dead on the success edge. It snapshots
-a still-live volatile non-ref cache into that lane, keeps every frame store for
-the safepoint, follows only a unique identity-edge continuation, and replaces
-the first exact reload before any overlapping access. Ref-typed values remain
-frame-visible before every boundary where a callee or runtime helper could
-need root visibility.
+locals after publishing dirty state. Ref-typed values remain frame-visible
+before every boundary where a callee or runtime helper could need root
+visibility.
 
 #### 3. Scratch registers must come from the scratch pool
 
