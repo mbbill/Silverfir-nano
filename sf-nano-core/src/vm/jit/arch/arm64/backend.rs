@@ -13,8 +13,9 @@ use crate::{
     vm::{
         jit::machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
-            MachineInst, MachineInstKind, MachineReg, MachineReturnAbi, MachineTerminator,
-            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MachineIndexExtend, MachineInst, MachineInstKind, MachineLoadExtension,
+            MachineMemWidth, MachineReg, MachineReturnAbi, MachineTerminator, MachineTrapKind,
+            MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
         },
         jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
@@ -648,6 +649,29 @@ impl<'a> Arm64Backend<'a> {
             .patch_u32(ldr_offset, enc::ldr_lit_64(scratch_reg, delta_words));
         Ok((veneer_offset, literal_offset))
     }
+
+    #[cold]
+    #[inline(never)]
+    fn try_lower_exact_copy18_block_start(&mut self, index: usize) -> Result<bool, WasmError> {
+        let fusion = match self.core.current_block {
+            Some(block_id) => self
+                .core
+                .mir_blocks()?
+                .get(block_id.as_usize())
+                .and_then(|block| super::fusion::exact_copy18_fusion(&block.ops)),
+            None => None,
+        };
+        let Some(fusion) = fusion else {
+            return Ok(false);
+        };
+
+        self.core.current_op_index = Some(index);
+        self.lower_exact_copy18(fusion)?;
+        self.fused_copy_ops_remaining = 5;
+        self.gp_scratch.assert_all_free();
+        self.fp_scratch.assert_all_free();
+        Ok(true)
+    }
 }
 
 /// ARM64-only lowering effect: true when this MachineIR instruction emits a
@@ -992,23 +1016,22 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         // recognize it before placing op 0 in the one-op lookahead buffer.
         // Restricting this to block entry keeps skip accounting and pending-op
         // ordering mechanically simple.
-        if index == 0 && self.pending_op.is_none() {
-            let fusion = match self.core.current_block {
-                Some(block_id) => self
-                    .core
-                    .mir_blocks()?
-                    .get(block_id.as_usize())
-                    .and_then(|block| super::fusion::exact_copy18_fusion(&block.ops)),
-                None => None,
-            };
-            if let Some(fusion) = fusion {
-                self.core.current_op_index = Some(index);
-                self.lower_exact_copy18(fusion)?;
-                self.fused_copy_ops_remaining = 5;
-                self.gp_scratch.assert_all_free();
-                self.fp_scratch.assert_all_free();
-                return Ok(());
-            }
+        if index == 0
+            && self.pending_op.is_none()
+            && matches!(
+                inst.kind,
+                MachineInstKind::IndexedLoad {
+                    base: MACHINE_MEM0_BASE_REG,
+                    index_extend: MachineIndexExtend::None,
+                    offset: 0,
+                    width: MachineMemWidth::U64,
+                    extension: MachineLoadExtension::None,
+                    ..
+                }
+            )
+            && self.try_lower_exact_copy18_block_start(index)?
+        {
+            return Ok(());
         }
         // Try to fuse the previously buffered op with this incoming op. On a
         // hit, both are consumed by a single emitted instruction. On a miss,
