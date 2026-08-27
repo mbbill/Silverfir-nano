@@ -12,10 +12,11 @@
 //! kernels).
 //!
 //! Gated on `BackendConfig::gp32_defs_zero_extend`; backends whose 32-bit
-//! ops sign-extend (riscv64) leave it off. AArch64 also benefits when an
-//! indexed access has a non-zero offset: its register-offset memory encoding
-//! cannot carry that offset, so proving the index clean avoids a separate
-//! zero-extension before the adjusted-index address calculation.
+//! ops sign-extend (riscv64) leave it off. AArch64 runs the analysis only in
+//! blocks containing a non-zero-offset load or a non-zero-offset store that
+//! cannot use the scaled imm12 form. Within an eligible block every safe
+//! access is still relaxed, preserving mixed-offset instruction fusions;
+//! zero-only blocks retain the backend-native UXTW form.
 //!
 //! Soundness: a register is tracked as clean only from a whitelisted
 //! 32-bit-form definition to its next redefinition. At block boundaries a
@@ -368,26 +369,55 @@ fn zero_extend_index(kind: &mut MachineInstKind) -> Option<(MachineReg, &mut Mac
     }
 }
 
-fn has_zero_extend_index(kind: &MachineInstKind) -> bool {
-    matches!(
-        kind,
+// Keep this predicate in lockstep with the immediate fast path in
+// `arm64::inst::encode_load_imm12`. The profitability policy is enabled only
+// by the ARM64 backend, while this shared pass must still compile for every
+// backend.
+fn arm64_store_offset_fits_imm12(offset: i32, width: MachineMemWidth) -> bool {
+    if offset < 0 {
+        return false;
+    }
+    let bytes = match width {
+        MachineMemWidth::U8 => 1,
+        MachineMemWidth::U16 => 2,
+        MachineMemWidth::U32 => 4,
+        MachineMemWidth::U64 => 8,
+    };
+    let offset = offset as u32;
+    offset <= 4095 * bytes && offset % bytes == 0
+}
+
+fn has_zero_extend_index(kind: &MachineInstKind, profitable_blocks_only: bool) -> bool {
+    match kind {
         MachineInstKind::IndexedLoad {
             index_extend: MachineIndexExtend::ZeroExtend32,
+            offset,
             ..
-        } | MachineInstKind::IndexedStore {
+        } => !profitable_blocks_only || *offset != 0,
+        MachineInstKind::IndexedStore {
             index_extend: MachineIndexExtend::ZeroExtend32,
+            offset,
+            width,
             ..
+        } => {
+            !profitable_blocks_only
+                || (*offset != 0 && !arm64_store_offset_fits_imm12(*offset, *width))
         }
-    )
+        _ => false,
+    }
 }
 
 /// Relax facts established within this block and report whether any remaining
 /// obligation could change when whole-CFG block-entry facts are supplied.
-fn relax_index_extends_locally(block: &mut MachineBlock, seed_entry_params: bool) -> bool {
+fn relax_index_extends_locally_with_policy(
+    block: &mut MachineBlock,
+    seed_entry_params: bool,
+    profitable_blocks_only: bool,
+) -> bool {
     if !block
         .ops
         .iter()
-        .any(|inst| has_zero_extend_index(&inst.kind))
+        .any(|inst| has_zero_extend_index(&inst.kind, profitable_blocks_only))
     {
         return false;
     }
@@ -418,8 +448,16 @@ fn relax_index_extends_locally(block: &mut MachineBlock, seed_entry_params: bool
     needs_cfg
 }
 
+#[cfg(test)]
+fn relax_index_extends_locally(block: &mut MachineBlock, seed_entry_params: bool) -> bool {
+    relax_index_extends_locally_with_policy(block, seed_entry_params, false)
+}
+
 /// Relax index extends using facts proven across the complete MachineIR CFG.
-pub(super) fn relax_index_extends_program(program: &mut MachineProgram) {
+pub(super) fn relax_index_extends_program_with_policy(
+    program: &mut MachineProgram,
+    profitable_blocks_only: bool,
+) {
     // Most functions either have no indexed zero-extend obligations, can
     // discharge them from in-block definitions, or leave obligations whose
     // index cannot depend on any block-entry fact. Handle those cases before
@@ -434,7 +472,8 @@ pub(super) fn relax_index_extends_program(program: &mut MachineProgram) {
         // The public-entry parameters are unknown by definition; only a
         // non-entry block can receive a clean parameter from a CFG edge.
         let seed_entry_params = block.id != entry;
-        if relax_index_extends_locally(block, seed_entry_params) {
+        if relax_index_extends_locally_with_policy(block, seed_entry_params, profitable_blocks_only)
+        {
             unresolved_blocks.push(index);
         }
     }
@@ -460,9 +499,22 @@ pub(super) fn relax_index_extends_program(program: &mut MachineProgram) {
     }
 }
 
+#[cfg(test)]
+pub(super) fn relax_index_extends_program(program: &mut MachineProgram) {
+    relax_index_extends_program_with_policy(program, false);
+}
+
+#[cfg(test)]
 pub(super) fn relax_index_extends(block: &mut MachineBlock) {
     // Standalone block optimization has no predecessor facts available.
-    relax_index_extends_locally(block, false);
+    relax_index_extends_locally_with_policy(block, false, false);
+}
+
+pub(super) fn relax_index_extends_with_policy(
+    block: &mut MachineBlock,
+    profitable_blocks_only: bool,
+) {
+    relax_index_extends_locally_with_policy(block, false, profitable_blocks_only);
 }
 
 fn relax_index_extends_with_entry(block: &mut MachineBlock, entry: &CleanRegs) {
@@ -681,15 +733,40 @@ mod tests {
     }
 
     fn indexed_load(index: u16) -> MachineInst {
+        indexed_load_offset(index, 0)
+    }
+
+    fn indexed_load_offset(index: u16, offset: i32) -> MachineInst {
+        indexed_load_offset_width(index, offset, MachineMemWidth::U32)
+    }
+
+    fn indexed_load_offset_width(index: u16, offset: i32, width: MachineMemWidth) -> MachineInst {
         MachineInst {
             kind: MachineInstKind::IndexedLoad {
                 dst: MachineReg(9),
                 base: MachineReg(2),
                 index: MachineReg(index),
                 index_extend: MachineIndexExtend::ZeroExtend32,
-                offset: 0,
-                width: MachineMemWidth::U32,
+                offset,
+                width,
                 extension: MachineLoadExtension::None,
+            },
+        }
+    }
+
+    fn indexed_store_offset(index: u16, offset: i32) -> MachineInst {
+        indexed_store_offset_width(index, offset, MachineMemWidth::U32)
+    }
+
+    fn indexed_store_offset_width(index: u16, offset: i32, width: MachineMemWidth) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::IndexedStore {
+                base: MachineReg(2),
+                index: MachineReg(index),
+                index_extend: MachineIndexExtend::ZeroExtend32,
+                offset,
+                width,
+                src: MachineValue::Reg(MachineReg(9)),
             },
         }
     }
@@ -1367,6 +1444,116 @@ mod tests {
     }
 
     #[test]
+    fn profitable_block_policy_relaxes_all_candidates_in_eligible_block() {
+        let mut b = block(collections::vec![
+            add32(5, 5),
+            indexed_load_offset(5, 0),
+            indexed_load_offset(5, 12),
+            indexed_store_offset(5, 0),
+            indexed_store_offset(5, -8),
+        ]);
+
+        relax_index_extends_with_policy(&mut b, true);
+        assert_eq!(extend_of(&b, 1), MachineIndexExtend::None);
+        assert_eq!(extend_of(&b, 2), MachineIndexExtend::None);
+        assert_eq!(extend_of(&b, 3), MachineIndexExtend::None);
+        assert_eq!(extend_of(&b, 4), MachineIndexExtend::None);
+    }
+
+    #[test]
+    fn profitable_block_policy_loads_trigger_for_every_width() {
+        for width in [
+            MachineMemWidth::U8,
+            MachineMemWidth::U16,
+            MachineMemWidth::U32,
+            MachineMemWidth::U64,
+        ] {
+            let mut zero_offset = block(collections::vec![
+                add32(5, 5),
+                indexed_load_offset_width(5, 0, width),
+            ]);
+            relax_index_extends_with_policy(&mut zero_offset, true);
+            assert_eq!(extend_of(&zero_offset, 1), MachineIndexExtend::ZeroExtend32);
+
+            let mut nonzero_offset = block(collections::vec![
+                add32(5, 5),
+                indexed_load_offset_width(5, 1, width),
+            ]);
+            relax_index_extends_with_policy(&mut nonzero_offset, true);
+            assert_eq!(extend_of(&nonzero_offset, 1), MachineIndexExtend::None);
+        }
+    }
+
+    #[test]
+    fn profitable_block_policy_skips_zero_offset_store_only_block() {
+        let mut b = block(collections::vec![add32(5, 5), indexed_store_offset(5, 0),]);
+
+        relax_index_extends_with_policy(&mut b, true);
+        assert_eq!(extend_of(&b, 1), MachineIndexExtend::ZeroExtend32);
+    }
+
+    #[test]
+    fn profitable_block_policy_uses_arm64_store_imm12_boundaries() {
+        for (width, bytes) in [
+            (MachineMemWidth::U8, 1),
+            (MachineMemWidth::U16, 2),
+            (MachineMemWidth::U32, 4),
+            (MachineMemWidth::U64, 8),
+        ] {
+            let max_imm12_offset = 4095 * bytes;
+            let mut encodable = block(collections::vec![
+                add32(5, 5),
+                indexed_store_offset_width(5, max_imm12_offset, width),
+            ]);
+            relax_index_extends_with_policy(&mut encodable, true);
+            assert_eq!(extend_of(&encodable, 1), MachineIndexExtend::ZeroExtend32);
+
+            for unencodable_offset in [-bytes, max_imm12_offset + bytes] {
+                let mut unencodable = block(collections::vec![
+                    add32(5, 5),
+                    indexed_store_offset_width(5, unencodable_offset, width),
+                ]);
+                relax_index_extends_with_policy(&mut unencodable, true);
+                assert_eq!(extend_of(&unencodable, 1), MachineIndexExtend::None);
+            }
+
+            if bytes > 1 {
+                let mut misaligned = block(collections::vec![
+                    add32(5, 5),
+                    indexed_store_offset_width(5, max_imm12_offset - 1, width),
+                ]);
+                relax_index_extends_with_policy(&mut misaligned, true);
+                assert_eq!(extend_of(&misaligned, 1), MachineIndexExtend::None);
+            }
+        }
+    }
+
+    #[test]
+    fn profitable_block_policy_relaxes_zero_offset_candidate_across_cfg() {
+        let mut p = program(collections::vec![
+            cfg_block(
+                0,
+                &[],
+                collections::vec![add32(4, 4)],
+                MachineTerminator::Jump(edge(
+                    1,
+                    collections::vec![MachineValue::Reg(MachineReg(4))],
+                )),
+            ),
+            cfg_block(
+                1,
+                &[MachineReg(5)],
+                collections::vec![indexed_load_offset(5, 0), indexed_load_offset(5, -8),],
+                MachineTerminator::Return,
+            ),
+        ]);
+
+        relax_index_extends_program_with_policy(&mut p, true);
+        assert_eq!(extend_of(&p.blocks[1], 0), MachineIndexExtend::None);
+        assert_eq!(extend_of(&p.blocks[1], 1), MachineIndexExtend::None);
+    }
+
+    #[test]
     fn optimizer_gates_relaxation_on_gp32_zero_extending_config() {
         let make_program = || {
             program(collections::vec![cfg_block(
@@ -1390,5 +1577,17 @@ mod tests {
             BackendConfig::new(8, 8, 0, 0).with_gp32_zero_extending_defs(),
         );
         assert_eq!(extend_of(&enabled.blocks[0], 1), MachineIndexExtend::None);
+
+        let mut profitable_blocks_only = make_program();
+        super::super::optimize(
+            &mut profitable_blocks_only,
+            BackendConfig::new(8, 8, 0, 0)
+                .with_gp32_zero_extending_defs()
+                .with_profitable_block_index_extend_relaxation(),
+        );
+        assert_eq!(
+            extend_of(&profitable_blocks_only.blocks[0], 1),
+            MachineIndexExtend::ZeroExtend32
+        );
     }
 }

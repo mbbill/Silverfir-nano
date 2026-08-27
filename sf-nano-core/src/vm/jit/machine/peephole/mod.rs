@@ -180,7 +180,10 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
     }
     if ctx.config.gp32_defs_zero_extend && !ctx.defer_index_extend_relaxation {
-        relax_index_extends::relax_index_extends(block);
+        relax_index_extends::relax_index_extends_with_policy(
+            block,
+            ctx.config.relax_index_extends_in_profitable_blocks_only,
+        );
     }
 
     // Keep pass scheduling honest as transformation patterns evolve. Release
@@ -222,7 +225,10 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
             );
         }
         if ctx.config.gp32_defs_zero_extend && !ctx.defer_index_extend_relaxation {
-            relax_index_extends::relax_index_extends(&mut unconditional_oracle);
+            relax_index_extends::relax_index_extends_with_policy(
+                &mut unconditional_oracle,
+                ctx.config.relax_index_extends_in_profitable_blocks_only,
+            );
         }
         assert_eq!(
             block, &unconditional_oracle,
@@ -273,6 +279,9 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     // fold may have emitted new ZeroExtend32 forms, and clean block parameters
     // (including loop-carried values) can now use the direct indexed form.
     if config.gp32_defs_zero_extend {
-        relax_index_extends::relax_index_extends_program(program);
+        relax_index_extends::relax_index_extends_program_with_policy(
+            program,
+            config.relax_index_extends_in_profitable_blocks_only,
+        );
     }
 }

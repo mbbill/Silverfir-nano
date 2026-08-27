@@ -54,6 +54,11 @@ pub(crate) struct BackendConfig {
     /// peephole relax redundant `ZeroExtend32` index obligations on indexed
     /// memory ops.
     pub gp32_defs_zero_extend: bool,
+    /// Restrict index-extend relaxation to blocks where ARM64 can profit: a
+    /// non-zero-offset load or a store whose non-zero offset cannot use its
+    /// scaled imm12 form. Eligible blocks still relax every safe access so
+    /// mixed-offset instruction fusions remain available.
+    pub relax_index_extends_in_profitable_blocks_only: bool,
 }
 
 impl BackendConfig {
@@ -117,6 +122,7 @@ impl BackendConfig {
             call_scratch_slots,
             preserved_lane_save_overhead: 0,
             gp32_defs_zero_extend: false,
+            relax_index_extends_in_profitable_blocks_only: false,
         }
     }
 
@@ -128,6 +134,13 @@ impl BackendConfig {
     #[cfg(any(sf_backend_arm64, sf_backend_x64, test))]
     pub(crate) const fn with_gp32_zero_extending_defs(mut self) -> Self {
         self.gp32_defs_zero_extend = true;
+        self
+    }
+
+    #[inline]
+    #[cfg(any(sf_backend_arm64, test))]
+    pub(crate) const fn with_profitable_block_index_extend_relaxation(mut self) -> Self {
+        self.relax_index_extends_in_profitable_blocks_only = true;
         self
     }
 
@@ -260,6 +273,7 @@ mod tests {
         assert_eq!(config.fp_arg_lanes, 2);
         assert!(config.scalar_return_lanes);
         assert!(!config.gp32_defs_zero_extend);
+        assert!(!config.relax_index_extends_in_profitable_blocks_only);
     }
 
     #[test]
@@ -267,5 +281,9 @@ mod tests {
         let config = BackendConfig::with_volatility(8, 6, 4, 1, 5, 3, 4, 2, true, 3)
             .with_gp32_zero_extending_defs();
         assert!(config.gp32_defs_zero_extend);
+        assert!(!config.relax_index_extends_in_profitable_blocks_only);
+
+        let config = config.with_profitable_block_index_extend_relaxation();
+        assert!(config.relax_index_extends_in_profitable_blocks_only);
     }
 }

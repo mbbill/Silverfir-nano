@@ -352,6 +352,7 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
         SCALAR_CALL_SCRATCH_SLOTS,
     )
     .with_gp32_zero_extending_defs()
+    .with_profitable_block_index_extend_relaxation()
     // Lazy per-body preserved save: ~1 store in the body prelude plus 1
     // restore at each return path (typically two).
     .with_preserved_lane_save_overhead(3)
@@ -474,6 +475,8 @@ mod tests {
         let config = compile_backend_config();
         assert_eq!(config.allocatable_gp_dynamic_budget(), 23);
         assert_eq!(config.gp_internal_scratch, GP_INTERNAL_SCRATCH);
+        assert!(config.gp32_defs_zero_extend);
+        assert!(config.relax_index_extends_in_profitable_blocks_only);
         assert_eq!(
             map_reg(MachineReg(MACHINE_FIXED_REG_COUNT + 15)).unwrap(),
             gp(30)
