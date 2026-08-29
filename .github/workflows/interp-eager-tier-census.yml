@@ -2,6 +2,9 @@ name: Interpreter eager-tier structural census
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - dev/interp-eager-tier-census
 
 permissions:
   contents: read
