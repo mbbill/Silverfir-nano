@@ -37,10 +37,11 @@ use tracked_alloc::rc::Rc;
 pub(super) const WIDE_MEMARG: u64 = 1 << 63;
 
 use super::instr::{
-    operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
-    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL,
-    FLAG_SHARED_TABLE,
+    operand_is_f32, operand_is_float, result_is_f32, result_is_float, Instr, Op, FLAG_ADDR64,
+    FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE,
+    FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
+use super::layout::{slot_fields, Pinned};
 use super::SLOT_GP_UNIT_BYTES;
 
 /// Producer index meaning "no patchable producer" (call results, block
@@ -98,8 +99,57 @@ impl Deref for FunctionCode {
     }
 }
 
+/// Four-byte persistent form of [`Pinned`]. Valid pinned locals are below
+/// slot 8192 because call records encode their byte offsets in 16 bits, so
+/// each slot needs 14 bits including an explicit none value. The final two
+/// bits carry the integer/float register-file choice.
+#[derive(Clone, Copy)]
+struct PackedPinned(u32);
+
+impl PackedPinned {
+    const SLOT_BITS: u32 = 14;
+    const SLOT_MASK: u32 = (1 << Self::SLOT_BITS) - 1;
+    const NONE: u32 = Self::SLOT_MASK;
+
+    fn new(pin: Pinned) -> Self {
+        let slot = |value: u64| {
+            if value == u64::MAX {
+                Self::NONE
+            } else {
+                debug_assert!(value < 8192);
+                value as u32
+            }
+        };
+        Self(
+            slot(pin.l0)
+                | slot(pin.l1) << Self::SLOT_BITS
+                | u32::from(pin.l0_float) << 28
+                | u32::from(pin.l1_float) << 29,
+        )
+    }
+
+    fn expand(self) -> Pinned {
+        let slot = |value: u32| {
+            if value == Self::NONE {
+                u64::MAX
+            } else {
+                value as u64
+            }
+        };
+        Pinned {
+            l0: slot(self.0 & Self::SLOT_MASK),
+            l1: slot((self.0 >> Self::SLOT_BITS) & Self::SLOT_MASK),
+            l0_float: self.0 & (1 << 28) != 0,
+            l1_float: self.0 & (1 << 29) != 0,
+        }
+    }
+}
+
 pub(crate) struct PredecodedFunction {
     pub code: FunctionCode,
+    /// Final pinned-local choice, maintained alongside instruction emission
+    /// and mutation so link does not rescan the instruction stream.
+    pinned: PackedPinned,
     /// Side tables for `BrTable`: resolved instruction indices, the last
     /// entry is the default target.
     pub br_tables: Vec<Vec<u32>>,
@@ -183,6 +233,10 @@ impl IndexMut<usize> for FunctionCodeBuilder<'_> {
 }
 
 impl PredecodedFunction {
+    pub(super) fn pinned(&self) -> Pinned {
+        self.pinned.expand()
+    }
+
     /// The active handler chain at `pc`, innermost try first and in source
     /// clause order within each try.
     pub(crate) fn exception_handlers_at(&self, pc: u32) -> &[ExceptionHandler] {
@@ -218,12 +272,14 @@ pub(super) fn linker_test_function(
     n_locals: u32,
 ) -> PredecodedFunction {
     let code_len = code.len();
+    let pinned = PackedPinned::new(super::engine::select_pinned_reference(&code, n_locals));
     PredecodedFunction {
         frame_slots: n_locals,
         code: FunctionCode {
             arena: Rc::new(code),
             range: 0..code_len,
         },
+        pinned,
         br_tables,
         wide_memargs: Vec::new(),
         n_locals,
@@ -306,6 +362,7 @@ pub(crate) fn predecode_functions(
 
 struct PredecodedFunctionParts {
     code_range: Range<usize>,
+    pinned: PackedPinned,
     br_tables: Vec<Vec<u32>>,
     wide_memargs: Vec<(u32, u64)>,
     frame_slots: u32,
@@ -324,6 +381,7 @@ impl PredecodedFunctionParts {
                 arena: code,
                 range: self.code_range,
             },
+            pinned: self.pinned,
             br_tables: self.br_tables,
             wide_memargs: self.wide_memargs,
             frame_slots: self.frame_slots,
@@ -389,11 +447,9 @@ fn predecode_function_into(
             frames: Vec::new(),
             dead: false,
             region: 0,
-            last_read: vec![0u32; n_locals as usize],
-            last_write: vec![0u32; n_locals as usize],
+            locals: vec![LocalState::default(); n_locals as usize],
             last_mat_mov: NO_DEF,
             last_mat_region: 0,
-            last_write_region: vec![0u32; n_locals as usize],
             br_tables: Vec::new(),
             wide_memargs: Vec::new(),
             exception_sites: Vec::new(),
@@ -441,8 +497,16 @@ fn predecode_function_into(
         canonical_loop_homes = next;
     };
     let code_range = p.code.range();
+    let pinned = PackedPinned::new(select_pinned(&p.locals));
+    #[cfg(test)]
+    assert_eq!(
+        pinned.expand(),
+        super::engine::select_pinned_reference(&p.code.arena[code_range.clone()], n_locals,),
+        "incremental pinned-local census disagrees with the original full-stream scan"
+    );
     Ok(PredecodedFunctionParts {
         code_range,
+        pinned,
         frame_slots: n_locals + p.max_height,
         br_tables: p.br_tables,
         wide_memargs: p.wide_memargs,
@@ -575,10 +639,9 @@ struct Predecoder<'m, 'code> {
     frames: Vec<CtlFrame>,
     dead: bool,
     region: u32,
-    /// Per local: 1 + index of the last emitted instruction reading /
-    /// writing it (0 = never). Used by the dst-folding soundness rules.
-    last_read: Vec<u32>,
-    last_write: Vec<u32>,
+    /// Per-local dataflow state and the live pinned-local census. Keeping the
+    /// two together avoids adding an allocation to each decoded function.
+    locals: Vec<LocalState>,
     /// Index of an immediately preceding plain `MovSlot` that another
     /// ordered copy may merge with (NO_DEF = none), and its region.
     ///
@@ -587,11 +650,6 @@ struct Predecoder<'m, 'code> {
     /// particular Wasm source pattern about `MovPair`.
     last_mat_mov: u32,
     last_mat_region: u32,
-    /// Control region of the last write per local (acc write-through:
-    /// a consumer may read the accumulator only when the write happened
-    /// in the same region — a merge between them means the consumer can
-    /// be reached with a stale accumulator).
-    last_write_region: Vec<u32>,
     br_tables: Vec<Vec<u32>>,
     wide_memargs: Vec<(u32, u64)>,
     exception_sites: Vec<ExceptionSite>,
@@ -628,6 +686,176 @@ struct Predecoder<'m, 'code> {
     /// Exception landing metadata currently names canonical temp spans, so
     /// an actual decoded `try_table` requires all loop homes to stay there.
     force_canonical_loop_homes: bool,
+}
+
+/// Predecode state for one WebAssembly local.
+///
+/// The first three fields drive destination and accumulator folding. The
+/// remaining counters describe the final instruction stream exactly enough
+/// to choose its two pinned locals without a later full-stream scan. Domain
+/// facts use counters rather than sticky bits because load/store fusion and
+/// the i64 subtraction-branch rewrite can remove an already emitted access.
+#[derive(Clone, Copy, Default)]
+struct LocalState {
+    /// 1 + index of the last emitted instruction reading this local.
+    last_read: u32,
+    /// 1 + index of the last emitted instruction writing this local.
+    last_write: u32,
+    /// Control region of the last write. Accumulator write-through is safe
+    /// only when the writer and reader remain in the same region.
+    last_write_region: u32,
+    pin_count: u32,
+    pin_r_int: u32,
+    pin_r_float: u32,
+    pin_w_int: u32,
+    pin_w_float: u32,
+    pin_f32: u32,
+}
+
+#[inline]
+fn adjust(counter: &mut u32, add: bool) {
+    if add {
+        *counter += 1;
+    } else {
+        debug_assert!(*counter != 0);
+        *counter -= 1;
+    }
+}
+
+#[inline]
+fn census_read(locals: &mut [LocalState], slot: u64, is_float: bool, is_f32: bool, add: bool) {
+    let stat = &mut locals[slot as usize];
+    adjust(&mut stat.pin_count, add);
+    if is_float {
+        adjust(&mut stat.pin_r_float, add);
+        if is_f32 {
+            adjust(&mut stat.pin_f32, add);
+        }
+    } else {
+        adjust(&mut stat.pin_r_int, add);
+    }
+}
+
+#[inline]
+fn census_write(
+    locals: &mut [LocalState],
+    slot: u64,
+    is_float: bool,
+    is_f32: bool,
+    counted: bool,
+    add: bool,
+) {
+    let stat = &mut locals[slot as usize];
+    if counted {
+        adjust(&mut stat.pin_count, add);
+    }
+    if is_float {
+        adjust(&mut stat.pin_w_float, add);
+        if is_f32 {
+            adjust(&mut stat.pin_f32, add);
+        }
+    } else {
+        adjust(&mut stat.pin_w_int, add);
+    }
+}
+
+/// Apply or remove one instruction's contribution using the original
+/// link-time census rules. Keeping this function field-for-field equivalent
+/// to the test-only oracle makes forged instruction streams checkable too.
+fn update_pin_census(locals: &mut [LocalState], ins: Instr, add: bool) {
+    let n = locals.len() as u64;
+    let (a_s, b_s, c_d) = slot_fields(ins.op);
+    if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
+        census_read(
+            locals,
+            ins.a,
+            operand_is_float(ins.op, false),
+            operand_is_f32(ins.op, false),
+            add,
+        );
+    }
+    if b_s && ins.flags & FLAG_B_CONST == 0 && ins.b < n {
+        census_read(
+            locals,
+            ins.b,
+            operand_is_float(ins.op, true),
+            operand_is_f32(ins.op, true),
+            add,
+        );
+    }
+    if c_d && ins.c < n {
+        census_write(
+            locals,
+            ins.c,
+            result_is_float(ins.op),
+            result_is_f32(ins.op),
+            true,
+            add,
+        );
+    }
+    if matches!(ins.op, Op::I32_SubBrIf | Op::I64_SubBrIf) && ins.a < n {
+        census_write(locals, ins.a, false, false, true, add);
+    }
+    if ins.op == Op::Select {
+        let dst = ins.c & 0xffff_ffff;
+        if dst < n {
+            census_write(locals, dst, false, false, false, add);
+        }
+    }
+    if ins.op == Op::MovPair {
+        for dst in [ins.c >> 32, ins.c & 0xffff_ffff] {
+            if dst < n {
+                census_write(locals, dst, false, false, true, add);
+            }
+        }
+    }
+}
+
+/// Select the same top two locals as the old linker pass from the live
+/// counters maintained above.
+fn select_pinned(locals: &[LocalState]) -> Pinned {
+    if locals.is_empty() {
+        return Pinned::NONE;
+    }
+    let (has_l1, has_float_regs, float_pin_f32) = super::engine::PIN_CAPS;
+    let float_ok = |i: usize| has_float_regs && (float_pin_f32 || locals[i].pin_f32 == 0);
+    let mut best = (usize::MAX, 0u32);
+    let mut second = (usize::MAX, 0u32);
+    for (i, stat) in locals.iter().enumerate() {
+        let wdom = u8::from(stat.pin_w_int != 0) | (u8::from(stat.pin_w_float != 0) << 1);
+        if wdom == 3 || (wdom & 2 != 0 && !float_ok(i)) {
+            continue;
+        }
+        if stat.pin_count > best.1 {
+            second = best;
+            best = (i, stat.pin_count);
+        } else if stat.pin_count > second.1 {
+            second = (i, stat.pin_count);
+        }
+    }
+    let ok = |(i, count): (usize, u32)| count > 0 && i * 8 < 1 << 16;
+    let mode = |i: usize| {
+        let no_writers = locals[i].pin_w_int == 0 && locals[i].pin_w_float == 0;
+        float_ok(i)
+            && (locals[i].pin_w_float != 0
+                || (no_writers && locals[i].pin_r_float != 0 && locals[i].pin_r_int == 0))
+    };
+    let (l0, l0_float) = if ok(best) {
+        (best.0 as u64, mode(best.0))
+    } else {
+        (u64::MAX, false)
+    };
+    let (l1, l1_float) = if has_l1 && l0 != u64::MAX && ok(second) {
+        (second.0 as u64, mode(second.0))
+    } else {
+        (u64::MAX, false)
+    };
+    Pinned {
+        l0,
+        l1,
+        l0_float,
+        l1_float,
+    }
 }
 
 fn block_arity(types: &TypeContext, bt: &BlockType) -> Result<(u32, u32), WasmError> {
@@ -997,8 +1225,31 @@ impl<'m, 'code> Predecoder<'m, 'code> {
 
     fn emit(&mut self, op: Op, flags: u16, a: u64, b: u64, c: u64) -> u32 {
         let idx = self.code.len() as u32;
-        self.code.push(Instr::new(op, flags, a, b, c));
+        let ins = Instr::new(op, flags, a, b, c);
+        update_pin_census(&mut self.locals, ins, true);
+        self.code.push(ins);
         idx
+    }
+
+    /// Replace an emitted cell while keeping the live pinned-local census in
+    /// step. Every in-place fusion and destination patch goes through here.
+    fn replace_instr(&mut self, index: u32, ins: Instr) {
+        let old = self.code[index as usize];
+        update_pin_census(&mut self.locals, old, false);
+        update_pin_census(&mut self.locals, ins, true);
+        self.code[index as usize] = ins;
+    }
+
+    fn edit_instr(&mut self, index: u32, edit: impl FnOnce(&mut Instr)) {
+        let mut ins = self.code[index as usize];
+        edit(&mut ins);
+        self.replace_instr(index, ins);
+    }
+
+    fn pop_instr(&mut self) -> Option<Instr> {
+        let ins = self.code.pop()?;
+        update_pin_census(&mut self.locals, ins, false);
+        Some(ins)
     }
 
     /// Emit one ordered slot copy, merging two adjacent plain copies into
@@ -1020,13 +1271,16 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             let prev = self.last_mat_mov;
             let pm = self.code[prev as usize];
             debug_assert!(pm.c <= u32::MAX as u64 && dst <= u32::MAX as u64);
-            self.code[prev as usize] = Instr {
-                op: Op::MovPair,
-                flags: 0,
-                a: pm.a,
-                b: src,
-                c: pm.c << 32 | dst,
-            };
+            self.replace_instr(
+                prev,
+                Instr {
+                    op: Op::MovPair,
+                    flags: 0,
+                    a: pm.a,
+                    b: src,
+                    c: pm.c << 32 | dst,
+                },
+            );
             self.last_mat_mov = NO_DEF; // pairs never re-pair
             prev
         } else {
@@ -1049,7 +1303,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     fn operand(&mut self, d: Desc, at: u32) -> (u64, bool) {
         match d {
             Desc::Local(i) => {
-                self.last_read[i as usize] = at + 1;
+                self.locals[i as usize].last_read = at + 1;
                 (i as u64, false)
             }
             Desc::ConstV(k) => (k, true),
@@ -1090,7 +1344,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             Desc::Local(l) => {
                 let slot = self.temp_slot_used(height);
                 let idx = self.emit_ordered_mov_slot(0, l as u64, slot);
-                self.last_read[l as usize] = idx + 1;
+                self.locals[l as usize].last_read = idx + 1;
                 idx
             }
             Desc::ConstV(k) => {
@@ -1117,7 +1371,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         match d {
             Desc::Local(l) => {
                 let idx = self.emit_ordered_mov_slot(0, l as u64, dst);
-                self.last_read[l as usize] = idx + 1;
+                self.locals[l as usize].last_read = idx + 1;
             }
             Desc::ConstV(k) => {
                 self.emit(Op::MovConst, FLAG_A_CONST, k, 0, dst);
@@ -1278,7 +1532,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     // below and the native-handler invariant documented on
                     // `Op::MovPair`.
                     if self.code[def as usize].op != Op::MovPair {
-                        self.code[def as usize].flags |= FLAG_DST_ACC;
+                        self.edit_instr(def, |ins| ins.flags |= FLAG_DST_ACC);
                     }
                     which_flag
                 } else if def == NO_DEF
@@ -1310,10 +1564,10 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 // immediately preceding instruction" — and the nonzero
                 // gate keeps never-written locals at function start from
                 // colliding with an empty stream.
-                let write = self.last_write[x as usize];
+                let write = self.locals[x as usize].last_write;
                 if write > 0
                     && write == self.code.len() as u32
-                    && self.last_write_region[x as usize] == self.region
+                    && self.locals[x as usize].last_write_region == self.region
                     && result_is_float(self.code[write as usize - 1].op) == want_float
                     // Both packed destinations are written by one MovPair
                     // cell, but only destination 2 is its accumulator
@@ -1341,7 +1595,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             if let Some(&cond) = self.stack.last() {
                 if let Some(def) = self.rewritable_producer(cond) {
                     if let Some(inv) = invert_cmp(self.code[def as usize].op) {
-                        self.code[def as usize].op = inv;
+                        self.edit_instr(def, |ins| ins.op = inv);
                         return Ok(());
                     }
                 }
@@ -1378,12 +1632,13 @@ impl<'m, 'code> Predecoder<'m, 'code> {
 
     /// Retro-patch the destination field of a producer instruction.
     fn patch_dst(&mut self, def: u32, slot: u64) {
-        let instr = &mut self.code[def as usize];
-        if instr.op == Op::Select || instr.flags & FLAG_FUSED != 0 {
-            instr.c = (instr.c & !0xffff_ffff) | slot;
-        } else {
-            instr.c = slot;
-        }
+        self.edit_instr(def, |instr| {
+            if instr.op == Op::Select || instr.flags & FLAG_FUSED != 0 {
+                instr.c = (instr.c & !0xffff_ffff) | slot;
+            } else {
+                instr.c = slot;
+            }
+        });
     }
 
     fn local_set(&mut self, idx: u32, is_tee: bool) -> Result<(), WasmError> {
@@ -1408,8 +1663,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     && region == self.region
                     && !flushed
                     && self.code[def as usize].op != Op::MovPair
-                    && self.last_read[idx as usize] <= def + 1
-                    && self.last_write[idx as usize] <= def + 1 =>
+                    && self.locals[idx as usize].last_read <= def + 1
+                    && self.locals[idx as usize].last_write <= def + 1 =>
             {
                 Some(def)
             }
@@ -1418,8 +1673,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
 
         if let Some(def) = fold_def {
             self.patch_dst(def, idx as u64);
-            self.last_write[idx as usize] = def + 1;
-            self.last_write_region[idx as usize] = self.region;
+            self.locals[idx as usize].last_write = def + 1;
+            self.locals[idx as usize].last_write_region = self.region;
         } else {
             let (op, flags, a, read_local) = match top {
                 Desc::Local(src) => {
@@ -1438,10 +1693,10 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 self.emit(op, flags, a, 0, idx as u64)
             };
             if let Some(src) = read_local {
-                self.last_read[src as usize] = at + 1;
+                self.locals[src as usize].last_read = at + 1;
             }
-            self.last_write[idx as usize] = at + 1;
-            self.last_write_region[idx as usize] = self.region;
+            self.locals[idx as usize].last_write = at + 1;
+            self.locals[idx as usize].last_write_region = self.region;
         }
         if is_tee {
             self.stack.push(Desc::Local(idx));
@@ -1661,8 +1916,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             };
             let at = self.emit(Op::MovSlot, 0, src, 0, dst);
             if let Some(local) = dst_local {
-                self.last_write[local as usize] = at + 1;
-                self.last_write_region[local as usize] = self.region;
+                self.locals[local as usize].last_write = at + 1;
+                self.locals[local as usize].last_write_region = self.region;
             }
         }
     }
@@ -1685,7 +1940,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     let skip = self.emit(guard, flags, a, 0, FIXUP);
                     self.emit_return();
                     let here = self.code.len() as u64;
-                    self.code[skip as usize].c = here;
+                    self.edit_instr(skip, |ins| ins.c = here);
                 }
                 _ => return Err(desync()),
             }
@@ -1709,9 +1964,10 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         let n = self.frames.len();
         let i = n - 1 - depth as usize;
         if self.frames[i].is_loop {
-            self.code[def as usize].c = self.frames[i].header as u64;
+            let target = self.frames[i].header as u64;
+            self.edit_instr(def, |ins| ins.c = target);
         } else {
-            self.code[def as usize].c = FIXUP;
+            self.edit_instr(def, |ins| ins.c = FIXUP);
             self.frames[i].fixups.push(Fixup::InstrC(def));
         }
     }
@@ -1758,10 +2014,10 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         let Desc::Local(local) = cond else {
             return None;
         };
-        let write = self.last_write[local as usize];
+        let write = self.locals[local as usize].last_write;
         if write == 0
             || write != self.code.len() as u32
-            || self.last_write_region[local as usize] != self.region
+            || self.locals[local as usize].last_write_region != self.region
         {
             return None;
         }
@@ -1793,8 +2049,11 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             return None;
         };
 
-        let write = self.last_write[local as usize];
-        if write == 0 || write != cmp_def || self.last_write_region[local as usize] != self.region {
+        let write = self.locals[local as usize].last_write;
+        if write == 0
+            || write != cmp_def
+            || self.locals[local as usize].last_write_region != self.region
+        {
             return None;
         }
         let mut fusion = self.sub_br_if_update(write - 1, local, true)?;
@@ -2162,7 +2421,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         let here = self.code.len() as u32;
         for &f in fixups {
             match f {
-                Fixup::InstrC(i) => self.code[i as usize].c = here as u64,
+                Fixup::InstrC(i) => self.edit_instr(i, |ins| ins.c = here as u64),
                 Fixup::Table { tbl, entry } => {
                     self.br_tables[tbl as usize][entry as usize] = here;
                 }
@@ -2174,7 +2433,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     }
 
     fn patch_instr_to_here(&mut self, i: u32) {
-        self.code[i as usize].c = self.code.len() as u64;
+        let here = self.code.len() as u64;
+        self.edit_instr(i, |ins| ins.c = here);
     }
 
     /// Lower a decoded load. Kept out of the byte-dispatch loop so the same
@@ -2220,13 +2480,16 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 } else {
                     (add.a, add.b, add.flags & FLAG_A_ACC)
                 };
-                self.code[def as usize] = Instr {
-                    op: lop,
-                    flags: afl | FLAG_FUSED,
-                    a: a1,
-                    b: offset,
-                    c: a2 << 32 | dst,
-                };
+                self.replace_instr(
+                    def,
+                    Instr {
+                        op: lop,
+                        flags: afl | FLAG_FUSED,
+                        a: a1,
+                        b: offset,
+                        c: a2 << 32 | dst,
+                    },
+                );
                 self.push_result_temp(def);
                 fused = true;
             }
@@ -2289,13 +2552,16 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 } else {
                     (add.a, add.b, add.flags & FLAG_A_ACC)
                 };
-                self.code[def as usize] = Instr {
-                    op: sop,
-                    flags: flags | afl | FLAG_FUSED,
-                    a: a1,
-                    b,
-                    c: a2 << 32 | offset,
-                };
+                self.replace_instr(
+                    def,
+                    Instr {
+                        op: sop,
+                        flags: flags | afl | FLAG_FUSED,
+                        a: a1,
+                        b,
+                        c: a2 << 32 | offset,
+                    },
+                );
                 fused = true;
             }
         }
@@ -2868,8 +3134,10 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         self.rewritable_producer(cond).and_then(|def| {
                             fuse_cmp_br(self.code[def as usize].op, true).map(|op| (def, op))
                         }) {
-                        self.code[def as usize].op = op;
-                        self.code[def as usize].c = FIXUP;
+                        self.edit_instr(def, |ins| {
+                            ins.op = op;
+                            ins.c = FIXUP;
+                        });
                         def
                     } else {
                         let at = self.code.len() as u32;
@@ -3007,33 +3275,36 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                                 fusion.def + 2,
                                 "the i64 zero comparison must immediately follow its update"
                             );
-                            self.code.pop();
-                            self.last_read[fusion.local as usize] = fusion.def + 1;
+                            self.pop_instr();
+                            self.locals[fusion.local as usize].last_read = fusion.def + 1;
                         }
-                        self.code[fusion.def as usize].op = fusion.op;
-                        self.code[fusion.def as usize].b = fusion.b;
-                        // `a` remains the authoritative destination slot;
-                        // do not make the fused control handler depend on
-                        // transient accumulator residency for that operand.
-                        self.code[fusion.def as usize].flags &= !(FLAG_A_ACC | FLAG_DST_ACC);
+                        self.edit_instr(fusion.def, |ins| {
+                            ins.op = fusion.op;
+                            ins.b = fusion.b;
+                            // `a` remains the authoritative destination slot;
+                            // do not make the fused control handler depend on
+                            // transient accumulator residency for that operand.
+                            ins.flags &= !(FLAG_A_ACC | FLAG_DST_ACC);
+                        });
                         self.retarget_branch(fusion.def, d);
                     } else if let Some((def, fusion)) = fused {
-                        self.code[def as usize].op = fusion.op;
-                        if let Some(b) = fusion.b_const {
-                            self.code[def as usize].b = b;
-                            self.code[def as usize].flags =
-                                (self.code[def as usize].flags & !FLAG_B_ACC) | FLAG_B_CONST;
-                        }
+                        self.edit_instr(def, |ins| {
+                            ins.op = fusion.op;
+                            if let Some(b) = fusion.b_const {
+                                ins.b = b;
+                                ins.flags = (ins.flags & !FLAG_B_ACC) | FLAG_B_CONST;
+                            }
+                        });
                         if !needs_moves {
                             self.retarget_branch(def, d);
                         } else {
                             // Guard form: the fused inverted branch skips
                             // the taken path's moves + jump.
-                            self.code[def as usize].c = FIXUP;
+                            self.edit_instr(def, |ins| ins.c = FIXUP);
                             self.emit_branch_copies(&plan);
                             self.emit_branch(Op::Br, 0, 0, d)?;
                             let here = self.code.len() as u64;
-                            self.code[def as usize].c = here;
+                            self.edit_instr(def, |ins| ins.c = here);
                         }
                     } else {
                         let at = self.code.len() as u32;
@@ -3050,7 +3321,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                             self.emit_branch_copies(&plan);
                             self.emit_branch(Op::Br, 0, 0, d)?;
                             let here = self.code.len() as u64;
-                            self.code[skip as usize].c = here;
+                            self.edit_instr(skip, |ins| ins.c = here);
                         }
                     }
                     self.bump_region();
@@ -3300,7 +3571,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     self.emit_branch_copies(&plan);
                     self.emit_branch(Op::Br, 0, 0, d)?;
                     let here = self.code.len() as u64;
-                    self.code[skip as usize].c = here;
+                    self.edit_instr(skip, |ins| ins.c = here);
                     if on_null {
                         self.stack.push(r);
                     } else {
@@ -3576,10 +3847,126 @@ mod tests {
     use super::super::layout::native_guard;
     use super::*;
     use crate::module::Module;
+    use crate::vm::interpreter::instr::{op_from_index, N_OPS};
     use std::fmt::Write as _;
     use std::format;
     use std::string::String as StdString;
     use std::vec::Vec as StdVec;
+
+    fn assert_pinned_fields_match(code: &[Instr], locals: &[LocalState], context: &str) {
+        let actual = PackedPinned::new(select_pinned(locals)).expand();
+        let expected = super::super::engine::select_pinned_reference(code, locals.len() as u32);
+        assert_eq!(actual.l0, expected.l0, "{context}: l0");
+        assert_eq!(actual.l1, expected.l1, "{context}: l1");
+        assert_eq!(actual.l0_float, expected.l0_float, "{context}: l0_float");
+        assert_eq!(actual.l1_float, expected.l1_float, "{context}: l1_float");
+    }
+
+    fn generated_field(state: u64, n_locals: u32) -> u64 {
+        match state & 7 {
+            0 => 0,
+            1 => n_locals.saturating_sub(1) as u64,
+            2 => n_locals as u64,
+            3 => 8191,
+            4 => 8192,
+            _ => state.rotate_left(17) & 0x3fff,
+        }
+    }
+
+    #[test]
+    fn incremental_pinned_census_matches_reference_for_generated_mutations() {
+        // Begin with the layouts which bypass ordinary slot_fields handling,
+        // plus float readers/writers and the 16-bit call-record boundary.
+        let n_locals = 8194u32;
+        let mut locals = vec![LocalState::default(); n_locals as usize];
+        let mut code = StdVec::new();
+        let edge_cells = [
+            Instr::new(Op::MovPair, 0, 0, 1, 8191u64 << 32 | 8192),
+            Instr::new(Op::Select, 0, 2, 3, 4u64 << 32 | 5),
+            Instr::new(Op::I32_SubBrIf, FLAG_B_CONST, 6, 1, 0),
+            Instr::new(Op::I64_SubBrIf, 0, 7, 8, 0),
+            Instr::new(Op::F32_Add, 0, 9, 10, 11),
+            Instr::new(Op::F64_Store, 0, 12, 13, 0),
+            Instr::new(Op::I32_Load, FLAG_FUSED, 14, 0, 15u64 << 32 | 16),
+            Instr::new(Op::I32_Store, FLAG_FUSED, 17, 18, 19u64 << 32),
+        ];
+        for (i, ins) in edge_cells.into_iter().enumerate() {
+            update_pin_census(&mut locals, ins, true);
+            code.push(ins);
+            assert_pinned_fields_match(&code, &locals, &format!("edge push {i}"));
+        }
+
+        // Exercise the exact edit protocol: remove the old contribution,
+        // install the replacement, then delete a cell entirely.
+        let replacements = [
+            Instr::new(Op::MovSlot, 0, 8192, 0, 8191),
+            Instr::new(Op::F32_Load, FLAG_FUSED, 10, 0, 9u64 << 32 | 11),
+            Instr::new(Op::Select, FLAG_A_CONST, 0, 13, 7u64 << 32 | 6),
+        ];
+        for (i, replacement) in replacements.into_iter().enumerate() {
+            let old = code[i];
+            update_pin_census(&mut locals, old, false);
+            update_pin_census(&mut locals, replacement, true);
+            code[i] = replacement;
+            assert_pinned_fields_match(&code, &locals, &format!("edge replace {i}"));
+        }
+        let removed = code.pop().unwrap();
+        update_pin_census(&mut locals, removed, false);
+        assert_pinned_fields_match(&code, &locals, "edge pop");
+
+        // The generated streams include forged field/flag combinations on
+        // purpose. The old linker accepted any Instr payload, so metadata
+        // maintenance must preserve its behavior outside normal predecode
+        // shapes as well as for valid Wasm.
+        let local_counts = [0u32, 1, 2, 7, 33, 8194];
+        let mut random = 0x4d59_5df4_d0f3_3173u64;
+        for stream in 0..256usize {
+            let n_locals = local_counts[stream % local_counts.len()];
+            let mut locals = vec![LocalState::default(); n_locals as usize];
+            let mut code = StdVec::new();
+            for step in 0..96usize {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                let op = op_from_index((random as usize) % N_OPS);
+                let flags = ((random >> 19) as u16) & ((FLAG_NO_NATIVE << 1) - 1);
+                let a = generated_field(random, n_locals);
+                let b = generated_field(random.rotate_left(11), n_locals);
+                let lo = generated_field(random.rotate_left(23), n_locals) & 0xffff_ffff;
+                let hi = generated_field(random.rotate_left(37), n_locals) & 0xffff_ffff;
+                let c = if matches!(op, Op::MovPair | Op::Select) || flags & FLAG_FUSED != 0 {
+                    hi << 32 | lo
+                } else {
+                    generated_field(random.rotate_left(29), n_locals)
+                };
+                let ins = Instr::new(op, flags, a, b, c);
+                match (random >> 61) as u8 {
+                    0 if !code.is_empty() => {
+                        let index = (random as usize >> 8) % code.len();
+                        let old = code[index];
+                        update_pin_census(&mut locals, old, false);
+                        update_pin_census(&mut locals, ins, true);
+                        code[index] = ins;
+                    }
+                    1 if !code.is_empty() => {
+                        let old = code.pop().unwrap();
+                        update_pin_census(&mut locals, old, false);
+                    }
+                    _ => {
+                        update_pin_census(&mut locals, ins, true);
+                        code.push(ins);
+                    }
+                }
+                if step == 95 {
+                    assert_pinned_fields_match(
+                        &code,
+                        &locals,
+                        &format!("generated stream {stream}"),
+                    );
+                }
+            }
+        }
+    }
 
     fn predecode_wat_mode(src: &str, func: usize, disable_fast: bool) -> PredecodedFunction {
         let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
@@ -3640,6 +4027,7 @@ mod tests {
         assert_eq!(fast.n_locals, generic.n_locals, "local count");
         assert_eq!(fast.n_params, generic.n_params, "parameter count");
         assert_eq!(fast.n_results, generic.n_results, "result count");
+        assert_eq!(fast.pinned(), generic.pinned(), "pinned locals");
         assert_eq!(
             fast.slow_tail_return, generic.slow_tail_return,
             "slow tail landing"
