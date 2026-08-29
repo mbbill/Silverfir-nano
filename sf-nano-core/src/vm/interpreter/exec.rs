@@ -2168,6 +2168,42 @@ impl InterpInstance {
         self.localize_slot_for_type(slot, global.value_type())
     }
 
+    /// Read one global in the raw representation used by an interpreter frame.
+    ///
+    /// Reachable globals store function references in absolute world form, so
+    /// callers executing guest code must not read their backing cell directly.
+    /// This is the common boundary used by both instruction representations.
+    #[inline]
+    pub(super) fn global_get_for_frame(&self, global_idx: usize) -> u64 {
+        let value = match self
+            .shared_globals
+            .get(global_idx)
+            .and_then(|global| global.as_ref())
+        {
+            Some(shared) => shared.raw(),
+            None => self.globals[global_idx],
+        };
+        self.global_slot_for_frame(global_idx, value)
+    }
+
+    /// Store one raw frame slot into a global's canonical backing form.
+    ///
+    /// Private function-reference globals keep module-local handles, while
+    /// reachable globals keep absolute world identities. The module validator
+    /// has already established mutability and the value type for guest writes.
+    #[inline]
+    pub(super) fn global_set_from_frame(&mut self, global_idx: usize, value: u64) {
+        let value = self.global_slot_for_storage(global_idx, value);
+        match self
+            .shared_globals
+            .get_mut(global_idx)
+            .and_then(|global| global.as_mut())
+        {
+            Some(shared) => shared.set_raw(value),
+            None => self.globals[global_idx] = value,
+        }
+    }
+
     pub(crate) fn absolutize_value_for_type(&self, value: Value, value_type: ValueType) -> Value {
         let Value::Ref(handle, ref_type) = value else {
             return value;
@@ -2924,7 +2960,7 @@ impl InterpInstance {
         }
     }
 
-    fn mem_load(
+    pub(super) fn mem_load(
         &self,
         addr: u64,
         mem_idx: usize,
@@ -2949,7 +2985,7 @@ impl InterpInstance {
         Ok(&mem.bytes()[ea as usize..end as usize])
     }
 
-    fn mem_store(
+    pub(super) fn mem_store(
         &mut self,
         addr: u64,
         mem_idx: usize,
@@ -2973,6 +3009,61 @@ impl InterpInstance {
             return Err(WasmError::trap("out of bounds memory access"));
         }
         Ok(&mut mem.bytes_mut()[ea as usize..end as usize])
+    }
+
+    /// Current page count in the memory's index type, represented as a raw
+    /// interpreter slot. Invalid static indices have already been rejected by
+    /// validation; preserving the old zero fallback keeps the slow path exact.
+    #[inline]
+    pub(super) fn memory_size(&self, mem_idx: usize) -> u64 {
+        self.memories
+            .get(mem_idx)
+            .map(|memory| memory.len() / PAGE)
+            .unwrap_or(0) as u64
+    }
+
+    /// Grow a memory and return its previous page count, or the memory's
+    /// correctly-sized -1 sentinel when a limit or host allocation refuses it.
+    pub(super) fn memory_grow(&mut self, mem_idx: usize, raw_delta: u64) -> Result<u64, WasmError> {
+        let runtime_cap = self.config.get_wasm_memory_max_pages() as u64;
+        let mem = self
+            .memories
+            .get_mut(mem_idx)
+            .ok_or(WasmError::trap("out of bounds memory access"))?;
+        // Both the delta and the -1 failure result belong to the memory's
+        // index type, so a 64-bit memory must not truncate either to 32 bits.
+        let (delta, fail, cap) = if mem.is64 {
+            (raw_delta, u64::MAX, 1u64 << 48)
+        } else {
+            (raw_delta as u32 as u64, u32::MAX as u64, 65536)
+        };
+        let cur = (mem.len() / PAGE) as u64;
+        let want = cur.saturating_add(delta);
+        // The declared maximum is a type-level ceiling; the engine's
+        // configured cap applies at grow time (`check_memory_quota` states
+        // this split), and a failed host allocation is the spec's -1 result,
+        // not an abort. Sizes are computed in u64: `want as usize * PAGE`
+        // would truncate a memory64 request on a 32-bit host before any check
+        // could reject it.
+        let new_len = want.checked_mul(PAGE as u64);
+        match new_len {
+            Some(new_len)
+                if want <= mem.max_pages
+                    && want <= cap
+                    && want <= runtime_cap
+                    && new_len <= usize::MAX as u64 =>
+            {
+                let data = &mut mem.inst.backing_mut().data;
+                let additional = (new_len as usize).saturating_sub(data.len());
+                if data.try_reserve(additional).is_err() {
+                    Ok(fail)
+                } else {
+                    data.resize(new_len as usize, 0);
+                    Ok(cur)
+                }
+            }
+            _ => Ok(fail),
+        }
     }
 
     /// Prepare an imported call while the caller is materialized.
@@ -4000,51 +4091,10 @@ impl InterpInstance {
             Op::I64_Store16 => store!(ins, 2),
             Op::I64_Store32 => store!(ins, 4),
             Op::MemorySize => {
-                let m = ins.b as usize;
-                let pages = self.memories.get(m).map(|x| x.len() / PAGE).unwrap_or(0);
-                frame[ins.c as usize] = pages as u64;
+                frame[ins.c as usize] = self.memory_size(ins.b as usize);
             }
             Op::MemoryGrow => {
-                let runtime_cap = self.config.get_wasm_memory_max_pages() as u64;
-                let mem = self
-                    .memories
-                    .get_mut(ins.b as usize)
-                    .ok_or(WasmError::trap("out of bounds memory access"))?;
-                // Both the delta and the -1 failure result belong to the
-                // memory's index type, so a 64-bit memory must not truncate
-                // either to 32 bits.
-                let (delta, fail, cap) = if mem.is64 {
-                    (opa!(ins), u64::MAX, 1u64 << 48)
-                } else {
-                    (opa!(ins) as u32 as u64, u32::MAX as u64, 65536)
-                };
-                let cur = (mem.len() / PAGE) as u64;
-                let want = cur.saturating_add(delta);
-                // The declared maximum is a type-level ceiling; the engine's
-                // configured cap applies at grow time (`check_memory_quota`
-                // states this split), and a failed host allocation is the
-                // spec's -1 result, not an abort. Sizes are computed in u64:
-                // `want as usize * PAGE` would truncate a memory64 request
-                // on a 32-bit host before any check could reject it.
-                let new_len = want.checked_mul(PAGE as u64);
-                match new_len {
-                    Some(new_len)
-                        if want <= mem.max_pages
-                            && want <= cap
-                            && want <= runtime_cap
-                            && new_len <= usize::MAX as u64 =>
-                    {
-                        let data = &mut mem.inst.backing_mut().data;
-                        let additional = (new_len as usize).saturating_sub(data.len());
-                        if data.try_reserve(additional).is_err() {
-                            frame[ins.c as usize] = fail;
-                        } else {
-                            data.resize(new_len as usize, 0);
-                            frame[ins.c as usize] = cur;
-                        }
-                    }
-                    _ => frame[ins.c as usize] = fail,
-                }
+                frame[ins.c as usize] = self.memory_grow(ins.b as usize, opa!(ins))?;
             }
             Op::MemoryFill => {
                 let base = ins.a as usize;
@@ -4175,20 +4225,10 @@ impl InterpInstance {
 
             // ---- globals ----
             Op::GlobalGet => {
-                let i = ins.a as usize;
-                let value = match self.shared_globals.get(i).and_then(|g| g.as_ref()) {
-                    Some(shared) => shared.raw(),
-                    None => self.globals[i],
-                };
-                frame[ins.c as usize] = self.global_slot_for_frame(i, value);
+                frame[ins.c as usize] = self.global_get_for_frame(ins.a as usize);
             }
             Op::GlobalSet => {
-                let i = ins.c as usize;
-                let v = self.global_slot_for_storage(i, opa!(ins));
-                match self.shared_globals.get_mut(i).and_then(|g| g.as_mut()) {
-                    Some(shared) => shared.set_raw(v),
-                    None => self.globals[i] = v,
-                }
+                self.global_set_from_frame(ins.c as usize, opa!(ins));
             }
 
             // ---- ref/table ----
@@ -6081,6 +6121,172 @@ mod tests {
     }
 
     #[test]
+    fn frame_memory_primitives_match_folded_memory32() {
+        let src = r#"(module
+            (memory 1 2)
+            (func (export "roundtrip") (param i32 i32) (result i32)
+                local.get 0 local.get 1 i32.store offset=4
+                local.get 0 i32.load offset=4)
+            (func (export "load") (param i32) (result i32)
+                local.get 0 i32.load)
+            (func (export "size") (result i32) memory.size)
+            (func (export "grow") (param i32) (result i32)
+                local.get 0 memory.grow))"#;
+        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
+        let engine = Engine::with_defaults();
+        let mut helper = InterpInstance::new(
+            &engine,
+            Module::new("memory32-helper", &bin).expect("module"),
+            None,
+            &[],
+        )
+        .expect("helper instance");
+        let mut folded = InterpInstance::new(
+            &engine,
+            Module::new("memory32-folded", &bin).expect("module"),
+            None,
+            &[],
+        )
+        .expect("folded instance");
+
+        let raw = 0x89ab_cdefu32 as u64;
+        helper
+            .mem_store(8, 0, 4, 4)
+            .expect("helper store")
+            .copy_from_slice(&(raw as u32).to_le_bytes());
+        let mut helper_bytes = [0u8; 4];
+        helper_bytes.copy_from_slice(helper.mem_load(8, 0, 4, 4).expect("helper load"));
+        let mut folded_result = [0u64; 1];
+        folded
+            .invoke(
+                folded.find_export("roundtrip").expect("roundtrip"),
+                &[8, raw],
+                &mut folded_result,
+            )
+            .expect("folded roundtrip");
+        assert_eq!(u32::from_le_bytes(helper_bytes) as u64, folded_result[0]);
+
+        let helper_oob = helper.mem_load(65_534, 0, 0, 4).expect_err("helper OOB");
+        let folded_oob = folded
+            .invoke(
+                folded.find_export("load").expect("load"),
+                &[65_534],
+                &mut folded_result,
+            )
+            .expect_err("folded OOB");
+        assert_eq!(helper_oob, folded_oob);
+
+        folded
+            .invoke(
+                folded.find_export("size").expect("size"),
+                &[],
+                &mut folded_result,
+            )
+            .expect("folded size");
+        assert_eq!(helper.memory_size(0), folded_result[0]);
+        assert_eq!(helper.memory_grow(0, 1).expect("helper grow"), 1);
+        folded
+            .invoke(
+                folded.find_export("grow").expect("grow"),
+                &[1],
+                &mut folded_result,
+            )
+            .expect("folded grow");
+        assert_eq!(folded_result[0], 1);
+        assert_eq!(helper.memory_size(0), 2);
+        assert_eq!(
+            helper.memory_grow(0, 1).expect("helper refused grow"),
+            u32::MAX as u64
+        );
+        folded
+            .invoke(
+                folded.find_export("grow").expect("grow"),
+                &[1],
+                &mut folded_result,
+            )
+            .expect("folded refused grow");
+        assert_eq!(folded_result[0], u32::MAX as u64);
+    }
+
+    #[test]
+    fn frame_memory_primitives_match_folded_memory64() {
+        let src = r#"(module
+            (memory i64 1 2)
+            (func (export "roundtrip") (param i64 i64) (result i64)
+                local.get 0 local.get 1 i64.store offset=8
+                local.get 0 i64.load offset=8)
+            (func (export "load") (param i64) (result i64)
+                local.get 0 i64.load)
+            (func (export "grow") (param i64) (result i64)
+                local.get 0 memory.grow))"#;
+        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
+        let engine = Engine::with_defaults();
+        let mut helper = InterpInstance::new(
+            &engine,
+            Module::new("memory64-helper", &bin).expect("module"),
+            None,
+            &[],
+        )
+        .expect("helper instance");
+        let mut folded = InterpInstance::new(
+            &engine,
+            Module::new("memory64-folded", &bin).expect("module"),
+            None,
+            &[],
+        )
+        .expect("folded instance");
+
+        let raw = 0x0123_4567_89ab_cdefu64;
+        helper
+            .mem_store(16, 0, 8, 8)
+            .expect("helper store")
+            .copy_from_slice(&raw.to_le_bytes());
+        let mut helper_bytes = [0u8; 8];
+        helper_bytes.copy_from_slice(helper.mem_load(16, 0, 8, 8).expect("helper load"));
+        let mut folded_result = [0u64; 1];
+        folded
+            .invoke(
+                folded.find_export("roundtrip").expect("roundtrip"),
+                &[16, raw],
+                &mut folded_result,
+            )
+            .expect("folded roundtrip");
+        assert_eq!(u64::from_le_bytes(helper_bytes), folded_result[0]);
+
+        let helper_oob = helper.mem_load(65_530, 0, 0, 8).expect_err("helper OOB");
+        let folded_oob = folded
+            .invoke(
+                folded.find_export("load").expect("load"),
+                &[65_530],
+                &mut folded_result,
+            )
+            .expect_err("folded OOB");
+        assert_eq!(helper_oob, folded_oob);
+
+        assert_eq!(helper.memory_grow(0, 1).expect("helper grow"), 1);
+        folded
+            .invoke(
+                folded.find_export("grow").expect("grow"),
+                &[1],
+                &mut folded_result,
+            )
+            .expect("folded grow");
+        assert_eq!(folded_result[0], 1);
+        assert_eq!(
+            helper.memory_grow(0, 1).expect("helper refused grow"),
+            u64::MAX
+        );
+        folded
+            .invoke(
+                folded.find_export("grow").expect("grow"),
+                &[1],
+                &mut folded_result,
+            )
+            .expect("folded refused grow");
+        assert_eq!(folded_result[0], u64::MAX);
+    }
+
+    #[test]
     fn subword_load_store_sign() {
         let src = r#"(module (memory 1)
             (func (export "go") (result i32)
@@ -6097,6 +6303,155 @@ mod tests {
                 global.get $g i32.const 3 i32.add global.set $g
                 global.get $g))"#;
         assert_eq!(run1(src, "bump", &[]).unwrap(), 8);
+    }
+
+    #[test]
+    fn frame_global_primitives_match_private_and_shared_folded_globals() {
+        let private_src = r#"(module
+            (global $g (mut i64) (i64.const 5))
+            (func (export "read") (result i64) global.get $g)
+            (func (export "write") (param i64) local.get 0 global.set $g))"#;
+        let private_bin: StdVec<u8> = wat::parse_str(private_src).expect("wat");
+        let engine = Engine::with_defaults();
+        let mut private = InterpInstance::new(
+            &engine,
+            Module::new("private-global", &private_bin).expect("module"),
+            None,
+            &[],
+        )
+        .expect("private instance");
+        assert!(private.global_state_at(0).is_none());
+        private.global_set_from_frame(0, 17);
+        let mut result = [0u64; 1];
+        private
+            .invoke(private.find_export("read").expect("read"), &[], &mut result)
+            .expect("folded read");
+        assert_eq!(result[0], 17);
+        private
+            .invoke(private.find_export("write").expect("write"), &[23], &mut [])
+            .expect("folded write");
+        assert_eq!(private.global_get_for_frame(0), 23);
+
+        let shared_src = r#"(module
+            (global $g (export "state") (mut i64) (i64.const 5))
+            (func (export "read") (result i64) global.get $g)
+            (func (export "write") (param i64) local.get 0 global.set $g))"#;
+        let shared_bin: StdVec<u8> = wat::parse_str(shared_src).expect("wat");
+        let mut shared = InterpInstance::new(
+            &engine,
+            Module::new("shared-global", &shared_bin).expect("module"),
+            None,
+            &[],
+        )
+        .expect("shared instance");
+        shared.global_set_from_frame(0, 29);
+        shared
+            .invoke(shared.find_export("read").expect("read"), &[], &mut result)
+            .expect("folded read");
+        assert_eq!(result[0], 29);
+        assert_eq!(shared.global_state_at(0).expect("shared cell").raw(), 29);
+        shared
+            .invoke(shared.find_export("write").expect("write"), &[31], &mut [])
+            .expect("folded write");
+        assert_eq!(shared.global_get_for_frame(0), 31);
+        assert_eq!(shared.global_state_at(0).expect("shared cell").raw(), 31);
+    }
+
+    #[test]
+    fn frame_global_funcrefs_localize_and_absolutize_like_folded() {
+        let src = r#"(module
+            (func $first (export "first"))
+            (func $second (export "second"))
+            (global $slot (export "slot") (mut funcref) (ref.func $first))
+            (func (export "read") (result funcref) global.get $slot)
+            (func (export "write") (param funcref) local.get 0 global.set $slot))"#;
+        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
+        let engine = Engine::with_defaults();
+        let mut inst = InterpInstance::new(
+            &engine,
+            Module::new("global-funcref", &bin).expect("module"),
+            None,
+            &[],
+        )
+        .expect("instance");
+        let first_local = ref_to_machine_raw(RefValue::new(0), SLOT_GP_UNIT_BYTES);
+        let second_local = ref_to_machine_raw(RefValue::new(1), SLOT_GP_UNIT_BYTES);
+
+        inst.global_set_from_frame(0, second_local);
+        let second_absolute = ref_to_machine_raw(
+            inst.function_handle_at(1).expect("second identity"),
+            SLOT_GP_UNIT_BYTES,
+        );
+        assert_eq!(
+            inst.global_state_at(0).expect("shared global").raw(),
+            second_absolute
+        );
+        let mut result = [0u64; 1];
+        inst.invoke(inst.find_export("read").expect("read"), &[], &mut result)
+            .expect("folded read");
+        assert_eq!(result[0], second_local);
+
+        inst.invoke(
+            inst.find_export("write").expect("write"),
+            &[first_local],
+            &mut [],
+        )
+        .expect("folded write");
+        assert_eq!(inst.global_get_for_frame(0), first_local);
+        let first_absolute = ref_to_machine_raw(
+            inst.function_handle_at(0).expect("first identity"),
+            SLOT_GP_UNIT_BYTES,
+        );
+        assert_eq!(
+            inst.global_state_at(0).expect("shared global").raw(),
+            first_absolute
+        );
+    }
+
+    #[test]
+    fn frame_runtime_primitives_keep_entity_borrows_scoped() {
+        let src = r#"(module
+            (memory 1 2)
+            (func $first (export "first"))
+            (func $second (export "second"))
+            (global $slot (export "slot") (mut funcref) (ref.func $first)))"#;
+        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
+        let module = Module::new("scoped-frame-primitives", &bin).expect("module");
+        let registry = LinkRegistry::new();
+        let (_, instance_backref) = registry.reserve_instance();
+        // Deliberately stop before native linking. This keeps the ownership
+        // oracle executable under Miri while exercising the real memory and
+        // global entities built for an interpreter instance.
+        let mut inst = InterpInstance::build(
+            &Engine::with_defaults(),
+            module,
+            None,
+            &[],
+            None,
+            registry.arenas(),
+            instance_backref,
+        )
+        .expect("build instance state");
+
+        inst.mem_store(4, 0, 0, 4)
+            .expect("store")
+            .copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        let mut loaded = [0u8; 4];
+        loaded.copy_from_slice(inst.mem_load(4, 0, 0, 4).expect("load"));
+        assert_eq!(u32::from_le_bytes(loaded), 0x1234_5678);
+        assert_eq!(inst.memory_grow(0, 1).expect("grow"), 1);
+
+        let second_local = ref_to_machine_raw(RefValue::new(1), SLOT_GP_UNIT_BYTES);
+        inst.global_set_from_frame(0, second_local);
+        assert_eq!(inst.global_get_for_frame(0), second_local);
+        let second_absolute = ref_to_machine_raw(
+            inst.function_handle_at(1).expect("second identity"),
+            SLOT_GP_UNIT_BYTES,
+        );
+        assert_eq!(
+            inst.global_state_at(0).expect("shared global").raw(),
+            second_absolute
+        );
     }
 
     #[test]
