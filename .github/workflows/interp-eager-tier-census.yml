@@ -1,0 +1,57 @@
+name: Interpreter eager-tier structural census
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    name: deterministic wasmi startup corpus census
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+
+      - name: Checkout pinned wasmi-benchmarks
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test census algorithms
+        run: cargo test --locked --package sf-nano-eager-tier-census
+
+      - name: Build census tool
+        run: >-
+          cargo build --release --locked
+          --package sf-nano-eager-tier-census
+
+      - name: Census all seven startup modules
+        run: |
+          target/release/sf-nano-eager-tier-census \
+            --out-dir eager-tier-census \
+            bz2=wasmi-benchmarks/res/wasm/bz2.wasm \
+            pulldown-cmark=wasmi-benchmarks/res/wasm/pulldown-cmark.wasm \
+            spidermonkey=wasmi-benchmarks/res/wasm/spidermonkey.wasm \
+            ffmpeg=wasmi-benchmarks/res/wasm/ffmpeg.wasm \
+            coremark=wasmi-benchmarks/res/wasm/coremark.wasm \
+            argon2=wasmi-benchmarks/res/rust/cases/argon2/out.wasm \
+            erc20=wasmi-benchmarks/res/wasm/erc20.wasm
+          git rev-parse HEAD > eager-tier-census/source-revision.txt
+          git -C wasmi-benchmarks rev-parse HEAD > eager-tier-census/corpus-revision.txt
+          cat eager-tier-census/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload structural census
+        uses: actions/upload-artifact@v7
+        with:
+          name: interpreter-eager-tier-census
+          path: eager-tier-census/
+          if-no-files-found: error
+          retention-days: 14

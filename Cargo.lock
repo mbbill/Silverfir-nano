@@ -349,6 +349,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sf-nano-eager-tier-census"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sf-nano-core",
+ "wat",
+]
+
+[[package]]
 name = "sf-nano-foldsim"
 version = "0.1.0"
 dependencies = [
