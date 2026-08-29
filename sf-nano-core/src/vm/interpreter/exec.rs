@@ -1854,12 +1854,14 @@ impl InterpInstance {
                     let canon = canon_of.get(expected_type as usize);
                     if let Some(Some(canon)) = canon {
                         if *canon <= 0xFFFF {
-                            plan.record_indirect_type(cell, expected_type);
                             *plan.cell_mut(cell) = DCell {
                                 h: ci_h,
                                 a: caller_l1 << 48 | table_slot * 8,
                                 b: (caller_l0 | caller_fp) << 48 | canon << 32 | arg_base * 8,
-                                c: 0,
+                                // The native handler consumes only a/b. Keep
+                                // the original type id here so a guard failure
+                                // can rebuild the slow instruction directly.
+                                c: expected_type as u64,
                             };
                         }
                     }
@@ -3284,30 +3286,64 @@ impl InterpInstance {
                         cur_l0_slot = (lf.l0_off / 8) as usize;
                         cur_l1_slot = (lf.l1_off / 8) as usize;
                     }
-                    let ins = {
+                    let (cell, fast_indirect) = {
                         let native = self.native.as_ref().expect("native state");
                         let cell = native
                             .plan
                             .cell_index(state.pc)
                             .ok_or(WasmError::invalid("interp: native pc out of range"))?;
-                        native
-                            .plan
-                            .restore_slow_instr(cell, native.engine.slow_stub_addr())
-                            .ok_or(WasmError::internal(
-                                "interpreter native slow payload is not recoverable",
-                            ))?
+                        let payload = native.plan.native_call_indirect_payload(
+                            cell,
+                            native.engine.callindirect_handler_addr(),
+                        );
+                        (cell, payload)
+                    };
+                    let mut restored_ins = None;
+                    let slow_op = if fast_indirect.is_some() {
+                        Op::CallIndirect
+                    } else {
+                        let ins = {
+                            let native = self.native.as_ref().expect("native state");
+                            native
+                                .plan
+                                .restore_slow_instr(cell, native.engine.slow_stub_addr())
+                                .ok_or(WasmError::internal(
+                                    "interpreter native slow payload is not recoverable",
+                                ))?
+                        };
+                        let op = ins.op;
+                        restored_ins = Some(ins);
+                        op
                     };
                     if let Some(native) = self.native.as_mut() {
-                        native.slow_exits[ins.op as usize] += 1;
+                        native.slow_exits[slow_op as usize] += 1;
                     }
                     let frame = &mut ctx.stack[base..base + f.frame_slots as usize];
-                    let effect = match self.exec_ins(frame, &f, ins) {
+                    let result = match fast_indirect {
+                        Some((table_slot, arg_base, expected_type)) => {
+                            let table_element = frame[table_slot as usize];
+                            self.exec_call_indirect(
+                                frame,
+                                &f,
+                                table_element,
+                                arg_base as usize,
+                                expected_type as u64,
+                                false,
+                            )
+                        }
+                        None => self.exec_ins(
+                            frame,
+                            &f,
+                            restored_ins.expect("generic slow exit has an instruction"),
+                        ),
+                    };
+                    let effect = match result {
                         Ok(effect) => effect,
                         Err(error) => match self.pending_from_error(error) {
                             Ok(pending) => {
                                 act.pc = idx;
                                 let search_current = !matches!(
-                                    ins.op,
+                                    slow_op,
                                     Op::ReturnCall | Op::ReturnCallIndirect | Op::ReturnCallRef
                                 );
                                 return Ok(StepExit::Throw {
@@ -3372,6 +3408,101 @@ impl InterpInstance {
                 _ => return Err(WasmError::invalid("interp: bad native exit reason")),
             }
         }
+    }
+
+    /// Execute the common semantic slow path for `call_indirect` and
+    /// `return_call_indirect` after their operand representation has been
+    /// decoded. Native indirect-call guard exits can enter here directly;
+    /// static slow cells use the same helper through `exec_ins`.
+    fn exec_call_indirect(
+        &mut self,
+        frame: &mut [u64],
+        func: &PredecodedFunction,
+        table_element: u64,
+        arg_base: usize,
+        table_and_type: u64,
+        tail: bool,
+    ) -> Result<Effect, WasmError> {
+        let table = self
+            .tables
+            .get((table_and_type >> 32) as usize)
+            .ok_or(WasmError::trap("undefined element"))?;
+        let fi = usize::try_from(table_element)
+            .ok()
+            .and_then(|element| table.entries.get(element))
+            .ok_or(WasmError::trap("undefined element"))?;
+        let callee = machine_raw_to_ref(fi, SLOT_GP_UNIT_BYTES);
+        if callee.is_null() {
+            return Err(WasmError::trap("uninitialized element"));
+        }
+        if callee.is_special() {
+            return Err(WasmError::trap("indirect call type mismatch"));
+        }
+        let local = self.localize_ref(callee);
+        if local.encoded() >= self.module.functions().len() {
+            let entry = self.link_registry.functions.entry_for_handle(callee);
+            if entry.is_some() {
+                let expected = RefType::non_nullable_concrete(table_and_type as u32);
+                if !ref_type_matches(callee, &expected.heap_type, RefTypeOwner::Interp(self))
+                    .unwrap_or(false)
+                {
+                    return Err(WasmError::trap("indirect call type mismatch"));
+                }
+            }
+            let (param_types, result_types) = self
+                .module
+                .types()
+                .get_function_type(table_and_type as u32)
+                .map(|ft| {
+                    (
+                        ft.params().iter().copied().collect::<Vec<_>>(),
+                        ft.results().iter().copied().collect::<Vec<_>>(),
+                    )
+                })
+                .ok_or(WasmError::trap("indirect call type mismatch"))?;
+            let call = self.prepare_funcref_call(
+                callee,
+                param_types,
+                result_types,
+                frame,
+                arg_base,
+                entry,
+            );
+            let tail_target = if tail {
+                Some(func.slow_tail_return.ok_or(WasmError::invalid(
+                    "interp: tail call has no return landing",
+                ))? as usize)
+            } else {
+                None
+            };
+            return Ok(Effect::ExternalCall {
+                call: Box::new(call),
+                arg_base,
+                tail_target,
+            });
+        }
+        let fi = local.encoded() as u32;
+        let expected = table_and_type as u32;
+        let actual = self
+            .module
+            .functions()
+            .get(fi as usize)
+            .ok_or(WasmError::trap("undefined element"))?
+            .type_index();
+        if !self.module.types().types_equivalent(expected, actual) {
+            return Err(WasmError::trap("indirect call type mismatch"));
+        }
+        Ok(if tail {
+            Effect::TailCall {
+                callee: fi as usize,
+                arg_base,
+            }
+        } else {
+            Effect::Call {
+                callee: fi as usize,
+                arg_base,
+            }
+        })
     }
 
     /// Execute exactly one instruction against `frame` — the native
@@ -4405,92 +4536,14 @@ impl InterpInstance {
                 });
             }
             Op::CallIndirect | Op::ReturnCallIndirect => {
-                let t = opa!(ins);
-                let table = self
-                    .tables
-                    .get((ins.c >> 32) as usize)
-                    .ok_or(WasmError::trap("undefined element"))?;
-                let fi = usize::try_from(t)
-                    .ok()
-                    .and_then(|t| table.entries.get(t))
-                    .ok_or(WasmError::trap("undefined element"))?;
-                let callee = machine_raw_to_ref(fi, SLOT_GP_UNIT_BYTES);
-                if callee.is_null() {
-                    return Err(WasmError::trap("uninitialized element"));
-                }
-                if callee.is_special() {
-                    return Err(WasmError::trap("indirect call type mismatch"));
-                }
-                let local = self.localize_ref(callee);
-                if local.encoded() >= self.module.functions().len() {
-                    let entry = self.link_registry.functions.entry_for_handle(callee);
-                    if entry.is_some() {
-                        let expected = RefType::non_nullable_concrete(ins.c as u32);
-                        if !ref_type_matches(
-                            callee,
-                            &expected.heap_type,
-                            RefTypeOwner::Interp(self),
-                        )
-                        .unwrap_or(false)
-                        {
-                            return Err(WasmError::trap("indirect call type mismatch"));
-                        }
-                    }
-                    let (param_types, result_types) = self
-                        .module
-                        .types()
-                        .get_function_type(ins.c as u32)
-                        .map(|ft| {
-                            (
-                                ft.params().iter().copied().collect::<Vec<_>>(),
-                                ft.results().iter().copied().collect::<Vec<_>>(),
-                            )
-                        })
-                        .ok_or(WasmError::trap("indirect call type mismatch"))?;
-                    let base = ins.b as usize;
-                    let call = self.prepare_funcref_call(
-                        callee,
-                        param_types,
-                        result_types,
-                        frame,
-                        base,
-                        entry,
-                    );
-                    let tail_target = if ins.op == Op::ReturnCallIndirect {
-                        Some(func.slow_tail_return.ok_or(WasmError::invalid(
-                            "interp: tail call has no return landing",
-                        ))? as usize)
-                    } else {
-                        None
-                    };
-                    return Ok(Effect::ExternalCall {
-                        call: Box::new(call),
-                        arg_base: base,
-                        tail_target,
-                    });
-                }
-                let fi = local.encoded() as u32;
-                let expected = ins.c as u32;
-                let actual = self
-                    .module
-                    .functions()
-                    .get(fi as usize)
-                    .ok_or(WasmError::trap("undefined element"))?
-                    .type_index();
-                if !self.module.types().types_equivalent(expected, actual) {
-                    return Err(WasmError::trap("indirect call type mismatch"));
-                }
-                return Ok(if ins.op == Op::ReturnCallIndirect {
-                    Effect::TailCall {
-                        callee: fi as usize,
-                        arg_base: ins.b as usize,
-                    }
-                } else {
-                    Effect::Call {
-                        callee: fi as usize,
-                        arg_base: ins.b as usize,
-                    }
-                });
+                return self.exec_call_indirect(
+                    frame,
+                    func,
+                    opa!(ins),
+                    ins.b as usize,
+                    ins.c,
+                    ins.op == Op::ReturnCallIndirect,
+                );
             }
             Op::Unreachable => {
                 return Err(WasmError::trap("unreachable"));
@@ -4644,6 +4697,30 @@ mod tests {
     fn instantiate(src: &str) -> (StdVec<u8>, ()) {
         let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
         (bin, ())
+    }
+
+    fn linked_cell_for_op(
+        instance: &InterpInstance,
+        func_index: usize,
+        op: Op,
+    ) -> (&DCell, Instr, usize) {
+        let function = instance.functions()[func_index]
+            .as_ref()
+            .expect("defined function");
+        let pc = function
+            .code
+            .iter()
+            .position(|ins| ins.op == op)
+            .expect("requested linked op");
+        let native = instance.native.as_ref().expect("native state");
+        let linked = native.linked[func_index].as_ref().expect("linked function");
+        let cells = native.plan.cells(linked);
+        let cell = &cells[pc];
+        let cell_index = native
+            .plan
+            .cell_index(cell as *const DCell as u64)
+            .expect("cell belongs to plan");
+        (cell, function.code[pc], cell_index)
     }
 
     fn run1(src: &str, export: &str, args: &[u64]) -> Result<u64, WasmError> {
@@ -6699,6 +6776,111 @@ mod tests {
     }
 
     #[test]
+    fn exported_table_call_indirect_guard_uses_native_payload_fast_path() {
+        let (bin, _) = instantiate(
+            r#"(module
+                (type $unused (func))
+                (type $unary (func (param i32) (result i32)))
+                (table (export "table") 2 funcref)
+                (elem (i32.const 0) $double $square)
+                (func $double (type $unary) (param i32) (result i32)
+                    local.get 0 i32.const 2 i32.mul)
+                (func $square (type $unary) (param i32) (result i32)
+                    local.get 0 local.get 0 i32.mul)
+                (func (export "go") (param i32 i32) (result i32)
+                    local.get 1 local.get 0 call_indirect (type $unary)))"#,
+        );
+        let module = Module::new("exported-table-indirect", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instance");
+        let go = inst.find_export("go").expect("go");
+
+        {
+            let native = inst.native.as_ref().expect("native state");
+            assert!(inst.tables[0].entries.fast_base().is_none());
+            let (cell, ins, cell_index) = linked_cell_for_op(&inst, go, Op::CallIndirect);
+            let ci_h = native.engine.callindirect_handler_addr();
+            assert_eq!(cell.h, ci_h);
+            assert_eq!(cell.c, ins.c, "native cell retains the module type id");
+            assert_eq!(
+                native.plan.native_call_indirect_payload(cell_index, ci_h),
+                Some((ins.a, ins.b, ins.c as u32))
+            );
+        }
+
+        let mut result = [u64::MAX];
+        inst.invoke(go, &[0, 21], &mut result).expect("double");
+        assert_eq!(result, [42]);
+        inst.invoke(go, &[1, 7], &mut result).expect("square");
+        assert_eq!(result, [49]);
+        assert_eq!(
+            inst.slow_exit_stats()
+                .into_iter()
+                .find(|&(op, _)| op == Op::CallIndirect),
+            Some((Op::CallIndirect, 2))
+        );
+    }
+
+    #[test]
+    fn static_call_indirect_keeps_generic_slow_restore() {
+        let (bin, _) = instantiate(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (table 1 funcref)
+                (elem (i32.const 0) $double)
+                (func $double (type $unary) (param i32) (result i32)
+                    local.get 0 i32.const 2 i32.mul)
+                (func (export "go") (param i32) (result i32)
+                    local.get 0 i32.const 0 call_indirect (type $unary)))"#,
+        );
+        let module = Module::new("static-table-indirect", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instance");
+        let go = inst.find_export("go").expect("go");
+
+        {
+            let native = inst.native.as_ref().expect("native state");
+            let (cell, ins, cell_index) = linked_cell_for_op(&inst, go, Op::CallIndirect);
+            assert_eq!(cell.h, native.engine.slow_stub_addr());
+            assert_eq!(
+                native.plan.native_call_indirect_payload(
+                    cell_index,
+                    native.engine.callindirect_handler_addr()
+                ),
+                None
+            );
+            let restored = native
+                .plan
+                .restore_slow_instr(cell_index, native.engine.slow_stub_addr())
+                .expect("generic slow instruction");
+            assert_eq!(
+                (
+                    restored.op,
+                    restored.flags,
+                    restored.a,
+                    restored.b,
+                    restored.c
+                ),
+                (ins.op, ins.flags, ins.a, ins.b, ins.c)
+            );
+        }
+
+        let mut result = [u64::MAX];
+        inst.invoke(go, &[21], &mut result).expect("invoke");
+        assert_eq!(result, [42]);
+    }
+
+    #[test]
     fn call_indirect_dispatch() {
         let src = r#"(module
             (type $t (func (param i32) (result i32)))
@@ -6773,6 +6955,19 @@ mod tests {
         .expect("instance");
         let go = inst.find_export("go").expect("go");
 
+        {
+            let native = inst.native.as_ref().expect("native state");
+            assert!(inst.tables[0].entries.fast_base().is_some());
+            let (cell, ins, cell_index) = linked_cell_for_op(&inst, go, Op::CallIndirect);
+            let ci_h = native.engine.callindirect_handler_addr();
+            assert_eq!(cell.h, ci_h);
+            assert_eq!(cell.c, ins.c);
+            assert_eq!(
+                native.plan.native_call_indirect_payload(cell_index, ci_h),
+                Some((ins.a, ins.b, ins.c as u32))
+            );
+        }
+
         assert!(matches!(
             inst.invoke(go, &[0], &mut [0]),
             Err(WasmError::Trap("indirect call type mismatch"))
@@ -6783,6 +6978,12 @@ mod tests {
                 crate::vm::interpreter::EXTERNAL_FUNCREF_HOST_REQUIRED
             ))
         ));
+        assert_eq!(
+            inst.slow_exit_stats()
+                .into_iter()
+                .find(|&(op, _)| op == Op::CallIndirect),
+            Some((Op::CallIndirect, 2))
+        );
     }
 
     #[test]
