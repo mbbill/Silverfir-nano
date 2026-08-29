@@ -2464,9 +2464,20 @@ pub unsafe fn retype_vec<T, U>(value: Vec<T>) -> Vec<U> {
     // ordinary owning type. From here until `inner` is constructed, only
     // infallible raw-parts access occurs.
     let mut value = core::mem::ManuallyDrop::new(value);
+    #[cfg(not(feature = "memprof"))]
+    let (len, capacity) = (value.len(), value.capacity());
+    #[cfg(feature = "memprof")]
+    let (len, capacity) = (value.inner.len(), value.inner.capacity());
+    // Obtain the allocation pointer last. Under Stacked Borrows, reading the
+    // old vector header after creating this mutable raw pointer can invalidate
+    // the tag later used by the new vector to deallocate the buffer.
+    #[cfg(not(feature = "memprof"))]
     let ptr = value.as_mut_ptr().cast::<U>();
-    let len = value.len();
-    let capacity = value.capacity();
+    // Call alloc::Vec's inherent raw-pointer accessor directly. Going through
+    // this wrapper's DerefMut would first create an `&mut [T]`, whose stronger
+    // aliasing promise cannot be transferred into the new vector owner.
+    #[cfg(feature = "memprof")]
+    let ptr = value.inner.as_mut_ptr().cast::<U>();
     // SAFETY: equal size/alignment preserve the allocation layout and the
     // remaining validity/aliasing requirements are this function's contract.
     let inner = unsafe { inner::Vec::from_raw_parts(ptr, len, capacity) };
