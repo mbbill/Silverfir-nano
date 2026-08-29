@@ -1245,6 +1245,32 @@ impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
         self.decoder.payload.advance_known_valid(len);
     }
 
+    /// Publish one already-validated opcode through the decoder's ordinary
+    /// one-op slot. This keeps the consumer's hot loop on a single borrowed
+    /// `DecodedOp` path while an out-of-line parser handles uncommon misses.
+    #[cfg(sf_interp)]
+    #[inline]
+    pub(crate) fn commit_predecoded(
+        &mut self,
+        wasm_op: WasmOpcode,
+        imm: Immediate,
+        len: usize,
+    ) -> &DecodedOp {
+        let op_offset = self.decoder.payload.position();
+        self.decoder.payload.advance_known_valid(len);
+        let next_op_offset = self.decoder.payload.position();
+        if matches!(wasm_op, WasmOpcode::OP(Opcode::END)) && self.decoder.payload.is_empty() {
+            self.decoder.end_reached = true;
+        }
+        self.decoder.current = DecodedOp {
+            wasm_op,
+            op_offset,
+            next_op_offset,
+            imm,
+        };
+        &self.decoder.current
+    }
+
     /// Decode and return the next op, or `None` at the end of the body.
     ///
     /// The reference borrows the stream, so it is valid until the next
