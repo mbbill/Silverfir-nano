@@ -644,6 +644,14 @@ mod tests {
             ),
             [FunctionPlanKind::Import, FunctionPlanKind::FullFold]
         );
+        assert_eq!(
+            plans(
+                r#"(module
+                    (import "host" "tail" (func $host))
+                    (func return_call $host))"#,
+            ),
+            [FunctionPlanKind::Import, FunctionPlanKind::FullFold]
+        );
     }
 
     #[test]

@@ -433,6 +433,10 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
                 let callee = raw_function(raw.imm)?;
                 self.exec_direct_call(callee, raw.start)?;
             }
+            Opcode::RETURN_CALL => {
+                let callee = raw_function(raw.imm)?;
+                self.enter_tail_call(callee, raw.start)?;
+            }
             Opcode::CALL_INDIRECT => {
                 let (expected_type, table_index) = raw_call_indirect(raw.imm)?;
                 self.exec_indirect_call(expected_type, table_index, raw.start)?;
@@ -1217,7 +1221,7 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         let call = self.access.with_instance(|instance| {
             instance.prepare_import_call(callee, &self.values, argument_base)
         })??;
-        self.run_prepared_call(&call, argument_base, result_count, source_pc, Opcode::CALL)
+        self.run_prepared_call(&call, argument_base, result_count)
     }
 
     fn exec_indirect_call(
@@ -1279,13 +1283,9 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         })??;
         match resolved {
             ResolvedIndirectCall::Local(callee) => self.exec_direct_call(callee, source_pc),
-            ResolvedIndirectCall::External(call) => self.run_prepared_call(
-                &call,
-                argument_base,
-                result_count,
-                source_pc,
-                Opcode::CALL_INDIRECT,
-            ),
+            ResolvedIndirectCall::External(call) => {
+                self.run_prepared_call(&call, argument_base, result_count)
+            }
         }
     }
 
@@ -1294,24 +1294,12 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         call: &PreparedCall,
         argument_base: usize,
         result_count: usize,
-        source_pc: usize,
-        opcode: Opcode,
     ) -> Result<(), BaselineExecError> {
         // `call` owns arguments, result types, names, and shared entity
         // handles. No materialized instance reference survives this point, so
         // host callbacks and linked foreign instances may safely re-enter the
         // runtime world before results are localized in a fresh short scope.
-        let returned = match InterpInstance::run_external_call(&self.access, call) {
-            Ok(returned) => returned,
-            Err(WasmError::HostThrow { .. } | WasmError::Exception { .. }) => {
-                return Err(BaselineExecError::Unsupported {
-                    opcode: Some(WasmOpcode::OP(opcode)),
-                    pc: source_pc,
-                    feature: "external call exceptions",
-                });
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let returned = InterpInstance::run_external_call(&self.access, call)?;
         if returned.len() != result_count {
             return Err(WasmError::invalid("baseline MVP external result count mismatch").into());
         }
@@ -1319,6 +1307,67 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         for value in returned {
             self.push(value)?;
         }
+        Ok(())
+    }
+
+    fn enter_tail_call(
+        &mut self,
+        callee: usize,
+        source_pc: usize,
+    ) -> Result<(), BaselineExecError> {
+        let (parameter_count, local_count) = self.access.with_instance(|instance| {
+            let function =
+                instance.module().functions().get(callee).ok_or_else(|| {
+                    WasmError::invalid("baseline MVP callee index is out of bounds")
+                })?;
+            let spec = function.spec().ok_or(BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::RETURN_CALL)),
+                pc: source_pc,
+                feature: "imported return_call",
+            })?;
+            let function_type = function.func_type();
+            validate_baseline_function(
+                function_type.params(),
+                function_type.results(),
+                spec.locals(),
+            )?;
+            Ok::<_, BaselineExecError>((function_type.params().len(), spec.locals().len()))
+        })??;
+        let max_operand_height = self.baseline_function(callee)?.max_operand_height as usize;
+        let activation = *self.current_activation()?;
+        let argument_base = self
+            .values
+            .len()
+            .checked_sub(parameter_count)
+            .filter(|&base| base >= activation.operand_base)
+            .ok_or_else(|| WasmError::invalid("baseline MVP call argument underflow"))?;
+        let locals_base = activation.return_base;
+        let parameters_end = locals_base
+            .checked_add(parameter_count)
+            .ok_or_else(|| WasmError::invalid("baseline MVP tail parameters overflow"))?;
+        let operand_base = parameters_end
+            .checked_add(local_count)
+            .ok_or_else(|| WasmError::invalid("baseline MVP tail locals overflow"))?;
+        let required = operand_base
+            .checked_add(max_operand_height)
+            .ok_or_else(|| WasmError::invalid("baseline MVP tail frame overflow"))?;
+        self.reserve_value_slots(required)?;
+
+        // Tail calls preserve the current activation's caller destination.
+        // Move staged arguments over the old frame, discard its locals and
+        // operands, then zero only the replacement callee's declared locals.
+        self.values
+            .copy_within(argument_base..argument_base + parameter_count, locals_base);
+        self.values.truncate(parameters_end);
+        self.values.resize(operand_base, 0);
+        *self.current_activation_mut()? = BaselineActivation {
+            function_index: callee,
+            pc: 0,
+            stp: 0,
+            locals_base,
+            operand_base,
+            return_base: activation.return_base,
+        };
         Ok(())
     }
 
@@ -1751,6 +1800,34 @@ mod tests {
             .invoke_export(export, args)
     }
 
+    fn baseline_with_peak_activations(
+        wasm: &[u8],
+        export: &str,
+        args: &[Value],
+    ) -> Result<(Vec<Value>, usize), BaselineExecError> {
+        let _guard = artifact_test_guard();
+        let module = Module::new("baseline-tail-depth", wasm).expect("module");
+        let function = module
+            .functions()
+            .iter()
+            .position(|function| function.export_names().iter().any(|name| name == export))
+            .expect("export");
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let mut instance = built_interp(module, &[]);
+        let mut frame = BaselineFrame::new(
+            InterpInstanceAccess::borrowed(&mut instance),
+            &artifact,
+            function,
+            args,
+        )?;
+        let mut peak = frame.activations.len();
+        while !frame.activations.is_empty() {
+            frame.step()?;
+            peak = peak.max(frame.activations.len());
+        }
+        Ok((frame.results()?, peak))
+    }
+
     fn assert_values_equal(baseline: &[Value], native: &[Value]) {
         assert_eq!(baseline.len(), native.len());
         for (baseline, native) in baseline.iter().zip(native) {
@@ -1996,6 +2073,139 @@ mod tests {
             let native = native(&wasm, "depth", &args).expect("native depth boundary");
             assert_values_equal(&baseline, &native);
         }
+    }
+
+    #[test]
+    fn direct_tail_wrapper_and_multivalue_results_match_folded() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $target (func (param i32 i64) (result i32 i64)))
+                (type $wrapper (func (param i32) (result i32 i64)))
+                (func $pair (type $target) (param $value i32) (param $wide i64)
+                    (result i32 i64) (local $zero i32)
+                    local.get $value
+                    local.get $zero
+                    i32.add
+                    local.get $wide)
+                (func $wrapper (export "wrapper") (type $wrapper) (param $value i32)
+                    (result i32 i64) (local i64)
+                    local.get $value
+                    local.get $value
+                    i64.extend_i32_s
+                    return_call $pair)
+                (func (export "nested") (type $wrapper) (param $value i32)
+                    (result i32 i64) (local $wide i64)
+                    i32.const 777
+                    local.get $value
+                    call $wrapper
+                    local.set $wide
+                    i32.add
+                    local.get $wide))"#,
+        )
+        .expect("wat");
+        for input in [-17, 0, 31] {
+            let args = [Value::I32(input)];
+            let (baseline, peak) =
+                baseline_with_peak_activations(&wasm, "wrapper", &args).expect("baseline tail");
+            let folded = native(&wasm, "wrapper", &args).expect("folded tail");
+            assert_values_equal(&baseline, &folded);
+            assert_eq!(peak, 1, "acyclic tail wrapper pushed an activation");
+
+            let (baseline, peak) =
+                baseline_with_peak_activations(&wasm, "nested", &args).expect("nested tail");
+            let folded = native(&wasm, "nested", &args).expect("folded nested tail");
+            assert_values_equal(&baseline, &folded);
+            assert_eq!(peak, 2, "nested tail call failed to reuse return_base");
+        }
+    }
+
+    #[test]
+    fn self_and_mutual_tail_calls_keep_one_activation_beyond_depth_limit() {
+        let self_tail = wat::parse_str(
+            r#"(module
+                (func $count (export "count") (param $remaining i32) (result i32)
+                    (local $must_reset i32)
+                    local.get $remaining
+                    i32.eqz
+                    if (result i32)
+                        local.get $must_reset
+                    else
+                        i32.const 99
+                        local.set $must_reset
+                        local.get $remaining
+                        i32.const 1
+                        i32.sub
+                        return_call $count
+                    end))"#,
+        )
+        .expect("self-tail wat");
+        let args = [Value::I32(5000)];
+        let (baseline, peak) =
+            baseline_with_peak_activations(&self_tail, "count", &args).expect("baseline self tail");
+        let folded = native(&self_tail, "count", &args).expect("folded self tail");
+        assert_values_equal(&baseline, &folded);
+        assert_eq!(baseline, [Value::I32(0)], "tail call did not zero locals");
+        assert_eq!(peak, 1, "self tail recursion grew activation depth");
+
+        let mutual_tail = wat::parse_str(
+            r#"(module
+                (type $count (func (param i32) (result i32)))
+                (func $even (export "count") (type $count) (param $remaining i32) (result i32)
+                    local.get $remaining
+                    i32.eqz
+                    if (result i32)
+                        i32.const 42
+                    else
+                        local.get $remaining
+                        i32.const 1
+                        i32.sub
+                        return_call $odd
+                    end)
+                (func $odd (type $count) (param $remaining i32) (result i32)
+                    local.get $remaining
+                    i32.eqz
+                    if (result i32)
+                        i32.const 41
+                    else
+                        local.get $remaining
+                        i32.const 1
+                        i32.sub
+                        return_call $even
+                    end))"#,
+        )
+        .expect("mutual-tail wat");
+        let args = [Value::I32(5001)];
+        let (baseline, peak) = baseline_with_peak_activations(&mutual_tail, "count", &args)
+            .expect("baseline mutual tail");
+        let folded = native(&mutual_tail, "count", &args).expect("folded mutual tail");
+        assert_values_equal(&baseline, &folded);
+        assert_eq!(peak, 1, "mutual tail recursion grew activation depth");
+    }
+
+    #[test]
+    fn tail_replacement_runs_without_native_linking() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func $count (export "count") (param $remaining i32) (result i32)
+                    (local $must_reset i32)
+                    local.get $remaining
+                    i32.eqz
+                    if (result i32)
+                        local.get $must_reset
+                    else
+                        i32.const 99
+                        local.set $must_reset
+                        local.get $remaining
+                        i32.const 1
+                        i32.sub
+                        return_call $count
+                    end))"#,
+        )
+        .expect("wat");
+        let (result, peak) = baseline_with_peak_activations(&wasm, "count", &[Value::I32(32)])
+            .expect("baseline tail without native linking");
+        assert_eq!(result, [Value::I32(0)]);
+        assert_eq!(peak, 1);
     }
 
     #[test]
@@ -2436,6 +2646,113 @@ mod tests {
         let folded =
             native_with_imports(&wasm, "run", &[], &[host()]).expect_err("folded host trap");
         assert_eq!(baseline, folded);
+    }
+
+    #[test]
+    fn imported_return_call_is_unsupported_before_callback() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "host" "tail" (func $tail))
+                (func (export "run")
+                    return_call $tail))"#,
+        )
+        .expect("wat");
+        let calls = Rc::new(Cell::new(0usize));
+        let callback_calls = Rc::clone(&calls);
+        let import = crate::Import::func("host", "tail", move |_caller, _args, _results| {
+            callback_calls.set(callback_calls.get() + 1);
+            Ok(())
+        });
+        let error = baseline_with_imports(&wasm, "run", &[], &[import])
+            .expect_err("imported tail call must be rejected before dispatch");
+        assert!(matches!(
+            error,
+            BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::RETURN_CALL)),
+                feature: "imported return_call",
+                ..
+            }
+        ));
+        assert_eq!(
+            calls.get(),
+            0,
+            "imported tail callback ran before rejection"
+        );
+    }
+
+    #[test]
+    fn host_throw_after_side_effect_is_terminal_and_never_fallback_eligible() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $exception (func (param i32)))
+                (import "host" "exception" (tag $e (type $exception)))
+                (import "host" "throw" (func $throw))
+                (func (export "run") call $throw))"#,
+        )
+        .expect("wat");
+        let tag_type = crate::FunctionType::new(
+            crate::collections::vec![ValueType::I32],
+            crate::collections::vec![],
+        );
+        let (tag_import, tag) = crate::Import::tag_typed_with_handle("host", "exception", tag_type);
+        let effects = Rc::new(Cell::new(0usize));
+        let callback_effects = Rc::clone(&effects);
+        let function_import =
+            crate::Import::func("host", "throw", move |_caller, _args, _results| {
+                callback_effects.set(callback_effects.get() + 1);
+                Err(WasmError::HostThrow {
+                    tag,
+                    args: vec![Value::I32(7)],
+                })
+            });
+        let error = baseline_with_imports(&wasm, "run", &[], &[tag_import, function_import])
+            .expect_err("host throw must terminate baseline execution");
+        let BaselineExecError::Wasm(WasmError::HostThrow {
+            tag: actual_tag,
+            args,
+        }) = error
+        else {
+            panic!("post-effect host throw became fallback-eligible: {error}");
+        };
+        assert_eq!(actual_tag, tag);
+        assert_eq!(args, [Value::I32(7)]);
+        assert_eq!(effects.get(), 1, "host side effect ran more than once");
+    }
+
+    #[test]
+    fn external_exception_after_side_effect_is_terminal_and_preserved() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "host" "throw" (func $throw))
+                (func (export "run") call $throw))"#,
+        )
+        .expect("wat");
+        let effects = Rc::new(Cell::new(0usize));
+        let callback_effects = Rc::clone(&effects);
+        let exn = RefValue::new(123);
+        let tag = crate::vm::tag::TagIdentity::mint_fresh();
+        let import = crate::Import::func("host", "throw", move |_caller, _args, _results| {
+            callback_effects.set(callback_effects.get() + 1);
+            Err(WasmError::Exception {
+                exn,
+                tag,
+                module_tag_name: Some("sentinel".to_string()),
+            })
+        });
+        let error = baseline_with_imports(&wasm, "run", &[], &[import])
+            .expect_err("external exception must terminate baseline execution");
+        assert_eq!(
+            match error {
+                BaselineExecError::Wasm(error) => error,
+                error => panic!("external exception became fallback-eligible: {error}"),
+            },
+            WasmError::Exception {
+                exn,
+                tag,
+                module_tag_name: Some("sentinel".to_string()),
+            }
+        );
+        assert_eq!(effects.get(), 1, "external side effect ran more than once");
     }
 
     #[test]
