@@ -125,16 +125,14 @@ const _: () = {
 /// Transfer the module-wide stage-A allocation into its stage-B element
 /// type without allocating or copying any instruction payloads.
 fn into_dispatch_cells(instrs: Vec<Instr>) -> Vec<DCell> {
-    let mut instrs = core::mem::ManuallyDrop::new(instrs);
-    let ptr = instrs.as_mut_ptr().cast::<DCell>();
-    let len = instrs.len();
-    let capacity = instrs.capacity();
+    let (ptr, len, capacity) = crate::collections::into_raw_parts(instrs);
     // SAFETY: the compile-time assertions above prove identical element
     // size/alignment and a field-for-field payload layout. `Instr` is Copy
     // and has no drop glue; its explicit head padding is initialized. The
-    // ManuallyDrop transfers the one allocation to this Vec, so there is one
-    // owner throughout and no live reference into it crosses the transfer.
-    unsafe { Vec::from_raw_parts(ptr, len, capacity) }
+    // The tracking-aware raw-parts pair unregisters the old typed owner and
+    // registers the new one around the same allocation. There is one owner
+    // throughout and no live reference crosses the transfer.
+    unsafe { crate::collections::from_raw_parts(ptr.cast(), len, capacity) }
 }
 
 /// Native handlers which can return `EXIT_SLOW` after their cell payload has
@@ -1358,7 +1356,7 @@ mod tests {
             "prefetch pad changed"
         );
 
-        let mut arena = func.code.to_vec();
+        let mut arena = tracked_alloc::from_alloc_vec(func.code.to_vec());
         arena.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
         let allocation = arena.as_ptr() as usize;
         let expected_heads: Vec<u32> = arena.iter().copied().map(Instr::packed_head).collect();
