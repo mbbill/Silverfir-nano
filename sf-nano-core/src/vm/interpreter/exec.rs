@@ -41,8 +41,8 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use super::engine::{
-    DCell, EnterState, LinkScratch, LinkedFunction, NativeEngine, EXIT_RETURN, EXIT_SLOW,
-    EXIT_TRAP_BASE, NATIVE_CALLS, RET_RECORD, TRAP_KINDS,
+    CallFixup, DCell, EnterState, LinkPlan, LinkScratch, LinkedFunction, NativeEngine, EXIT_RETURN,
+    EXIT_SLOW, EXIT_TRAP_BASE, RET_RECORD, TRAP_KINDS,
 };
 use super::fmath;
 use super::instr::{op_from_index, Op};
@@ -561,6 +561,11 @@ pub(super) enum Effect {
 /// cells (parallel to `InterpInstance::funcs`).
 struct NativeState {
     engine: NativeEngine,
+    /// One arena owns every function's dispatch cells and flattened branch
+    /// tables. `linked` stores stable ranges into it rather than one vector
+    /// allocation per function. Function entry addresses are cached after
+    /// linking, so this field is ownership-only once initialization ends.
+    _plan: LinkPlan,
     linked: Vec<Option<LinkedFunction>>,
     /// Per-function-index callee info for the native `CallIndirect`
     /// handler: [callee cells (0 = slow), l1off<<48|l0off<<32|canon type,
@@ -1703,19 +1708,22 @@ impl InterpInstance {
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         let engine = NativeEngine::new();
         let mut scratch = LinkScratch::default();
+        let mut plan = LinkPlan::for_functions(self.funcs.iter().filter_map(|f| f.as_deref()));
         // Seeded with every defined function's own type, then extended by
         // the link pass with each `call_indirect`'s type as it goes.
         let mut used_types: Vec<u32> = (0..self.funcs.len())
             .filter_map(|i| self.module.functions().get(i).map(|f| f.type_index()))
             .collect();
-        let mut linked: Vec<Option<LinkedFunction>> = self
+        let linked: Vec<Option<LinkedFunction>> = self
             .funcs
             .iter()
-            .map(|f| {
+            .enumerate()
+            .map(|(i, f)| {
                 f.as_ref()
-                    .map(|f| engine.link(f, &mut scratch, &mut used_types))
+                    .map(|f| engine.link(f, i, &mut plan, &mut scratch, &mut used_types))
             })
             .collect();
+        plan.finish_layout();
 
         // Cross-function fixup: rewire `Call` cells to the native call
         // handler now that every callee's cell block has its final address.
@@ -1737,7 +1745,7 @@ impl InterpInstance {
                     }
                     let packed = fs << 32 | (f.n_locals as u64) << 16 | f.n_params as u64;
                     Some((
-                        lf.cells.as_ptr() as u64,
+                        lf.cell_base(),
                         packed,
                         lf.l0_off as u64,
                         lf.l1_off as u64,
@@ -1784,8 +1792,14 @@ impl InterpInstance {
             .collect();
 
         let ci_h = engine.callindirect_handler_addr();
-        for (i, lf) in linked.iter_mut().enumerate().filter(|_| NATIVE_CALLS) {
-            let (Some(f), Some(lf)) = (&self.funcs[i], lf) else {
+        // Only call sites recorded by the first link pass are visited here.
+        // This replaces the old second sweep over every instruction and its
+        // per-cell exception-site binary search.
+        for fixup in plan.take_call_fixups() {
+            let caller = match fixup {
+                CallFixup::Direct { caller, .. } | CallFixup::Indirect { caller, .. } => caller,
+            };
+            let Some(lf) = linked.get(caller).and_then(|lf| lf.as_ref()) else {
                 continue;
             };
             let caller_l0 = lf.l0_off as u64;
@@ -1793,38 +1807,43 @@ impl InterpInstance {
             // Rides bit 0 of the recorded l0 offset (byte-scaled, so the
             // bit is structurally free) into every return record.
             let caller_fp = lf.fp_pinned as u64;
-            for (k, ins) in f.code.iter().enumerate() {
-                // A protected call is an explicit Rust activation boundary.
-                // Its return-stack cursor is the precise checkpoint used to
-                // discard native descendants when the callee throws.
-                if f.has_exception_handlers_at(k as u32) {
-                    continue;
-                }
-                if ins.op == Op::Call {
+            match fixup {
+                CallFixup::Direct {
+                    cell,
+                    callee,
+                    arg_base,
+                    ..
+                } => {
                     if let Some(Some((cells, packed, callee_l0, callee_l1, callee_fp))) =
-                        callee_info.get(ins.a as usize)
+                        callee_info.get(callee)
                     {
-                        lf.cells[k] = DCell {
+                        *plan.cell_mut(cell) = DCell {
                             h: call_h,
                             a: caller_l1 << 48 | *cells,
                             b: callee_l1 << 48
                                 | callee_l0 << 32
                                 | (*callee_fp as u64) << 31
-                                | ins.b * 8,
+                                | arg_base * 8,
                             c: (caller_l0 | caller_fp) << 48 | *packed,
                         };
                     }
                 }
-                if ins.op == Op::CallIndirect && ins.flags & FLAG_A_CONST == 0 && ins.c >> 32 == 0 {
+                CallFixup::Indirect {
+                    cell,
+                    table_slot,
+                    arg_base,
+                    expected_type,
+                    ..
+                } => {
                     // The expected id must fit the cell's 16-bit field;
                     // an overflow (or unknown type) leaves the site slow.
-                    let canon = canon_of.get((ins.c as u32) as usize);
+                    let canon = canon_of.get(expected_type as usize);
                     if let Some(Some(canon)) = canon {
                         if *canon <= 0xFFFF {
-                            lf.cells[k] = DCell {
+                            *plan.cell_mut(cell) = DCell {
                                 h: ci_h,
-                                a: caller_l1 << 48 | ins.a * 8,
-                                b: (caller_l0 | caller_fp) << 48 | canon << 32 | ins.b * 8,
+                                a: caller_l1 << 48 | table_slot * 8,
+                                b: (caller_l0 | caller_fp) << 48 | canon << 32 | arg_base * 8,
                                 c: 0,
                             };
                         }
@@ -1833,19 +1852,20 @@ impl InterpInstance {
             }
         }
 
-        let mut ranges: Vec<(u64, u64, u32)> = Vec::new();
+        let mut ranges: Vec<(u64, u64, u32)> = Vec::with_capacity(linked.len());
         for (i, lf) in linked.iter().enumerate() {
             if let Some(lf) = lf {
-                let start = lf.cells.as_ptr() as u64;
+                let start = lf.cell_base();
                 // The trailing prefetch pad is not an instruction.
-                let end = start + (lf.cells.len() as u64 - 1) * 32;
+                let end = start + plan.instruction_len(lf) as u64 * 32;
+                debug_assert!(ranges.last().is_none_or(|r| r.0 < start));
                 ranges.push((start, end, i as u32));
             }
         }
-        ranges.sort_unstable_by_key(|r| r.0);
 
         self.native = Some(NativeState {
             engine,
+            _plan: plan,
             linked,
             indirect_info,
             ranges,
@@ -3122,7 +3142,7 @@ impl InterpInstance {
                     (
                         native.engine.entry_fn(),
                         native.engine.exit_cell_addr(),
-                        lf.cells.as_ptr() as u64,
+                        lf.cell_base(),
                         lf.l0_off,
                         lf.l1_off,
                     )
@@ -4705,6 +4725,100 @@ mod tests {
         let mut result = [u64::MAX];
         inst.invoke(get, &[], &mut result).expect("invoke get");
         assert_eq!(result, [73]);
+    }
+
+    #[test]
+    fn module_link_plan_owns_contiguous_cells_and_branch_tables() {
+        let src = r#"(module
+            (type $unary (func (param i32) (result i32)))
+            (table 2 funcref)
+            (elem (i32.const 0) $inc $twice)
+            (func $inc (type $unary) (param $x i32) (result i32)
+                local.get $x i32.const 1 i32.add)
+            (func $twice (type $unary) (param $x i32) (result i32)
+                local.get $x i32.const 2 i32.mul)
+            (func (export "direct") (param $x i32) (result i32)
+                local.get $x call $inc)
+            (func (export "indirect") (param $x i32) (param $which i32) (result i32)
+                local.get $x local.get $which call_indirect (type $unary))
+            (func (export "switch") (param $which i32) (result i32)
+                (block $outer (result i32)
+                    (block $inner (result i32)
+                        i32.const 41
+                        local.get $which
+                        br_table $inner $outer)
+                    i32.const 1
+                    i32.add)))"#;
+        let (bin, _) = instantiate(src);
+        let module = Module::new("module-link-plan", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+
+        {
+            let native = inst.native.as_ref().expect("native state");
+            assert!(native._plan.call_fixups_are_drained());
+
+            let mut next_cell_base = None;
+            let mut range_index = 0usize;
+            let mut br_table_cell = None;
+            for (func_index, linked) in native.linked.iter().enumerate() {
+                let Some(linked) = linked else { continue };
+                let base = linked.cell_base();
+                if let Some(expected) = next_cell_base {
+                    assert_eq!(base, expected, "function cell slices must be contiguous");
+                }
+                let cells = native._plan.cells(linked);
+                assert_eq!(
+                    base,
+                    cells.as_ptr() as u64,
+                    "cached function base must address its arena slice"
+                );
+                let predecoded = inst.funcs[func_index].as_ref().expect("defined body");
+                assert_eq!(cells.len(), predecoded.code.len() + 1);
+                next_cell_base = Some(base + (cells.len() * core::mem::size_of::<DCell>()) as u64);
+
+                assert_eq!(
+                    native.ranges[range_index],
+                    (
+                        base,
+                        base + (predecoded.code.len() * core::mem::size_of::<DCell>()) as u64,
+                        func_index as u32,
+                    )
+                );
+                range_index += 1;
+
+                if br_table_cell.is_none() {
+                    br_table_cell = predecoded
+                        .code
+                        .iter()
+                        .position(|ins| ins.op == Op::BrTable)
+                        .map(|pc| &cells[pc]);
+                }
+            }
+            assert_eq!(range_index, native.ranges.len());
+
+            let branch_bytes = native._plan.branch_bytes();
+            let br_table_cell = br_table_cell.expect("br_table cell");
+            assert!(branch_bytes.contains(&br_table_cell.b));
+            assert!(br_table_cell.b + 4 <= branch_bytes.end);
+        }
+
+        for (export, args, expected) in [
+            ("direct", &[40][..], 41),
+            ("indirect", &[20, 1][..], 40),
+            ("switch", &[0][..], 42),
+            ("switch", &[9][..], 41),
+        ] {
+            let func = inst.find_export(export).expect("export");
+            let mut result = [0u64];
+            inst.invoke(func, args, &mut result).expect("invoke");
+            assert_eq!(result[0], expected, "{export}");
+        }
     }
 
     const ITERATIVE_FIB_WAT: &str = r#"(module
