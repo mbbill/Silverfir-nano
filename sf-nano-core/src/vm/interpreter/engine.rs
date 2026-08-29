@@ -164,13 +164,9 @@ const fn native_may_exit_slow(op: Op) -> bool {
 }
 
 /// Recreate a native cell's stage-A payload on an `EXIT_SLOW` edge.
-/// `call_indirect` is the sole non-invertible fixup: its canonical type id
-/// replaces the module type index, supplied by the sparse side table.
-fn restore_native_slow_instr(
-    head: u32,
-    cell: &DCell,
-    indirect_type_index: Option<u32>,
-) -> Option<Instr> {
+/// `CallIndirect` keeps its original module type index in the otherwise-unused
+/// `c` word while its native handler uses `a` and `b`.
+fn restore_native_slow_instr(head: u32, cell: &DCell) -> Option<Instr> {
     let op = super::instr::op_from_index((head & 0xffff) as usize);
     let flags = (head >> 16) as u16;
     if !native_may_exit_slow(op) {
@@ -181,14 +177,11 @@ fn restore_native_slow_instr(
         value / 8
     };
     let (a, b, c) = match op {
-        Op::CallIndirect => {
-            let type_index = indirect_type_index?;
-            (
-                unscale(cell.a & ((1u64 << 48) - 1)),
-                unscale(cell.b & 0xffff_ffff),
-                type_index as u64,
-            )
-        }
+        Op::CallIndirect => (
+            unscale(cell.a & ((1u64 << 48) - 1)),
+            unscale(cell.b & 0xffff_ffff),
+            cell.c,
+        ),
         Op::MemoryFill | Op::MemoryCopy => (unscale(cell.a), unscale(cell.b), unscale(cell.c)),
         Op::MemoryFillCopy => (unscale(cell.a), unscale(cell.b), cell.c),
         _ => {
@@ -259,12 +252,6 @@ pub(super) enum CallFixup {
     },
 }
 
-#[derive(Clone, Copy)]
-struct IndirectTypeSite {
-    cell: usize,
-    type_index: u32,
-}
-
 /// Module-wide storage planned before linking begins.
 ///
 /// The exact cell and branch-table capacities are computed from all
@@ -277,7 +264,6 @@ pub(super) struct LinkPlan {
     heads: Vec<u32>,
     br_flat: Vec<u32>,
     call_fixups: Vec<CallFixup>,
-    indirect_types: Vec<IndirectTypeSite>,
     planned_cells: usize,
     planned_br_entries: usize,
     linked_cells: usize,
@@ -311,7 +297,6 @@ impl LinkPlan {
             // early growth without reserving in proportion to instruction
             // count or adding a separate call-counting sweep.
             call_fixups: Vec::with_capacity(function_count),
-            indirect_types: Vec::new(),
             planned_cells,
             planned_br_entries,
             linked_cells: 0,
@@ -331,7 +316,6 @@ impl LinkPlan {
             heads,
             br_flat: Vec::with_capacity(planned_br_entries),
             call_fixups: Vec::with_capacity(function_count),
-            indirect_types: Vec::new(),
             planned_cells,
             planned_br_entries,
             linked_cells: 0,
@@ -415,20 +399,25 @@ impl LinkPlan {
         core::mem::take(&mut self.call_fixups)
     }
 
-    pub(super) fn record_indirect_type(&mut self, cell: usize, type_index: u32) {
-        debug_assert!(self
-            .indirect_types
-            .last()
-            .is_none_or(|site| site.cell < cell));
-        self.indirect_types
-            .push(IndirectTypeSite { cell, type_index });
-    }
-
-    fn indirect_type(&self, cell: usize) -> Option<u32> {
-        self.indirect_types
-            .binary_search_by_key(&cell, |site| site.cell)
-            .ok()
-            .map(|index| self.indirect_types[index].type_index)
+    /// Recover the raw stage-A operands of a natively linked
+    /// `CallIndirect` without consulting the dense instruction-head arena.
+    /// Only the generated indirect-call handler uses this payload layout.
+    pub(super) fn native_call_indirect_payload(
+        &self,
+        index: usize,
+        callindirect_handler: u64,
+    ) -> Option<(u64, u64, u32)> {
+        let cell = self.cells.get(index)?;
+        if cell.h != callindirect_handler {
+            return None;
+        }
+        debug_assert_eq!(cell.a & 7, 0);
+        debug_assert_eq!(cell.b & 7, 0);
+        Some((
+            (cell.a & ((1u64 << 48) - 1)) / 8,
+            (cell.b & 0xffff_ffff) / 8,
+            cell.c as u32,
+        ))
     }
 
     pub(super) fn cell_index(&self, address: u64) -> Option<usize> {
@@ -447,7 +436,7 @@ impl LinkPlan {
         if cell.h == slow_stub {
             return Some(Instr::from_packed_head(head, cell.a, cell.b, cell.c));
         }
-        restore_native_slow_instr(head, cell, self.indirect_type(index))
+        restore_native_slow_instr(head, cell)
     }
 }
 
@@ -1452,8 +1441,8 @@ mod tests {
                 };
                 let (b, c) = transform_bc(&ins, flags);
                 let cell = DCell { h: 1, a, b, c };
-                let restored = restore_native_slow_instr(ins.packed_head(), &cell, None)
-                    .expect("dynamic slow op");
+                let restored =
+                    restore_native_slow_instr(ins.packed_head(), &cell).expect("dynamic slow op");
                 assert_eq!(
                     (
                         restored.op,
@@ -1482,7 +1471,7 @@ mod tests {
                 c,
             };
             let restored =
-                restore_native_slow_instr(ins.packed_head(), &cell, None).expect("bulk slow op");
+                restore_native_slow_instr(ins.packed_head(), &cell).expect("bulk slow op");
             assert_eq!(
                 (restored.op, restored.a, restored.b, restored.c),
                 (ins.op, ins.a, ins.b, ins.c)
@@ -1494,12 +1483,10 @@ mod tests {
             h: 1,
             a: 17u64 << 48 | indirect.a * 8,
             b: 13u64 << 48 | 19u64 << 32 | indirect.b * 8,
-            c: 0,
+            c: indirect.c,
         };
-        assert!(restore_native_slow_instr(indirect.packed_head(), &linked, None).is_none());
-        let restored =
-            restore_native_slow_instr(indirect.packed_head(), &linked, Some(indirect.c as u32))
-                .expect("call_indirect type sidecar");
+        let restored = restore_native_slow_instr(indirect.packed_head(), &linked)
+            .expect("call_indirect type payload");
         assert_eq!(
             (restored.op, restored.a, restored.b, restored.c),
             (indirect.op, indirect.a, indirect.b, indirect.c)
