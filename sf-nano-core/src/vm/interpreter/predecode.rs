@@ -2928,6 +2928,99 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         }
         Ok(())
     }
+
+    /// Probe, commit and lower one common opcode as one outlined operation.
+    /// Every immediate is decoded against the borrowed remaining-byte slice;
+    /// the stream cursor advances only after the complete probe succeeds.
+    #[inline(never)]
+    fn try_lower_fast<'x, 'y, 'z>(
+        &mut self,
+        stream: &mut OpStream<'x, 'y, 'z>,
+    ) -> Result<bool, WasmError> {
+        let bytes = stream.predecode_bytes();
+        let Some(&opcode) = bytes.first() else {
+            return Ok(false);
+        };
+        let lowering = FAST_LOWERINGS[opcode as usize];
+        let mut cursor = 1;
+        let (imm0, imm1, preserves_pending_fill) = match lowering {
+            FastLowering::Fallback => return Ok(false),
+            FastLowering::LocalGet | FastLowering::LocalSet | FastLowering::LocalTee => {
+                let Some(index) = probe_u32(bytes, &mut cursor) else {
+                    return Ok(false);
+                };
+                (index as u64, 0, matches!(lowering, FastLowering::LocalGet))
+            }
+            FastLowering::I32Const => {
+                let Some(value) = probe_i32(bytes, &mut cursor) else {
+                    return Ok(false);
+                };
+                (value as u32 as u64, 0, true)
+            }
+            FastLowering::I64Const => {
+                let Some(value) = probe_i64(bytes, &mut cursor) else {
+                    return Ok(false);
+                };
+                (value as u64, 0, true)
+            }
+            FastLowering::F32Const => {
+                let Some(value) = probe_fixed::<4>(bytes, &mut cursor) else {
+                    return Ok(false);
+                };
+                (u32::from_le_bytes(value) as u64, 0, false)
+            }
+            FastLowering::F64Const => {
+                let Some(value) = probe_fixed::<8>(bytes, &mut cursor) else {
+                    return Ok(false);
+                };
+                (u64::from_le_bytes(value), 0, false)
+            }
+            FastLowering::Load(_) | FastLowering::Store(_) => {
+                let Some(align_flag) = probe_u32(bytes, &mut cursor) else {
+                    return Ok(false);
+                };
+                let (align, memidx) = if align_flag < 64 {
+                    (align_flag, 0)
+                } else {
+                    let Some(memidx) = probe_u32(bytes, &mut cursor) else {
+                        return Ok(false);
+                    };
+                    (align_flag - 64, memidx)
+                };
+                if align >= 32 {
+                    return Ok(false);
+                }
+                let Some(offset) = probe_u64(bytes, &mut cursor) else {
+                    return Ok(false);
+                };
+                (offset, memidx, false)
+            }
+            FastLowering::Value1(_) | FastLowering::Value2(_) => (0, 0, false),
+        };
+
+        stream.consume_predecoded(cursor);
+        if !preserves_pending_fill && self.pending_fill.is_some() {
+            self.flush_pending_fill();
+        }
+        if self.dead {
+            return Ok(true);
+        }
+        match lowering {
+            FastLowering::LocalGet => self.stack.push(Desc::Local(imm0 as u32)),
+            FastLowering::LocalSet => self.local_set(imm0 as u32, false)?,
+            FastLowering::LocalTee => self.local_set(imm0 as u32, true)?,
+            FastLowering::I32Const
+            | FastLowering::I64Const
+            | FastLowering::F32Const
+            | FastLowering::F64Const => self.stack.push(Desc::ConstV(imm0)),
+            FastLowering::Value1(op) => self.value_op(op, 1)?,
+            FastLowering::Value2(op) => self.value_op(op, 2)?,
+            FastLowering::Load(op) => self.lower_load(op, imm1, imm0)?,
+            FastLowering::Store(op) => self.lower_store(op, imm1, imm0)?,
+            FastLowering::Fallback => unreachable!(),
+        }
+        Ok(true)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -3038,26 +3131,6 @@ const FAST_LOWERINGS: [FastLowering; 256] = {
     table
 };
 
-/// Trivially-copy result of a successful common-op probe. `imm0` is the
-/// scalar immediate (or raw memory offset), and `imm1` is the memory index.
-/// No field owns memory, so overwriting this slot never runs drop glue.
-#[derive(Clone, Copy)]
-struct FastDecoded {
-    lowering: FastLowering,
-    imm0: u64,
-    imm1: u32,
-    consumed: usize,
-}
-
-impl FastDecoded {
-    const EMPTY: Self = Self {
-        lowering: FastLowering::Fallback,
-        imm0: 0,
-        imm1: 0,
-        consumed: 0,
-    };
-}
-
 #[inline]
 fn probe_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
     let tail = bytes.get(*cursor..)?;
@@ -3128,79 +3201,6 @@ fn probe_fixed<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Option<[u8; 
     Some(value)
 }
 
-/// Probe one common opcode without mutating the decoder cursor. A malformed
-/// immediate deliberately reports a miss: the unchanged generic fallback then
-/// produces the same public error it did before this fast lane existed.
-#[inline(never)]
-fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
-    let Some(&opcode) = bytes.first() else {
-        return false;
-    };
-    let lowering = FAST_LOWERINGS[opcode as usize];
-    let mut cursor = 1;
-    let (imm0, imm1) = match lowering {
-        FastLowering::Fallback => return false,
-        FastLowering::LocalGet | FastLowering::LocalSet | FastLowering::LocalTee => {
-            let Some(index) = probe_u32(bytes, &mut cursor) else {
-                return false;
-            };
-            (index as u64, 0)
-        }
-        FastLowering::I32Const => {
-            let Some(value) = probe_i32(bytes, &mut cursor) else {
-                return false;
-            };
-            (value as u32 as u64, 0)
-        }
-        FastLowering::I64Const => {
-            let Some(value) = probe_i64(bytes, &mut cursor) else {
-                return false;
-            };
-            (value as u64, 0)
-        }
-        FastLowering::F32Const => {
-            let Some(value) = probe_fixed::<4>(bytes, &mut cursor) else {
-                return false;
-            };
-            (u32::from_le_bytes(value) as u64, 0)
-        }
-        FastLowering::F64Const => {
-            let Some(value) = probe_fixed::<8>(bytes, &mut cursor) else {
-                return false;
-            };
-            (u64::from_le_bytes(value), 0)
-        }
-        FastLowering::Load(_) | FastLowering::Store(_) => {
-            let Some(align_flag) = probe_u32(bytes, &mut cursor) else {
-                return false;
-            };
-            let (align, memidx) = if align_flag < 64 {
-                (align_flag, 0)
-            } else {
-                let Some(memidx) = probe_u32(bytes, &mut cursor) else {
-                    return false;
-                };
-                (align_flag - 64, memidx)
-            };
-            if align >= 32 {
-                return false;
-            }
-            let Some(offset) = probe_u64(bytes, &mut cursor) else {
-                return false;
-            };
-            (offset, memidx)
-        }
-        FastLowering::Value1(_) | FastLowering::Value2(_) => (0, 0),
-    };
-    *decoded = FastDecoded {
-        lowering,
-        imm0,
-        imm1,
-        consumed: cursor,
-    };
-    true
-}
-
 impl OpcodeHandler for Predecoder<'_, '_> {
     fn on_decode_begin(&mut self) -> Result<(), WasmError> {
         Ok(())
@@ -3210,43 +3210,8 @@ impl OpcodeHandler for Predecoder<'_, '_> {
         &mut self,
         stream: &mut OpStream<'x, 'y, 'z>,
     ) -> Result<(), WasmError> {
-        let mut fast = FastDecoded::EMPTY;
         loop {
-            if probe_fast(stream.predecode_bytes(), &mut fast) {
-                // Probe first, commit second: every miss leaves the generic
-                // decoder at the exact byte where it started.
-                stream.consume_predecoded(fast.consumed);
-                if self.pending_fill.is_some()
-                    && !matches!(
-                        fast.lowering,
-                        FastLowering::LocalGet | FastLowering::I32Const | FastLowering::I64Const
-                    )
-                {
-                    self.flush_pending_fill();
-                }
-                if self.dead {
-                    continue;
-                }
-                match fast.lowering {
-                    FastLowering::LocalGet => {
-                        self.stack.push(Desc::Local(fast.imm0 as u32));
-                    }
-                    FastLowering::LocalSet => self.local_set(fast.imm0 as u32, false)?,
-                    FastLowering::LocalTee => self.local_set(fast.imm0 as u32, true)?,
-                    FastLowering::I32Const
-                    | FastLowering::I64Const
-                    | FastLowering::F32Const
-                    | FastLowering::F64Const => self.stack.push(Desc::ConstV(fast.imm0)),
-                    FastLowering::Value1(op) => self.value_op(op, 1)?,
-                    FastLowering::Value2(op) => self.value_op(op, 2)?,
-                    FastLowering::Load(op) => {
-                        self.lower_load(op, fast.imm1, fast.imm0)?;
-                    }
-                    FastLowering::Store(op) => {
-                        self.lower_store(op, fast.imm1, fast.imm0)?;
-                    }
-                    FastLowering::Fallback => unreachable!(),
-                }
+            if self.try_lower_fast(stream)? {
                 continue;
             }
 
@@ -4366,9 +4331,12 @@ mod tests {
         }
     }
 
-    fn predecode_wat_mode(src: &str, func: usize, disable_fast: bool) -> PredecodedFunction {
-        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
-        let module = Module::new("t", &bin).expect("module");
+    fn try_predecode_bytes_mode(
+        bin: &[u8],
+        func: usize,
+        disable_fast: bool,
+    ) -> Result<PredecodedFunction, WasmError> {
+        let module = Module::new("t", bin)?;
         let tag_identities: StdVec<TagIdentity> = module
             .tags()
             .iter()
@@ -4386,10 +4354,18 @@ mod tests {
             disable_fast,
             &mut code,
             &mut scratch,
-        )
-        .expect("predecode");
+        )?;
         let code = Rc::new(code);
-        parts.finish(Some(&code))
+        Ok(parts.finish(Some(&code)))
+    }
+
+    fn predecode_bytes_mode(bin: &[u8], func: usize, disable_fast: bool) -> PredecodedFunction {
+        try_predecode_bytes_mode(bin, func, disable_fast).expect("predecode")
+    }
+
+    fn predecode_wat_mode(src: &str, func: usize, disable_fast: bool) -> PredecodedFunction {
+        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
+        predecode_bytes_mode(&bin, func, disable_fast)
     }
 
     fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
@@ -4713,12 +4689,166 @@ mod tests {
         assert_same_predecode(&fast, &generic);
     }
 
+    fn opcode_template() -> (StdVec<u8>, usize) {
+        let mut wat = StdString::from(
+            "(module (memory 1) (func (param i64 i64) i64.const 0 i64.const 0 i64.add",
+        );
+        for _ in 0..16 {
+            wat.push_str(" unreachable");
+        }
+        wat.push_str("))");
+        let bin: StdVec<u8> = wat::parse_str(wat).expect("opcode template");
+        let pattern = [
+            Opcode::I64_CONST as u8,
+            0,
+            Opcode::I64_CONST as u8,
+            0,
+            Opcode::I64_ADD as u8,
+            Opcode::UNREACHABLE as u8,
+            Opcode::UNREACHABLE as u8,
+            Opcode::UNREACHABLE as u8,
+        ];
+        let matches: StdVec<usize> = bin
+            .windows(pattern.len())
+            .enumerate()
+            .filter_map(|(at, bytes)| (bytes == pattern).then_some(at))
+            .collect();
+        assert_eq!(matches.len(), 1, "unique opcode template body");
+        (bin, matches[0] + 4)
+    }
+
+    fn assert_same_predecode_result(
+        fast: Result<PredecodedFunction, WasmError>,
+        generic: Result<PredecodedFunction, WasmError>,
+        context: &str,
+    ) {
+        match (fast, generic) {
+            (Ok(fast), Ok(generic)) => assert_same_predecode(&fast, &generic),
+            (Err(fast), Err(generic)) => assert_eq!(fast, generic, "{context}"),
+            (Ok(_), Err(generic)) => panic!("{context}: fast succeeded, generic={generic:?}"),
+            (Err(fast), Ok(_)) => panic!("{context}: fast={fast:?}, generic succeeded"),
+        }
+    }
+
+    #[test]
+    fn every_opcode_byte_matches_generic_decoder() {
+        let (template, opcode_at) = opcode_template();
+        for opcode in 0u16..=u8::MAX as u16 {
+            let mut bin = template.clone();
+            bin[opcode_at] = opcode as u8;
+            assert_same_predecode_result(
+                try_predecode_bytes_mode(&bin, 0, false),
+                try_predecode_bytes_mode(&bin, 0, true),
+                &format!("opcode {opcode:#04x}"),
+            );
+        }
+    }
+
+    #[test]
+    fn fast_immediate_boundaries_match_generic_decoder() {
+        let mut locals = StdString::new();
+        for _ in 0..130 {
+            locals.push_str(" i32");
+        }
+        let wat = format!(
+            r#"(module
+                (memory $m0 1)
+                (memory $m1 1)
+                (func (result i32) (local{locals})
+                    i32.const 1 local.set 127
+                    i32.const 2 local.tee 128 drop
+                    local.get 127 local.get 128 i32.add)
+                (func
+                    i32.const -2147483648 drop
+                    i32.const -65 drop
+                    i32.const -64 drop
+                    i32.const 63 drop
+                    i32.const 64 drop
+                    i32.const 2147483647 drop
+                    i64.const -9223372036854775808 drop
+                    i64.const -65 drop
+                    i64.const -64 drop
+                    i64.const 63 drop
+                    i64.const 64 drop
+                    i64.const 9223372036854775807 drop
+                    f32.const -0x1.fffffep127 drop
+                    f64.const 0x1.fffffffffffffp1023 drop)
+                (func
+                    i32.const 0 i32.load $m0 offset=0 drop
+                    i32.const 0 i32.load $m0 offset=127 drop
+                    i32.const 0 i32.load $m0 offset=128 drop
+                    i32.const 0 i32.load $m0 offset=16383 drop
+                    i32.const 0 i32.load $m0 offset=16384 drop
+                    i32.const 0 i32.load $m1 offset=4294967295 drop
+                    i32.const 0 i32.const 7 i32.store $m1 offset=128))"#
+        );
+        let bin: StdVec<u8> = wat::parse_str(wat).expect("immediate boundaries");
+        for func in 0..3 {
+            let fast = predecode_bytes_mode(&bin, func, false);
+            let generic = predecode_bytes_mode(&bin, func, true);
+            assert_same_predecode(&fast, &generic);
+        }
+    }
+
+    #[test]
+    fn malformed_fast_miss_preserves_generic_cursor() {
+        let (template, opcode_at) = opcode_template();
+        for (opcode, continuation_len) in [
+            (Opcode::LOCAL_GET as u8, 5usize),
+            (Opcode::I64_CONST as u8, 10usize),
+            (Opcode::I32_LOAD as u8, 5usize),
+        ] {
+            let mut bin = template.clone();
+            bin[opcode_at] = opcode;
+            bin[opcode_at + 1..opcode_at + 1 + continuation_len].fill(0x80);
+            assert_same_predecode_result(
+                try_predecode_bytes_mode(&bin, 0, false),
+                try_predecode_bytes_mode(&bin, 0, true),
+                &format!("malformed opcode {opcode:#04x}"),
+            );
+        }
+    }
+
+    #[test]
+    fn combined_fast_lowering_preserves_pending_fill_and_dead_code() {
+        let wat = r#"(module
+            (memory 1)
+            (func (param i32 i32 i32) (result i32)
+                local.get 0 local.get 1 local.get 2 memory.fill
+                i32.const 9
+                i32.clz)
+            (func
+                unreachable
+                i32.add
+                drop))"#;
+        for func in 0..2 {
+            let fast = predecode_wat_mode(wat, func, false);
+            let generic = predecode_wat_mode(wat, func, true);
+            assert_same_predecode(&fast, &generic);
+        }
+    }
+
     #[test]
     fn malformed_fast_immediate_is_a_non_consuming_miss() {
-        let mut decoded = FastDecoded::EMPTY;
-        assert!(!probe_fast(&[Opcode::LOCAL_GET as u8, 0x80], &mut decoded));
-        assert!(!probe_fast(&[Opcode::I64_CONST as u8, 0x80], &mut decoded));
-        assert_eq!(decoded.consumed, 0);
+        // Keep the historical focused names in addition to the cursor test
+        // above: both malformed immediates must still report the generic
+        // decoder's public error rather than a post-consumption desync.
+        let (template, opcode_at) = opcode_template();
+        for (opcode, continuation_len) in [
+            (Opcode::LOCAL_GET as u8, 5usize),
+            (Opcode::I64_CONST as u8, 10usize),
+        ] {
+            let mut bin = template.clone();
+            bin[opcode_at] = opcode;
+            bin[opcode_at + 1..opcode_at + 1 + continuation_len].fill(0x80);
+            match (
+                try_predecode_bytes_mode(&bin, 0, false),
+                try_predecode_bytes_mode(&bin, 0, true),
+            ) {
+                (Err(fast), Err(generic)) => assert_eq!(fast, generic),
+                _ => panic!("malformed fast immediate unexpectedly decoded"),
+            }
+        }
     }
 
     #[test]
