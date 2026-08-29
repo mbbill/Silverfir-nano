@@ -29,12 +29,12 @@ default = ["jit", "interp", "guard-pages"]
 # code, compiled on the target device.
 jit = []
 
-# The folded stack machine interpreter. Its dispatch
-# handlers are generated per target at BUILD time and linked into `.text`, so
-# it needs no executable memory and does not imply `jit`. A target with no
-# generated engine still builds; instantiating an interpreter there fails with
-# a clean error.
-interp = []
+# The folded/raw mixed stack-machine interpreter. Validation produces the
+# eager per-function execution plan used to omit folded storage for Raw bodies;
+# no compilation is deferred until first call. Dispatch handlers are generated
+# per target at BUILD time and linked into `.text`, so this still needs no
+# executable memory and does not imply `jit`.
+interp = ["validator"]
 
 # ---------------------------------------------------------------------------
 # JIT options. Each implies `jit`, because none of them means anything without
