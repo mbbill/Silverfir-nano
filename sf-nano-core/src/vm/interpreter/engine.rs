@@ -758,12 +758,7 @@ impl PinCensus {
         } else {
             (u64::MAX, false)
         };
-        Pinned {
-            l0,
-            l1,
-            l0_float: l0f,
-            l1_float: l1f,
-        }
+        Pinned::new(l0, l1, l0f, l1f)
     }
 }
 
@@ -1931,42 +1926,12 @@ mod tests {
         const OTHER: u64 = 33;
         let pins = [
             Pinned::NONE,
-            Pinned {
-                l0: L0,
-                l1: L1,
-                l0_float: false,
-                l1_float: false,
-            },
-            Pinned {
-                l0: L0,
-                l1: L1,
-                l0_float: true,
-                l1_float: true,
-            },
-            Pinned {
-                l0: L0,
-                l1: L1,
-                l0_float: false,
-                l1_float: true,
-            },
-            Pinned {
-                l0: L0,
-                l1: L1,
-                l0_float: true,
-                l1_float: false,
-            },
-            Pinned {
-                l0: L0,
-                l1: u64::MAX,
-                l0_float: false,
-                l1_float: false,
-            },
-            Pinned {
-                l0: u64::MAX,
-                l1: L1,
-                l0_float: false,
-                l1_float: true,
-            },
+            Pinned::new(L0, L1, false, false),
+            Pinned::new(L0, L1, true, true),
+            Pinned::new(L0, L1, false, true),
+            Pinned::new(L0, L1, true, false),
+            Pinned::new(L0, u64::MAX, false, false),
+            Pinned::new(u64::MAX, L1, false, true),
         ];
         let payloads = [
             // Unpinned, L0/L1-aliasing, zero-index, nonzero-index, packed

@@ -113,6 +113,8 @@ impl Deref for FunctionCode {
 #[derive(Clone, Copy)]
 struct PackedPinned(u32);
 
+const _: () = assert!(core::mem::size_of::<PackedPinned>() == core::mem::size_of::<u32>());
+
 impl PackedPinned {
     const SLOT_BITS: u32 = 14;
     const SLOT_MASK: u32 = (1 << Self::SLOT_BITS) - 1;
@@ -143,12 +145,12 @@ impl PackedPinned {
                 value as u64
             }
         };
-        Pinned {
-            l0: slot(self.0 & Self::SLOT_MASK),
-            l1: slot((self.0 >> Self::SLOT_BITS) & Self::SLOT_MASK),
-            l0_float: self.0 & (1 << 28) != 0,
-            l1_float: self.0 & (1 << 29) != 0,
-        }
+        Pinned::new(
+            slot(self.0 & Self::SLOT_MASK),
+            slot((self.0 >> Self::SLOT_BITS) & Self::SLOT_MASK),
+            self.0 & (1 << 28) != 0,
+            self.0 & (1 << 29) != 0,
+        )
     }
 }
 
@@ -1204,12 +1206,7 @@ fn select_pinned_incremental(locals: &[LocalState]) -> Pinned {
     } else {
         (u64::MAX, false)
     };
-    Pinned {
-        l0,
-        l1,
-        l0_float,
-        l1_float,
-    }
+    Pinned::new(l0, l1, l0_float, l1_float)
 }
 
 fn block_arity(types: &TypeContext, bt: &BlockType) -> Result<(u32, u32), WasmError> {

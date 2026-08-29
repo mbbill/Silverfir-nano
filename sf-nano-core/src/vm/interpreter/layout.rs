@@ -66,7 +66,7 @@ pub(crate) enum PairDstCls {
 }
 
 impl Cls {
-    pub(crate) fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         match self {
             Cls::Slot => 0,
             Cls::Const => 1,
@@ -78,7 +78,7 @@ impl Cls {
 }
 
 impl DstCls {
-    pub(crate) fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         match self {
             DstCls::Mem => 0,
             DstCls::Acc => 1,
@@ -589,15 +589,66 @@ pub(crate) struct Pinned {
     pub(crate) l1: u64,
     pub(crate) l0_float: bool,
     pub(crate) l1_float: bool,
+    /// Negative-only alias filter for the common three-field family. A set
+    /// bit is merely a candidate; hash collisions always use exact identity
+    /// and domain classification.
+    alias_bloom: u64,
 }
 
 impl Pinned {
-    pub(crate) const NONE: Pinned = Pinned {
-        l0: u64::MAX,
-        l1: u64::MAX,
-        l0_float: false,
-        l1_float: false,
-    };
+    pub(crate) const NONE: Pinned = Pinned::new(u64::MAX, u64::MAX, false, false);
+
+    pub(crate) const fn new(l0: u64, l1: u64, l0_float: bool, l1_float: bool) -> Self {
+        Self {
+            l0,
+            l1,
+            l0_float,
+            l1_float,
+            alias_bloom: field_bloom(l0) | field_bloom(l1),
+        }
+    }
+}
+
+/// One-hash Bloom bit for a semantic frame field. The `u64::MAX` no-pin
+/// sentinel deliberately occupies bit 63: the exact legacy classifier also
+/// compares forged max-valued fields equal to that sentinel, so preserving
+/// its result requires those cases to collide and fall back.
+#[inline]
+const fn field_bloom(slot: u64) -> u64 {
+    1u64 << (slot as u32 & 63)
+}
+
+/// Handler-bank offset for a [`Fam::SrcABDst`] cell known not to alias either
+/// pinned slot. Only the five residency bits affect this no-pin result.
+const NO_PIN_SRC_AB_DST_INDEX: [u8; 32] = build_no_pin_src_ab_dst_index();
+
+const fn build_no_pin_src_ab_dst_index() -> [u8; 32] {
+    let mut table = [0u8; 32];
+    let mut flags = 0usize;
+    while flags < table.len() {
+        let a = if flags & FLAG_A_CONST as usize != 0 {
+            Cls::Const
+        } else if flags & FLAG_A_ACC as usize != 0 {
+            Cls::Acc
+        } else {
+            Cls::Slot
+        };
+        let b = if flags & FLAG_B_CONST as usize != 0 {
+            Cls::Const
+        } else if flags & FLAG_B_ACC as usize != 0 {
+            Cls::Acc
+        } else {
+            Cls::Slot
+        };
+        let d = if flags & FLAG_DST_ACC as usize != 0 {
+            DstCls::Acc
+        } else {
+            DstCls::Mem
+        };
+        table[flags] = (a.index() + 5 * b.index() + 25 * d.index()) as u8;
+        flags += 1;
+    }
+    table
 }
 
 /// Classify one cell into its packed handler slot, given link-resolved
@@ -646,9 +697,19 @@ pub(crate) fn op_slot(ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
                 + 25 * pair_dst_class(ins, pin)?.index()
         }
         Fam::SrcABDst => {
-            source_a_class(ins, flags, pin).index()
-                + 5 * source_b_class(ins, flags, pin).index()
-                + 25 * dst_class(ins, flags, pin, ins.op == Op::Select).index()
+            let dslot = if ins.op == Op::Select {
+                ins.c & 0xffff_ffff
+            } else {
+                ins.c
+            };
+            let fields = field_bloom(ins.a) | field_bloom(ins.b) | field_bloom(dslot);
+            if fields & pin.alias_bloom == 0 {
+                NO_PIN_SRC_AB_DST_INDEX[flags as usize & 0x1f] as usize
+            } else {
+                source_a_class(ins, flags, pin).index()
+                    + 5 * source_b_class(ins, flags, pin).index()
+                    + 25 * dst_class(ins, flags, pin, ins.op == Op::Select).index()
+            }
         }
         Fam::Load => {
             source_a_class(ins, flags, pin).index()
@@ -867,42 +928,12 @@ mod tests {
         const OTHER_2: u64 = 44;
         let pins = [
             Pinned::NONE,
-            Pinned {
-                l0: L0,
-                l1: L1,
-                l0_float: false,
-                l1_float: false,
-            },
-            Pinned {
-                l0: L0,
-                l1: L1,
-                l0_float: true,
-                l1_float: true,
-            },
-            Pinned {
-                l0: L0,
-                l1: L1,
-                l0_float: false,
-                l1_float: true,
-            },
-            Pinned {
-                l0: L0,
-                l1: L1,
-                l0_float: true,
-                l1_float: false,
-            },
-            Pinned {
-                l0: L0,
-                l1: u64::MAX,
-                l0_float: false,
-                l1_float: false,
-            },
-            Pinned {
-                l0: u64::MAX,
-                l1: L1,
-                l0_float: false,
-                l1_float: true,
-            },
+            Pinned::new(L0, L1, false, false),
+            Pinned::new(L0, L1, true, true),
+            Pinned::new(L0, L1, false, true),
+            Pinned::new(L0, L1, true, false),
+            Pinned::new(L0, u64::MAX, false, false),
+            Pinned::new(u64::MAX, L1, false, true),
         ];
 
         // Exhaust every classification bit combination. The three slow bits
@@ -967,14 +998,56 @@ mod tests {
         }
     }
 
+    /// Bloom is a negative filter only. Exact aliases, low-six-bit
+    /// collisions, partial pin sets, and the no-pin sentinel must all retain
+    /// the exact classifier's result for every common-family opcode and
+    /// residency-flag combination.
+    #[test]
+    fn src_ab_dst_bloom_collisions_match_exact_classifier() {
+        const L0: u64 = 11;
+        const L1: u64 = 22;
+        let pins = [
+            Pinned::NONE,
+            Pinned::new(L0, L1, false, false),
+            Pinned::new(L0, L1, true, true),
+            Pinned::new(L0, L1, false, true),
+            Pinned::new(L0, u64::MAX, false, false),
+            Pinned::new(u64::MAX, L1, false, true),
+        ];
+        let fields = [L0, L1, L0 + 64, L1 + 64, L0 + 128, L1 + 128, 7, u64::MAX];
+
+        for op_index in 0..N_OPS {
+            let op = op_from_index(op_index);
+            if family(op) != Fam::SrcABDst {
+                continue;
+            }
+            for (pin_index, pin) in pins.iter().enumerate() {
+                for flags in 0..(FLAG_FUSED << 1) {
+                    for &a in &fields {
+                        for &b in &fields {
+                            for &dst in &fields {
+                                let c = if op == Op::Select {
+                                    (L0 + 64) << 32 | (dst & 0xffff_ffff)
+                                } else {
+                                    dst
+                                };
+                                let ins = Instr::new(op, flags, a, b, c);
+                                assert_eq!(
+                                    op_slot(&ins, flags, pin),
+                                    op_slot_generic_reference(&ins, flags, pin),
+                                    "op={op:?} flags={flags:#x} pin={pin_index} a={a} b={b} c={c:#x}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn mov_pair_classifies_every_ordered_pinned_destination_state() {
-        let pin = Pinned {
-            l0: 1,
-            l1: 2,
-            l0_float: false,
-            l1_float: false,
-        };
+        let pin = Pinned::new(1, 2, false, false);
         let cases = [
             ((3, 4), PairDstCls::None),
             ((1, 3), PairDstCls::FirstL0),
