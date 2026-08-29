@@ -89,3 +89,7 @@ memprof = ["tracked_alloc/memprof"]
 [[example]]
 name = "invoke_export"
 required-features = ["wasi"]
+
+[[example]]
+name = "startup_callgrind"
+required-features = ["interp"]
