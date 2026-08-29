@@ -590,13 +590,13 @@ pub struct InterpInstance {
     /// back into the module, so there is nothing to keep alive separately
     /// and nothing for an embedder to have to outlive.
     module: Module,
-    /// Published only after the shared instruction allocation has been
-    /// transferred into dispatch cells. Each defined body keeps the original
-    /// per-function `Rc` metadata and side-table vectors.
+    /// Published only after compact drafts have been expanded into dispatch
+    /// cells. Each defined body keeps the original per-function `Rc` metadata
+    /// and side-table vectors.
     funcs: Option<Vec<Option<Rc<PredecodedFunction>>>>,
-    /// Owned stage-A arena. It exists only between `build` and the first
-    /// step of `initialize`, where link consumes it in place and publishes
-    /// immutable function metadata.
+    /// Owned compact stage-A arena. It exists only between `build` and the
+    /// first step of `initialize`, where link reads it into a separate module
+    /// dispatch arena and then publishes immutable function metadata.
     unlinked_funcs: Option<UnlinkedPredecodedFunctions>,
     /// Runtime state only the executor touches. Instance construction still
     /// builds it on every target -- doing so is what rejects
@@ -1712,7 +1712,7 @@ impl InterpInstance {
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         let engine = NativeEngine::new();
         let mut scratch = LinkScratch::default();
-        let mut unlinked = self
+        let unlinked = self
             .unlinked_funcs
             .take()
             .ok_or_else(|| WasmError::internal("interpreter functions already linked"))?;
@@ -1722,8 +1722,8 @@ impl InterpInstance {
         let test_code = None;
         let function_count = unlinked.defined_count();
         let br_entry_count = unlinked.br_entry_count();
-        let instrs = unlinked.take_code();
-        let mut plan = LinkPlan::from_instr_arena(instrs, function_count, br_entry_count);
+        let mut plan =
+            LinkPlan::for_compact_arena(unlinked.code_len(), function_count, br_entry_count);
         // Seeded with every defined function's own type, then extended by
         // the link pass with each `call_indirect`'s type as it goes.
         let mut used_types: Vec<u32> = (0..unlinked.len())
@@ -1732,7 +1732,15 @@ impl InterpInstance {
         let linked: Vec<Option<LinkedFunction>> = (0..unlinked.len())
             .map(|i| {
                 unlinked.function(i).map(|function| {
-                    engine.link_in_place(&function, i, &mut plan, &mut scratch, &mut used_types)
+                    engine.link_compact(
+                        &function,
+                        unlinked.drafts(),
+                        unlinked.draft_side(),
+                        i,
+                        &mut plan,
+                        &mut scratch,
+                        &mut used_types,
+                    )
                 })
             })
             .collect();

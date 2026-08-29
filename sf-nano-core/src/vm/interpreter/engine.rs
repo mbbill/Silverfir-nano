@@ -12,7 +12,7 @@
 //! with slot operands pre-scaled to byte offsets and branch targets
 //! resolved to absolute cell addresses.
 
-use tracked_alloc::{boxed::Box, retype_vec};
+use tracked_alloc::boxed::Box;
 
 use crate::collections::Vec;
 
@@ -27,9 +27,9 @@ use super::layout::slot_fields;
 use super::layout::{
     c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
 };
-use super::predecode::LinkFunction;
 #[cfg(test)]
 use super::predecode::PredecodedFunction;
+use super::predecode::{CellDraft, LinkFunction};
 
 // Build-time facts about the generated engine: which operand classes it
 // was built with, and how many packed handler slots the table holds.
@@ -97,8 +97,7 @@ pub(super) struct EnterState {
     pub indirect_len: u64, // 136: number of per-function info entries
 }
 
-/// One 32-byte dispatch cell: [`Instr`] with the leading word replaced by
-/// the handler address.
+/// One 32-byte dispatch cell.
 #[repr(C, align(32))]
 #[cfg_attr(test, derive(Clone, Copy, Debug, PartialEq, Eq))]
 pub(super) struct DCell {
@@ -108,31 +107,7 @@ pub(super) struct DCell {
     pub c: u64,
 }
 
-// Stage A owns exactly the same allocation layout as stage B. The explicit
-// `Instr::head_pad` makes the leading eight bytes fully initialized before
-// ownership is transferred; these assertions make a future field/layout
-// drift a compile-time failure rather than allocator or aliasing UB.
-const _: () = {
-    assert!(core::mem::size_of::<Instr>() == core::mem::size_of::<DCell>());
-    assert!(core::mem::align_of::<Instr>() == core::mem::align_of::<DCell>());
-    assert!(!core::mem::needs_drop::<Instr>());
-    assert!(!core::mem::needs_drop::<DCell>());
-    assert!(core::mem::offset_of!(Instr, a) == core::mem::offset_of!(DCell, a));
-    assert!(core::mem::offset_of!(Instr, b) == core::mem::offset_of!(DCell, b));
-    assert!(core::mem::offset_of!(Instr, c) == core::mem::offset_of!(DCell, c));
-};
-
-/// Transfer the module-wide stage-A allocation into its stage-B element
-/// type without allocating or copying any instruction payloads.
-fn into_dispatch_cells(instrs: Vec<Instr>) -> Vec<DCell> {
-    // SAFETY: the compile-time assertions above prove identical element
-    // size/alignment and a field-for-field payload layout. `Instr` is Copy
-    // and has no drop glue; its explicit head padding is initialized. The
-    // tracking-aware transfer retypes the one live allocation record in one
-    // operation. There is one owner throughout and no live reference crosses
-    // the transfer.
-    unsafe { retype_vec(instrs) }
-}
+const _: () = assert!(core::mem::size_of::<DCell>() == 32);
 
 /// Native handlers which can return `EXIT_SLOW` after their cell payload has
 /// been transformed. Static slow cells keep raw a/b/c and need no inverse.
@@ -281,7 +256,6 @@ pub(super) struct LinkPlan {
     planned_cells: usize,
     planned_br_entries: usize,
     linked_cells: usize,
-    in_place: bool,
 }
 
 impl LinkPlan {
@@ -305,7 +279,7 @@ impl LinkPlan {
         }
         Self {
             cells: Vec::with_capacity(planned_cells),
-            heads: Vec::new(),
+            heads: Vec::with_capacity(planned_cells),
             br_flat: Vec::with_capacity(planned_br_entries),
             // Most real functions have no call. One slot per function avoids
             // early growth without reserving in proportion to instruction
@@ -315,27 +289,23 @@ impl LinkPlan {
             planned_cells,
             planned_br_entries,
             linked_cells: 0,
-            in_place: false,
         }
     }
 
-    pub(super) fn from_instr_arena(
-        instrs: Vec<Instr>,
+    pub(super) fn for_compact_arena(
+        planned_cells: usize,
         function_count: usize,
         planned_br_entries: usize,
     ) -> Self {
-        let heads = instrs.iter().copied().map(Instr::packed_head).collect();
-        let planned_cells = instrs.len();
         Self {
-            cells: into_dispatch_cells(instrs),
-            heads,
+            cells: Vec::with_capacity(planned_cells),
+            heads: Vec::with_capacity(planned_cells),
             br_flat: Vec::with_capacity(planned_br_entries),
             call_fixups: Vec::with_capacity(function_count),
             indirect_types: Vec::new(),
             planned_cells,
             planned_br_entries,
             linked_cells: 0,
-            in_place: true,
         }
     }
 
@@ -351,19 +321,11 @@ impl LinkPlan {
     }
 
     #[inline]
-    fn write_cell(&mut self, index: usize, cell: DCell) {
-        if self.in_place {
-            self.cells[index] = cell;
-        } else {
-            debug_assert_eq!(index, self.cells.len());
-            self.cells.push(cell);
-        }
-    }
-
-    #[inline]
-    fn raw_instr(&self, index: usize) -> Instr {
-        let cell = &self.cells[index];
-        Instr::from_packed_head(self.heads[index], cell.a, cell.b, cell.c)
+    fn write_cell(&mut self, index: usize, head: u32, cell: DCell) {
+        debug_assert_eq!(index, self.cells.len());
+        debug_assert_eq!(index, self.heads.len());
+        self.cells.push(cell);
+        self.heads.push(head);
     }
 
     /// Verify that the precomputed storage plan and the completed link agree.
@@ -371,10 +333,7 @@ impl LinkPlan {
         debug_assert_eq!(self.cells.len(), self.planned_cells);
         debug_assert_eq!(self.br_flat.len(), self.planned_br_entries);
         debug_assert_eq!(self.linked_cells, self.planned_cells);
-        debug_assert_eq!(
-            self.heads.len(),
-            if self.in_place { self.planned_cells } else { 0 }
-        );
+        debug_assert_eq!(self.heads.len(), self.planned_cells);
     }
 
     #[inline]
@@ -476,20 +435,19 @@ struct ResolvedCell {
 }
 
 trait LinkCode {
-    fn get(&self, plan: &LinkPlan, cell_start: usize, index: usize) -> Instr;
-    fn is_in_place(&self) -> bool;
+    fn get(&self, index: usize) -> Instr;
 }
 
-struct InPlaceCode;
+struct CompactCode<'a> {
+    drafts: &'a [CellDraft],
+    side: &'a [u64],
+    start: usize,
+}
 
-impl LinkCode for InPlaceCode {
+impl LinkCode for CompactCode<'_> {
     #[inline]
-    fn get(&self, plan: &LinkPlan, cell_start: usize, index: usize) -> Instr {
-        plan.raw_instr(cell_start + index)
-    }
-
-    fn is_in_place(&self) -> bool {
-        true
+    fn get(&self, index: usize) -> Instr {
+        self.drafts[self.start + index].decode(self.side)
     }
 }
 
@@ -498,12 +456,8 @@ struct BorrowedCode<'a>(&'a [Instr]);
 
 #[cfg(test)]
 impl LinkCode for BorrowedCode<'_> {
-    fn get(&self, _plan: &LinkPlan, _cell_start: usize, index: usize) -> Instr {
+    fn get(&self, index: usize) -> Instr {
         self.0[index]
-    }
-
-    fn is_in_place(&self) -> bool {
-        false
     }
 }
 
@@ -948,9 +902,11 @@ impl NativeEngine {
         )
     }
 
-    pub(super) fn link_in_place<F: LinkFunction + ?Sized>(
+    pub(super) fn link_compact<F: LinkFunction + ?Sized>(
         &self,
         func: &F,
+        drafts: &[CellDraft],
+        side: &[u64],
         caller_index: usize,
         plan: &mut LinkPlan,
         scratch: &mut LinkScratch,
@@ -958,7 +914,11 @@ impl NativeEngine {
     ) -> LinkedFunction {
         self.link_source(
             func,
-            InPlaceCode,
+            CompactCode {
+                drafts,
+                side,
+                start: func.code_start(),
+            },
             caller_index,
             plan,
             scratch,
@@ -1009,12 +969,10 @@ impl NativeEngine {
             }
         };
         let cell_start = plan.begin_function(code_len);
-        if source.is_in_place() {
-            debug_assert_eq!(cell_start, func.code_start());
-        }
+        debug_assert_eq!(cell_start, func.code_start());
         // Every linked body contains at least its prefetch pad, so this is
         // always an in-allocation address rather than a one-past pointer.
-        let cells_base = unsafe { plan.cells.as_ptr().add(cell_start) as u64 };
+        let cells_base = plan.cells.as_ptr().wrapping_add(cell_start) as u64;
         let lf = LinkedFunction {
             #[cfg(test)]
             cell_start,
@@ -1038,16 +996,14 @@ impl NativeEngine {
         // `LinkPlan::for_functions` reserved the exact module totals before
         // any absolute address is observed. These bases consequently remain
         // stable through every push below and through all later fixups.
-        if !plan.in_place {
-            debug_assert!(plan.cells.capacity() - plan.cells.len() >= lf.cell_len);
-        }
+        debug_assert!(plan.cells.capacity() - plan.cells.len() >= lf.cell_len);
         let br_base = plan.br_flat.as_ptr() as u64;
         if code_len != 0 {
             let mut prev_index = 0usize;
-            let mut prev_ins = source.get(plan, cell_start, 0);
+            let mut prev_ins = source.get(0);
             let mut prev = self.first_resolution(&prev_ins, &pin);
             for index in 1..code_len {
-                let ins = source.get(plan, cell_start, index);
+                let ins = source.get(index);
                 let mut current = self.initial_resolution(&ins, &pin);
                 self.resolve_pair(&prev_ins, &mut prev, &ins, &mut current, &pin);
                 if prev_ins.op == Op::CallIndirect {
@@ -1094,6 +1050,7 @@ impl NativeEngine {
 
         plan.write_cell(
             cell_start + code_len,
+            Instr::new(Op::Unreachable, 0, 0, 0, 0).packed_head(),
             DCell {
                 h: self.slow_stub as u64,
                 a: 0,
@@ -1201,7 +1158,7 @@ impl NativeEngine {
                 c: ins.c,
             },
         };
-        plan.write_cell(cell_index, cell);
+        plan.write_cell(cell_index, ins.packed_head(), cell);
     }
 
     /// The entry trampoline as a callable function pointer.
@@ -1354,22 +1311,28 @@ mod tests {
             "prefetch pad changed"
         );
 
-        let mut arena = tracked_alloc::from_alloc_vec(func.code.to_vec());
-        arena.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
-        let allocation = arena.as_ptr() as usize;
-        let expected_heads: Vec<u32> = arena.iter().copied().map(Instr::packed_head).collect();
-        let mut in_place = LinkPlan::from_instr_arena(arena, 1, expected_flat.len());
-        assert_eq!(in_place.cells.as_ptr() as usize, allocation);
-        let mut in_place_scratch = LinkScratch::default();
-        let mut in_place_types = Vec::new();
-        let in_place_linked = engine.link_in_place(
+        let mut full = func.code.to_vec();
+        full.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
+        let expected_heads: Vec<u32> = full.iter().copied().map(Instr::packed_head).collect();
+        let mut side = Vec::new();
+        let drafts: Vec<CellDraft> = full
+            .iter()
+            .copied()
+            .map(|ins| CellDraft::new(ins, &mut side))
+            .collect();
+        let mut compact = LinkPlan::for_compact_arena(drafts.len(), 1, expected_flat.len());
+        let mut compact_scratch = LinkScratch::default();
+        let mut compact_types = Vec::new();
+        let compact_linked = engine.link_compact(
             func,
+            &drafts,
+            &side,
             0,
-            &mut in_place,
-            &mut in_place_scratch,
-            &mut in_place_types,
+            &mut compact,
+            &mut compact_scratch,
+            &mut compact_types,
         );
-        in_place.finish_layout();
+        compact.finish_layout();
 
         let normalize = |mut cell: DCell, op: Op, cells_base: u64, br_base: u64| -> DCell {
             if op == Op::BrTable && cell.h != engine.slow_stub as u64 {
@@ -1380,45 +1343,61 @@ mod tests {
             }
             cell
         };
-        let in_place_cells = in_place.cells(&in_place_linked);
+        let compact_cells = compact.cells(&compact_linked);
         let old_br_base = plan.br_flat.as_ptr() as u64;
-        let new_br_base = in_place.br_flat.as_ptr() as u64;
+        let new_br_base = compact.br_flat.as_ptr() as u64;
         for (index, ins) in func.code.iter().enumerate() {
             assert_eq!(
                 normalize(
-                    in_place_cells[index],
+                    compact_cells[index],
                     ins.op,
-                    in_place_linked.cell_base(),
+                    compact_linked.cell_base(),
                     new_br_base,
                 ),
                 normalize(cells[index], ins.op, linked.cell_base(), old_br_base),
-                "in-place linked cell {index} ({:?})",
+                "compact linked cell {index} ({:?})",
                 ins.op,
             );
         }
-        assert_eq!(in_place_cells.last(), cells.last());
-        assert_eq!(in_place.br_flat, plan.br_flat);
-        assert_eq!(in_place.call_fixups, plan.call_fixups);
-        assert_eq!(in_place_types, call_indirect_types);
-        assert_eq!(in_place.heads, expected_heads);
-        assert_eq!(in_place_linked.l0_off, linked.l0_off);
-        assert_eq!(in_place_linked.l1_off, linked.l1_off);
-        assert_eq!(in_place_linked.fp_pinned, linked.fp_pinned);
+        assert_eq!(compact_cells.last(), cells.last());
+        assert_eq!(compact.br_flat, plan.br_flat);
+        assert_eq!(compact.call_fixups, plan.call_fixups);
+        assert_eq!(compact_types, call_indirect_types);
+        assert_eq!(compact.heads, expected_heads);
+        assert_eq!(compact_linked.l0_off, linked.l0_off);
+        assert_eq!(compact_linked.l1_off, linked.l1_off);
+        assert_eq!(compact_linked.fp_pinned, linked.fp_pinned);
     }
 
     #[test]
-    fn instruction_arena_transfer_keeps_one_owner_and_allocation() {
+    fn compact_draft_round_trips_all_payload_modes() {
         let instrs = vec![
             Instr::new(Op::I32_Add, FLAG_B_CONST, 3, 41, 7),
-            Instr::new(Op::Return, 0, 7, 1, 0),
+            Instr::new(Op::I64_Add, FLAG_A_CONST, u64::MAX, 1, 2),
+            Instr::new(Op::Select, 0, 7, 9, 13u64 << 32 | 11),
+            Instr::new(Op::MovConst, FLAG_A_CONST, 0x0123_4567_89ab_cdef, 0, 3),
         ];
-        let allocation = instrs.as_ptr() as usize;
-        let capacity = instrs.capacity();
-        let cells = into_dispatch_cells(instrs);
-        assert_eq!(cells.as_ptr() as usize, allocation);
-        assert_eq!(cells.capacity(), capacity);
-        assert_eq!((cells[0].a, cells[0].b, cells[0].c), (3, 41, 7));
-        assert_eq!((cells[1].a, cells[1].b, cells[1].c), (7, 1, 0));
+        let mut side = Vec::new();
+        let drafts: Vec<CellDraft> = instrs
+            .iter()
+            .copied()
+            .map(|ins| CellDraft::new(ins, &mut side))
+            .collect();
+        assert_eq!(core::mem::size_of::<CellDraft>(), 16);
+        assert_eq!(side, vec![0x0123_4567_89ab_cdef]);
+        for (draft, expected) in drafts.into_iter().zip(instrs) {
+            let actual = draft.decode(&side);
+            assert_eq!(
+                (actual.op, actual.flags, actual.a, actual.b, actual.c),
+                (
+                    expected.op,
+                    expected.flags,
+                    expected.a,
+                    expected.b,
+                    expected.c,
+                )
+            );
+        }
     }
 
     #[test]

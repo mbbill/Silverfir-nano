@@ -1,9 +1,12 @@
 //! Instruction format of the folded stack machine.
 //!
-//! Fixed-width 32-byte cells, two per cache line (design doc §6):
+//! The predecoder's persistent stage-A stream uses compact 16-byte
+//! `CellDraft` records. The linker expands each draft into one fixed-width
+//! 32-byte dispatch cell (two per cache line, design doc §6):
 //!
 //! ```text
-//! stage A: [ op:u16 | flags:u16 | pad:u32 | a:u64 | b:u64 | c:u64 ]
+//! stage A: [ op+flags+modes:u32 | a:u32 | b:u32 | c:u32 ]
+//! stage B: [ handler:u64 | a:u64 | b:u64 | c:u64 ]
 //! ```
 //!
 //! `a`/`b` are source operands: a frame-slot index, or an inline 64-bit
@@ -59,6 +62,10 @@ pub(crate) const FLAG_SHARED_GLOBAL: u16 = 1 << 8;
 /// cell. At present the bit marks memory operations whose encoded memory
 /// index is not zero; generated handlers address memory 0 only.
 pub(crate) const FLAG_NO_NATIVE: u16 = 1 << 9;
+/// Bits available to semantic instruction flags. Bits 10..=15 are the three
+/// compact-draft payload modes; adding a semantic flag there requires changing
+/// the 16-byte draft format rather than silently consuming one.
+pub(crate) const SEMANTIC_FLAGS_MASK: u16 = (1 << 10) - 1;
 
 /// Number of distinct `Op` discriminants.
 pub(crate) const N_OPS: usize = Op::Unreachable as usize + 1;
@@ -563,17 +570,14 @@ pub enum Op {
     Unreachable,
 }
 
-/// One 32-byte instruction cell. Stage B replaces the leading
-/// `op`/`flags`/pad word with the dispatch word (handler pointer or
-/// index×stride); the operand layout is shared by both stages.
+/// Full-width semantic instruction used by the predecoder's working logic,
+/// the slow path, and differential test oracles. Persistent stage-A storage
+/// is a compact `CellDraft`; stage B is a separate 32-byte dispatch cell.
 #[repr(C, align(32))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Instr {
     pub op: Op,
     pub flags: u16,
-    /// Initialized explicitly so every byte can be transferred into the
-    /// stage-B dispatch-word representation without reading Rust padding.
-    pub(crate) head_pad: u32,
     pub a: u64,
     pub b: u64,
     pub c: u64,
@@ -581,14 +585,7 @@ pub(crate) struct Instr {
 
 impl Instr {
     pub(crate) fn new(op: Op, flags: u16, a: u64, b: u64, c: u64) -> Self {
-        Instr {
-            op,
-            flags,
-            head_pad: 0,
-            a,
-            b,
-            c,
-        }
+        Instr { op, flags, a, b, c }
     }
 
     #[inline]
@@ -601,7 +598,6 @@ impl Instr {
         Self {
             op: op_from_index((head & 0xffff) as usize),
             flags: (head >> 16) as u16,
-            head_pad: 0,
             a,
             b,
             c,
