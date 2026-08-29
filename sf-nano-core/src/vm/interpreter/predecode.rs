@@ -5074,7 +5074,8 @@ mod tests {
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
         let shared = predecode_functions(&module, &tag_identities, &function_handles)
-            .expect("shared predecode");
+            .expect("shared predecode")
+            .publish_for_test();
         for (index, shared) in shared.iter().enumerate() {
             let mut arena = PredecodedArena::default();
             let mut fresh_scratch = PredecodeScratch::default();
