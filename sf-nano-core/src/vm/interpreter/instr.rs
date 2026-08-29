@@ -52,6 +52,13 @@ pub(crate) const FLAG_SHARED_TABLE: u16 = 1 << 7;
 /// contiguous array, so the generated handlers -- which index that array by
 /// byte offset -- cannot reach it.
 pub(crate) const FLAG_SHARED_GLOBAL: u16 = 1 << 8;
+/// Predecode proved that this cell cannot use a generated native handler.
+///
+/// This caches instruction-local eligibility that would otherwise be
+/// re-derived every time link-time accumulator resolution reclassifies the
+/// cell. At present the bit marks memory operations whose encoded memory
+/// index is not zero; generated handlers address memory 0 only.
+pub(crate) const FLAG_NO_NATIVE: u16 = 1 << 9;
 
 /// Number of distinct `Op` discriminants.
 pub(crate) const N_OPS: usize = Op::Unreachable as usize + 1;

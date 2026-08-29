@@ -196,8 +196,8 @@ impl Fam {
 //
 // `family`, `slot_fields`, `writes_acc` and `c_is_branch_target` all answer
 // a question about the opcode alone, and the linker asks them repeatedly
-// for every cell it builds: `op_slot`, `native_guard`, `transform_bc` and
-// `select_pinned` each start by classifying the op again. Walking the
+// for every cell it builds: `op_slot`, `transform_bc` and `select_pinned`
+// each start by classifying the op again. Walking the
 // discriminant ranges every time cost 13.7% of interpreter instantiation
 // (`family` plus its `between` scans) on a 6 k-function module. The answers
 // fit in six bytes per op, so they are computed once at compile time — in
@@ -249,7 +249,9 @@ enum BcShape {
 }
 
 /// Which cell field carries a memory index that only memory 0 can satisfy
-/// natively, and hence what [`native_guard`] has to test.
+/// natively. Retained only as the independent test oracle for predecode's
+/// cached `FLAG_NO_NATIVE` decision.
+#[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MemGuard {
     /// Nothing to check.
@@ -271,6 +273,7 @@ struct OpProps {
     base: u32,
     bits: u8,
     bc: BcShape,
+    #[cfg(test)]
     guard: MemGuard,
 }
 
@@ -282,6 +285,7 @@ const fn build_op_props() -> [OpProps; N_OPS] {
         base: 0,
         bits: 0,
         bc: BcShape::Plain,
+        #[cfg(test)]
         guard: MemGuard::None,
     }; N_OPS];
     let mut i = 0;
@@ -311,6 +315,7 @@ const fn build_op_props() -> [OpProps; N_OPS] {
             base: next,
             bits,
             bc: compute_bc_shape(op),
+            #[cfg(test)]
             guard: compute_mem_guard(op),
         };
         next += fam.slots() as u32;
@@ -459,6 +464,7 @@ const fn compute_writes_acc(op: Op) -> bool {
 
 /// Ops whose static offset packs a memory index in the high bits can only
 /// run natively against memory 0.
+#[cfg(test)]
 #[inline]
 pub(crate) fn native_guard(ins: &Instr) -> bool {
     match OP_PROPS[ins.op as usize].guard {
@@ -470,6 +476,7 @@ pub(crate) fn native_guard(ins: &Instr) -> bool {
     }
 }
 
+#[cfg(test)]
 const fn compute_mem_guard(op: Op) -> MemGuard {
     match compute_family(op) {
         Fam::Load => MemGuard::OffsetInB,

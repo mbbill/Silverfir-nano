@@ -18,12 +18,12 @@ use crate::collections::Vec;
 
 use super::instr::{
     operand_is_f32, operand_is_float, result_is_f32, result_is_float, Instr, Op, FLAG_ADDR64,
-    FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
+    FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE,
     FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
 use super::layout::{
-    c_is_branch_target, family, native_guard, op_slot, slot_fields, total_slots, transform_bc,
-    writes_acc, Fam, Pinned,
+    c_is_branch_target, family, op_slot, slot_fields, total_slots, transform_bc, writes_acc, Fam,
+    Pinned,
 };
 use super::predecode::PredecodedFunction;
 
@@ -502,16 +502,28 @@ impl NativeEngine {
     ///
     /// The blob base is never a handler address, so 0 doubles as the
     /// sentinel — the same convention `handler_at` uses for an unemitted
-    /// slot. `native_guard` is folded in here rather than tested beside
-    /// every use: a cell that fails it has no native form either way, and
-    /// the acc pass would otherwise ask the same question twice per pair.
+    /// slot. Predecode caches instruction-local native eligibility in
+    /// `FLAG_NO_NATIVE`, so accumulator retries do not re-read and classify
+    /// the cell's payload.
     fn handler_for(&self, ins: &Instr, flags: u16, pin: &Pinned) -> usize {
         // The generated handlers zero-extend a 32-bit address, so a 64-bit
         // memory access has no native form and takes the shared executor.
-        if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL) != 0 {
+        if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL | FLAG_NO_NATIVE) != 0 {
             return 0;
         }
-        if !native_guard(ins) {
+        match op_slot(ins, flags, pin) {
+            Some(slot) => self.handler_at(slot).unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    /// The payload-inspecting implementation replaced by `FLAG_NO_NATIVE`.
+    /// Kept only as a differential oracle for the cached production path.
+    #[cfg(test)]
+    fn handler_for_uncached_reference(&self, ins: &Instr, flags: u16, pin: &Pinned) -> usize {
+        if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL) != 0
+            || !super::layout::native_guard(ins)
+        {
             return 0;
         }
         match op_slot(ins, flags, pin) {
@@ -737,5 +749,99 @@ impl NativeEngine {
     /// The entry trampoline as a callable function pointer.
     pub(super) fn entry_fn(&self) -> extern "C" fn(*mut EnterState) {
         unsafe { core::mem::transmute::<usize, extern "C" fn(*mut EnterState)>(self.entry) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::instr::{op_from_index, N_OPS};
+    use super::super::layout::native_guard;
+    use super::*;
+
+    /// Cross every opcode with every pre-existing flag combination, every
+    /// pinned-register domain/occupancy shape, and payloads which exercise
+    /// each memory-guard outcome. The exact handler address must remain the
+    /// same when the old payload test is replaced by its cached flag.
+    #[test]
+    fn cached_native_guard_matches_uncached_handler_addresses() {
+        const L0: u64 = 11;
+        const L1: u64 = 22;
+        const OTHER: u64 = 33;
+        let pins = [
+            Pinned::NONE,
+            Pinned {
+                l0: L0,
+                l1: L1,
+                l0_float: false,
+                l1_float: false,
+            },
+            Pinned {
+                l0: L0,
+                l1: L1,
+                l0_float: true,
+                l1_float: true,
+            },
+            Pinned {
+                l0: L0,
+                l1: L1,
+                l0_float: false,
+                l1_float: true,
+            },
+            Pinned {
+                l0: L0,
+                l1: L1,
+                l0_float: true,
+                l1_float: false,
+            },
+            Pinned {
+                l0: L0,
+                l1: u64::MAX,
+                l0_float: false,
+                l1_float: false,
+            },
+            Pinned {
+                l0: u64::MAX,
+                l1: L1,
+                l0_float: false,
+                l1_float: true,
+            },
+        ];
+        let payloads = [
+            // Unpinned, L0/L1-aliasing, zero-index, nonzero-index, packed
+            // memory-index, and packed static-offset cases.
+            (OTHER, OTHER + 1, OTHER + 2),
+            (L0, L1, L0),
+            (L1, L0, L1),
+            (OTHER, 0, 0),
+            (OTHER, 1, 1),
+            (OTHER, 1u64 << 32, 1u64 << 32),
+            (OTHER, 1u64 << 48, 1u64 << 48),
+            (OTHER, (1u64 << 48) | 7, (1u64 << 48) | 9),
+        ];
+
+        let engine = NativeEngine::new();
+        for op_index in 0..N_OPS {
+            let op = op_from_index(op_index);
+            for (pin_index, pin) in pins.iter().enumerate() {
+                // Bits 0..=8 are the complete flag space before the cache
+                // bit was introduced.
+                for flags in 0..(FLAG_NO_NATIVE) {
+                    for &(a, b, c) in &payloads {
+                        let ins = Instr::new(op, flags, a, b, c);
+                        let cached = flags
+                            | if native_guard(&ins) {
+                                0
+                            } else {
+                                FLAG_NO_NATIVE
+                            };
+                        assert_eq!(
+                            engine.handler_for(&ins, cached, pin),
+                            engine.handler_for_uncached_reference(&ins, flags, pin),
+                            "op={op:?} flags={flags:#x} pin={pin_index} a={a:#x} b={b:#x} c={c:#x}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
