@@ -1,0 +1,123 @@
+name: wasmi-startup-ranking
+
+on:
+  push:
+    branches: ["dev/**"]
+
+concurrency:
+  group: wasmi-startup-ranking-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rank:
+    name: ${{ matrix.platform }} / complete interpreter startup ranking
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/wasmi-ranking-target
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CXXFLAGS: -Wno-error=deprecated-declarations
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout pinned wasmi-benchmarks
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+
+      - name: Install complete interpreter field dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            clang cmake libclang-dev libfontconfig1-dev ninja-build
+
+      - name: Restore cargo-criterion
+        id: cargo-criterion-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-criterion
+          key: cargo-criterion-1.1.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rust-toolchain.outputs.cachekey }}
+
+      - name: Install pinned cargo-criterion
+        if: steps.cargo-criterion-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 1.1.0 cargo-criterion
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: wasmi-startup-ranking-${{ matrix.platform }}
+          workspaces: ". -> wasmi-ranking-target"
+
+      - name: Record runner CPU
+        run: |
+          uname -a
+          lscpu | grep -iE "model name|vendor|bios" || true
+
+      - name: Resolve candidate adapter and compile the full field
+        run: |
+          python3 -m ci.wasmi_startup_ranking prepare \
+            --suite wasmi-benchmarks \
+            --source . \
+            --target-root wasmi-ranking-target \
+            --metadata-out wasmi-ranking-output/build-metadata.json
+
+      - name: Measure seven startup workloads and enforce the ranking
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -uo pipefail
+          ulimit -s 65520
+          measure_status=0
+          taskset -c 1 setarch "$(uname -m)" -R \
+            python3 -m ci.wasmi_startup_ranking measure \
+              --suite wasmi-benchmarks \
+              --target-root wasmi-ranking-target \
+              --raw-dir wasmi-ranking-output/raw || measure_status=$?
+          rank_status=0
+          python3 -m ci.wasmi_startup_ranking report \
+            --raw-dir wasmi-ranking-output/raw \
+            --platform "$PLATFORM" \
+            --candidate-sha "$GITHUB_SHA" \
+            --json-out wasmi-ranking-output/ranking.json \
+            --summary-out wasmi-ranking-output/summary.md \
+            --require-nano-fastest || rank_status=$?
+          if [[ -f wasmi-ranking-output/summary.md ]]; then
+            cat wasmi-ranking-output/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "$measure_status" -ne 0 ]]; then
+            exit "$measure_status"
+          fi
+          exit "$rank_status"
+
+      - name: Upload complete ranking evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wasmi-startup-ranking-${{ matrix.platform }}
+          path: wasmi-ranking-output/
+          if-no-files-found: error
+          retention-days: 14
