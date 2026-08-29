@@ -678,18 +678,18 @@ impl NativeEngine {
 
     /// Build the dispatch cells for one predecoded function.
     ///
-    /// Every `call_indirect` type index is appended to `call_indirect_types`
-    /// on the way past. The caller needs them to number the canonical type
-    /// classes for the native indirect-call check, and this pass already
-    /// reads every instruction — collecting them separately cost a second
-    /// sweep of the whole module's instruction stream.
+    /// Every `call_indirect` type index is passed to
+    /// `mark_call_indirect_type` on the way past. The caller marks it directly
+    /// in the module-sized canonical-type table, and this pass already reads
+    /// every instruction, so no growing side list or second instruction sweep
+    /// is needed.
     pub(super) fn link(
         &self,
         func: &PredecodedFunction,
         caller_index: usize,
         plan: &mut LinkPlan,
         scratch: &mut LinkScratch,
-        call_indirect_types: &mut Vec<u32>,
+        mark_call_indirect_type: &mut impl FnMut(u32),
     ) -> LinkedFunction {
         let pin = func.pinned();
 
@@ -756,7 +756,7 @@ impl NativeEngine {
                 let mut current = self.initial_resolution(ins, &pin);
                 self.resolve_pair(prev_ins, &mut prev, ins, &mut current, &pin);
                 if prev_ins.op == Op::CallIndirect {
-                    call_indirect_types.push(prev_ins.c as u32);
+                    mark_call_indirect_type(prev_ins.c as u32);
                 }
                 self.push_cell(
                     &mut plan.cells,
@@ -774,7 +774,7 @@ impl NativeEngine {
             }
             self.finish_last(prev_ins, &mut prev, &pin);
             if prev_ins.op == Op::CallIndirect {
-                call_indirect_types.push(prev_ins.c as u32);
+                mark_call_indirect_type(prev_ins.c as u32);
             }
             self.push_cell(
                 &mut plan.cells,
@@ -989,13 +989,14 @@ mod tests {
 
         let mut link_scratch = LinkScratch::default();
         let mut call_indirect_types = Vec::new();
+        let mut record_call_indirect_type = |type_index| call_indirect_types.push(type_index);
         let mut plan = LinkPlan::for_functions(core::iter::once(func));
         let linked = engine.link(
             func,
             0,
             &mut plan,
             &mut link_scratch,
-            &mut call_indirect_types,
+            &mut record_call_indirect_type,
         );
         plan.finish_layout();
 
