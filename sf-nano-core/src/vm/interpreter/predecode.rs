@@ -28,6 +28,7 @@ use crate::utils::{leb128, limits::Limitable};
 use crate::value_type::ValueType;
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::{ref_to_machine_raw, RefValue};
+use core::mem;
 use core::ops::{Deref, Index, IndexMut, Range};
 use core::ptr::NonNull;
 use tracked_alloc::rc::Rc;
@@ -605,6 +606,7 @@ pub(crate) fn predecode_function(
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
     let mut arena = PredecodedArena::default();
+    let mut scratch = PredecodeScratch::default();
     let parts = predecode_function_into(
         module,
         tag_identities,
@@ -612,6 +614,7 @@ pub(crate) fn predecode_function(
         func_index,
         false,
         &mut arena,
+        &mut scratch,
     )?;
     Ok(parts.finish(Rc::new(arena)))
 }
@@ -650,6 +653,10 @@ pub(crate) fn predecode_functions(
         ),
         side_tables: SideTableArena::default(),
     };
+    // These vectors are compile-time state, not part of any published
+    // function. Keep their allocations for the next body rather than
+    // allocating and freeing the same transient shapes per local function.
+    let mut scratch = PredecodeScratch::default();
     let mut parts = Vec::with_capacity(module.functions().len());
     for (func_index, func) in module.functions().iter().enumerate() {
         if func.is_import() {
@@ -662,6 +669,7 @@ pub(crate) fn predecode_functions(
                 func_index,
                 false,
                 &mut arena,
+                &mut scratch,
             )?;
             parts.push(Some(decoded));
             // The linked chain may prefetch one handler word past the final
@@ -871,6 +879,7 @@ fn predecode_function_into(
     func_index: usize,
     _disable_fast: bool,
     arena: &mut PredecodedArena,
+    scratch: &mut PredecodeScratch,
 ) -> Result<PredecodedFunctionParts, WasmError> {
     if tag_identities.len() != module.tags().len() {
         return Err(WasmError::invalid(
@@ -899,12 +908,28 @@ fn predecode_function_into(
     // Loop ordinals are structural and therefore stable across passes.
     let code_start = arena.code.len();
     let side_start = arena.side_tables.snapshot();
-    let mut canonical_loop_homes = Vec::new();
+    // Move the vector headers out of the module scratch while a Predecoder
+    // owns them. `mem::take` itself does not allocate. Every retry and every
+    // following function receives the capacities grown by the prior pass.
+    let mut stack = mem::take(&mut scratch.stack);
+    let mut frames = mem::take(&mut scratch.frames);
+    let mut locals = mem::take(&mut scratch.locals);
+    let mut canonical_loop_homes = mem::take(&mut scratch.canonical_loop_homes);
+    let mut unsafe_loop_homes = mem::take(&mut scratch.unsafe_loop_homes);
+    let mut side_scratch = mem::take(&mut scratch.side);
+    canonical_loop_homes.clear();
+
     let p = loop {
         // Roll back an optimistic pass in-place. Earlier functions occupy
         // the immutable prefix before `code_start` and cannot be disturbed.
         arena.code.truncate(code_start);
         arena.side_tables.truncate(side_start);
+        stack.clear();
+        frames.clear();
+        locals.clear();
+        locals.resize(n_locals as usize, LocalState::default());
+        unsafe_loop_homes.clear();
+        side_scratch.clear();
         let (code, side_tables) = (&mut arena.code, &mut arena.side_tables);
         let mut p = Predecoder {
             types: module.types(),
@@ -919,11 +944,11 @@ fn predecode_function_into(
                 arena: side_tables,
                 start: side_start,
             },
-            stack: Vec::new(),
-            frames: Vec::new(),
+            stack,
+            frames,
             dead: false,
             region: 0,
-            locals: vec![LocalState::default(); n_locals as usize],
+            locals,
             last_mat_mov: NO_DEF,
             last_mat_region: 0,
             needs_slow_tail_return: false,
@@ -936,10 +961,11 @@ fn predecode_function_into(
             last_call_height: 0,
             last_call_region: 0,
             pending_fill: None,
-            canonical_loop_homes: canonical_loop_homes.clone(),
-            unsafe_loop_homes: Vec::new(),
+            canonical_loop_homes,
+            unsafe_loop_homes,
             next_loop_id: 0,
             force_canonical_loop_homes: false,
+            side_scratch,
         };
         let mut decoder = Decoder::new(spec.code());
         #[cfg(test)]
@@ -949,24 +975,37 @@ fn predecode_function_into(
         decoder.add_handler(&mut p);
         decoder.decode_function()?;
         drop(decoder);
-        let mut next = p.canonical_loop_homes.clone();
-        next.resize(p.next_loop_id as usize, false);
+        let mut learned_unsafe_home = false;
+        p.canonical_loop_homes
+            .resize(p.next_loop_id as usize, false);
         if p.force_canonical_loop_homes {
-            next.fill(true);
+            for canonical in &mut p.canonical_loop_homes {
+                if !*canonical {
+                    learned_unsafe_home = true;
+                    *canonical = true;
+                }
+            }
         } else {
             for (loop_id, &unsafe_home) in p.unsafe_loop_homes.iter().enumerate() {
-                if unsafe_home {
-                    next[loop_id] = true;
+                if unsafe_home && !p.canonical_loop_homes[loop_id] {
+                    learned_unsafe_home = true;
+                    p.canonical_loop_homes[loop_id] = true;
                 }
             }
         }
-        let learned_unsafe_home = next.iter().enumerate().any(|(loop_id, &canonical)| {
-            canonical && !canonical_loop_homes.get(loop_id).copied().unwrap_or(false)
-        });
         if !learned_unsafe_home {
             break p;
         }
-        canonical_loop_homes = next;
+
+        // Reclaim every buffer before retrying. In particular, a safety
+        // re-decode no longer repeats the local-state and control-stack
+        // allocations that prompted the retry.
+        stack = mem::take(&mut p.stack);
+        frames = mem::take(&mut p.frames);
+        locals = mem::take(&mut p.locals);
+        canonical_loop_homes = mem::take(&mut p.canonical_loop_homes);
+        unsafe_loop_homes = mem::take(&mut p.unsafe_loop_homes);
+        side_scratch = mem::take(&mut p.side_scratch);
     };
     let code_range = p.code.range();
     let pinned = PackedPinned::new(select_pinned(&p.locals));
@@ -977,7 +1016,8 @@ fn predecode_function_into(
         "incremental pinned-local census disagrees with the original full-stream scan"
     );
     let side_ranges = p.side_tables.ranges();
-    Ok(PredecodedFunctionParts {
+    let mut p = p;
+    let parts = PredecodedFunctionParts {
         code_range,
         pinned,
         side_ranges,
@@ -986,7 +1026,14 @@ fn predecode_function_into(
         n_params,
         n_results,
         slow_tail_return: p.slow_tail_return,
-    })
+    };
+    scratch.stack = mem::take(&mut p.stack);
+    scratch.frames = mem::take(&mut p.frames);
+    scratch.locals = mem::take(&mut p.locals);
+    scratch.canonical_loop_homes = mem::take(&mut p.canonical_loop_homes);
+    scratch.unsafe_loop_homes = mem::take(&mut p.unsafe_loop_homes);
+    scratch.side = mem::take(&mut p.side_scratch);
+    Ok(parts)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1023,7 +1070,9 @@ enum BranchHome {
 /// landing pad while copy-free loop/block targets remain directly addressable.
 struct BranchPlan {
     depth: u32,
-    copies: Vec<BranchCopy>,
+    /// Range in the module-scoped `PredecodeScratch::branch_copies` buffer.
+    /// Copies are consumed before another branch opcode can reset it.
+    copies: Range<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -1094,6 +1143,83 @@ struct CtlFrame {
     catches: Vec<ActiveExceptionHandler>,
 }
 
+/// Module-scoped capacity cache for state that exists only while translating
+/// one function body.
+///
+/// Contents are cleared between passes and functions; only allocations are
+/// retained. None of these values is referenced by a `PredecodedFunction`,
+/// so sharing the scratch cannot affect published code, side tables,
+/// exception metadata, or activation/re-entry lifetimes.
+#[derive(Default)]
+struct PredecodeScratch {
+    stack: Vec<Desc>,
+    frames: Vec<CtlFrame>,
+    locals: Vec<LocalState>,
+    canonical_loop_homes: Vec<bool>,
+    unsafe_loop_homes: Vec<bool>,
+    side: PredecodeSideScratch,
+}
+
+/// Opcode-scoped workspaces, grouped so ownership can move between the
+/// module scratch and a `Predecoder` as one value rather than shuffling ten
+/// independent vector headers on every function and safety retry.
+#[derive(Default)]
+struct PredecodeSideScratch {
+    /// Short-lived side workspaces. None of these buffers is reachable from
+    /// the finished module arena.
+    loop_candidates: Vec<(u32, usize)>,
+    branch_copies: Vec<BranchCopy>,
+    branch_plans: Vec<BranchPlan>,
+    br_depths: Vec<u32>,
+    br_plan_for_target: Vec<Option<u32>>,
+    br_entry_plans: Vec<u32>,
+    br_pad_plans: Vec<u32>,
+    br_pad_for_plan: Vec<Option<u32>>,
+    br_entry_pads: Vec<Option<u32>>,
+    br_pad_addresses: Vec<u32>,
+}
+
+impl PredecodeSideScratch {
+    fn clear(&mut self) {
+        self.loop_candidates.clear();
+        self.branch_copies.clear();
+        self.branch_plans.clear();
+        self.br_depths.clear();
+        self.br_plan_for_target.clear();
+        self.br_entry_plans.clear();
+        self.br_pad_plans.clear();
+        self.br_pad_for_plan.clear();
+        self.br_entry_pads.clear();
+        self.br_pad_addresses.clear();
+    }
+}
+
+#[cfg(test)]
+impl PredecodeScratch {
+    /// Capacities of every allocation-owning transient vector. Persistent
+    /// module output (`Instr`, branch tables, wide memargs, exceptions) is
+    /// intentionally absent from this census.
+    fn capacities(&self) -> [usize; 15] {
+        [
+            self.stack.capacity(),
+            self.frames.capacity(),
+            self.locals.capacity(),
+            self.canonical_loop_homes.capacity(),
+            self.unsafe_loop_homes.capacity(),
+            self.side.loop_candidates.capacity(),
+            self.side.branch_copies.capacity(),
+            self.side.branch_plans.capacity(),
+            self.side.br_depths.capacity(),
+            self.side.br_plan_for_target.capacity(),
+            self.side.br_entry_plans.capacity(),
+            self.side.br_pad_plans.capacity(),
+            self.side.br_pad_for_plan.capacity(),
+            self.side.br_entry_pads.capacity(),
+            self.side.br_pad_addresses.capacity(),
+        ]
+    }
+}
+
 struct Predecoder<'m, 'code, 'side> {
     types: &'m TypeContext,
     module: &'m Module,
@@ -1153,6 +1279,10 @@ struct Predecoder<'m, 'code, 'side> {
     /// Exception landing metadata currently names canonical temp spans, so
     /// an actual decoded `try_table` requires all loop homes to stay there.
     force_canonical_loop_homes: bool,
+    /// Reusable workspaces borrowed from `PredecodeScratch`. They are reset
+    /// at each opcode that owns their contents and never enter published
+    /// metadata.
+    side_scratch: PredecodeSideScratch,
 }
 
 /// Predecode state for one WebAssembly local.
@@ -1570,13 +1700,7 @@ impl<'m, 'code, 'side> Predecoder<'m, 'code, 'side> {
     /// Frames are walked in reverse so runtime matching naturally implements
     /// innermost-try precedence, while each frame's source order is retained.
     fn record_exception_site(&mut self, pc: u32) {
-        let active: Vec<ActiveExceptionHandler> = self
-            .frames
-            .iter()
-            .rev()
-            .flat_map(|frame| frame.catches.iter().copied())
-            .collect();
-        if active.is_empty() {
+        if !self.has_active_exception_handlers() {
             return;
         }
 
@@ -1585,25 +1709,32 @@ impl<'m, 'code, 'side> Predecoder<'m, 'code, 'side> {
             .exception_sites_last()
             .is_none_or(|site| site.pc < pc));
         let handlers_start = self.side_tables.exception_handlers_len() as u32;
-        for handler in active {
-            let target = match handler.target {
-                PendingExceptionTarget::Function => EH_FUNCTION_TARGET_FIXUP,
-                PendingExceptionTarget::Instruction(pc) => pc,
-                PendingExceptionTarget::FrameEnd(frame_idx) => {
-                    let handler_idx = self.side_tables.exception_handlers_len() as u32;
-                    self.frames[frame_idx as usize]
-                        .fixups
-                        .push(Fixup::ExceptionTarget(handler_idx));
-                    EH_TARGET_FIXUP
-                }
-            };
-            self.side_tables.push_exception_handler(ExceptionHandler {
-                tag: handler.tag,
-                payload_arity: handler.payload_arity,
-                forwards_exn: handler.forwards_exn,
-                target,
-                target_base: handler.target_base,
-            });
+        // Copy one clause before mutating the target frame. This preserves
+        // the old innermost-first flattened order without allocating a fresh
+        // `Vec` for every potentially throwing cell.
+        for active_frame in (0..self.frames.len()).rev() {
+            let catch_count = self.frames[active_frame].catches.len();
+            for catch_index in 0..catch_count {
+                let handler = self.frames[active_frame].catches[catch_index];
+                let target = match handler.target {
+                    PendingExceptionTarget::Function => EH_FUNCTION_TARGET_FIXUP,
+                    PendingExceptionTarget::Instruction(pc) => pc,
+                    PendingExceptionTarget::FrameEnd(frame_idx) => {
+                        let handler_idx = self.side_tables.exception_handlers_len() as u32;
+                        self.frames[frame_idx as usize]
+                            .fixups
+                            .push(Fixup::ExceptionTarget(handler_idx));
+                        EH_TARGET_FIXUP
+                    }
+                };
+                self.side_tables.push_exception_handler(ExceptionHandler {
+                    tag: handler.tag,
+                    payload_arity: handler.payload_arity,
+                    forwards_exn: handler.forwards_exn,
+                    target,
+                    target_base: handler.target_base,
+                });
+            }
         }
         self.side_tables.push_exception_site(ExceptionSite {
             pc,
@@ -2321,6 +2452,7 @@ impl<'m, 'code, 'side> Predecoder<'m, 'code, 'side> {
             return Err(desync());
         }
         let source_base = h - arity;
+        let copies_start = self.side_scratch.branch_copies.len();
 
         if (depth as usize) >= n {
             for i in 0..arity {
@@ -2333,7 +2465,7 @@ impl<'m, 'code, 'side> Predecoder<'m, 'code, 'side> {
             }
             return Ok(BranchPlan {
                 depth,
-                copies: Vec::new(),
+                copies: copies_start..copies_start,
             });
         }
 
@@ -2346,7 +2478,6 @@ impl<'m, 'code, 'side> Predecoder<'m, 'code, 'side> {
         if h < target_end {
             return Err(desync());
         }
-        let mut copies = Vec::new();
         for i in 0..arity {
             let source = self.stack[(source_base + i) as usize];
             let param_local = if is_loop {
@@ -2368,7 +2499,7 @@ impl<'m, 'code, 'side> Predecoder<'m, 'code, 'side> {
                     if matches!(destination, BranchHome::Local(_)) {
                         self.unsafe_loop_homes[loop_id as usize] = true;
                     }
-                    copies.push(BranchCopy {
+                    self.side_scratch.branch_copies.push(BranchCopy {
                         source_height: height,
                         destination,
                     });
@@ -2376,11 +2507,15 @@ impl<'m, 'code, 'side> Predecoder<'m, 'code, 'side> {
                 _ => return Err(desync()),
             }
         }
-        Ok(BranchPlan { depth, copies })
+        Ok(BranchPlan {
+            depth,
+            copies: copies_start..self.side_scratch.branch_copies.len(),
+        })
     }
 
     fn emit_branch_copies(&mut self, plan: &BranchPlan) {
-        for copy in plan.copies.iter().copied() {
+        for copy_index in plan.copies.clone() {
+            let copy = self.side_scratch.branch_copies[copy_index];
             let src = self.temp_slot_used(copy.source_height);
             let (dst, dst_local) = match copy.destination {
                 BranchHome::Local(local) => (local as u64, Some(local)),
@@ -3699,23 +3834,26 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                             // parameter's home directly. Duplicates stay in
                             // separate temp slots because their back-edge
                             // values are allowed to diverge.
-                            let mut candidates = Vec::new();
+                            self.side_scratch.loop_candidates.clear();
                             for i in 0..p as usize {
                                 if let Desc::Local(local) = self.stack[base as usize + i] {
-                                    candidates.push((local, i));
+                                    self.side_scratch.loop_candidates.push((local, i));
                                 }
                             }
-                            candidates.sort_unstable_by_key(|&(local, _)| local);
+                            self.side_scratch
+                                .loop_candidates
+                                .sort_unstable_by_key(|&(local, _)| local);
                             let mut first = 0;
-                            while first < candidates.len() {
+                            while first < self.side_scratch.loop_candidates.len() {
                                 let mut end = first + 1;
-                                while end < candidates.len()
-                                    && candidates[end].0 == candidates[first].0
+                                while end < self.side_scratch.loop_candidates.len()
+                                    && self.side_scratch.loop_candidates[end].0
+                                        == self.side_scratch.loop_candidates[first].0
                                 {
                                     end += 1;
                                 }
                                 if end == first + 1 {
-                                    let (local, param) = candidates[first];
+                                    let (local, param) = self.side_scratch.loop_candidates[first];
                                     param_locals[param] = local;
                                 }
                                 first = end;
@@ -3846,6 +3984,7 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                     };
                     self.mark_branch_target(d);
                     self.prepare_branch(d)?;
+                    self.side_scratch.branch_copies.clear();
                     let plan = self.plan_branch(d)?;
                     self.emit_branch_copies(&plan);
                     self.emit_branch(Op::Br, 0, 0, d)?;
@@ -3861,6 +4000,7 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                     let cond = self.pop()?;
                     self.prepare_branch(d)?;
 
+                    self.side_scratch.branch_copies.clear();
                     let plan = self.plan_branch(d)?;
                     let needs_moves = !plan.copies.is_empty();
 
@@ -4190,6 +4330,7 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                     if on_null {
                         let _ = self.pop()?;
                     }
+                    self.side_scratch.branch_copies.clear();
                     let plan = self.plan_branch(d)?;
                     // Guard, moves, jump. The guard skips the branch on the
                     // sense that does NOT take it.
@@ -4335,7 +4476,7 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                 }
                 Opcode::BR_TABLE => {
                     let (labels, default) = match imm {
-                        Immediate::BrLabels(labels, default) => (labels.clone(), *default),
+                        Immediate::BrLabels(labels, default) => (labels.as_slice(), *default),
                         _ => return Err(desync()),
                     };
                     for &d in labels.iter() {
@@ -4346,7 +4487,9 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                     let d0 = self.pop()?;
                     let (a, a_const) = self.operand(d0, at);
                     let mut flags = if a_const { FLAG_A_CONST } else { 0 };
-                    let mut depths = labels.clone();
+                    let mut depths = mem::take(&mut self.side_scratch.br_depths);
+                    depths.clear();
+                    depths.extend_from_slice(labels);
                     depths.push(default);
                     self.prepare_br_table(&depths)?;
                     // Acc marking AFTER materialization: the adjacency
@@ -4364,9 +4507,14 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                     // landing pad per target, so repeated table entries share
                     // both planning work and the emitted move sequence.
                     let n = self.frames.len();
-                    let mut plans = Vec::new();
-                    let mut plan_for_target = vec![None; n + 1];
-                    let mut entry_plans = Vec::with_capacity(depths.len());
+                    self.side_scratch.branch_copies.clear();
+                    let mut plans = mem::take(&mut self.side_scratch.branch_plans);
+                    plans.clear();
+                    let mut plan_for_target = mem::take(&mut self.side_scratch.br_plan_for_target);
+                    plan_for_target.clear();
+                    plan_for_target.resize(n + 1, None);
+                    let mut entry_plans = mem::take(&mut self.side_scratch.br_entry_plans);
+                    entry_plans.clear();
                     for &depth in depths.iter() {
                         let target = (depth as usize).min(n);
                         let plan = if let Some(plan) = plan_for_target[target] {
@@ -4380,9 +4528,13 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                         entry_plans.push(plan);
                     }
 
-                    let mut pad_plans = Vec::new();
-                    let mut pad_for_plan = vec![None; plans.len()];
-                    let mut entry_pads: Vec<Option<u32>> = Vec::new();
+                    let mut pad_plans = mem::take(&mut self.side_scratch.br_pad_plans);
+                    pad_plans.clear();
+                    let mut pad_for_plan = mem::take(&mut self.side_scratch.br_pad_for_plan);
+                    pad_for_plan.clear();
+                    pad_for_plan.resize(plans.len(), None);
+                    let mut entry_pads = mem::take(&mut self.side_scratch.br_entry_pads);
+                    entry_pads.clear();
                     for (entry, &plan_index) in entry_plans.iter().enumerate() {
                         let plan = &plans[plan_index as usize];
                         let needs_pad = (plan.depth as usize) >= n || !plan.copies.is_empty();
@@ -4415,12 +4567,16 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                     }
                     self.emit(Op::BrTable, flags, a, 0, tbl as u64);
 
-                    let mut pad_addresses = Vec::with_capacity(pad_plans.len());
+                    let mut pad_addresses = mem::take(&mut self.side_scratch.br_pad_addresses);
+                    pad_addresses.clear();
                     for &plan_index in &pad_plans {
                         let pad = self.code.len() as u32;
                         pad_addresses.push(pad);
-                        let plan = &plans[plan_index as usize];
-                        self.emit_branch_copies(plan);
+                        let plan = BranchPlan {
+                            depth: plans[plan_index as usize].depth,
+                            copies: plans[plan_index as usize].copies.clone(),
+                        };
+                        self.emit_branch_copies(&plan);
                         self.emit_branch(Op::Br, 0, 0, plan.depth)?;
                     }
                     for (entry, entry_pad) in entry_pads.iter().copied().enumerate() {
@@ -4432,6 +4588,14 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                             );
                         }
                     }
+                    self.side_scratch.br_depths = depths;
+                    self.side_scratch.branch_plans = plans;
+                    self.side_scratch.br_plan_for_target = plan_for_target;
+                    self.side_scratch.br_entry_plans = entry_plans;
+                    self.side_scratch.br_pad_plans = pad_plans;
+                    self.side_scratch.br_pad_for_plan = pad_for_plan;
+                    self.side_scratch.br_entry_pads = entry_pads;
+                    self.side_scratch.br_pad_addresses = pad_addresses;
                     self.bump_region();
                     self.dead = true;
                 }
@@ -4611,6 +4775,7 @@ mod tests {
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
         let mut arena = PredecodedArena::default();
+        let mut scratch = PredecodeScratch::default();
         let parts = predecode_function_into(
             &module,
             &tag_identities,
@@ -4618,6 +4783,7 @@ mod tests {
             func,
             disable_fast,
             &mut arena,
+            &mut scratch,
         )
         .expect("predecode");
         parts.finish(Rc::new(arena))
@@ -4804,6 +4970,139 @@ mod tests {
         }
         assert_eq!(funcs[0].as_ref().unwrap().code[0].a, 7);
         assert_eq!(funcs[2].as_ref().unwrap().code[0].a, 99);
+    }
+
+    #[test]
+    fn shared_scratch_matches_fresh_scratch_for_complex_side_metadata() {
+        // Production predecode exercises one scratch across all four
+        // functions. The comparison path constructs a fresh scratch for each
+        // body, preserving the old ownership model as a cfg(test) oracle.
+        // Cover rollback, branch tables, exceptions, and self-tail re-entry.
+        let wat = r#"(module
+            (tag $e (param i32))
+            (func (param $x i32) (param $n i32) (result i32)
+                local.get $x
+                (loop $unsafe (param i32) (result i32)
+                    drop
+                    i32.const 42
+                    local.get $n
+                    i32.const 1
+                    i32.sub
+                    local.tee $n
+                    br_if $unsafe)
+                drop
+                local.get $x)
+            (func (param i32) (result i32)
+                (block $exit (result i32)
+                    local.get 0
+                    (loop $again (param i32) (result i32)
+                        local.get 0
+                        br_table $again $exit)))
+            (func (result i32)
+                (try_table (result i32) (catch $e 0)
+                    i32.const 7
+                    throw $e))
+            (func $reenter (param i32) (result i32)
+                local.get 0
+                return_call $reenter))"#;
+        let bin: StdVec<u8> = wat::parse_str(wat).expect("wat");
+        let module = Module::new("scratch-oracle", &bin).expect("module");
+        let tag_identities: StdVec<TagIdentity> = module
+            .tags()
+            .iter()
+            .map(|_| TagIdentity::mint_fresh())
+            .collect();
+        let function_handles: StdVec<RefValue> =
+            (0..module.functions().len()).map(RefValue::new).collect();
+        let shared = predecode_functions(&module, &tag_identities, &function_handles)
+            .expect("shared predecode");
+        for (index, shared) in shared.iter().enumerate() {
+            let mut arena = PredecodedArena::default();
+            let mut fresh_scratch = PredecodeScratch::default();
+            let fresh = predecode_function_into(
+                &module,
+                &tag_identities,
+                &function_handles,
+                index,
+                false,
+                &mut arena,
+                &mut fresh_scratch,
+            )
+            .expect("fresh predecode")
+            .finish(Rc::new(arena));
+            assert_same_predecode(shared.as_ref().expect("defined function"), &fresh);
+        }
+    }
+
+    #[test]
+    fn fourteen_thousand_functions_share_transient_allocation_owners() {
+        const FUNCTION_COUNT: usize = 14_000;
+        let mut wat = StdString::from("(module");
+        for _ in 0..FUNCTION_COUNT {
+            // Exercise every core scratch vector and all br_table workspaces.
+            // The bodies are deliberately identical, so any capacity growth
+            // after body zero would prove that state was not actually reused.
+            wat.push_str(
+                r#" (func (param i32) (result i32)
+                    (block $exit (result i32)
+                        local.get 0
+                        (loop $again (param i32) (result i32)
+                            local.get 0
+                            br_table $again $exit)))"#,
+            );
+        }
+        wat.push(')');
+
+        let bin: StdVec<u8> = wat::parse_str(&wat).expect("wat");
+        let module = Module::new("scratch-census", &bin).expect("module");
+        let function_handles: StdVec<RefValue> =
+            (0..module.functions().len()).map(RefValue::new).collect();
+        let mut arena = PredecodedArena::default();
+        let mut scratch = PredecodeScratch::default();
+        let mut prior = scratch.capacities();
+        let mut shared_growth_owners = 0usize;
+        let mut legacy_fresh_owners = 0usize;
+        let mut owner_count = None;
+
+        for func_index in 0..FUNCTION_COUNT {
+            let parts = predecode_function_into(
+                &module,
+                &[],
+                &function_handles,
+                func_index,
+                false,
+                &mut arena,
+                &mut scratch,
+            )
+            .expect("predecode");
+            drop(parts);
+
+            let capacities = scratch.capacities();
+            shared_growth_owners += capacities
+                .iter()
+                .zip(prior.iter())
+                .filter(|(after, before)| after > before)
+                .count();
+            let allocated_owners = capacities.iter().filter(|&&capacity| capacity != 0).count();
+            assert_eq!(
+                *owner_count.get_or_insert(allocated_owners),
+                allocated_owners,
+                "identical bodies must exercise the same transient owners"
+            );
+            // The pre-change path created these allocation-owning Vecs anew
+            // for each body. This is a static owner census, independent of
+            // allocator implementation and benchmark timing.
+            legacy_fresh_owners += allocated_owners;
+            prior = capacities;
+        }
+
+        let owner_count = owner_count.expect("at least one function");
+        assert_eq!(owner_count, 15, "the fixture must cover every scratch Vec");
+        assert_eq!(
+            (legacy_fresh_owners, shared_growth_owners),
+            (210_000, 15),
+            "14k fresh-scratch owner allocations must collapse to one module-scoped growth per owner"
+        );
     }
 
     #[test]
