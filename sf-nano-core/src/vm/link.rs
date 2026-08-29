@@ -1129,6 +1129,7 @@ mod instance_table_tests {
             handle.clone(),
         )
         .expect("interpreter test instance");
+        #[cfg(not(miri))]
         let instance = InterpInstance::initialize(instance)
             .unwrap_or_else(|(_, error)| panic!("initialize interpreter test instance: {error:?}"));
         registry
@@ -1182,6 +1183,7 @@ mod instance_table_tests {
             handle,
         )
         .expect("reentrant import instance");
+        #[cfg(not(miri))]
         let instance = InterpInstance::initialize(instance)
             .unwrap_or_else(|(_, error)| panic!("initialize reentrant import: {error:?}"));
         registry
@@ -1484,7 +1486,11 @@ mod instance_table_tests {
                     .checkout(reentrant_id)
                     .expect("outer reentrant-import checkout"),
             );
+            #[cfg(not(miri))]
             InterpInstance::invoke_access(&mut outer, 0, &[], &mut [])
+                .expect("host callback re-enters the same interpreter slot");
+            #[cfg(miri)]
+            InterpInstance::invoke_import_for_miri_instance_table_test(&mut outer, 0)
                 .expect("host callback re-enters the same interpreter slot");
             outer
                 .with_instance(|instance| {
