@@ -1849,18 +1849,23 @@ impl InterpInstance {
                     let canon = canon_of.get(expected_type as usize);
                     if let Some(Some(canon)) = canon {
                         if *canon <= 0xFFFF {
-                            plan.record_indirect_type(cell, expected_type);
                             *plan.cell_mut(cell) = DCell {
                                 h: ci_h,
                                 a: caller_l1 << 48 | table_slot * 8,
                                 b: (caller_l0 | caller_fp) << 48 | canon << 32 | arg_base * 8,
-                                c: 0,
+                                // The native handler consumes only a/b. Keep
+                                // the original type id here so a guard failure
+                                // can rebuild the slow instruction directly.
+                                c: expected_type as u64,
                             };
                         }
                     }
                 }
             }
         }
+        plan.finish_slow_heads(engine.slow_stub_addr());
+        #[cfg(test)]
+        plan.assert_sparse_slow_heads(&linked, engine.slow_stub_addr());
 
         let mut ranges: Vec<(u64, u64, u32)> = Vec::with_capacity(linked.len());
         for (i, lf) in linked.iter().enumerate() {
@@ -1908,26 +1913,33 @@ impl InterpInstance {
     /// Static adjacent-pair census over the predecoded streams: a pair
     /// is counted only when the first op falls through (no control
     /// transfer), i.e. exactly where a fused handler could replace two
-    /// dispatches with one. Descending by count.
+    /// dispatches with one. Descending by count. This diagnostic keeps the
+    /// full head stream only in `interp-count` builds; ordinary builds return
+    /// an empty list so startup does not pay for dense metadata.
     pub fn bigram_stats(&self) -> Vec<((Op, Op), u64)> {
-        let mut map: tracked_alloc::BTreeMap<(u16, u16), u64> = tracked_alloc::BTreeMap::new();
-        let native = self.native.as_ref().expect("native state");
-        for function in native.linked.iter().flatten() {
-            for w in native.plan.instruction_heads(function).windows(2) {
-                let first = (w[0] & 0xffff) as u16;
-                let second = (w[1] & 0xffff) as u16;
-                if first >= Op::Br as u16 {
-                    continue; // control transfer: never a fusible pair
+        #[cfg(any(test, feature = "interp-count"))]
+        {
+            let mut map: tracked_alloc::BTreeMap<(u16, u16), u64> = tracked_alloc::BTreeMap::new();
+            let native = self.native.as_ref().expect("native state");
+            for function in native.linked.iter().flatten() {
+                for w in native.plan.instruction_heads(function).windows(2) {
+                    let first = (w[0] & 0xffff) as u16;
+                    let second = (w[1] & 0xffff) as u16;
+                    if first >= Op::Br as u16 {
+                        continue; // control transfer: never a fusible pair
+                    }
+                    *map.entry((first, second)).or_insert(0) += 1;
                 }
-                *map.entry((first, second)).or_insert(0) += 1;
             }
+            let mut out: Vec<((Op, Op), u64)> = map
+                .into_iter()
+                .map(|((a, b), n)| ((op_from_index(a as usize), op_from_index(b as usize)), n))
+                .collect();
+            out.sort_by(|x, y| y.1.cmp(&x.1));
+            return out;
         }
-        let mut out: Vec<((Op, Op), u64)> = map
-            .into_iter()
-            .map(|((a, b), n)| ((op_from_index(a as usize), op_from_index(b as usize)), n))
-            .collect();
-        out.sort_by(|x, y| y.1.cmp(&x.1));
-        out
+        #[cfg(not(any(test, feature = "interp-count")))]
+        Vec::new()
     }
 
     /// Slow-path exit counts by op since instantiation, descending —
