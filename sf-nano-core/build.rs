@@ -458,6 +458,7 @@ fn has_std_enabled() -> bool {
         || env::var_os("CARGO_FEATURE_CALL_TRACE").is_some()
         || env::var_os("CARGO_FEATURE_GUARD_PAGES").is_some()
         || env::var_os("CARGO_FEATURE_JIT_DEBUG").is_some()
+        || env::var_os("CARGO_FEATURE_STARTUP_PROFILE").is_some()
 }
 
 fn compute_want_ir_dump() -> bool {

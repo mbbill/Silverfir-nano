@@ -608,6 +608,9 @@ fn predecode_function_into(
     // Move the vector headers out of the module scratch while a Predecoder
     // owns them. `mem::take` itself does not allocate. Every retry and every
     // following function receives the capacities grown by the prior pass.
+    #[cfg(feature = "startup-profile")]
+    let scratch_take_span =
+        crate::startup_profile::Span::new(crate::startup_profile::Stage::PredecodeScratch);
     let mut stack = mem::take(&mut scratch.stack);
     let mut frames = mem::take(&mut scratch.frames);
     let mut locals = mem::take(&mut scratch.locals);
@@ -615,6 +618,8 @@ fn predecode_function_into(
     let mut unsafe_loop_homes = mem::take(&mut scratch.unsafe_loop_homes);
     let mut side_scratch = mem::take(&mut scratch.side);
     canonical_loop_homes.clear();
+    #[cfg(feature = "startup-profile")]
+    drop(scratch_take_span);
 
     // These are persistent function outputs. They can reuse a failed
     // optimistic pass, but the successful buffers move into the published
@@ -626,6 +631,9 @@ fn predecode_function_into(
     let p = loop {
         // Roll back an optimistic pass in-place. Earlier functions occupy
         // the immutable prefix before `code_start` and cannot be disturbed.
+        #[cfg(feature = "startup-profile")]
+        let scratch_reset_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::PredecodeScratch);
         code.truncate(code_start);
         stack.clear();
         frames.clear();
@@ -637,6 +645,8 @@ fn predecode_function_into(
         wide_memargs.clear();
         exception_sites.clear();
         exception_handlers.clear();
+        #[cfg(feature = "startup-profile")]
+        drop(scratch_reset_span);
         let mut p = Predecoder {
             types: module.types(),
             module,
@@ -706,6 +716,9 @@ fn predecode_function_into(
         // Reclaim every buffer before retrying. In particular, a safety
         // re-decode no longer repeats the local-state and control-stack
         // allocations that prompted the retry.
+        #[cfg(feature = "startup-profile")]
+        let scratch_retry_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::PredecodeScratch);
         stack = mem::take(&mut p.stack);
         frames = mem::take(&mut p.frames);
         locals = mem::take(&mut p.locals);
@@ -716,9 +729,14 @@ fn predecode_function_into(
         wide_memargs = mem::take(&mut p.wide_memargs);
         exception_sites = mem::take(&mut p.exception_sites);
         exception_handlers = mem::take(&mut p.exception_handlers);
+        #[cfg(feature = "startup-profile")]
+        drop(scratch_retry_span);
     };
     let code_range = p.code.range();
-    let pinned = PackedPinned::new(select_pinned(&p.locals));
+    let pinned = PackedPinned::new(startup_profile_measure!(
+        crate::startup_profile::Stage::PinnedCensus,
+        select_pinned(&p.locals)
+    ));
     #[cfg(test)]
     assert_eq!(
         pinned.expand(),
@@ -739,12 +757,14 @@ fn predecode_function_into(
         exception_sites: mem::take(&mut p.exception_sites),
         exception_handlers: mem::take(&mut p.exception_handlers),
     };
-    scratch.stack = mem::take(&mut p.stack);
-    scratch.frames = mem::take(&mut p.frames);
-    scratch.locals = mem::take(&mut p.locals);
-    scratch.canonical_loop_homes = mem::take(&mut p.canonical_loop_homes);
-    scratch.unsafe_loop_homes = mem::take(&mut p.unsafe_loop_homes);
-    scratch.side = mem::take(&mut p.side_scratch);
+    startup_profile_measure!(crate::startup_profile::Stage::PredecodeScratch, {
+        scratch.stack = mem::take(&mut p.stack);
+        scratch.frames = mem::take(&mut p.frames);
+        scratch.locals = mem::take(&mut p.locals);
+        scratch.canonical_loop_homes = mem::take(&mut p.canonical_loop_homes);
+        scratch.unsafe_loop_homes = mem::take(&mut p.unsafe_loop_homes);
+        scratch.side = mem::take(&mut p.side_scratch);
+    });
     Ok(parts)
 }
 
@@ -1075,6 +1095,7 @@ fn census_write(
 /// link-time census rules. Keeping this function field-for-field equivalent
 /// to the test-only oracle makes forged instruction streams checkable too.
 fn update_pin_census(locals: &mut [LocalState], ins: Instr, add: bool) {
+    startup_profile_span!(crate::startup_profile::Stage::PinnedCensus);
     let n = locals.len() as u64;
     let (a_s, b_s, c_d) = slot_fields(ins.op);
     if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
@@ -3184,7 +3205,12 @@ impl OpcodeHandler for Predecoder<'_, '_> {
     ) -> Result<(), WasmError> {
         let mut fast = FastDecoded::EMPTY;
         loop {
+            #[cfg(feature = "startup-profile")]
+            let decode_span =
+                crate::startup_profile::Span::new(crate::startup_profile::Stage::PredecodeDecode);
             if probe_fast(stream.predecode_bytes(), &mut fast) {
+                #[cfg(feature = "startup-profile")]
+                drop(decode_span);
                 // Probe first, commit second: every miss leaves the generic
                 // decoder at the exact byte where it started.
                 stream.consume_predecoded(fast.consumed);
@@ -3222,7 +3248,10 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                 continue;
             }
 
-            let Some(op) = stream.next()? else {
+            let next = stream.next()?;
+            #[cfg(feature = "startup-profile")]
+            drop(decode_span);
+            let Some(op) = next else {
                 break;
             };
             if self.pending_fill.is_some()

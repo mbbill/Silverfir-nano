@@ -103,8 +103,40 @@ pub(crate) mod test_alloc {
     }
 }
 
-#[cfg(any(sf_has_std, test))]
+#[cfg(any(sf_has_std, test, feature = "startup-profile"))]
 extern crate std;
+
+#[cfg(all(feature = "startup-profile", not(sf_has_std)))]
+compile_error!("startup-profile is a hosted CI diagnostic and requires std");
+
+#[cfg(feature = "startup-profile")]
+pub mod startup_profile;
+
+#[cfg(feature = "startup-profile")]
+macro_rules! startup_profile_span {
+    ($stage:expr) => {
+        let _startup_profile_span = crate::startup_profile::Span::new($stage);
+    };
+}
+
+#[cfg(not(feature = "startup-profile"))]
+macro_rules! startup_profile_span {
+    ($stage:expr) => {};
+}
+
+#[cfg(feature = "startup-profile")]
+macro_rules! startup_profile_measure {
+    ($stage:expr, $body:expr) => {
+        crate::startup_profile::measure($stage, || $body)
+    };
+}
+
+#[cfg(not(feature = "startup-profile"))]
+macro_rules! startup_profile_measure {
+    ($stage:expr, $body:expr) => {
+        $body
+    };
+}
 
 pub(crate) mod collections;
 // At least one execution engine has to be compiled in; a crate that can parse

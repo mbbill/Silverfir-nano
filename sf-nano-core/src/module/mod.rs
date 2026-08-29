@@ -40,7 +40,10 @@ pub struct Module {
 
 impl Module {
     pub fn new(name: &str, bin: &[u8]) -> Result<Self, WasmError> {
-        let module = parser::parse_module(name, bin)?;
+        let module = startup_profile_measure!(
+            crate::startup_profile::Stage::ParserTotal,
+            parser::parse_module(name, bin)
+        )?;
         module.ensure_simd_supported()?;
         Ok(module)
     }

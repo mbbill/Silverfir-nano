@@ -1011,14 +1011,17 @@ impl InterpInstance {
     ) -> Result<InterpInstanceLease, (Option<InterpInstanceLease>, WasmError)> {
         let (instance_id, instance_backref) = registry.reserve_instance();
         let lease_handle = instance_backref.clone();
-        let inst = match Self::build(
-            engine,
-            module,
-            host,
-            imports,
-            funcref_host,
-            registry.arenas(),
-            instance_backref,
+        let inst = match startup_profile_measure!(
+            crate::startup_profile::Stage::InstanceBuildTotal,
+            Self::build(
+                engine,
+                module,
+                host,
+                imports,
+                funcref_host,
+                registry.arenas(),
+                instance_backref,
+            )
         ) {
             Ok(inst) => inst,
             Err(error) => {
@@ -1051,11 +1054,21 @@ impl InterpInstance {
         // Link the dispatch chain BEFORE the data segments: a partial
         // instance handed back after a trap still has to be callable, and
         // linking is not observable, so its position is free.
-        inst.enable_native_dispatch().map_err(|e| (None, e))?;
-        if let Err(e) = inst.apply_element_segments() {
+        startup_profile_measure!(
+            crate::startup_profile::Stage::LinkTotal,
+            inst.enable_native_dispatch()
+        )
+        .map_err(|e| (None, e))?;
+        if let Err(e) = startup_profile_measure!(
+            crate::startup_profile::Stage::InstanceElementSegments,
+            inst.apply_element_segments()
+        ) {
             return Err((Some(inst), e));
         }
-        if let Err(e) = inst.apply_data_segments() {
+        if let Err(e) = startup_profile_measure!(
+            crate::startup_profile::Stage::InstanceDataSegments,
+            inst.apply_data_segments()
+        ) {
             return Err((Some(inst), e));
         }
         if let Some(si) = inst.module.start_function_index() {
@@ -1072,6 +1085,7 @@ impl InterpInstance {
         lease_handle: InstanceBackref,
         inst: Self,
     ) -> Result<InterpInstanceLease, WasmError> {
+        startup_profile_span!(crate::startup_profile::Stage::InstanceLease);
         registry
             .instance_table()
             .occupy_interp(instance_id, Box::new(inst))
@@ -1090,6 +1104,9 @@ impl InterpInstance {
         link_registry: LinkArenas,
         instance_backref: InstanceBackref,
     ) -> Result<Self, WasmError> {
+        #[cfg(feature = "startup-profile")]
+        let instance_setup_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::InstanceSetup);
         let config = *engine.config();
         let global_reachable: Vec<bool> = module
             .globals()
@@ -1280,7 +1297,15 @@ impl InterpInstance {
 
         // Predecode every local function eagerly; imports are dispatched at
         // the slow boundary, so import-free modules remain entirely local.
-        let funcs = predecode_functions(&module, &tags, &function_handles)?;
+        #[cfg(feature = "startup-profile")]
+        drop(instance_setup_span);
+        let funcs = startup_profile_measure!(
+            crate::startup_profile::Stage::PredecodeTotal,
+            predecode_functions(&module, &tags, &function_handles)
+        )?;
+        #[cfg(feature = "startup-profile")]
+        let instance_setup_tail_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::InstanceSetup);
         let import_names = module
             .functions()
             .iter()
@@ -1291,8 +1316,13 @@ impl InterpInstance {
                 crate::module::entities::FunctionDef::Local(_) => None,
             })
             .collect();
+        #[cfg(feature = "startup-profile")]
+        drop(instance_setup_tail_span);
 
         // Memories.
+        #[cfg(feature = "startup-profile")]
+        let memories_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::InstanceMemories);
         let mut memories = Vec::with_capacity(module.memories().len());
         for (i, m) in module.memories().iter().enumerate() {
             let resolved = resolved_memories
@@ -1320,8 +1350,13 @@ impl InterpInstance {
                 is64: limits.is64,
             });
         }
+        #[cfg(feature = "startup-profile")]
+        drop(memories_span);
 
         // Globals.
+        #[cfg(feature = "startup-profile")]
+        let globals_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::InstanceGlobals);
         let mut globals = Vec::with_capacity(module.globals().len());
         let mut shared_globals: Vec<Option<GlobalInst>> =
             Vec::with_capacity(module.globals().len());
@@ -1432,7 +1467,13 @@ impl InterpInstance {
             }
         }
 
+        #[cfg(feature = "startup-profile")]
+        drop(globals_span);
+
         // Tables (any reference type) + active element segments.
+        #[cfg(feature = "startup-profile")]
+        let tables_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::InstanceTables);
         let mut tables = Vec::with_capacity(module.tables().len());
         for (table_idx, t) in module.tables().iter().enumerate() {
             let mut shared_from_import: Option<TableInst> = None;
@@ -1543,12 +1584,18 @@ impl InterpInstance {
             .iter()
             .map(|e| matches!(e, Element::Declarative { .. }))
             .collect();
+        #[cfg(feature = "startup-profile")]
+        drop(tables_span);
 
         // Data segments are applied by `apply_data_segments`, after the
         // instance exists: one of them trapping must not lose the element
         // writes that already happened, nor the instance holding them.
         let dropped_data = vec![false; module.data().len()];
 
+        let (stack, ret_stack) = startup_profile_measure!(
+            crate::startup_profile::Stage::InstanceStackDeferred,
+            (Some(Vec::new()), Some(Vec::new()))
+        );
         let inst = InterpInstance {
             module,
             funcs: None,
@@ -1568,8 +1615,8 @@ impl InterpInstance {
             // `drive` materializes the pair immediately before native code
             // can observe it. `Some(empty)` is distinct from the `None`
             // left while an outer call owns the reusable buffers.
-            stack: Some(Vec::new()),
-            ret_stack: Some(Vec::new()),
+            stack,
+            ret_stack,
             host,
             funcref_host: funcref_host.map(|host| Rc::new(RefCell::new(host))),
             import_names,
@@ -1737,19 +1784,22 @@ impl InterpInstance {
                 *slot = Some(CANON_PENDING);
             }
         };
-        let linked: Vec<Option<LinkedFunction>> = (0..unlinked.len())
-            .map(|i| {
-                unlinked.function(i).map(|function| {
-                    engine.link_in_place(
-                        &function,
-                        i,
-                        &mut plan,
-                        &mut scratch,
-                        &mut mark_call_indirect_type,
-                    )
+        let linked: Vec<Option<LinkedFunction>> = startup_profile_measure!(
+            crate::startup_profile::Stage::LinkCellsTotal,
+            (0..unlinked.len())
+                .map(|i| {
+                    unlinked.function(i).map(|function| {
+                        engine.link_in_place(
+                            &function,
+                            i,
+                            &mut plan,
+                            &mut scratch,
+                            &mut mark_call_indirect_type,
+                        )
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        );
         drop(mark_call_indirect_type);
         plan.finish_layout();
 
@@ -1766,6 +1816,9 @@ impl InterpInstance {
         // classes densely lets the handler compare one small id. Class
         // representatives are found by linear scan — real modules carry
         // hundreds of types at most.
+        #[cfg(feature = "startup-profile")]
+        let call_fixup_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::LinkCallFixup);
         let used_type_count = canon_of.iter().filter(|entry| entry.is_some()).count();
         let mut reps: Vec<u32> = Vec::with_capacity(used_type_count);
         for ti in 0..canon_of.len() {
@@ -1882,6 +1935,12 @@ impl InterpInstance {
                 }
             }
         }
+        #[cfg(feature = "startup-profile")]
+        drop(call_fixup_span);
+
+        #[cfg(feature = "startup-profile")]
+        let _link_finalize_span =
+            crate::startup_profile::Span::new(crate::startup_profile::Stage::LinkFinalize);
         plan.finish_slow_heads(engine.slow_stub_addr());
         #[cfg(test)]
         plan.assert_sparse_slow_heads(&linked, engine.slow_stub_addr());

@@ -78,6 +78,27 @@ impl TryFrom<u8> for WasmSection {
     }
 }
 
+#[cfg(feature = "startup-profile")]
+fn profile_stage(section: WasmSection) -> crate::startup_profile::Stage {
+    use crate::startup_profile::Stage;
+    match section {
+        WasmSection::Custom => Stage::ParserCustom,
+        WasmSection::Type => Stage::ParserType,
+        WasmSection::Import => Stage::ParserImport,
+        WasmSection::Function => Stage::ParserFunction,
+        WasmSection::Table => Stage::ParserTable,
+        WasmSection::Memory => Stage::ParserMemory,
+        WasmSection::Tag => Stage::ParserTag,
+        WasmSection::Global => Stage::ParserGlobal,
+        WasmSection::Export => Stage::ParserExport,
+        WasmSection::Start => Stage::ParserStart,
+        WasmSection::Element => Stage::ParserElement,
+        WasmSection::Code => Stage::ParserCode,
+        WasmSection::Data => Stage::ParserData,
+        WasmSection::DataCount => Stage::ParserDataCount,
+    }
+}
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ExternalKind {
@@ -255,6 +276,10 @@ fn plan_module_capacities(mut payload: Payload<'_>) -> Result<ModuleCapacities, 
 pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> {
     let mut payload: Payload = bin.into();
 
+    #[cfg(feature = "startup-profile")]
+    let parser_header_span =
+        crate::startup_profile::Span::new(crate::startup_profile::Stage::ParserHeader);
+
     let magic = payload.read_bytes(4)?;
     if magic != WASM_MAGIC_NUMBER {
         return Err(WasmError::malformed("Invalid magic number"));
@@ -315,7 +340,13 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         ));
     }
 
-    let capacities = plan_module_capacities(payload.clone())?;
+    #[cfg(feature = "startup-profile")]
+    drop(parser_header_span);
+
+    let capacities = startup_profile_measure!(
+        crate::startup_profile::Stage::ParserPlan,
+        plan_module_capacities(payload.clone())
+    )?;
     let mut types: collections::Vec<Rc<DefType>> = collections::Vec::new();
     let mut functions: collections::Vec<Function> =
         collections::Vec::with_capacity(capacities.functions);
@@ -341,67 +372,71 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
 
         check_section_order(section)?;
 
-        match section {
-            WasmSection::Custom => {
-                parse_custom_section(&mut section_payload)?;
-            }
-            WasmSection::Type => {
-                types = parse_type_section(&mut section_payload)?;
-            }
-            WasmSection::Import => {
-                parse_import_section(
-                    &types,
-                    &mut functions,
-                    &mut tables,
-                    &mut memories,
-                    &mut globals,
-                    &mut tags,
-                    &mut section_payload,
-                )?;
-            }
-            WasmSection::Function => {
-                parse_function_section(&types, &mut functions, &mut section_payload)?;
-            }
-            WasmSection::Table => {
-                parse_table_section(&mut tables, &mut section_payload)?;
-            }
-            WasmSection::Memory => {
-                parse_memory_section(&mut memories, &mut section_payload)?;
-            }
-            WasmSection::Tag => {
-                parse_tag_section(&types, &mut tags, &mut section_payload)?;
-            }
-            WasmSection::Global => {
-                parse_global_section(&mut globals, &mut section_payload)?;
-            }
-            WasmSection::Export => {
-                parse_export_section(
-                    &mut functions,
-                    &mut tables,
-                    &mut memories,
-                    &mut globals,
-                    &mut tags,
-                    &mut section_payload,
-                )?;
-            }
-            WasmSection::Start => {
-                let index = section_payload.read_leb128_u32()? as usize;
-                if index >= functions.len() {
-                    return Err(WasmError::malformed("Invalid start function index"));
+        {
+            #[cfg(feature = "startup-profile")]
+            let _section_span = crate::startup_profile::Span::new(profile_stage(section));
+            match section {
+                WasmSection::Custom => {
+                    parse_custom_section(&mut section_payload)?;
                 }
-                start_func_index = Some(index);
-            }
-            WasmSection::Element => {
-                elements = parse_vec(&mut section_payload, parse_element)?;
-            }
-            WasmSection::DataCount => {
-                data_count = Some(section_payload.read_leb128_u32()? as usize);
-            }
-            WasmSection::Code => {
-                parse_code_section(&mut functions, &mut section_payload, payload_offset)?;
-            }
-            WasmSection::Data => {
-                data_segments = parse_data_section(data_count, &mut section_payload)?;
+                WasmSection::Type => {
+                    types = parse_type_section(&mut section_payload)?;
+                }
+                WasmSection::Import => {
+                    parse_import_section(
+                        &types,
+                        &mut functions,
+                        &mut tables,
+                        &mut memories,
+                        &mut globals,
+                        &mut tags,
+                        &mut section_payload,
+                    )?;
+                }
+                WasmSection::Function => {
+                    parse_function_section(&types, &mut functions, &mut section_payload)?;
+                }
+                WasmSection::Table => {
+                    parse_table_section(&mut tables, &mut section_payload)?;
+                }
+                WasmSection::Memory => {
+                    parse_memory_section(&mut memories, &mut section_payload)?;
+                }
+                WasmSection::Tag => {
+                    parse_tag_section(&types, &mut tags, &mut section_payload)?;
+                }
+                WasmSection::Global => {
+                    parse_global_section(&mut globals, &mut section_payload)?;
+                }
+                WasmSection::Export => {
+                    parse_export_section(
+                        &mut functions,
+                        &mut tables,
+                        &mut memories,
+                        &mut globals,
+                        &mut tags,
+                        &mut section_payload,
+                    )?;
+                }
+                WasmSection::Start => {
+                    let index = section_payload.read_leb128_u32()? as usize;
+                    if index >= functions.len() {
+                        return Err(WasmError::malformed("Invalid start function index"));
+                    }
+                    start_func_index = Some(index);
+                }
+                WasmSection::Element => {
+                    elements = parse_vec(&mut section_payload, parse_element)?;
+                }
+                WasmSection::DataCount => {
+                    data_count = Some(section_payload.read_leb128_u32()? as usize);
+                }
+                WasmSection::Code => {
+                    parse_code_section(&mut functions, &mut section_payload, payload_offset)?;
+                }
+                WasmSection::Data => {
+                    data_segments = parse_data_section(data_count, &mut section_payload)?;
+                }
             }
         }
         if !section_payload.is_empty() {
@@ -409,28 +444,30 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         }
     }
 
-    // Validate data count consistency
-    if let Some(dc) = data_count {
-        if dc > 0 && data_segments.is_empty() {
-            return Err(WasmError::malformed(
-                "data count and data section have inconsistent lengths".into(),
-            ));
+    startup_profile_measure!(crate::startup_profile::Stage::ParserFinalize, {
+        // Validate data count consistency
+        if let Some(dc) = data_count {
+            if dc > 0 && data_segments.is_empty() {
+                return Err(WasmError::malformed(
+                    "data count and data section have inconsistent lengths".into(),
+                ));
+            }
         }
-    }
 
-    Ok(Module {
-        name: name.into(),
-        binary_version: version,
-        types: TypeContext::new(types),
-        functions,
-        tables,
-        memories,
-        globals,
-        tags,
-        elements,
-        data: data_segments,
-        start_func_index,
-        data_count,
+        Ok(Module {
+            name: name.into(),
+            binary_version: version,
+            types: TypeContext::new(types),
+            functions,
+            tables,
+            memories,
+            globals,
+            tags,
+            elements,
+            data: data_segments,
+            start_func_index,
+            data_count,
+        })
     })
 }
 

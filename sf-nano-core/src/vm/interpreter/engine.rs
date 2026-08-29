@@ -869,6 +869,7 @@ impl NativeEngine {
     /// `FLAG_NO_NATIVE`, so accumulator retries do not re-read and classify
     /// the cell's payload.
     fn handler_for(&self, ins: &Instr, flags: u16, pin: &Pinned) -> usize {
+        startup_profile_span!(crate::startup_profile::Stage::LinkHandlerSelection);
         // The generated handlers zero-extend a 32-bit address, so a 64-bit
         // memory access has no native form and takes the shared executor.
         if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL | FLAG_NO_NATIVE) != 0 {

@@ -86,6 +86,16 @@ jit-debug = ["jit"]
 # Route every allocation through the tracked-alloc facade and report phases.
 memprof = ["tracked_alloc/memprof"]
 
+# Temporary CI-only instrumentation for decomposing eager interpreter startup.
+# This is intentionally separate from `interp-count`: it uses hosted
+# `std::time::Instant`, exposes no behavior to ordinary builds, and is never
+# enabled by a runtime feature set.
+startup-profile = ["interp"]
+
 [[example]]
 name = "invoke_export"
 required-features = ["wasi"]
+
+[[example]]
+name = "startup_stage_profile"
+required-features = ["startup-profile"]

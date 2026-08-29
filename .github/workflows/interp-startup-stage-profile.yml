@@ -1,0 +1,89 @@
+name: Temporary interpreter startup stage profile
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev/interp-stage-profile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: interp-startup-stage-profile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  profile:
+    name: stage-profile / ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: stage-profile-target
+    steps:
+      - name: Checkout profiler candidate
+        uses: actions/checkout@v7
+
+      - name: Checkout pinned wasmi-benchmarks
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: startup-stage-profile-${{ matrix.platform }}
+          workspaces: ". -> stage-profile-target"
+
+      - name: Record runner CPU
+        run: |
+          set -euo pipefail
+          uname -a
+          lscpu 2>/dev/null | grep -iE "model name|vendor|bios" || true
+
+      - name: Build isolated profiler binary
+        run: |
+          set -euo pipefail
+          cargo build \
+            --release \
+            --package sf-nano-core \
+            --example startup_stage_profile \
+            --no-default-features \
+            --features interp,startup-profile
+
+      - name: Profile all seven startup workloads
+        run: |
+          set -euo pipefail
+          mkdir -p stage-profile-output
+          taskset -c 1 setarch "$(uname -m)" -R \
+            python3 ci/startup_stage_profile.py \
+              --binary stage-profile-target/release/examples/startup_stage_profile \
+              --suite wasmi-benchmarks \
+              --iterations 31 \
+              --warmups 5 \
+              --out-dir stage-profile-output \
+            | tee stage-profile-output/console.md
+          cat stage-profile-output/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload stage profile
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: interp-startup-stage-profile-${{ matrix.platform }}
+          path: stage-profile-output/
+          if-no-files-found: error
+          retention-days: 14
