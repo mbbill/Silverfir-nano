@@ -613,7 +613,7 @@ impl SharedFunctionRegistry {
         self.borrow().get(funcaddr).copied()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, sf_module_validator))]
     fn census_for_test(&self) -> (usize, usize) {
         (
             self.max_local_functions_ever.get(),
@@ -1037,7 +1037,7 @@ impl LinkRegistry {
         self.instances.clone()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, sf_module_validator))]
     pub(crate) fn function_registry_census_for_test(&self) -> (usize, usize) {
         self.arenas.functions.census_for_test()
     }
