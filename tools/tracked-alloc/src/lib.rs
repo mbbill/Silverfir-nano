@@ -1099,8 +1099,7 @@ fn sync_unique_allocation_with_stack(
             existing.remove();
             return;
         }
-        existing.retype(descriptor);
-        existing.update(state);
+        existing.retype_and_update(descriptor, state);
         insert_tracked_allocation(state.ptr, handle.take().expect("tracked handle exists"));
         return;
     }
@@ -1324,16 +1323,33 @@ impl AllocationHandle {
         handle
     }
 
-    /// Change the logical owner/type of one live allocation without ending
-    /// its lifetime. The record id and creation stack deliberately survive:
-    /// an in-place container retype is not a free followed by an allocation.
-    fn retype(&mut self, descriptor: AllocationDescriptor) {
+    /// Change the logical owner/type and state of one live allocation without
+    /// ending its lifetime. The record id and creation stack deliberately
+    /// survive: an in-place container retype is not a free followed by an
+    /// allocation.
+    ///
+    /// Descriptor and state move together under one profiler lock so a
+    /// concurrent snapshot cannot observe a new type with the old vector
+    /// metadata. The pointer registry is not held while this lock is taken.
+    fn retype_and_update(&mut self, descriptor: AllocationDescriptor, state: AllocationState) {
         if self.descriptor == descriptor {
+            self.update(state);
+            return;
+        }
+
+        if state.size_bytes == 0 || state.ptr == 0 {
+            self.descriptor = descriptor;
+            self.remove();
+            return;
+        }
+
+        if self.id.is_none() {
+            self.descriptor = descriptor;
+            self.materialize(state);
             return;
         }
 
         let Some(id) = self.id else {
-            self.descriptor = descriptor;
             return;
         };
 
@@ -1346,34 +1362,35 @@ impl AllocationHandle {
 
             let old_bucket = runtime_bucket(record.owner_kind, record.type_name);
             let new_bucket = runtime_bucket(descriptor.owner_kind, descriptor.type_name);
-            if old_bucket != new_bucket {
-                match old_bucket {
-                    RuntimeBucket::Heap => {
-                        profiler.total_bytes =
-                            profiler.total_bytes.saturating_sub(record.size_bytes);
-                    }
-                    RuntimeBucket::CodeBuffer => {
-                        profiler.code_buffer_bytes =
-                            profiler.code_buffer_bytes.saturating_sub(record.size_bytes);
-                    }
-                    RuntimeBucket::GuardPage => {
-                        profiler.guard_page_bytes =
-                            profiler.guard_page_bytes.saturating_sub(record.size_bytes);
-                    }
+            let old_size_bytes = record.size_bytes;
+            let size_changed = record.capacity != state.capacity
+                || record.size_bytes != state.size_bytes
+                || record.ptr != state.ptr;
+
+            match old_bucket {
+                RuntimeBucket::Heap => {
+                    profiler.total_bytes = profiler.total_bytes.saturating_sub(old_size_bytes);
                 }
-                match new_bucket {
-                    RuntimeBucket::Heap => {
-                        profiler.total_bytes =
-                            profiler.total_bytes.saturating_add(record.size_bytes);
-                    }
-                    RuntimeBucket::CodeBuffer => {
-                        profiler.code_buffer_bytes =
-                            profiler.code_buffer_bytes.saturating_add(record.size_bytes);
-                    }
-                    RuntimeBucket::GuardPage => {
-                        profiler.guard_page_bytes =
-                            profiler.guard_page_bytes.saturating_add(record.size_bytes);
-                    }
+                RuntimeBucket::CodeBuffer => {
+                    profiler.code_buffer_bytes =
+                        profiler.code_buffer_bytes.saturating_sub(old_size_bytes);
+                }
+                RuntimeBucket::GuardPage => {
+                    profiler.guard_page_bytes =
+                        profiler.guard_page_bytes.saturating_sub(old_size_bytes);
+                }
+            }
+            match new_bucket {
+                RuntimeBucket::Heap => {
+                    profiler.total_bytes = profiler.total_bytes.saturating_add(state.size_bytes);
+                }
+                RuntimeBucket::CodeBuffer => {
+                    profiler.code_buffer_bytes =
+                        profiler.code_buffer_bytes.saturating_add(state.size_bytes);
+                }
+                RuntimeBucket::GuardPage => {
+                    profiler.guard_page_bytes =
+                        profiler.guard_page_bytes.saturating_add(state.size_bytes);
                 }
             }
 
@@ -1381,8 +1398,19 @@ impl AllocationHandle {
             record.owner_kind = descriptor.owner_kind;
             record.type_name = descriptor.type_name;
             record.element_type = descriptor.element_type;
+            record.len = state.len;
+            record.capacity = state.capacity;
+            record.size_bytes = state.size_bytes;
+            record.ptr = state.ptr;
+            if size_changed {
+                record.last_update_stack = None;
+            }
             profiler.aggregate_add(&record);
             profiler.records.insert(id, record);
+            if size_changed {
+                profiler.maybe_sample_timeline();
+                profiler.maybe_take_snapshot();
+            }
             self.descriptor = descriptor;
         });
     }
@@ -2400,36 +2428,47 @@ pub fn into_alloc_vec<T>(value: Vec<T>) -> inner::Vec<T> {
     value.into_alloc_vec()
 }
 
-/// Consume a vector and return its allocation as raw parts.
+/// Retype one vector allocation without exposing a separable raw-owner state.
 ///
-/// With memory profiling enabled the live allocation record remains attached
-/// to the pointer so a matching [`from_raw_parts`] can retype it without a
-/// false free/allocation pair. The caller must either rebuild an owning
-/// collection or otherwise release the allocation according to
-/// `alloc::vec::Vec`'s raw-parts contract.
-pub fn into_raw_parts<T>(value: Vec<T>) -> (*mut T, usize, usize) {
-    let mut value = core::mem::ManuallyDrop::new(value);
-    (value.as_mut_ptr(), value.len(), value.capacity())
-}
-
-/// Rebuild a vector from an allocation previously split into raw parts.
-///
-/// With memory profiling enabled an existing live record for `ptr` is retyped
-/// in place, preserving its id and creation site. A previously untracked
-/// allocation is registered as a new vector owner. This is the tracking-aware
-/// counterpart of `alloc::vec::Vec::from_raw_parts`.
+/// This is a hidden cross-crate implementation hook for owners that replace
+/// every element in place. With memory profiling enabled, the one live record
+/// changes type atomically while preserving its allocation id, creation site,
+/// pointer, and byte count.
 ///
 /// # Safety
 ///
-/// The caller must uphold all requirements of
-/// `alloc::vec::Vec::from_raw_parts`: `ptr` must have been allocated by the
-/// global allocator for `T` with exactly this capacity/layout, the first
-/// `len` elements must be initialized valid `T` values, and no other owner or
-/// live reference may access the allocation after this call.
-pub unsafe fn from_raw_parts<T>(ptr: *mut T, len: usize, capacity: usize) -> Vec<T> {
-    // Construct the owner before touching tracking state so unwinding from the
-    // profiler cannot leak the raw allocation.
-    // SAFETY: forwarded from this function's contract.
+/// Every initialized `T` element's bytes must be a valid `U`, and no unsafe
+/// alias may access the allocation through the old element type after the
+/// call. The function panics unless the element layouts are equal and neither
+/// type has drop glue; all of those checks run before it disarms the original
+/// owner.
+#[doc(hidden)]
+#[track_caller]
+pub unsafe fn retype_vec<T, U>(value: Vec<T>) -> Vec<U> {
+    assert_eq!(
+        core::mem::size_of::<T>(),
+        core::mem::size_of::<U>(),
+        "vector retype requires equal element sizes"
+    );
+    assert_eq!(
+        core::mem::align_of::<T>(),
+        core::mem::align_of::<U>(),
+        "vector retype requires equal element alignments"
+    );
+    assert!(
+        !core::mem::needs_drop::<T>() && !core::mem::needs_drop::<U>(),
+        "vector retype requires elements without drop glue"
+    );
+
+    // All checks that can reject the transfer run while `value` is still its
+    // ordinary owning type. From here until `inner` is constructed, only
+    // infallible raw-parts access occurs.
+    let mut value = core::mem::ManuallyDrop::new(value);
+    let ptr = value.as_mut_ptr().cast::<U>();
+    let len = value.len();
+    let capacity = value.capacity();
+    // SAFETY: equal size/alignment preserve the allocation layout and the
+    // remaining validity/aliasing requirements are this function's contract.
     let inner = unsafe { inner::Vec::from_raw_parts(ptr, len, capacity) };
     #[cfg(not(feature = "memprof"))]
     {
@@ -2440,7 +2479,7 @@ pub unsafe fn from_raw_parts<T>(ptr: *mut T, len: usize, capacity: usize) -> Vec
         let values = Vec { inner };
         sync_unique_allocation_with_stack(
             buffer_ptr(&values.inner),
-            AllocationDescriptor::new("Vec", type_name::<T>()).with_element_type(type_name::<T>()),
+            AllocationDescriptor::new("Vec", type_name::<U>()).with_element_type(type_name::<U>()),
             vec_state(&values.inner),
             None,
         );
@@ -3990,7 +4029,7 @@ pub mod string {
 pub mod vec {
     pub use crate::inner::IntoIter;
 
-    pub use crate::{from_alloc_vec, from_raw_parts, into_alloc_vec, into_raw_parts, Vec};
+    pub use crate::{from_alloc_vec, into_alloc_vec, Vec};
 }
 
 #[cfg(test)]
@@ -4050,15 +4089,16 @@ mod tests {
     }
 
     #[test]
-    fn raw_parts_retype_transfers_tracking_and_drops_cleanly() {
+    fn vec_retype_preserves_record_identity_and_drops_cleanly() {
         #[cfg(feature = "memprof")]
         let _guard = tracking_test_lock()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         #[cfg(feature = "memprof")]
         {
-            set_tracking_enabled(true);
+            set_tracking_enabled(false);
             reset_tracking();
+            set_tracking_enabled(true);
         }
 
         let mut values = Vec::<u32>::with_capacity(8);
@@ -4073,21 +4113,13 @@ mod tests {
             assert_eq!(live.total_bytes, 8 * mem::size_of::<u32>());
             live.records[0].clone()
         };
-
-        let (ptr, len, capacity) = into_raw_parts(values);
-        assert_eq!(ptr as usize, allocation);
-        assert_eq!((len, capacity), (3, 8));
         #[cfg(feature = "memprof")]
-        {
-            let live = snapshot();
-            assert_eq!(live.records.len(), 1, "raw owner must stay tracked");
-            assert_eq!(live.records[0].id, before.id);
-        }
+        let before_event_count = profiler().lock().unwrap().event_count;
 
         // SAFETY: i32 and u32 have identical allocation layout/alignment and
-        // every initialized u32 bit pattern is also a valid i32 value. The
-        // raw allocation has no other owner between the paired calls.
-        let values: Vec<i32> = unsafe { from_raw_parts(ptr.cast(), len, capacity) };
+        // every initialized u32 bit pattern is also a valid i32 value. Neither
+        // type has drop glue, and ownership moves directly between vectors.
+        let values: Vec<i32> = unsafe { retype_vec(values) };
         assert_eq!(values.as_ptr() as usize, allocation);
         assert_eq!(values.as_slice(), &[1, 2, 3]);
         #[cfg(feature = "memprof")]
@@ -4105,6 +4137,43 @@ mod tests {
             assert_eq!(live.records[0].len, Some(3));
             assert_eq!(live.records[0].capacity, Some(8));
             assert_eq!(live.total_bytes, before.size_bytes);
+
+            let profiler = profiler().lock().unwrap();
+            assert_eq!(profiler.records.len(), 1);
+            let record = profiler
+                .records
+                .get(&before.id)
+                .expect("retyped record keeps its id");
+            assert_eq!(record.type_name, type_name::<i32>());
+            assert_eq!(record.element_type, Some(type_name::<i32>()));
+            assert_eq!(record.len, Some(3));
+            assert_eq!(record.capacity, Some(8));
+            assert_eq!(record.size_bytes, before.size_bytes);
+            assert_eq!(record.ptr, before.ptr);
+            assert_eq!(profiler.event_count, before_event_count);
+
+            let old_key = AggregateKey {
+                owner_kind: "Vec",
+                type_name: type_name::<u32>(),
+                element_type: Some(type_name::<u32>()),
+                create_stack: record.create_stack,
+            };
+            let new_key = AggregateKey {
+                owner_kind: "Vec",
+                type_name: type_name::<i32>(),
+                element_type: Some(type_name::<i32>()),
+                create_stack: record.create_stack,
+            };
+            let old = profiler
+                .aggregate
+                .get(&old_key)
+                .expect("old aggregate remains as an empty history bucket");
+            assert_eq!((old.count, old.total_bytes), (0, 0));
+            let new = profiler
+                .aggregate
+                .get(&new_key)
+                .expect("new aggregate owns the live record");
+            assert_eq!((new.count, new.total_bytes), (1, before.size_bytes));
         }
 
         drop(values);
@@ -4117,6 +4186,47 @@ mod tests {
             set_tracking_enabled(false);
             reset_tracking();
         }
+    }
+
+    #[cfg(feature = "memprof")]
+    #[test]
+    fn vec_retype_rejects_drop_glue_before_disarming_owner() {
+        let _guard = tracking_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        set_tracking_enabled(false);
+        reset_tracking();
+        set_tracking_enabled(true);
+
+        static DROPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        #[repr(transparent)]
+        struct DropWord(u64);
+        impl Drop for DropWord {
+            fn drop(&mut self) {
+                let _ = self.0;
+                DROPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        DROPS.store(0, std::sync::atomic::Ordering::SeqCst);
+        let mut values = Vec::with_capacity(2);
+        values.push(DropWord(11));
+        values.push(DropWord(29));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: the transparent wrapper's bytes are valid `u64` and
+            // there are no aliases. The checked drop-glue guard must panic
+            // while `values` still owns both elements and its allocation.
+            let _: Vec<u64> = unsafe { retype_vec(values) };
+        }));
+        assert!(result.is_err(), "drop-glue retype must be rejected");
+        assert_eq!(DROPS.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let live = snapshot();
+        assert!(live.records.is_empty(), "rejected owner must drop once");
+        assert_eq!(live.total_bytes, 0);
+        assert!(tracked_allocations().lock().unwrap().is_empty());
+        set_tracking_enabled(false);
+        reset_tracking();
     }
 
     #[test]
