@@ -157,6 +157,65 @@ impl Iterator for RawCatchIter<'_> {
 
 impl ExactSizeIterator for RawCatchIter<'_> {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawValueTypeRange<'a> {
+    bytes: &'a [u8],
+    count: u32,
+}
+
+impl<'a> RawValueTypeRange<'a> {
+    pub(crate) const fn len(self) -> u32 {
+        self.count
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.count == 0
+    }
+
+    pub(crate) const fn encoded(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    pub(crate) const fn iter(self) -> RawValueTypeIter<'a> {
+        RawValueTypeIter {
+            bytes: self.bytes,
+            pc: 0,
+            remaining: self.count,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RawValueTypeIter<'a> {
+    bytes: &'a [u8],
+    pc: usize,
+    remaining: u32,
+}
+
+impl Iterator for RawValueTypeIter<'_> {
+    type Item = Result<ValueType, WasmError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let Some(&byte) = self.bytes.get(self.pc) else {
+            self.remaining = 0;
+            return Some(Err(WasmError::malformed("unexpected end of input")));
+        };
+        self.pc += 1;
+        self.remaining -= 1;
+        Some(decode_raw_select_type(byte))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.remaining as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for RawValueTypeIter<'_> {}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RawImmediate<'a> {
     None,
@@ -169,6 +228,7 @@ pub(crate) enum RawImmediate<'a> {
         block: RawBlockType,
         catches: RawCatchRange<'a>,
     },
+    SelectTypes(RawValueTypeRange<'a>),
     RefType(ValueType),
     BrTable {
         labels: RawU32Range<'a>,
@@ -382,6 +442,21 @@ impl<'a> RawOpCursor<'a> {
             I64_CONST => (OP(op), RawImmediate::I64(payload.read_leb128_i64()?)),
             F32_CONST => (OP(op), RawImmediate::F32(payload.read_f32()?.to_bits())),
             F64_CONST => (OP(op), RawImmediate::F64(payload.read_f64()?.to_bits())),
+            SELECT_T => {
+                let count = payload.read_leb128_u32()?;
+                let types_start = start + payload.position();
+                for _ in 0..count {
+                    decode_raw_select_type(payload.read_u8()?)?;
+                }
+                let types_end = start + payload.position();
+                (
+                    OP(op),
+                    RawImmediate::SelectTypes(RawValueTypeRange {
+                        bytes: &self.bytes[types_start..types_end],
+                        count,
+                    }),
+                )
+            }
             I32_LOAD | I32_LOAD8_S | I32_LOAD8_U | I32_LOAD16_S | I32_LOAD16_U | I64_LOAD
             | I64_LOAD8_S | I64_LOAD8_U | I64_LOAD16_S | I64_LOAD16_U | I64_LOAD32_S
             | I64_LOAD32_U | F32_LOAD | F64_LOAD | I32_STORE | I32_STORE8 | I32_STORE16
@@ -441,7 +516,7 @@ impl<'a> RawOpCursor<'a> {
                 };
                 (FC(ext), imm)
             }
-            THROW | THROW_REF | SELECT_T => return self.unsupported(OP(op), start),
+            THROW | THROW_REF => return self.unsupported(OP(op), start),
             PREFIX_FB => {
                 let ext: OpcodeFB = payload.read_leb128_u32()?.try_into()?;
                 return self.unsupported(FB(ext), start);
@@ -499,6 +574,12 @@ fn decode_raw_catch(payload: &mut Payload<'_>) -> Result<RawCatch, WasmError> {
     })
 }
 
+fn decode_raw_select_type(byte: u8) -> Result<ValueType, WasmError> {
+    let value_type = ValueType::try_from(byte)?;
+    value_type.ensure_enabled_in_build()?;
+    Ok(value_type)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,6 +635,13 @@ mod tests {
                     assert_eq!(raw.tag_index, generic.tag_idx);
                     assert_eq!(raw.label_depth, generic.label_idx);
                 }
+            }
+            (RawImmediate::SelectTypes(types), Immediate::SelectTypes(generic)) => {
+                assert_eq!(types.len() as usize, generic.len());
+                assert_eq!(types.is_empty(), generic.is_empty());
+                assert!(!types.encoded().is_empty() || types.is_empty());
+                let raw: Vec<ValueType> = types.iter().collect::<Result<_, _>>().unwrap();
+                assert_eq!(raw, generic.as_slice());
             }
             (RawImmediate::RefType(a), Immediate::RefType(b)) => assert_eq!(a, *b),
             (RawImmediate::LabelIndex(a), Immediate::LabelIndex(b)) => assert_eq!(a, *b),
@@ -757,7 +845,7 @@ mod tests {
             }
         }
         assert!(supported >= 190, "supported primary bytes={supported}");
-        assert_eq!(unsupported, 5, "throw/typed-select/GC/SIMD families");
+        assert_eq!(unsupported, 4, "throw/GC/SIMD families");
     }
 
     #[test]
@@ -920,6 +1008,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn typed_select_borrows_types_and_matches_generic_from_random_resume_points() {
+        let code = [
+            Opcode::NOP as u8,
+            Opcode::SELECT_T as u8,
+            0x86,
+            0x00,
+            0x7f,
+            0x7e,
+            0x7d,
+            0x7c,
+            0x70,
+            0x6f,
+            Opcode::END as u8,
+        ];
+        let select_pc = 1;
+        let generic = decode_generic_at(&code, select_pc).expect("generic typed select");
+        let mut cursor = RawOpCursor::at(&code, select_pc);
+        let raw = cursor.next().expect("raw typed select").expect("one op");
+        assert_equivalent(raw, &generic);
+        let RawImmediate::SelectTypes(types) = raw.imm else {
+            panic!("expected raw typed-select types");
+        };
+        assert_eq!(types.len(), 6);
+        assert_eq!(types.encoded(), &code[4..10]);
+        assert_eq!(types.iter().len(), 6);
+        assert_eq!(
+            types.iter().collect::<Result<Vec<_>, _>>().unwrap(),
+            [
+                ValueType::I32,
+                ValueType::I64,
+                ValueType::F32,
+                ValueType::F64,
+                ValueType::funcref(),
+                ValueType::externref(),
+            ]
+        );
+
+        for pc in [raw.end, 0, select_pc] {
+            assert!(assert_one_matches_or_is_explicitly_unsupported(&code, pc));
+        }
+    }
+
+    #[test]
+    fn malformed_typed_select_matches_generic_and_never_commits_pc() {
+        for bytes in [
+            &[Opcode::SELECT_T as u8, 0x80][..],
+            &[Opcode::SELECT_T as u8, 0x01][..],
+            &[Opcode::SELECT_T as u8, 0x02, 0x7f][..],
+            &[Opcode::SELECT_T as u8, 0x01, 0xff][..],
+            &[Opcode::SELECT_T as u8, 0x80, 0x80, 0x80, 0x80, 0x80][..],
+        ] {
+            assert!(assert_one_matches_or_is_explicitly_unsupported(bytes, 0));
+            let mut cursor = RawOpCursor::new(bytes);
+            assert!(matches!(cursor.next(), Err(RawDecodeError::Decode(_))));
+            assert_eq!(cursor.position(), 0);
+        }
+
+        for bytes in [
+            &[Opcode::SELECT_T as u8, 0x00][..],
+            &[Opcode::SELECT_T as u8, 0x81, 0x00, 0x7f][..],
+        ] {
+            assert!(assert_one_matches_or_is_explicitly_unsupported(bytes, 0));
+        }
+    }
+
     fn compare_module_bodies(name: &str, wasm: &[u8]) -> (usize, usize, usize) {
         let module = Module::new(name, wasm).expect("parse corpus module");
         let mut supported = 0usize;
@@ -973,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn throw_gc_typed_select_and_simd_are_explicitly_unsupported() {
+    fn throw_gc_and_simd_are_explicitly_unsupported() {
         for (bytes, expected) in [
             (
                 &[Opcode::THROW as u8, 0x00][..],
@@ -982,10 +1136,6 @@ mod tests {
             (
                 &[Opcode::THROW_REF as u8][..],
                 WasmOpcode::OP(Opcode::THROW_REF),
-            ),
-            (
-                &[Opcode::SELECT_T as u8, 0x00][..],
-                WasmOpcode::OP(Opcode::SELECT_T),
             ),
             (
                 &[Opcode::PREFIX_FB as u8, 0x00, 0x00][..],
