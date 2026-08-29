@@ -43,7 +43,9 @@ use core::ptr::NonNull;
 #[cfg(all(test, sf_module_validator))]
 use super::baseline_artifact::BaselineArtifact;
 #[cfg(all(test, sf_module_validator))]
-use super::baseline_exec::{RawFrameState, RawSlots, RawStepExit, RawStepper};
+use super::baseline_exec::{
+    raw_stepper_supports_function, RawFrameState, RawSlots, RawStepExit, RawStepper,
+};
 #[cfg(all(test, sf_module_validator))]
 use super::baseline_function_plan::FunctionPlanKind;
 use super::engine::{
@@ -1753,12 +1755,11 @@ impl InterpInstance {
             } else {
                 match *mode {
                     FunctionPlanKind::Raw => {
-                        if artifact.functions[index].is_none() {
-                            return Err(WasmError::invalid(
-                                "artifact-ineligible function planned Raw",
-                            ));
+                        if raw_stepper_supports_function(&self.module, &artifact, index) {
+                            FunctionPlanKind::Raw
+                        } else {
+                            FunctionPlanKind::FullFold
                         }
-                        FunctionPlanKind::Raw
                     }
                     FunctionPlanKind::FullFold | FunctionPlanKind::Hybrid => {
                         FunctionPlanKind::FullFold
@@ -1776,7 +1777,7 @@ impl InterpInstance {
 
     #[cfg(all(test, sf_module_validator))]
     #[inline]
-    fn whole_function_mode(&self, function: usize) -> FunctionPlanKind {
+    pub(super) fn whole_function_mode(&self, function: usize) -> FunctionPlanKind {
         self.whole_function_plan
             .as_ref()
             .and_then(|plan| plan.get(function))

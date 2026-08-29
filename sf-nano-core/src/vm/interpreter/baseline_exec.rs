@@ -16,7 +16,7 @@ use crate::value_type::ValueType;
 use crate::Value;
 
 #[cfg(sf_module_validator)]
-use super::baseline_function_plan::FunctionPlanKind;
+use super::baseline_function_plan::{select_function_plans, FunctionPlanKind};
 use super::exec::{PreparedCall, ResolvedIndirectCall};
 use super::{InterpInstance, InterpInstanceAccess};
 
@@ -157,6 +157,87 @@ pub(super) enum RawStepExit {
     Return,
 }
 
+#[derive(Clone, Copy)]
+enum RawOpcodeKind {
+    Structural,
+    I32Const,
+    I64Const,
+    F32Const,
+    F64Const,
+    LocalGet,
+    LocalSet,
+    LocalTee,
+    Drop,
+    I32Binary(Opcode),
+    Call,
+    End,
+    Unreachable,
+}
+
+fn raw_stepper_opcode_kind(opcode: WasmOpcode) -> Option<RawOpcodeKind> {
+    match opcode {
+        WasmOpcode::OP(Opcode::NOP | Opcode::BLOCK | Opcode::LOOP) => {
+            Some(RawOpcodeKind::Structural)
+        }
+        WasmOpcode::OP(Opcode::I32_CONST) => Some(RawOpcodeKind::I32Const),
+        WasmOpcode::OP(Opcode::I64_CONST) => Some(RawOpcodeKind::I64Const),
+        WasmOpcode::OP(Opcode::F32_CONST) => Some(RawOpcodeKind::F32Const),
+        WasmOpcode::OP(Opcode::F64_CONST) => Some(RawOpcodeKind::F64Const),
+        WasmOpcode::OP(Opcode::LOCAL_GET) => Some(RawOpcodeKind::LocalGet),
+        WasmOpcode::OP(Opcode::LOCAL_SET) => Some(RawOpcodeKind::LocalSet),
+        WasmOpcode::OP(Opcode::LOCAL_TEE) => Some(RawOpcodeKind::LocalTee),
+        WasmOpcode::OP(Opcode::DROP) => Some(RawOpcodeKind::Drop),
+        WasmOpcode::OP(opcode @ (Opcode::I32_ADD | Opcode::I32_SUB | Opcode::I32_MUL)) => {
+            Some(RawOpcodeKind::I32Binary(opcode))
+        }
+        WasmOpcode::OP(Opcode::CALL) => Some(RawOpcodeKind::Call),
+        WasmOpcode::OP(Opcode::END) => Some(RawOpcodeKind::End),
+        WasmOpcode::OP(Opcode::UNREACHABLE) => Some(RawOpcodeKind::Unreachable),
+        WasmOpcode::OP(_) | WasmOpcode::FC(_) | WasmOpcode::FB(_) | WasmOpcode::FD(_) => None,
+    }
+}
+
+pub(super) fn raw_stepper_supports_opcode(opcode: WasmOpcode) -> bool {
+    raw_stepper_opcode_kind(opcode).is_some()
+}
+
+#[cfg(sf_module_validator)]
+pub(super) fn raw_stepper_supports_function(
+    module: &Module,
+    artifact: &BaselineArtifact,
+    function_index: usize,
+) -> bool {
+    let Some(function) = module.functions().get(function_index) else {
+        return false;
+    };
+    let Some(spec) = function.spec() else {
+        return false;
+    };
+    if artifact
+        .functions
+        .get(function_index)
+        .and_then(Option::as_ref)
+        .is_none()
+        || function
+            .func_type()
+            .params()
+            .iter()
+            .chain(function.func_type().results())
+            .chain(spec.locals())
+            .any(|&value_type| !is_mvp_scalar(value_type))
+    {
+        return false;
+    }
+    let mut cursor = RawOpCursor::new(spec.code());
+    loop {
+        match cursor.next() {
+            Ok(Some(raw)) if raw_stepper_supports_opcode(raw.wasm_op) => {}
+            Ok(Some(_)) | Err(_) => return false,
+            Ok(None) => return true,
+        }
+    }
+}
+
 pub(super) enum RawSlots<'a> {
     Owned(&'a mut Vec<u64>),
     Fixed {
@@ -286,40 +367,42 @@ impl RawStepper<'_, '_> {
             imm: copy_immediate(raw.imm),
         };
         self.state.pc = decoded.end;
-        let WasmOpcode::OP(opcode) = decoded.wasm_op else {
+        if !raw_stepper_supports_opcode(decoded.wasm_op) {
             return Err(BaselineExecError::Unsupported {
                 opcode: Some(decoded.wasm_op),
                 pc: decoded.start,
-                feature: "mixed raw prefixed opcode",
+                feature: "mixed raw MVP opcode",
             });
-        };
-        match opcode {
-            Opcode::NOP | Opcode::BLOCK | Opcode::LOOP => {}
-            Opcode::I32_CONST => {
+        }
+        let kind = raw_stepper_opcode_kind(decoded.wasm_op)
+            .expect("RawStepper capability and opcode kind must agree");
+        match kind {
+            RawOpcodeKind::Structural => {}
+            RawOpcodeKind::I32Const => {
                 let BaselineImmediate::I32(value) = decoded.imm else {
                     return Err(WasmError::internal("mixed raw i32.const mismatch").into());
                 };
                 self.slots.push(value as u32 as u64)?;
             }
-            Opcode::I64_CONST => {
+            RawOpcodeKind::I64Const => {
                 let BaselineImmediate::I64(value) = decoded.imm else {
                     return Err(WasmError::internal("mixed raw i64.const mismatch").into());
                 };
                 self.slots.push(value as u64)?;
             }
-            Opcode::F32_CONST => {
+            RawOpcodeKind::F32Const => {
                 let BaselineImmediate::F32(value) = decoded.imm else {
                     return Err(WasmError::internal("mixed raw f32.const mismatch").into());
                 };
                 self.slots.push(value as u64)?;
             }
-            Opcode::F64_CONST => {
+            RawOpcodeKind::F64Const => {
                 let BaselineImmediate::F64(value) = decoded.imm else {
                     return Err(WasmError::internal("mixed raw f64.const mismatch").into());
                 };
                 self.slots.push(value)?;
             }
-            Opcode::LOCAL_GET => {
+            RawOpcodeKind::LocalGet => {
                 let local = raw_local(decoded.imm)?;
                 let slot = self
                     .frame_base
@@ -332,7 +415,7 @@ impl RawStepper<'_, '_> {
                     .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
                 self.slots.push(value)?;
             }
-            Opcode::LOCAL_SET => {
+            RawOpcodeKind::LocalSet => {
                 let local = raw_local(decoded.imm)?;
                 let value = self.slots.pop(self.state.operand_base)?;
                 let slot = self
@@ -342,7 +425,7 @@ impl RawStepper<'_, '_> {
                     .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
                 self.slots.set(slot, value)?;
             }
-            Opcode::LOCAL_TEE => {
+            RawOpcodeKind::LocalTee => {
                 let local = raw_local(decoded.imm)?;
                 let value = self
                     .slots
@@ -355,10 +438,10 @@ impl RawStepper<'_, '_> {
                     .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
                 self.slots.set(slot, value)?;
             }
-            Opcode::DROP => {
+            RawOpcodeKind::Drop => {
                 self.slots.pop(self.state.operand_base)?;
             }
-            Opcode::I32_ADD | Opcode::I32_SUB | Opcode::I32_MUL => {
+            RawOpcodeKind::I32Binary(opcode) => {
                 let rhs = self.slots.pop(self.state.operand_base)? as u32;
                 let lhs = self.slots.pop(self.state.operand_base)? as u32;
                 let value = match opcode {
@@ -369,7 +452,7 @@ impl RawStepper<'_, '_> {
                 };
                 self.slots.push(value as u64)?;
             }
-            Opcode::CALL => {
+            RawOpcodeKind::Call => {
                 let callee = raw_function(decoded.imm)?;
                 let parameter_count = self
                     .instance
@@ -391,7 +474,7 @@ impl RawStepper<'_, '_> {
                     arg_base: argument - self.frame_base,
                 });
             }
-            Opcode::END if decoded.end == spec.code().len() => {
+            RawOpcodeKind::End if decoded.end == spec.code().len() => {
                 let result_count = function.func_type().results().len();
                 let expected_top = self
                     .state
@@ -411,15 +494,8 @@ impl RawStepper<'_, '_> {
                 *self.acc = self.slots.get(self.state.return_base).unwrap_or(0);
                 return Ok(RawStepExit::Return);
             }
-            Opcode::END => {}
-            Opcode::UNREACHABLE => return Err(WasmError::trap("unreachable").into()),
-            _ => {
-                return Err(BaselineExecError::Unsupported {
-                    opcode: Some(decoded.wasm_op),
-                    pc: decoded.start,
-                    feature: "mixed raw MVP opcode",
-                });
-            }
+            RawOpcodeKind::End => {}
+            RawOpcodeKind::Unreachable => return Err(WasmError::trap("unreachable").into()),
         }
         self.state.top = self.slots.len();
         if self.state.top > frame_limit {
@@ -2314,6 +2390,86 @@ mod tests {
             outcome.expect("warm mixed invoke");
             assert_eq!(census, crate::test_alloc::Census::default());
             assert_eq!((left[0], right[0]), (30, 94));
+        }
+    }
+
+    #[cfg(sf_module_validator)]
+    #[test]
+    fn whole_plan_preflights_selector_and_forced_raw_masks() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func $pure (export "pure") (param i32) (result i32)
+                    local.get 0 i32.const 2 i32.add)
+                (func (export "with_if") (param i32) (result i32)
+                    local.get 0 i32.eqz
+                    if (result i32)
+                        i32.const 7
+                    else
+                        local.get 0
+                    end)
+                (func (export "explicit") (result i32)
+                    i32.const 9 return)
+                (func (export "cross") (param i32) (result i32)
+                    local.get 0 call $pure
+                    i32.eqz
+                    if (result i32)
+                        i32.const 1
+                    else
+                        i32.const 2
+                    end))"#,
+        )
+        .expect("wat");
+        let module = Module::new("whole-plan-selector", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let selected = select_function_plans(&module, &artifact).expect("selector plan");
+        assert_eq!(selected, [FunctionPlanKind::Raw; 4]);
+
+        let mut selected_instance = built_interp(module, &[]);
+        selected_instance
+            .set_whole_function_plan_for_test(artifact, selected)
+            .expect("install selector plan");
+        assert_eq!(
+            (0..4)
+                .map(|index| selected_instance.whole_function_mode(index))
+                .collect::<StdVec<_>>(),
+            [
+                FunctionPlanKind::Raw,
+                FunctionPlanKind::FullFold,
+                FunctionPlanKind::FullFold,
+                FunctionPlanKind::FullFold,
+            ]
+        );
+        let mut selected_instance = InterpInstance::initialize(selected_instance)
+            .map_err(|(_, error)| error)
+            .expect("initialize selected mixed instance");
+        for (export, args, expected) in [
+            ("pure", &[Value::I32(40)][..], Value::I32(42)),
+            ("with_if", &[Value::I32(0)][..], Value::I32(7)),
+            ("explicit", &[][..], Value::I32(9)),
+            ("cross", &[Value::I32(5)][..], Value::I32(2)),
+        ] {
+            let function = selected_instance.find_export(export).expect("export");
+            let raw_args = args.iter().map(Value::to_raw).collect::<StdVec<_>>();
+            let mut result = [0u64; 1];
+            selected_instance
+                .invoke(function, &raw_args, &mut result)
+                .expect("preflighted mixed invoke");
+            assert_eq!(result[0], expected.to_raw(), "{export}");
+        }
+
+        let forced_module = Module::new("whole-plan-forced", &wasm).expect("module");
+        let forced_artifact = build_baseline_artifact(&forced_module).expect("artifact");
+        let mut forced = built_interp(forced_module, &[]);
+        forced
+            .set_whole_function_plan_for_test(forced_artifact, vec![FunctionPlanKind::Raw; 4])
+            .expect("forced plan must be safely promoted");
+        assert_eq!(forced.whole_function_mode(0), FunctionPlanKind::Raw);
+        for index in 1..4 {
+            assert_eq!(
+                forced.whole_function_mode(index),
+                FunctionPlanKind::FullFold
+            );
         }
     }
 
