@@ -439,45 +439,46 @@ impl NativeEngine {
         // classified twice.
         let flags = &mut scratch.flags;
         flags.clear();
-        flags.extend(func.code.iter().map(|i| i.flags));
         let handler = &mut scratch.handler;
         handler.clear();
-        handler.extend(
-            func.code
-                .iter()
-                .zip(flags.iter())
-                .map(|(ins, &fl)| self.handler_for(ins, fl, &pin)),
-        );
+        flags.reserve(func.code.len());
+        handler.reserve(func.code.len());
+        for ins in func.code.iter() {
+            let fl = ins.flags;
+            flags.push(fl);
+            handler.push(self.handler_for(ins, fl, &pin));
+        }
         for j in 0..func.code.len() {
-            if flags[j] & (FLAG_A_ACC | FLAG_B_ACC) == 0 {
-                continue;
-            }
-            // Call/CallIndirect are wired by the fixup pass, never through
-            // the handler table; every call flavor (native, slow, host)
-            // delivers result 0 through the accumulator relay, so they are
-            // valid producers regardless of the table lookup.
-            let prev_is_call = j > 0 && matches!(func.code[j - 1].op, Op::Call | Op::CallIndirect);
-            let ok = j > 0
-                && (writes_acc(func.code[j - 1].op) || prev_is_call)
-                && (prev_is_call || handler[j - 1] != 0)
-                && handler[j] != 0;
-            if !ok {
-                flags[j] &= !(FLAG_A_ACC | FLAG_B_ACC);
-                handler[j] = self.handler_for(&func.code[j], flags[j], &pin);
-                if j > 0 {
-                    flags[j - 1] &= !FLAG_DST_ACC;
-                    handler[j - 1] = self.handler_for(&func.code[j - 1], flags[j - 1], &pin);
+            if flags[j] & (FLAG_A_ACC | FLAG_B_ACC) != 0 {
+                // Call/CallIndirect are wired by the fixup pass, never through
+                // the handler table; every call flavor (native, slow, host)
+                // delivers result 0 through the accumulator relay, so they are
+                // valid producers regardless of the table lookup.
+                let prev_is_call =
+                    j > 0 && matches!(func.code[j - 1].op, Op::Call | Op::CallIndirect);
+                let ok = j > 0
+                    && (writes_acc(func.code[j - 1].op) || prev_is_call)
+                    && (prev_is_call || handler[j - 1] != 0)
+                    && handler[j] != 0;
+                if !ok {
+                    flags[j] &= !(FLAG_A_ACC | FLAG_B_ACC);
+                    handler[j] = self.handler_for(&func.code[j], flags[j], &pin);
+                    if j > 0 {
+                        flags[j - 1] &= !FLAG_DST_ACC;
+                        handler[j - 1] = self.handler_for(&func.code[j - 1], flags[j - 1], &pin);
+                    }
                 }
             }
-        }
-        // Defensive: a store-skipping producer requires an acc consumer
-        // right behind it (predecode marks them in pairs).
-        for i in 0..func.code.len() {
-            if flags[i] & FLAG_DST_ACC != 0
-                && (i + 1 >= func.code.len() || flags[i + 1] & (FLAG_A_ACC | FLAG_B_ACC) == 0)
+
+            // Defensive: a store-skipping producer requires an acc consumer
+            // right behind it (predecode marks them in pairs). If that next
+            // consumer is rejected later, its rejection path above clears
+            // this producer and recomputes its handler.
+            if flags[j] & FLAG_DST_ACC != 0
+                && (j + 1 >= func.code.len() || flags[j + 1] & (FLAG_A_ACC | FLAG_B_ACC) == 0)
             {
-                flags[i] &= !FLAG_DST_ACC;
-                handler[i] = self.handler_for(&func.code[i], flags[i], &pin);
+                flags[j] &= !FLAG_DST_ACC;
+                handler[j] = self.handler_for(&func.code[j], flags[j], &pin);
             }
         }
 
