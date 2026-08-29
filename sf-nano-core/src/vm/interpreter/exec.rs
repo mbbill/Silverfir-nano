@@ -4540,6 +4540,7 @@ fn wasm_max_f64(a: f64, b: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::module::Module;
+    use core::cell::Cell;
     use std::vec::Vec as StdVec;
 
     trait TestInterpInstance: Sized {
@@ -4695,6 +4696,254 @@ mod tests {
                 .as_ptr(),
             ret_stack_ptr
         );
+    }
+
+    #[test]
+    fn imported_start_leaves_owner_stacks_unmaterialized() {
+        let (bin, _) = instantiate(
+            r#"(module
+                (import "host" "start" (func $start))
+                (start $start))"#,
+        );
+        let module = Module::new("imported-start-call-stacks", &bin).expect("module");
+        let func_type = module.functions()[0].func_type().clone();
+        let import = Import::func_typed(
+            "host",
+            "start",
+            |_caller, _args, _results| Ok(()),
+            func_type,
+        );
+        let calls = Rc::new(Cell::new(0usize));
+        let host_calls = Rc::clone(&calls);
+        let host = InterpInstance::boxed_host(move |_module, _name, _memory, args, results| {
+            assert!(args.is_empty());
+            assert!(results.is_empty());
+            host_calls.set(host_calls.get() + 1);
+            Ok(())
+        });
+
+        let inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            Some(host),
+            &[import],
+        )
+        .expect("instantiate");
+
+        assert_eq!(calls.get(), 1, "the imported start must still execute");
+        assert!(
+            inst.stack.as_ref().is_some_and(Vec::is_empty),
+            "an imported start has no guest frame and must not allocate the owner stack"
+        );
+        assert!(
+            inst.ret_stack.as_ref().is_some_and(Vec::is_empty),
+            "an imported start has no guest frame and must not allocate the owner return stack"
+        );
+    }
+
+    #[test]
+    fn guest_trap_returns_owner_stacks_for_the_next_call() {
+        let (bin, _) = instantiate(
+            r#"(module
+                (func (export "trap")
+                    unreachable)
+                (func (export "ok") (result i32)
+                    i32.const 29))"#,
+        );
+        let module = Module::new("trap-call-stacks", &bin).expect("module");
+        let engine = Engine::new(Config::new().wasm_stack_bytes(4096)).expect("engine");
+        let mut inst = InterpInstance::new(&engine, module, None, &[]).expect("instantiate");
+        let trap = inst.find_export("trap").expect("trap");
+        let ok = inst.find_export("ok").expect("ok");
+
+        assert!(inst.stack.as_ref().is_some_and(Vec::is_empty));
+        assert!(inst.ret_stack.as_ref().is_some_and(Vec::is_empty));
+        assert!(matches!(
+            inst.invoke(trap, &[], &mut []),
+            Err(WasmError::Trap("unreachable"))
+        ));
+
+        let stack_ptr = inst
+            .stack
+            .as_ref()
+            .filter(|stack| !stack.is_empty())
+            .expect("trap returned the materialized owner stack")
+            .as_ptr();
+        let ret_stack_ptr = inst
+            .ret_stack
+            .as_ref()
+            .filter(|stack| !stack.is_empty())
+            .expect("trap returned the materialized owner return stack")
+            .as_ptr();
+
+        let mut result = [u64::MAX];
+        inst.invoke(ok, &[], &mut result)
+            .expect("instance remains callable after a trap");
+        assert_eq!(result, [29]);
+        assert_eq!(
+            inst.stack.as_ref().expect("owner stack").as_ptr(),
+            stack_ptr,
+            "the call after a trap must reuse the returned owner stack"
+        );
+        assert_eq!(
+            inst.ret_stack
+                .as_ref()
+                .expect("owner return stack")
+                .as_ptr(),
+            ret_stack_ptr,
+            "the call after a trap must reuse the returned owner return stack"
+        );
+    }
+
+    #[test]
+    fn same_instance_guest_reentry_keeps_the_outer_stacks_owned() {
+        const INNER_INDEX: usize = 1;
+        const OUTER_MARKER: u64 = 1_229_801_703_532_086_340;
+        const INNER_MARKER: u64 = 6_148_933_456_521_300_104;
+
+        fn invoke_lease(
+            lease: &InterpInstanceLease,
+            func_index: usize,
+            args: &[u64],
+            results: &mut [u64],
+        ) -> Result<(), WasmError> {
+            let mut access = InterpInstanceAccess::checked_out(lease.checkout_for_invocation()?);
+            InterpInstance::invoke_access(&mut access, func_index, args, results)
+        }
+
+        let (bin, _) = instantiate(
+            r#"(module
+                (import "host" "reenter" (func $reenter (param i64) (result i64)))
+                (func (export "inner") (param $seed i64) (result i64)
+                    (local $scratch i64)
+                    i64.const 6148933456521300104
+                    local.set $scratch
+                    local.get $seed
+                    local.get $scratch
+                    i64.xor)
+                (func (export "outer") (param $seed i64) (result i64)
+                    (local $kept i64)
+                    i64.const 1229801703532086340
+                    local.set $kept
+                    local.get $seed
+                    call $reenter
+                    drop
+                    local.get $kept))"#,
+        );
+        let module = Module::new("same-instance-stack-reentry", &bin).expect("module");
+        let func_type = module.functions()[0].func_type().clone();
+        let import = Import::func_typed(
+            "host",
+            "reenter",
+            |_caller, _args, _results| Ok(()),
+            func_type,
+        );
+        let registry = LinkRegistry::new();
+        let (id, instance_backref) = registry.reserve_instance();
+        let lease_backref = instance_backref.clone();
+        let callback_backref = instance_backref.clone();
+        let reentered = Rc::new(Cell::new(false));
+        let callback_reentered = Rc::clone(&reentered);
+        let host = InterpInstance::boxed_host(move |_module, _name, _memory, args, results| {
+            let token = callback_backref
+                .checkout(id)
+                .ok_or_else(|| WasmError::internal("same-instance checkout failed"))?;
+            let mut inner_access = InterpInstanceAccess::checked_out(token);
+            inner_access.with_instance(|instance| {
+                assert!(
+                    instance.stack.is_none(),
+                    "the active outer guest call must own its operand stack"
+                );
+                assert!(
+                    instance.ret_stack.is_none(),
+                    "the active outer guest call must own its return stack"
+                );
+            })?;
+
+            let mut inner_result = [u64::MAX];
+            InterpInstance::invoke_access(&mut inner_access, INNER_INDEX, args, &mut inner_result)?;
+            assert_eq!(inner_result, [args[0] ^ INNER_MARKER]);
+            inner_access.with_instance(|instance| {
+                assert!(
+                    instance.stack.is_none(),
+                    "a reentrant guest call must drop, not return, its temporary operand stack"
+                );
+                assert!(
+                    instance.ret_stack.is_none(),
+                    "a reentrant guest call must drop, not return, its temporary return stack"
+                );
+            })?;
+            results[0] = inner_result[0];
+            callback_reentered.set(true);
+            Ok(())
+        });
+        let engine = Engine::new(Config::new().wasm_stack_bytes(4096)).expect("engine");
+        let built = InterpInstance::build(
+            &engine,
+            module,
+            Some(host),
+            &[import],
+            None,
+            registry.arenas(),
+            instance_backref,
+        )
+        .expect("build instance");
+        let built = InterpInstance::initialize(built)
+            .unwrap_or_else(|(_, error)| panic!("initialize instance: {error:?}"));
+        let inst =
+            InterpInstance::lease_in(&registry, id, lease_backref, built).expect("occupy instance");
+        let (inner, outer) = inst.with_instance(|instance| {
+            (
+                instance.find_export("inner").expect("inner"),
+                instance.find_export("outer").expect("outer"),
+            )
+        });
+        assert_eq!(inner, INNER_INDEX);
+
+        // Materialize the reusable owner pair before the reentrant call so
+        // both its identity and the outer frame's live value are testable.
+        let mut result = [u64::MAX];
+        invoke_lease(&inst, inner, &[7], &mut result).expect("warm owner stacks");
+        assert_eq!(result, [7 ^ INNER_MARKER]);
+        let (stack_ptr, ret_stack_ptr) = inst.with_instance(|instance| {
+            (
+                instance.stack.as_ref().expect("owner stack").as_ptr(),
+                instance
+                    .ret_stack
+                    .as_ref()
+                    .expect("owner return stack")
+                    .as_ptr(),
+            )
+        });
+
+        invoke_lease(&inst, outer, &[11], &mut result).expect("same-instance guest reentry");
+        assert!(
+            reentered.get(),
+            "the host callback must enter the inner guest"
+        );
+        assert_eq!(
+            result,
+            [OUTER_MARKER],
+            "the inner root writes local slot 1 too, but must not overwrite the outer local"
+        );
+        inst.with_instance(|instance| {
+            assert_eq!(
+                instance
+                    .stack
+                    .as_ref()
+                    .expect("returned owner stack")
+                    .as_ptr(),
+                stack_ptr
+            );
+            assert_eq!(
+                instance
+                    .ret_stack
+                    .as_ref()
+                    .expect("returned owner return stack")
+                    .as_ptr(),
+                ret_stack_ptr
+            );
+        });
     }
 
     #[test]
