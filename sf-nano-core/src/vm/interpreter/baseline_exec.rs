@@ -314,12 +314,9 @@ impl<'a> BaselineFrame<'a> {
                 }
                 let target_offset = selector.min(target_count - 1);
                 let target_index = table.targets_start as usize + target_offset;
-                let expected_stp = table
-                    .targets_start
-                    .checked_sub(self.function.control_targets.start as u32)
-                    .ok_or_else(|| WasmError::invalid("baseline MVP br_table base mismatch"))?
-                    as usize;
-                if self.stp != expected_stp {
+                let relative_stp = u32::try_from(self.stp)
+                    .map_err(|_| WasmError::invalid("baseline MVP side-table pointer overflow"))?;
+                if self.function.absolute_stp(relative_stp) != Some(table.targets_start as usize) {
                     return Err(WasmError::invalid("baseline MVP br_table pointer mismatch").into());
                 }
                 let target =
@@ -800,11 +797,11 @@ impl<'a> BaselineFrame<'a> {
     }
 
     fn current_target(&self) -> Result<ControlTarget, BaselineExecError> {
+        let relative = u32::try_from(self.stp)
+            .map_err(|_| WasmError::invalid("baseline MVP side-table pointer overflow"))?;
         let index = self
             .function
-            .control_targets
-            .start
-            .checked_add(self.stp)
+            .absolute_stp(relative)
             .ok_or_else(|| WasmError::invalid("baseline MVP side-table index overflow"))?;
         if index >= self.function.control_targets.end {
             return Err(WasmError::invalid("baseline MVP side-table pointer overflow").into());
@@ -832,6 +829,9 @@ impl<'a> BaselineFrame<'a> {
         self.stack.copy_within(source..source + keep, base);
         self.stack.truncate(new_len);
         self.pc = target.target_pc as usize;
+        self.function
+            .absolute_stp(target.target_stp)
+            .ok_or_else(|| WasmError::invalid("baseline MVP target side-table overflow"))?;
         self.stp = target.target_stp as usize;
         Ok(())
     }
@@ -897,6 +897,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::vm::engine::{Engine, Tier};
+    use crate::vm::interpreter::baseline_artifact::artifact_test_guard;
     use crate::vm::interpreter::predecode::build_baseline_artifact;
     use crate::Instance;
     use std::string::ToString;
@@ -907,6 +908,7 @@ mod tests {
         export: &str,
         args: &[Value],
     ) -> Result<Vec<Value>, BaselineExecError> {
+        let _guard = artifact_test_guard();
         let module = Module::new("baseline-exec", wasm).expect("module");
         let artifact = build_baseline_artifact(&module).expect("artifact");
         BaselineDriver::new(&module, &artifact).invoke_export(export, args)
@@ -1208,6 +1210,7 @@ mod tests {
         )
         .expect("wat");
         let module = Module::new("baseline-allocation", &wasm).expect("module");
+        let _guard = artifact_test_guard();
         let artifact = build_baseline_artifact(&module).expect("artifact");
         let mut frame =
             BaselineFrame::new(&module, &artifact, 0, &[Value::I32(10_000)]).expect("frame");

@@ -19,6 +19,13 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 const UNRESOLVED: u32 = u32::MAX;
 
 static ARTIFACT_BUILD_COUNT: AtomicUsize = AtomicUsize::new(0);
+static ARTIFACT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(super) fn artifact_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    ARTIFACT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaselineArtifact {
@@ -923,15 +930,10 @@ mod tests {
     use crate::vm::tag::TagIdentity;
     use crate::vm::value::RefValue;
     use crate::{Instance, Value};
-    use std::sync::Mutex;
     use std::vec::Vec as StdVec;
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+        artifact_test_guard()
     }
 
     fn parse_artifact(wat: &str) -> (StdVec<u8>, Module, BaselineArtifact) {
