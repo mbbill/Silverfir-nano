@@ -55,8 +55,12 @@ use super::engine::{
 use super::fmath;
 use super::instr::{op_from_index, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
+#[cfg(not(sf_module_validator))]
+use super::predecode::predecode_functions;
+#[cfg(sf_module_validator)]
+use super::predecode::predecode_functions_selective;
 use super::predecode::{
-    predecode_functions, PredecodedFunction, UnlinkedPredecodedFunctions, WIDE_MEMARG,
+    FunctionRuntime, PredecodedFunction, UnlinkedPredecodedFunctions, WIDE_MEMARG,
 };
 use super::SLOT_GP_UNIT_BYTES;
 
@@ -128,6 +132,16 @@ fn normalize_baseline_plan(
                 .is_some_and(|function| function.spec().is_some())
         {
             plan[callee] = FunctionPlanKind::FullFold;
+        }
+    }
+    // A dynamic tail call can resolve to any local function of a compatible
+    // type. Raw does not yet carry the native caller's tail return route, so
+    // a module containing one keeps every local target Folded.
+    if artifact.indirect_calls.iter().any(|site| site.tail) {
+        for (mode, function) in plan.iter_mut().zip(module.functions()) {
+            if !function.is_import() {
+                *mode = FunctionPlanKind::FullFold;
+            }
         }
     }
     Ok(plan)
@@ -507,8 +521,51 @@ impl MemoryState {
 /// One live call frame. Calls and returns are driven by an explicit
 /// activation stack in the driver loop, never by host recursion, so call
 /// depth is interpreter data (the classic-interpreter lesson).
+#[derive(Clone, Copy)]
+struct FunctionFrameLayout {
+    frame_slots: u32,
+    n_locals: u32,
+    n_params: u32,
+    n_results: u32,
+}
+
+impl FunctionFrameLayout {
+    fn folded(function: &PredecodedFunction) -> Self {
+        Self {
+            frame_slots: function.frame_slots,
+            n_locals: function.n_locals,
+            n_params: function.n_params,
+            n_results: function.n_results,
+        }
+    }
+}
+
+enum ActivationRuntime {
+    #[cfg(sf_module_validator)]
+    Raw(RawFrameState),
+    Folded(Rc<PredecodedFunction>),
+}
+
+impl ActivationRuntime {
+    #[inline]
+    fn as_folded(&self) -> Option<&PredecodedFunction> {
+        match self {
+            Self::Folded(function) => Some(function),
+            #[cfg(sf_module_validator)]
+            Self::Raw(_) => None,
+        }
+    }
+
+    #[cfg(sf_module_validator)]
+    #[inline]
+    fn is_raw(&self) -> bool {
+        matches!(self, Self::Raw(_))
+    }
+}
+
 struct Activation {
-    func: Rc<PredecodedFunction>,
+    runtime: ActivationRuntime,
+    frame: FunctionFrameLayout,
     /// Index of `func` in the module's function space (native dispatch
     /// resolves its linked cells by this).
     func_index: usize,
@@ -520,8 +577,6 @@ struct Activation {
     /// caller record a native call pushed) is already on the native return
     /// stack — set after the first native entry, so resumes never re-plant.
     route_established: bool,
-    #[cfg(sf_module_validator)]
-    raw: Option<RawFrameState>,
 }
 
 /// A caller suspended at a Rust-owned call boundary.
@@ -744,7 +799,7 @@ pub struct InterpInstance {
     /// Published only after the shared instruction allocation has been
     /// transferred into dispatch cells. Each defined body keeps the original
     /// per-function `Rc` metadata and side-table vectors.
-    funcs: Option<Vec<Option<Rc<PredecodedFunction>>>>,
+    funcs: Option<Vec<FunctionRuntime>>,
     /// Owned stage-A arena. It exists only between `build` and the first
     /// step of `initialize`, where link consumes it in place and publishes
     /// immutable function metadata.
@@ -785,9 +840,8 @@ pub struct InterpInstance {
     /// owns the buffer and a re-entry must use a temporary pair.
     ///
     /// Keeping the owner slot present but empty lets instantiation avoid
-    /// allocating and zeroing 2 MiB of runtime-only storage. Predecode and
-    /// native linking remain eager; only memory that cannot be observed
-    /// before a call is deferred.
+    /// allocating and zeroing 2 MiB of runtime-only storage. Folded bodies
+    /// still link eagerly; Raw bodies own neither instructions nor cells.
     config: Config,
     stack: Option<Vec<u64>>,
     ret_stack: Option<Vec<u64>>,
@@ -818,7 +872,7 @@ pub struct InterpInstance {
     self_abs_base: usize,
     self_local_by_abs: Vec<u32>,
     /// Single-decode validation output used by the Raw whole-function mode.
-    /// Every local body remains fully predecoded and linked in this phase.
+    /// A Raw body executes from this artifact and owns no folded instructions.
     #[cfg(sf_module_validator)]
     baseline_artifact: Rc<BaselineArtifact>,
     #[cfg(sf_module_validator)]
@@ -1453,8 +1507,16 @@ impl InterpInstance {
             }
         }
 
-        // Predecode every local function eagerly; imports are dispatched at
-        // the slow boundary, so import-free modules remain entirely local.
+        // The validated Raw mode executes directly from the retained artifact;
+        // only Hybrid/FullFold bodies need folded instructions and link cells.
+        #[cfg(sf_module_validator)]
+        let funcs = predecode_functions_selective(
+            &module,
+            &tags,
+            &function_handles,
+            &baseline_execution_plan,
+        )?;
+        #[cfg(not(sf_module_validator))]
         let funcs = predecode_functions(&module, &tags, &function_handles)?;
         let import_names = module
             .functions()
@@ -1881,10 +1943,88 @@ impl InterpInstance {
     /// Link every predecoded function against the handler set that was
     /// generated into this binary at build time. Nothing is emitted or
     /// mapped here — the engine is already in `.text`.
-    fn functions(&self) -> &[Option<Rc<PredecodedFunction>>] {
+    fn functions(&self) -> &[FunctionRuntime] {
         self.funcs
             .as_deref()
             .expect("interpreter functions must be published after link")
+    }
+
+    fn activation_for(
+        &self,
+        function_index: usize,
+        runtime: FunctionRuntime,
+        base: usize,
+        _return_base: usize,
+    ) -> Result<Activation, WasmError> {
+        let (runtime, frame) = match runtime {
+            FunctionRuntime::Import => {
+                return Err(WasmError::invalid(
+                    "interp: import cannot become an activation",
+                ));
+            }
+            FunctionRuntime::Folded(function) => {
+                let frame = FunctionFrameLayout::folded(&function);
+                (ActivationRuntime::Folded(function), frame)
+            }
+            #[cfg(sf_module_validator)]
+            FunctionRuntime::Raw => {
+                let function = self
+                    .module
+                    .functions()
+                    .get(function_index)
+                    .ok_or(WasmError::invalid("interp: bad Raw function index"))?;
+                let spec = function
+                    .spec()
+                    .ok_or(WasmError::invalid("interp: Raw function is an import"))?;
+                let artifact = self
+                    .baseline_artifact
+                    .functions
+                    .get(function_index)
+                    .and_then(Option::as_ref)
+                    .ok_or(WasmError::invalid(
+                        "interp: Raw function artifact is missing",
+                    ))?;
+                let n_params = u32::try_from(function.func_type().params().len())
+                    .map_err(|_| WasmError::invalid("interp: Raw parameter count overflow"))?;
+                let n_results = u32::try_from(function.func_type().results().len())
+                    .map_err(|_| WasmError::invalid("interp: Raw result count overflow"))?;
+                let n_locals = n_params
+                    .checked_add(
+                        u32::try_from(spec.locals().len())
+                            .map_err(|_| WasmError::invalid("interp: Raw local count overflow"))?,
+                    )
+                    .ok_or(WasmError::invalid("interp: Raw local count overflow"))?;
+                let frame_slots = n_locals
+                    .checked_add(artifact.max_operand_height)
+                    .ok_or(WasmError::invalid("interp: Raw frame size overflow"))?;
+                let operand_base = base
+                    .checked_add(n_locals as usize)
+                    .ok_or(WasmError::invalid("interp: Raw operand base overflow"))?;
+                (
+                    ActivationRuntime::Raw(RawFrameState {
+                        pc: 0,
+                        stp: 0,
+                        top: operand_base,
+                        operand_base,
+                        return_base: _return_base,
+                    }),
+                    FunctionFrameLayout {
+                        frame_slots,
+                        n_locals,
+                        n_params,
+                        n_results,
+                    },
+                )
+            }
+        };
+        Ok(Activation {
+            runtime,
+            frame,
+            func_index: function_index,
+            base,
+            pc: 0,
+            route_established: false,
+        })
     }
 
     #[cfg(all(test, sf_module_validator))]
@@ -1899,6 +2039,12 @@ impl InterpInstance {
             ));
         }
         let plan = normalize_baseline_plan(&self.module, &artifact, plan)?;
+        self.unlinked_funcs = Some(predecode_functions_selective(
+            &self.module,
+            &self.tags,
+            &self.function_handles,
+            &plan,
+        )?);
         self.baseline_artifact = Rc::new(artifact);
         self.baseline_execution_plan = plan;
         Ok(())
@@ -1915,7 +2061,11 @@ impl InterpInstance {
 
     #[cfg(all(test, sf_module_validator))]
     pub(crate) fn whole_direct_call_is_slow_for_test(&self, caller: usize, callee: usize) -> bool {
-        let Some(function) = self.functions().get(caller).and_then(Option::as_ref) else {
+        let Some(function) = self
+            .functions()
+            .get(caller)
+            .and_then(FunctionRuntime::as_folded)
+        else {
             return false;
         };
         let Some(pc) = function
@@ -1932,6 +2082,35 @@ impl InterpInstance {
             return false;
         };
         native.plan.cells(linked)[pc].h != native.engine.call_handler_addr()
+    }
+
+    #[cfg(all(test, sf_module_validator))]
+    pub(crate) fn whole_direct_call_is_native_for_test(
+        &self,
+        caller: usize,
+        callee: usize,
+    ) -> bool {
+        let Some(function) = self
+            .functions()
+            .get(caller)
+            .and_then(FunctionRuntime::as_folded)
+        else {
+            return false;
+        };
+        let Some(pc) = function
+            .code
+            .iter()
+            .position(|instruction| instruction.op == Op::Call && instruction.a as usize == callee)
+        else {
+            return false;
+        };
+        let Some(native) = self.native.as_ref() else {
+            return false;
+        };
+        let Some(linked) = native.linked.get(caller).and_then(Option::as_ref) else {
+            return false;
+        };
+        native.plan.cells(linked)[pc].h == native.engine.call_handler_addr()
     }
 
     #[cfg(all(test, sf_module_validator))]
@@ -1960,6 +2139,46 @@ impl InterpInstance {
     }
 
     #[cfg(all(test, sf_module_validator))]
+    pub(crate) fn function_runtime_label_for_test(&self, function: usize) -> Option<&'static str> {
+        self.functions().get(function).map(|runtime| match runtime {
+            FunctionRuntime::Import => "import",
+            FunctionRuntime::Raw => "raw",
+            FunctionRuntime::Folded(_) => "folded",
+        })
+    }
+
+    #[cfg(all(test, sf_module_validator))]
+    pub(crate) fn function_instr_and_cell_count_for_test(
+        &self,
+        function: usize,
+    ) -> Option<(usize, usize)> {
+        let runtime = self.functions().get(function)?;
+        let instructions = runtime.as_folded().map_or(0, |folded| folded.code.len());
+        let cells = self
+            .native
+            .as_ref()
+            .and_then(|native| {
+                native
+                    .linked
+                    .get(function)
+                    .and_then(Option::as_ref)
+                    .map(|linked| native.plan.cells(linked).len())
+            })
+            .unwrap_or(0);
+        Some((instructions, cells))
+    }
+
+    #[cfg(all(test, sf_module_validator))]
+    pub(crate) fn function_has_native_range_for_test(&self, function: usize) -> bool {
+        self.native.as_ref().is_some_and(|native| {
+            native
+                .ranges
+                .iter()
+                .any(|&(_, _, index)| index as usize == function)
+        })
+    }
+
+    #[cfg(all(test, sf_module_validator))]
     pub(crate) fn baseline_artifact_has_function_for_test(&self, function: usize) -> Option<bool> {
         self.baseline_artifact
             .functions
@@ -1968,13 +2187,24 @@ impl InterpInstance {
     }
 
     #[cfg(all(test, sf_module_validator))]
-    pub(crate) fn predecode_is_complete_for_test(&self) -> bool {
+    pub(crate) fn predecode_matches_runtime_plan_for_test(&self) -> bool {
         let functions = self.functions();
         functions.len() == self.module.functions().len()
             && functions
                 .iter()
                 .zip(self.module.functions())
-                .all(|(decoded, function)| decoded.is_some() == function.spec().is_some())
+                .enumerate()
+                .all(|(index, (runtime, function))| match runtime {
+                    FunctionRuntime::Import => function.is_import(),
+                    FunctionRuntime::Raw => {
+                        !function.is_import()
+                            && self.whole_function_mode(index) == FunctionPlanKind::Raw
+                    }
+                    FunctionRuntime::Folded(_) => {
+                        !function.is_import()
+                            && self.whole_function_mode(index) != FunctionPlanKind::Raw
+                    }
+                })
     }
 
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
@@ -1996,7 +2226,7 @@ impl InterpInstance {
         let test_code = Some(unlinked.clone_code_for_oracle());
         #[cfg(not(test))]
         let test_code = None;
-        let function_count = unlinked.defined_count();
+        let function_count = unlinked.folded_count();
         let br_entry_count = unlinked.br_entry_count();
         let instrs = unlinked.take_code();
         let mut plan = LinkPlan::from_instr_arena(instrs, function_count, br_entry_count);
@@ -2027,28 +2257,22 @@ impl InterpInstance {
             .functions()
             .iter()
             .enumerate()
-            .map(|(i, _)| {
-                #[cfg(sf_module_validator)]
-                if self.whole_function_mode(i) == FunctionPlanKind::Raw {
-                    return None;
-                }
-                match (unlinked.function(i), &linked[i]) {
-                    (Some(f), Some(lf)) => {
-                        let fs = f.frame_slots() as u64;
-                        if fs >= 1 << 16 {
-                            return None;
-                        }
-                        let packed = fs << 32 | (f.n_locals() as u64) << 16 | f.n_params() as u64;
-                        Some((
-                            lf.cell_base(),
-                            packed,
-                            lf.l0_off as u64,
-                            lf.l1_off as u64,
-                            lf.fp_pinned,
-                        ))
+            .map(|(i, _)| match (unlinked.function(i), &linked[i]) {
+                (Some(f), Some(lf)) => {
+                    let fs = f.frame_slots() as u64;
+                    if fs >= 1 << 16 {
+                        return None;
                     }
-                    _ => None,
+                    let packed = fs << 32 | (f.n_locals() as u64) << 16 | f.n_params() as u64;
+                    Some((
+                        lf.cell_base(),
+                        packed,
+                        lf.l0_off as u64,
+                        lf.l1_off as u64,
+                        lf.fp_pinned,
+                    ))
                 }
+                _ => None,
             })
             .collect();
         // Canonical type ids for the native call_indirect type check:
@@ -2162,7 +2386,26 @@ impl InterpInstance {
             }
         }
 
-        self.funcs = Some(unlinked.publish(test_code));
+        let functions = unlinked.publish(test_code);
+        #[cfg(sf_module_validator)]
+        for ((runtime, mode), function) in functions
+            .iter()
+            .zip(&self.baseline_execution_plan)
+            .zip(self.module.functions())
+        {
+            let matches = match (runtime, mode, function.is_import()) {
+                (FunctionRuntime::Import, FunctionPlanKind::Import, true) => true,
+                (FunctionRuntime::Raw, FunctionPlanKind::Raw, false) => true,
+                (FunctionRuntime::Folded(_), FunctionPlanKind::FullFold, false) => true,
+                _ => false,
+            };
+            if !matches {
+                return Err(WasmError::invalid(
+                    "interp: runtime function representation mismatch",
+                ));
+            }
+        }
+        self.funcs = Some(functions);
 
         self.native = Some(NativeState {
             engine,
@@ -2793,10 +3036,10 @@ impl InterpInstance {
     ) -> Result<(), WasmError> {
         let entry =
             access.with_instance(|instance| instance.functions().get(func_index).cloned())?;
-        let Some(entry) = entry else {
+        let Some(runtime) = entry else {
             return Err(WasmError::invalid("interp: bad function index"));
         };
-        let Some(func) = entry else {
+        if matches!(&runtime, FunctionRuntime::Import) {
             // An imported function, reached directly rather than through a
             // call inside a body -- `(start $imported)` does exactly this.
             // It has no predecoded body to enter; the host is the callee.
@@ -2815,31 +3058,14 @@ impl InterpInstance {
             }
             results.copy_from_slice(&frame[..results.len()]);
             return Ok(());
-        };
-        if args.len() != func.n_params as usize || results.len() != func.n_results as usize {
+        }
+        let root = access
+            .with_instance(|instance| instance.activation_for(func_index, runtime, 0, 0))??;
+        if args.len() != root.frame.n_params as usize
+            || results.len() != root.frame.n_results as usize
+        {
             return Err(WasmError::invalid("interp: argument/result arity mismatch"));
         }
-        #[cfg(sf_module_validator)]
-        let raw = access.with_instance(|instance| {
-            (instance.whole_function_mode(func_index) == FunctionPlanKind::Raw).then_some(
-                RawFrameState {
-                    pc: 0,
-                    stp: 0,
-                    top: func.n_locals as usize,
-                    operand_base: func.n_locals as usize,
-                    return_base: 0,
-                },
-            )
-        })?;
-        let root = Activation {
-            func,
-            func_index,
-            base: 0,
-            pc: 0,
-            route_established: false,
-            #[cfg(sf_module_validator)]
-            raw,
-        };
         Self::drive(access, root, args, results)
     }
 
@@ -2908,7 +3134,7 @@ impl InterpInstance {
         ret_stack: &mut [u64],
         results: &mut [u64],
     ) -> Result<(), WasmError> {
-        if root.func.frame_slots as usize > stack.len() {
+        if root.frame.frame_slots as usize > stack.len() {
             return Err(WasmError::trap("call stack exhausted"));
         }
         let max_depth = (ret_stack.len() / (RET_RECORD / 8)).saturating_sub(8) as u32;
@@ -2924,7 +3150,7 @@ impl InterpInstance {
         // and it used to be covered only because every invocation started
         // on a newly allocated buffer. Temps above `n_locals` are written
         // before they are read, by construction in the predecoder.
-        ctx.stack[args.len()..root.func.n_locals as usize].fill(0);
+        ctx.stack[args.len()..root.frame.n_locals as usize].fill(0);
 
         let mut act = root;
         #[cfg(sf_module_validator)]
@@ -2964,7 +3190,12 @@ impl InterpInstance {
                             // Preserve the imported-tail ordering: the host call
                             // and its result writes happen before this internal
                             // landing invariant is validated.
-                            act.pc = act.func.slow_tail_return.ok_or(WasmError::invalid(
+                            let Some(function) = act.runtime.as_folded() else {
+                                return Err(WasmError::invalid(
+                                    "interp: Raw activation has a slow tail landing",
+                                ));
+                            };
+                            act.pc = function.slow_tail_return.ok_or(WasmError::invalid(
                                 "interp: tail call has no return landing",
                             ))? as usize;
                         }
@@ -3008,8 +3239,7 @@ impl InterpInstance {
         let raw_artifact = Rc::clone(&self.baseline_artifact);
         loop {
             #[cfg(sf_module_validator)]
-            let step = if act.raw.is_some() {
-                let raw = act.raw.as_mut().expect("checked mixed Raw activation");
+            let step = if let ActivationRuntime::Raw(raw) = &mut act.runtime {
                 let mut top = raw.top;
                 let exit = RawStepper {
                     instance: self,
@@ -3046,9 +3276,8 @@ impl InterpInstance {
                     if saved.len() as u32 >= max_depth {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
-                    let f = match self.functions().get(callee).cloned() {
-                        Some(Some(f)) => f,
-                        Some(None) => {
+                    let runtime = match self.functions().get(callee).cloned() {
+                        Some(FunctionRuntime::Import) => {
                             // Imported function: dispatch to the host. Its
                             // first result rides the accumulator relay like
                             // any other call result.
@@ -3062,55 +3291,25 @@ impl InterpInstance {
                                 resume_tail_return: false,
                             });
                         }
+                        Some(runtime) => runtime,
                         None => return Err(WasmError::trap("undefined element")),
                     };
                     let new_base = act.base + arg_base;
-                    if new_base + f.frame_slots as usize > ctx.stack.len() {
+                    let callee_act = self.activation_for(callee, runtime, new_base, new_base)?;
+                    if new_base + callee_act.frame.frame_slots as usize > ctx.stack.len() {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
                     // The caller already staged the params at the frame
                     // base; locals get fresh zeros, temps are written
                     // before read by predecode construction.
-                    let (np, nl) = (f.n_params as usize, f.n_locals as usize);
+                    let (np, nl) = (
+                        callee_act.frame.n_params as usize,
+                        callee_act.frame.n_locals as usize,
+                    );
                     ctx.stack[new_base + np..new_base + nl].fill(0);
                     #[cfg(sf_module_validator)]
-                    let raw = if self.whole_function_mode(callee) == FunctionPlanKind::Raw {
-                        let artifact = self
-                            .baseline_artifact
-                            .functions
-                            .get(callee)
-                            .and_then(Option::as_ref)
-                            .ok_or_else(|| {
-                                WasmError::invalid("mixed Raw callee artifact is missing")
-                            })?;
-                        let operand_base = new_base + nl;
-                        let required = operand_base
-                            .checked_add(artifact.max_operand_height as usize)
-                            .ok_or_else(|| WasmError::trap("call stack exhausted"))?;
-                        if required > ctx.stack.len() {
-                            return Err(WasmError::trap("call stack exhausted"));
-                        }
-                        Some(RawFrameState {
-                            pc: 0,
-                            stp: 0,
-                            top: operand_base,
-                            operand_base,
-                            return_base: new_base,
-                        })
-                    } else {
-                        None
-                    };
-                    #[cfg(sf_module_validator)]
-                    let raw_return_top = act.raw.as_ref().map(|_| new_base + f.n_results as usize);
-                    let callee_act = Activation {
-                        func: f,
-                        func_index: callee,
-                        base: new_base,
-                        pc: 0,
-                        route_established: false,
-                        #[cfg(sf_module_validator)]
-                        raw,
-                    };
+                    let raw_return_top = matches!(&act.runtime, ActivationRuntime::Raw(_))
+                        .then_some(new_base + callee_act.frame.n_results as usize);
                     // Dominate `push`'s capacity check so the hot path can
                     // copy the caller straight into the spare Vec slot.
                     while saved.len() == saved.capacity() {
@@ -3130,9 +3329,8 @@ impl InterpInstance {
                     // our results are expected), and the activation is
                     // replaced rather than pushed. Recursion through a tail
                     // call therefore runs at constant depth.
-                    let f = match self.functions().get(callee).cloned() {
-                        Some(Some(f)) => f,
-                        Some(None) => {
+                    let runtime = match self.functions().get(callee).cloned() {
+                        Some(FunctionRuntime::Import) => {
                             // An imported tail callee: run the host, leave
                             // its results at this frame's base, and return
                             // to the caller as this activation would have.
@@ -3153,13 +3351,24 @@ impl InterpInstance {
                                 resume_tail_return: true,
                             });
                         }
+                        Some(runtime) => runtime,
                         None => return Err(WasmError::trap("undefined element")),
                     };
                     let base = act.base;
-                    if base + f.frame_slots as usize > ctx.stack.len() {
+                    let callee_act = self.activation_for(callee, runtime, base, base)?;
+                    #[cfg(sf_module_validator)]
+                    if callee_act.runtime.is_raw() {
+                        return Err(WasmError::invalid(
+                            "interp: tail call resolved to a Raw function",
+                        ));
+                    }
+                    if base + callee_act.frame.frame_slots as usize > ctx.stack.len() {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
-                    let (np, nl) = (f.n_params as usize, f.n_locals as usize);
+                    let (np, nl) = (
+                        callee_act.frame.n_params as usize,
+                        callee_act.frame.n_locals as usize,
+                    );
                     ctx.stack
                         .copy_within(base + arg_base..base + arg_base + np, base);
                     ctx.stack[base + np..base + nl].fill(0);
@@ -3170,7 +3379,8 @@ impl InterpInstance {
                     // exactly that place. So the tail call switches which
                     // function executes and nothing else -- which is also why
                     // depth stays constant.
-                    act.func = f;
+                    act.runtime = callee_act.runtime;
+                    act.frame = callee_act.frame;
                     act.func_index = callee;
                     act.pc = 0;
                 }
@@ -3214,8 +3424,8 @@ impl InterpInstance {
                             #[cfg(not(sf_module_validator))]
                             let activation = parent.activation;
                             #[cfg(sf_module_validator)]
-                            if let (Some(raw), Some(top)) =
-                                (activation.raw.as_mut(), parent.raw_return_top)
+                            if let (ActivationRuntime::Raw(raw), Some(top)) =
+                                (&mut activation.runtime, parent.raw_return_top)
                             {
                                 raw.top = top;
                             }
@@ -3249,8 +3459,10 @@ impl InterpInstance {
         ctx: &mut DriveCtx<'_>,
         site: usize,
     ) -> Result<bool, WasmError> {
-        let Some(handler) = act
-            .func
+        let Some(function) = act.runtime.as_folded() else {
+            return Ok(false);
+        };
+        let Some(handler) = function
             .exception_handlers_at(site as u32)
             .iter()
             .copied()
@@ -3643,6 +3855,11 @@ impl InterpInstance {
         act: &mut Activation,
         ctx: &mut DriveCtx,
     ) -> Result<StepExit, WasmError> {
+        if !matches!(&act.runtime, ActivationRuntime::Folded(_)) {
+            return Err(WasmError::invalid(
+                "interp: Raw activation entered native dispatch",
+            ));
+        }
         let info = {
             let native = self.native.as_ref().expect("native_step without state");
             native
@@ -3756,15 +3973,14 @@ impl InterpInstance {
             match state.reason {
                 EXIT_SLOW => {
                     let (fi, cstart) = self.native_pc_lookup(state.pc)?;
-                    let f = self
-                        .functions()
-                        .get(fi)
-                        .cloned()
-                        .flatten()
-                        .expect("range map import");
+                    let f = match self.functions().get(fi) {
+                        Some(FunctionRuntime::Folded(function)) => Rc::clone(function),
+                        _ => return Err(WasmError::internal("range map is not Folded")),
+                    };
                     let idx = ((state.pc - cstart) / 32) as usize;
                     let base = ((state.frame - stack_ptr) / 8) as usize;
-                    act.func = f.clone();
+                    act.frame = FunctionFrameLayout::folded(&f);
+                    act.runtime = ActivationRuntime::Folded(f.clone());
                     act.func_index = fi;
                     act.base = base;
                     cur_base = base;
@@ -5276,7 +5492,7 @@ mod tests {
         op: Op,
     ) -> (&DCell, Instr, usize) {
         let function = instance.functions()[func_index]
-            .as_ref()
+            .as_folded()
             .expect("defined function");
         let pc = function
             .code
@@ -5715,7 +5931,9 @@ mod tests {
                     cells.as_ptr() as u64,
                     "cached function base must address its arena slice"
                 );
-                let predecoded = inst.functions()[func_index].as_ref().expect("defined body");
+                let predecoded = inst.functions()[func_index]
+                    .as_folded()
+                    .expect("defined body");
                 assert_eq!(cells.len(), predecoded.code.len() + 1);
                 next_cell_base = Some(base + (cells.len() * core::mem::size_of::<DCell>()) as u64);
 
@@ -5952,7 +6170,7 @@ mod tests {
         .expect("instantiate");
         let run = inst.find_export("run").expect("run");
         let pair = inst.functions()[run]
-            .as_ref()
+            .as_folded()
             .expect("predecoded body")
             .code
             .iter()
@@ -6002,7 +6220,7 @@ mod tests {
         .expect("instantiate");
         let run = inst.find_export("run").expect("run");
         let code = &inst.functions()[run]
-            .as_ref()
+            .as_folded()
             .expect("predecoded body")
             .code;
         let pair = code

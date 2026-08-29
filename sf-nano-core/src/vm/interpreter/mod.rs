@@ -52,9 +52,9 @@ mod predecode;
 #[cfg(sf_module_validator)]
 /// Owned output of the interpreter's single-decode validation pass.
 ///
-/// Construction still predecodes and links every local function. The
-/// validator-enabled interpreter may route preflighted whole functions Raw;
-/// this correctness rollout does not yet remove eager startup work.
+/// The validator-enabled interpreter routes preflighted whole functions Raw
+/// and skips their folded instruction and dispatch-cell construction. Hybrid
+/// and FullFold functions retain the complete folded pipeline.
 pub(crate) struct ValidatedBaselinePlan {
     artifact: baseline_artifact::BaselineArtifact,
     function_plan: crate::collections::Vec<baseline_function_plan::FunctionPlanKind>,

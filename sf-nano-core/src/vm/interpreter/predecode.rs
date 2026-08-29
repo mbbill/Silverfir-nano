@@ -41,6 +41,8 @@ pub(super) const WIDE_MEMARG: u64 = 1 << 63;
 
 #[cfg(test)]
 use super::baseline_artifact::{ArtifactEvent, BaselineArtifact, BaselineFunctionBuilder};
+#[cfg(sf_module_validator)]
+use super::baseline_function_plan::FunctionPlanKind;
 use super::engine::PinCensus;
 #[cfg(test)]
 use super::instr::{operand_is_f32, result_is_f32};
@@ -187,6 +189,32 @@ pub(crate) struct PredecodedFunction {
     exception_sites: Vec<ExceptionSite>,
     /// Flattened handler chains referenced by `exception_sites`.
     exception_handlers: Vec<ExceptionHandler>,
+}
+
+/// Published execution representation for one module function index.
+///
+/// Imports and Raw functions both own no folded instruction stream, but they
+/// are semantically different runtime entries. Keeping those states explicit
+/// prevents a missing folded body from being mistaken for an import.
+#[derive(Clone)]
+pub(crate) enum FunctionRuntime {
+    Import,
+    #[cfg(sf_module_validator)]
+    Raw,
+    Folded(Rc<PredecodedFunction>),
+}
+
+impl FunctionRuntime {
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn as_folded(&self) -> Option<&Rc<PredecodedFunction>> {
+        match self {
+            Self::Folded(function) => Some(function),
+            Self::Import => None,
+            #[cfg(sf_module_validator)]
+            Self::Raw => None,
+        }
+    }
 }
 
 /// Mutable function-relative view used while writing directly into the
@@ -337,35 +365,85 @@ pub(crate) fn predecode_function(
 }
 
 /// Predecode every local body directly into one module-owned instruction
-/// arena. Imported functions retain their index-preserving `None` entries.
+/// arena.
 ///
 /// The capacity hint is deliberately conservative rather than an upper
 /// bound. It removes the small early growth steps for ordinary Wasm while
 /// avoiding a `32 * body_bytes` reservation on memory-constrained no_std
 /// targets. Growth, when needed, remains module-wide instead of per-function.
+#[cfg(any(test, not(sf_module_validator)))]
 pub(crate) fn predecode_functions(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
 ) -> Result<UnlinkedPredecodedFunctions, WasmError> {
-    let local_count = module.functions().iter().filter(|f| !f.is_import()).count();
-    if local_count == 0 {
+    predecode_functions_where(module, tag_identities, function_handles, |_| true)
+}
+
+/// Validator-enabled production path: Raw functions retain their validated
+/// bytecode artifact and never create an Instr stream. Hybrid and FullFold
+/// functions keep the complete folded pipeline.
+#[cfg(sf_module_validator)]
+pub(crate) fn predecode_functions_selective(
+    module: &Module,
+    tag_identities: &[TagIdentity],
+    function_handles: &[RefValue],
+    plan: &[FunctionPlanKind],
+) -> Result<UnlinkedPredecodedFunctions, WasmError> {
+    if plan.len() != module.functions().len() {
+        return Err(WasmError::invalid(
+            "interp: selective predecode plan length mismatch",
+        ));
+    }
+    predecode_functions_where(module, tag_identities, function_handles, |index| {
+        plan[index] != FunctionPlanKind::Raw
+    })
+}
+
+fn predecode_functions_where(
+    module: &Module,
+    tag_identities: &[TagIdentity],
+    function_handles: &[RefValue],
+    should_fold: impl Fn(usize) -> bool,
+) -> Result<UnlinkedPredecodedFunctions, WasmError> {
+    let mut folded_count = 0usize;
+    let mut body_bytes = 0usize;
+    for (index, function) in module.functions().iter().enumerate() {
+        let fold = !function.is_import() && should_fold(index);
+        if fold {
+            folded_count += 1;
+            body_bytes = body_bytes.saturating_add(
+                function
+                    .spec()
+                    .expect("non-import has a function body")
+                    .code()
+                    .len(),
+            );
+        }
+    }
+    if folded_count == 0 {
         let mut funcs = Vec::with_capacity(module.functions().len());
-        funcs.resize_with(module.functions().len(), || None);
+        for function in module.functions() {
+            if function.is_import() {
+                funcs.push(UnlinkedFunctionRuntime::Import);
+            } else {
+                #[cfg(sf_module_validator)]
+                funcs.push(UnlinkedFunctionRuntime::Raw);
+                #[cfg(not(sf_module_validator))]
+                return Err(WasmError::internal(
+                    "ordinary interpreter skipped a local predecode",
+                ));
+            }
+        }
         return Ok(UnlinkedPredecodedFunctions {
             code: Vec::new(),
             parts: funcs,
         });
     }
-    let body_bytes = module
-        .functions()
-        .iter()
-        .filter_map(|f| f.spec())
-        .fold(0usize, |sum, spec| sum.saturating_add(spec.code().len()));
     let mut code = Vec::with_capacity(
         (body_bytes / 4)
-            .max(local_count)
-            .saturating_add(local_count),
+            .max(folded_count)
+            .saturating_add(folded_count),
     );
     // These vectors are compile-time state, not part of any published
     // function. Keep their allocations for the next body rather than
@@ -374,7 +452,14 @@ pub(crate) fn predecode_functions(
     let mut parts = Vec::with_capacity(module.functions().len());
     for (func_index, func) in module.functions().iter().enumerate() {
         if func.is_import() {
-            parts.push(None);
+            parts.push(UnlinkedFunctionRuntime::Import);
+        } else if !should_fold(func_index) {
+            #[cfg(sf_module_validator)]
+            parts.push(UnlinkedFunctionRuntime::Raw);
+            #[cfg(not(sf_module_validator))]
+            return Err(WasmError::internal(
+                "ordinary interpreter skipped a local predecode",
+            ));
         } else {
             let decoded = predecode_function_into(
                 module,
@@ -387,7 +472,7 @@ pub(crate) fn predecode_functions(
                 #[cfg(test)]
                 None,
             )?;
-            parts.push(Some(decoded));
+            parts.push(UnlinkedFunctionRuntime::Folded(decoded));
             // The linked chain may prefetch one handler word past the final
             // instruction. Reserve that cell in stage A so stage B can reuse
             // this exact allocation without inserting/moving any cells.
@@ -520,9 +605,16 @@ impl UnlinkedFunction<'_> {
     }
 }
 
+enum UnlinkedFunctionRuntime {
+    Import,
+    #[cfg(sf_module_validator)]
+    Raw,
+    Folded(PredecodedFunctionParts),
+}
+
 pub(crate) struct UnlinkedPredecodedFunctions {
     code: Vec<Instr>,
-    parts: Vec<Option<PredecodedFunctionParts>>,
+    parts: Vec<UnlinkedFunctionRuntime>,
 }
 
 impl UnlinkedPredecodedFunctions {
@@ -530,14 +622,22 @@ impl UnlinkedPredecodedFunctions {
         self.parts.len()
     }
 
-    pub(crate) fn defined_count(&self) -> usize {
-        self.parts.iter().filter(|part| part.is_some()).count()
+    pub(crate) fn folded_count(&self) -> usize {
+        self.parts
+            .iter()
+            .filter(|part| matches!(part, UnlinkedFunctionRuntime::Folded(_)))
+            .count()
     }
 
     pub(crate) fn br_entry_count(&self) -> usize {
         self.parts
             .iter()
-            .flatten()
+            .filter_map(|part| match part {
+                UnlinkedFunctionRuntime::Folded(parts) => Some(parts),
+                UnlinkedFunctionRuntime::Import => None,
+                #[cfg(sf_module_validator)]
+                UnlinkedFunctionRuntime::Raw => None,
+            })
             .flat_map(|parts| parts.br_tables.iter())
             .fold(0usize, |sum, table| {
                 sum.checked_add(table.len())
@@ -546,9 +646,10 @@ impl UnlinkedPredecodedFunctions {
     }
 
     pub(crate) fn function(&self, index: usize) -> Option<UnlinkedFunction<'_>> {
-        Some(UnlinkedFunction {
-            parts: self.parts.get(index)?.as_ref()?,
-        })
+        let UnlinkedFunctionRuntime::Folded(parts) = self.parts.get(index)? else {
+            return None;
+        };
+        Some(UnlinkedFunction { parts })
     }
 
     pub(crate) fn take_code(&mut self) -> Vec<Instr> {
@@ -560,14 +661,18 @@ impl UnlinkedPredecodedFunctions {
         self.code.clone()
     }
 
-    pub(crate) fn publish(
-        self,
-        test_code: Option<Vec<Instr>>,
-    ) -> Vec<Option<Rc<PredecodedFunction>>> {
+    pub(crate) fn publish(self, test_code: Option<Vec<Instr>>) -> Vec<FunctionRuntime> {
         let test_code = test_code.map(Rc::new);
         self.parts
             .into_iter()
-            .map(|parts| parts.map(|parts| Rc::new(parts.finish(test_code.as_ref()))))
+            .map(|parts| match parts {
+                UnlinkedFunctionRuntime::Import => FunctionRuntime::Import,
+                #[cfg(sf_module_validator)]
+                UnlinkedFunctionRuntime::Raw => FunctionRuntime::Raw,
+                UnlinkedFunctionRuntime::Folded(parts) => {
+                    FunctionRuntime::Folded(Rc::new(parts.finish(test_code.as_ref())))
+                }
+            })
             .collect()
     }
 
@@ -575,6 +680,14 @@ impl UnlinkedPredecodedFunctions {
     fn publish_for_test(self) -> Vec<Option<Rc<PredecodedFunction>>> {
         let test_code = Some(self.code.clone());
         self.publish(test_code)
+            .into_iter()
+            .map(|function| match function {
+                FunctionRuntime::Import => None,
+                #[cfg(sf_module_validator)]
+                FunctionRuntime::Raw => panic!("full predecode oracle published Raw"),
+                FunctionRuntime::Folded(function) => Some(function),
+            })
+            .collect()
     }
 }
 

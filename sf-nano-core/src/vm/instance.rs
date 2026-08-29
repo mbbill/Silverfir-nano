@@ -1042,8 +1042,8 @@ mod tests {
                 Some(true)
             );
             assert!(
-                interp.predecode_is_complete_for_test(),
-                "retaining baseline metadata must not make predecode selective"
+                interp.predecode_matches_runtime_plan_for_test(),
+                "published runtime entries must match the effective plan"
             );
         });
         assert_eq!(
@@ -1115,8 +1115,8 @@ mod tests {
                 "a folded caller must enter a Raw callee through the slow checkpoint"
             );
             assert!(
-                interp.predecode_is_complete_for_test(),
-                "mixed routing must not be mistaken for selective startup"
+                interp.predecode_matches_runtime_plan_for_test(),
+                "selective predecode must match the effective runtime plan"
             );
         });
 
@@ -1280,6 +1280,124 @@ mod tests {
             instance
                 .invoke("import_call", &[])
                 .expect("folded import invocation"),
+            collections::vec![Value::I32(9)]
+        );
+    }
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn selective_predecode_publishes_explicit_entries_and_no_raw_cells() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (import "host" "noop" (func $host))
+                (func $raw (export "raw") (type $unary)
+                    local.get 0 i32.const 1 i32.add)
+                (func $folded_leaf (type $unary)
+                    ref.null func drop
+                    local.get 0 i32.const 2 i32.add)
+                (func (export "folded") (type $unary)
+                    ref.null func drop
+                    local.get 0 call $folded_leaf i32.const 3 i32.add))"#,
+        )
+        .expect("encode selective module");
+        let import = Import::func("host", "noop", |_caller, _args, _results| Ok(()));
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+        let mut instance = Instance::from_module(
+            &engine,
+            Module::new("selective-predecode", &wasm).expect("parse module"),
+            &[import],
+        )
+        .expect("instantiate selective module");
+
+        let interp = match &instance.inner {
+            Inner::Interp(interp) => interp,
+            #[cfg(sf_jit)]
+            Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+        };
+        interp.with_instance(|interp| {
+            assert_eq!(
+                (0..4)
+                    .map(|index| interp.function_runtime_label_for_test(index))
+                    .collect::<collections::Vec<_>>(),
+                [Some("import"), Some("raw"), Some("folded"), Some("folded"),]
+            );
+            assert_eq!(
+                interp.function_instr_and_cell_count_for_test(0),
+                Some((0, 0))
+            );
+            assert_eq!(
+                interp.function_instr_and_cell_count_for_test(1),
+                Some((0, 0)),
+                "Raw must allocate neither Instr nor DCell storage"
+            );
+            for function in [2, 3] {
+                let (instructions, cells) = interp
+                    .function_instr_and_cell_count_for_test(function)
+                    .expect("Folded census");
+                assert!(instructions > 0, "Folded function has no instructions");
+                assert_eq!(cells, instructions + 1, "Folded prefetch pad is missing");
+            }
+            assert!(!interp.function_has_native_range_for_test(0));
+            assert!(!interp.function_has_native_range_for_test(1));
+            assert!(interp.function_has_native_range_for_test(2));
+            assert!(interp.function_has_native_range_for_test(3));
+            assert!(
+                interp.whole_direct_call_is_native_for_test(3, 2),
+                "Folded-to-Folded direct calls must retain native fixup"
+            );
+        });
+
+        assert_eq!(
+            instance
+                .invoke("raw", &[Value::I32(40)])
+                .expect("Raw invocation"),
+            collections::vec![Value::I32(41)]
+        );
+        assert_eq!(
+            instance
+                .invoke("folded", &[Value::I32(7)])
+                .expect("Folded invocation"),
+            collections::vec![Value::I32(12)]
+        );
+    }
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn selective_predecode_executes_a_raw_start_function() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (global $state (mut i32) (i32.const 0))
+                (func $start
+                    i32.const 9 global.set $state)
+                (start $start)
+                (func (export "read") (result i32)
+                    global.get $state))"#,
+        )
+        .expect("encode Raw start module");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+        let mut instance = Instance::from_module(
+            &engine,
+            Module::new("selective-raw-start", &wasm).expect("parse module"),
+            &[],
+        )
+        .expect("run Raw start");
+        let interp = match &instance.inner {
+            Inner::Interp(interp) => interp,
+            #[cfg(sf_jit)]
+            Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+        };
+        interp.with_instance(|interp| {
+            assert_eq!(interp.function_runtime_label_for_test(0), Some("raw"));
+            assert_eq!(
+                interp.function_instr_and_cell_count_for_test(0),
+                Some((0, 0))
+            );
+        });
+        assert_eq!(
+            instance
+                .invoke("read", &[])
+                .expect("read initialized global"),
             collections::vec![Value::I32(9)]
         );
     }
@@ -2106,6 +2224,18 @@ mod tests {
                 .instance_table()
                 .checkout(id)
                 .unwrap_or_else(|| panic!("{tier:?}: failed slot was freed or regenerated"));
+            #[cfg(all(sf_interp, sf_module_validator))]
+            if tier == Tier::Interp {
+                let interp = checkout
+                    .interp()
+                    .expect("interpreter partial slot lost its runtime");
+                assert_eq!(interp.function_runtime_label_for_test(0), Some("raw"));
+                assert_eq!(
+                    interp.function_instr_and_cell_count_for_test(0),
+                    Some((0, 0)),
+                    "trapping Raw start must still skip folded storage"
+                );
+            }
             assert!(world.free(id).is_err());
             drop(checkout);
             world.free(id).expect("free occupied failed slot");
