@@ -28,6 +28,8 @@ use crate::utils::{leb128, limits::Limitable};
 use crate::value_type::ValueType;
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::{ref_to_machine_raw, RefValue};
+use core::ops::{Deref, Index, IndexMut, Range};
+use tracked_alloc::rc::Rc;
 
 /// Marks a packed memarg field as a `wide_memargs` index rather than an
 /// inline `memidx << 48 | offset`. Bit 63 is free in the inline form, whose
@@ -74,8 +76,30 @@ pub(crate) struct ExceptionSite {
     handlers_len: u32,
 }
 
+/// One function's immutable view into the module-wide instruction arena.
+///
+/// Function-relative instruction indices remain unchanged: the predecoder,
+/// linker, and slow path all see this as an ordinary `[Instr]`. Sharing the
+/// backing vector removes one long-lived allocation per defined function
+/// without tying a function's lifetime to its originating instance. An
+/// `ExternalCall` can keep its `PredecodedFunction` alive and this `Rc` keeps
+/// the corresponding arena alive with it.
+pub(crate) struct FunctionCode {
+    arena: Rc<Vec<Instr>>,
+    range: Range<usize>,
+}
+
+impl Deref for FunctionCode {
+    type Target = [Instr];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.arena[self.range.clone()]
+    }
+}
+
 pub(crate) struct PredecodedFunction {
-    pub code: Vec<Instr>,
+    pub code: FunctionCode,
     /// Side tables for `BrTable`: resolved instruction indices, the last
     /// entry is the default target.
     pub br_tables: Vec<Vec<u32>>,
@@ -104,6 +128,60 @@ pub(crate) struct PredecodedFunction {
     exception_handlers: Vec<ExceptionHandler>,
 }
 
+/// Mutable function-relative view used while writing directly into the
+/// module-wide instruction arena.
+///
+/// All indices stored by the predecoder are relative to `start`; the wrapper
+/// translates only actual vector access. A safety re-decode truncates the
+/// arena back to `start`, so the optimistic loop-home pass remains exactly
+/// rollbackable even though it no longer owns a per-function vector.
+struct FunctionCodeBuilder<'a> {
+    arena: &'a mut Vec<Instr>,
+    start: usize,
+}
+
+impl FunctionCodeBuilder<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.arena.len() - self.start
+    }
+
+    #[inline]
+    fn push(&mut self, instr: Instr) {
+        self.arena.push(instr);
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Option<Instr> {
+        if self.arena.len() == self.start {
+            None
+        } else {
+            self.arena.pop()
+        }
+    }
+
+    #[inline]
+    fn range(&self) -> Range<usize> {
+        self.start..self.arena.len()
+    }
+}
+
+impl Index<usize> for FunctionCodeBuilder<'_> {
+    type Output = Instr;
+
+    #[inline]
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.arena[self.start + index]
+    }
+}
+
+impl IndexMut<usize> for FunctionCodeBuilder<'_> {
+    #[inline]
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.arena[self.start + index]
+    }
+}
+
 impl PredecodedFunction {
     /// The active handler chain at `pc`, innermost try first and in source
     /// clause order within each try.
@@ -130,7 +208,7 @@ impl PredecodedFunction {
 
 /// Minimal constructor for linker unit tests.
 ///
-/// Production functions are always built by `predecode_function`; keeping
+/// Production functions are always built by `predecode_functions`; keeping
 /// this here lets the sibling linker module exercise deliberately malformed
 /// ACC hint streams without opening the representation in non-test builds.
 #[cfg(test)]
@@ -139,9 +217,13 @@ pub(super) fn linker_test_function(
     br_tables: Vec<Vec<u32>>,
     n_locals: u32,
 ) -> PredecodedFunction {
+    let code_len = code.len();
     PredecodedFunction {
         frame_slots: n_locals,
-        code,
+        code: FunctionCode {
+            arena: Rc::new(code),
+            range: 0..code_len,
+        },
         br_tables,
         wide_memargs: Vec::new(),
         n_locals,
@@ -154,22 +236,115 @@ pub(super) fn linker_test_function(
 }
 
 /// Predecode one local (non-import) function of a parsed module.
+#[cfg(test)]
 pub(crate) fn predecode_function(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
-    predecode_function_impl(module, tag_identities, function_handles, func_index, false)
+    let mut code = Vec::new();
+    let parts = predecode_function_into(
+        module,
+        tag_identities,
+        function_handles,
+        func_index,
+        false,
+        &mut code,
+    )?;
+    Ok(parts.finish(Rc::new(code)))
 }
 
-fn predecode_function_impl(
+/// Predecode every local body directly into one module-owned instruction
+/// arena. Imported functions retain their index-preserving `None` entries.
+///
+/// The capacity hint is deliberately conservative rather than an upper
+/// bound. It removes the small early growth steps for ordinary Wasm while
+/// avoiding a `32 * body_bytes` reservation on memory-constrained no_std
+/// targets. Growth, when needed, remains module-wide instead of per-function.
+pub(crate) fn predecode_functions(
+    module: &Module,
+    tag_identities: &[TagIdentity],
+    function_handles: &[RefValue],
+) -> Result<Vec<Option<Rc<PredecodedFunction>>>, WasmError> {
+    let local_count = module.functions().iter().filter(|f| !f.is_import()).count();
+    if local_count == 0 {
+        let mut funcs = Vec::with_capacity(module.functions().len());
+        funcs.resize_with(module.functions().len(), || None);
+        return Ok(funcs);
+    }
+    let body_bytes = module
+        .functions()
+        .iter()
+        .filter_map(|f| f.spec())
+        .fold(0usize, |sum, spec| sum.saturating_add(spec.code().len()));
+    let mut code = Vec::with_capacity((body_bytes / 4).max(local_count));
+    let mut parts = Vec::with_capacity(module.functions().len());
+    for (func_index, func) in module.functions().iter().enumerate() {
+        if func.is_import() {
+            parts.push(None);
+        } else {
+            parts.push(Some(predecode_function_into(
+                module,
+                tag_identities,
+                function_handles,
+                func_index,
+                false,
+                &mut code,
+            )?));
+        }
+    }
+
+    // `Rc<Vec<_>>` takes ownership of the completed vector header and its
+    // existing buffer. No instruction stream is copied during publication.
+    let code = Rc::new(code);
+    Ok(parts
+        .into_iter()
+        .map(|parts| parts.map(|parts| Rc::new(parts.finish(code.clone()))))
+        .collect())
+}
+
+struct PredecodedFunctionParts {
+    code_range: Range<usize>,
+    br_tables: Vec<Vec<u32>>,
+    wide_memargs: Vec<(u32, u64)>,
+    frame_slots: u32,
+    n_locals: u32,
+    n_params: u32,
+    n_results: u32,
+    slow_tail_return: Option<u32>,
+    exception_sites: Vec<ExceptionSite>,
+    exception_handlers: Vec<ExceptionHandler>,
+}
+
+impl PredecodedFunctionParts {
+    fn finish(self, code: Rc<Vec<Instr>>) -> PredecodedFunction {
+        PredecodedFunction {
+            code: FunctionCode {
+                arena: code,
+                range: self.code_range,
+            },
+            br_tables: self.br_tables,
+            wide_memargs: self.wide_memargs,
+            frame_slots: self.frame_slots,
+            n_locals: self.n_locals,
+            n_params: self.n_params,
+            n_results: self.n_results,
+            slow_tail_return: self.slow_tail_return,
+            exception_sites: self.exception_sites,
+            exception_handlers: self.exception_handlers,
+        }
+    }
+}
+
+fn predecode_function_into(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
     func_index: usize,
     _disable_fast: bool,
-) -> Result<PredecodedFunction, WasmError> {
+    code: &mut Vec<Instr>,
+) -> Result<PredecodedFunctionParts, WasmError> {
     if tag_identities.len() != module.tags().len() {
         return Err(WasmError::invalid(
             "interp: runtime tag table does not match module",
@@ -195,14 +370,21 @@ fn predecode_function_impl(
     // locals. If a decoded backedge would have to synthesize a write into
     // such a local, repeat the pass with that loop's parameters canonical.
     // Loop ordinals are structural and therefore stable across passes.
+    let code_start = code.len();
     let mut canonical_loop_homes = Vec::new();
     let p = loop {
+        // Roll back an optimistic pass in-place. Earlier functions occupy
+        // the immutable prefix before `code_start` and cannot be disturbed.
+        code.truncate(code_start);
         let mut p = Predecoder {
             types: module.types(),
             module,
             tag_identities,
             function_handles,
-            code: Vec::new(),
+            code: FunctionCodeBuilder {
+                arena: code,
+                start: code_start,
+            },
             stack: Vec::new(),
             frames: Vec::new(),
             dead: false,
@@ -258,9 +440,10 @@ fn predecode_function_impl(
         }
         canonical_loop_homes = next;
     };
-    Ok(PredecodedFunction {
+    let code_range = p.code.range();
+    Ok(PredecodedFunctionParts {
+        code_range,
         frame_slots: n_locals + p.max_height,
-        code: p.code,
         br_tables: p.br_tables,
         wide_memargs: p.wide_memargs,
         n_locals,
@@ -377,7 +560,7 @@ struct CtlFrame {
     catches: Vec<ActiveExceptionHandler>,
 }
 
-struct Predecoder<'m> {
+struct Predecoder<'m, 'code> {
     types: &'m TypeContext,
     module: &'m Module,
     /// Runtime identities resolved by the linker. Module tag indices are
@@ -387,7 +570,7 @@ struct Predecoder<'m> {
     /// Frame-form identities for `ref.func`: local indices for this
     /// instance's functions and absolute handles for linked imports.
     function_handles: &'m [RefValue],
-    code: Vec<Instr>,
+    code: FunctionCodeBuilder<'code>,
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
     dead: bool,
@@ -578,7 +761,7 @@ fn unsupported() -> WasmError {
     WasmError::invalid("interp: opcode not yet supported by the interpreter")
 }
 
-impl<'m> Predecoder<'m> {
+impl<'m, 'code> Predecoder<'m, 'code> {
     fn allocate_loop_id(&mut self) -> u32 {
         let loop_id = self.next_loop_id;
         self.next_loop_id = self
@@ -2404,7 +2587,7 @@ fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
     true
 }
 
-impl<'m> OpcodeHandler for Predecoder<'m> {
+impl OpcodeHandler for Predecoder<'_, '_> {
     fn on_decode_begin(&mut self) -> Result<(), WasmError> {
         Ok(())
     }
@@ -3393,7 +3576,9 @@ mod tests {
     use super::super::layout::native_guard;
     use super::*;
     use crate::module::Module;
+    use std::fmt::Write as _;
     use std::format;
+    use std::string::String as StdString;
     use std::vec::Vec as StdVec;
 
     fn predecode_wat_mode(src: &str, func: usize, disable_fast: bool) -> PredecodedFunction {
@@ -3406,18 +3591,34 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        predecode_function_impl(
+        let mut code = Vec::new();
+        let parts = predecode_function_into(
             &module,
             &tag_identities,
             &function_handles,
             func,
             disable_fast,
+            &mut code,
         )
-        .expect("predecode")
+        .expect("predecode");
+        parts.finish(Rc::new(code))
     }
 
     fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
         predecode_wat_mode(src, func, false)
+    }
+
+    fn predecode_module_wat(src: &str) -> Vec<Option<Rc<PredecodedFunction>>> {
+        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
+        let module = Module::new("t", &bin).expect("module");
+        let tag_identities: StdVec<TagIdentity> = module
+            .tags()
+            .iter()
+            .map(|_| TagIdentity::mint_fresh())
+            .collect();
+        let function_handles: StdVec<RefValue> =
+            (0..module.functions().len()).map(RefValue::new).collect();
+        predecode_functions(&module, &tag_identities, &function_handles).expect("predecode module")
     }
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
@@ -3451,6 +3652,63 @@ mod tests {
             fast.exception_handlers, generic.exception_handlers,
             "exception handlers"
         );
+    }
+
+    #[test]
+    fn module_predecode_has_one_instruction_backing_for_many_functions() {
+        let mut wat = StdString::from("(module");
+        for value in 0..64 {
+            write!(&mut wat, " (func (result i32) i32.const {value})").unwrap();
+        }
+        wat.push(')');
+
+        let funcs = predecode_module_wat(&wat);
+        let first = funcs[0].as_ref().expect("defined function");
+        let arena = Rc::as_ptr(&first.code.arena);
+        let arena_base = first.code.arena.as_ptr();
+        let mut cursor = 0usize;
+        for func in funcs.iter().flatten() {
+            assert_eq!(
+                Rc::as_ptr(&func.code.arena),
+                arena,
+                "every defined function must share one Vec<Instr> owner"
+            );
+            assert_eq!(func.code.range.start, cursor, "code ranges stay packed");
+            assert_eq!(
+                func.code.as_ptr(),
+                unsafe { arena_base.add(func.code.range.start) },
+                "the published slice points into the original arena buffer"
+            );
+            cursor = func.code.range.end;
+        }
+        assert_eq!(cursor, first.code.arena.len());
+    }
+
+    #[test]
+    fn module_arena_rollback_preserves_neighboring_functions() {
+        let wat = r#"(module
+            (func (result i32) i32.const 7)
+            (func (param $x i32) (param $n i32) (result i32)
+                local.get $x
+                (loop $unsafe (param i32) (result i32)
+                    drop
+                    i32.const 42
+                    local.get $n
+                    i32.const 1
+                    i32.sub
+                    local.tee $n
+                    br_if $unsafe)
+                drop
+                local.get $x)
+            (func (result i64) i64.const 99))"#;
+        let funcs = predecode_module_wat(wat);
+        for (index, shared) in funcs.iter().enumerate() {
+            let shared = shared.as_ref().expect("defined function");
+            let standalone = predecode_wat(wat, index);
+            assert_same_predecode(shared, &standalone);
+        }
+        assert_eq!(funcs[0].as_ref().unwrap().code[0].a, 7);
+        assert_eq!(funcs[2].as_ref().unwrap().code[0].a, 99);
     }
 
     #[test]
