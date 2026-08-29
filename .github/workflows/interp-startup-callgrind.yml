@@ -1,0 +1,97 @@
+name: Temporary interpreter startup Callgrind profile
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev/interp-stage-profile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: interp-startup-callgrind-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  profile:
+    name: callgrind / x64-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: callgrind-target
+      CARGO_PROFILE_RELEASE_DEBUG: "2"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      RUSTFLAGS: "-C force-frame-pointers=yes"
+    steps:
+      - name: Checkout profiler candidate
+        uses: actions/checkout@v7
+
+      - name: Checkout pinned wasmi-benchmarks
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Callgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y valgrind
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: startup-callgrind-x64
+          workspaces: ". -> callgrind-target"
+
+      - name: Build ordinary release interpreter
+        run: |
+          set -euo pipefail
+          cargo build \
+            --release \
+            --package sf-nano-core \
+            --example startup_callgrind \
+            --no-default-features \
+            --features interp
+
+      - name: Profile representative startup workloads
+        run: |
+          set -euo pipefail
+          mkdir -p callgrind-output
+          binary=callgrind-target/release/examples/startup_callgrind
+          for case in coremark ffmpeg; do
+            case "$case" in
+              coremark) wasm=wasmi-benchmarks/res/wasm/coremark.wasm ;;
+              ffmpeg) wasm=wasmi-benchmarks/res/wasm/ffmpeg.wasm ;;
+            esac
+            taskset -c 1 setarch "$(uname -m)" -R \
+              valgrind \
+                --tool=callgrind \
+                --branch-sim=yes \
+                --collect-jumps=yes \
+                --separate-callers=4 \
+                --callgrind-out-file="callgrind-output/${case}.out" \
+                "$binary" 2 "${case}=${wasm}"
+            callgrind_annotate \
+              --inclusive=yes \
+              --tree=both \
+              --threshold=0.05 \
+              "callgrind-output/${case}.out" \
+              > "callgrind-output/${case}.txt"
+          done
+          sed -n '1,240p' callgrind-output/coremark.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Callgrind profiles
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: interp-startup-callgrind-x64-linux
+          path: callgrind-output/
+          if-no-files-found: error
+          retention-days: 14

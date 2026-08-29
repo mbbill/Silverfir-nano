@@ -99,3 +99,7 @@ required-features = ["wasi"]
 [[example]]
 name = "startup_stage_profile"
 required-features = ["startup-profile"]
+
+[[example]]
+name = "startup_callgrind"
+required-features = ["interp"]

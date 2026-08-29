@@ -2,9 +2,6 @@ name: Temporary interpreter startup stage profile
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - dev/interp-stage-profile
 
 permissions:
   contents: read
