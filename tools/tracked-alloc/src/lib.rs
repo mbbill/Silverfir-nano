@@ -2336,6 +2336,35 @@ pub fn into_alloc_vec<T>(value: Vec<T>) -> inner::Vec<T> {
     value.into_alloc_vec()
 }
 
+/// Consume a vector and return its allocation as raw parts.
+///
+/// With memory profiling enabled the old typed allocation is removed from
+/// the registry before ownership leaves the wrapper. The caller must either
+/// rebuild an owning collection with [`from_raw_parts`] or otherwise release
+/// the allocation according to `alloc::vec::Vec`'s raw-parts contract.
+pub fn into_raw_parts<T>(value: Vec<T>) -> (*mut T, usize, usize) {
+    let mut inner = mem::ManuallyDrop::new(into_alloc_vec(value));
+    (inner.as_mut_ptr(), inner.len(), inner.capacity())
+}
+
+/// Rebuild a vector from an allocation previously split into raw parts.
+///
+/// With memory profiling enabled the new typed owner is registered from the
+/// same backing allocation. This is the tracking-aware counterpart of
+/// `alloc::vec::Vec::from_raw_parts`.
+///
+/// # Safety
+///
+/// The caller must uphold all requirements of
+/// `alloc::vec::Vec::from_raw_parts`: `ptr` must have been allocated by the
+/// global allocator for `T` with exactly this capacity/layout, the first
+/// `len` elements must be initialized valid `T` values, and no other owner or
+/// live reference may access the allocation after this call.
+pub unsafe fn from_raw_parts<T>(ptr: *mut T, len: usize, capacity: usize) -> Vec<T> {
+    // SAFETY: forwarded from this function's contract.
+    from_alloc_vec(unsafe { inner::Vec::from_raw_parts(ptr, len, capacity) })
+}
+
 #[cfg(feature = "memprof")]
 pub struct Drain<'a, T> {
     inner: Option<inner::Drain<'a, T>>,
@@ -3878,7 +3907,7 @@ pub mod string {
 pub mod vec {
     pub use crate::inner::IntoIter;
 
-    pub use crate::{from_alloc_vec, into_alloc_vec, Vec};
+    pub use crate::{from_alloc_vec, from_raw_parts, into_alloc_vec, into_raw_parts, Vec};
 }
 
 #[cfg(test)]
@@ -3935,6 +3964,56 @@ mod tests {
 
         #[cfg(feature = "memprof")]
         reset_tracking();
+    }
+
+    #[test]
+    fn raw_parts_retype_transfers_tracking_and_drops_cleanly() {
+        #[cfg(feature = "memprof")]
+        let _guard = tracking_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        #[cfg(feature = "memprof")]
+        {
+            set_tracking_enabled(true);
+            reset_tracking();
+        }
+
+        let mut values = Vec::<u32>::with_capacity(8);
+        values.extend([1, 2, 3]);
+        let allocation = values.as_ptr() as usize;
+        #[cfg(feature = "memprof")]
+        {
+            let live = snapshot();
+            assert_eq!(live.records.len(), 1);
+            assert_eq!(live.records[0].type_name, type_name::<u32>());
+        }
+
+        let (ptr, len, capacity) = into_raw_parts(values);
+        #[cfg(feature = "memprof")]
+        assert!(snapshot().records.is_empty(), "old owner must be removed");
+
+        // SAFETY: i32 and u32 have identical allocation layout/alignment and
+        // every initialized u32 bit pattern is also a valid i32 value. The
+        // raw allocation has no other owner between the paired calls.
+        let values: Vec<i32> = unsafe { from_raw_parts(ptr.cast(), len, capacity) };
+        assert_eq!(values.as_ptr() as usize, allocation);
+        assert_eq!(values.as_slice(), &[1, 2, 3]);
+        #[cfg(feature = "memprof")]
+        {
+            let live = snapshot();
+            assert_eq!(live.records.len(), 1);
+            assert_eq!(live.records[0].type_name, type_name::<i32>());
+            assert_eq!(live.records[0].len, Some(3));
+            assert_eq!(live.records[0].capacity, Some(8));
+        }
+
+        drop(values);
+        #[cfg(feature = "memprof")]
+        {
+            assert!(snapshot().records.is_empty(), "new owner must drop once");
+            set_tracking_enabled(false);
+            reset_tracking();
+        }
     }
 
     #[test]
