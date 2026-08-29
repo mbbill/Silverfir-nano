@@ -12,7 +12,9 @@
 //! with slot operands pre-scaled to byte offsets and branch targets
 //! resolved to absolute cell addresses.
 
-use tracked_alloc::{boxed::Box, retype_vec};
+use tracked_alloc::boxed::Box;
+#[cfg(test)]
+use tracked_alloc::retype_vec;
 
 use crate::collections::Vec;
 
@@ -124,6 +126,7 @@ const _: () = {
 
 /// Transfer the module-wide stage-A allocation into its stage-B element
 /// type without allocating or copying any instruction payloads.
+#[cfg(test)]
 fn into_dispatch_cells(instrs: Vec<Instr>) -> Vec<DCell> {
     // SAFETY: the compile-time assertions above prove identical element
     // size/alignment and a field-for-field payload layout. `Instr` is Copy
@@ -213,7 +216,6 @@ fn restore_native_slow_instr(
 /// pad cell. The arena owns storage; this keeps a stable absolute entry address
 /// for the activation hot path without storing a self-referential slice.
 pub(super) struct LinkedFunction {
-    #[cfg(test)]
     cell_start: usize,
     /// Stable absolute address of `cell_start` in the preallocated arena.
     ///
@@ -236,6 +238,11 @@ impl LinkedFunction {
     #[inline]
     pub(super) fn cell_base(&self) -> u64 {
         self.cell_base
+    }
+
+    #[inline]
+    fn set_cell_base(&mut self, arena_base: u64) {
+        self.cell_base = arena_base + self.cell_start as u64 * core::mem::size_of::<DCell>() as u64;
     }
 }
 
@@ -265,23 +272,27 @@ struct IndirectTypeSite {
     type_index: u32,
 }
 
-/// Module-wide storage planned before linking begins.
+/// Module-wide linked storage.
 ///
-/// The exact cell and branch-table capacities are computed from all
-/// predecoded functions. Neither backing vector can therefore reallocate while
-/// absolute pointers are installed into dispatch cells. Besides replacing two
-/// allocations per function with two per module, the plan carries one compact
-/// list of native call sites for the deferred cross-function fixup.
+/// Production appends one function immediately after predecode, while that
+/// function's instruction scratch is still cache-hot. The vectors may grow
+/// during that stream, so address-bearing payloads stay relative and are
+/// recorded in two sparse index lists. Once every body is present, finalization
+/// installs the two permanent arena bases through that sparse list. Tests also
+/// retain the old exact-capacity and in-place modes as independent oracles.
 pub(super) struct LinkPlan {
     cells: Vec<DCell>,
     heads: Vec<u32>,
     br_flat: Vec<u32>,
     call_fixups: Vec<CallFixup>,
     indirect_types: Vec<IndirectTypeSite>,
-    planned_cells: usize,
-    planned_br_entries: usize,
+    cell_base_fixups: Vec<usize>,
+    branch_base_fixups: Vec<usize>,
+    planned_cells: Option<usize>,
+    planned_br_entries: Option<usize>,
     linked_cells: usize,
     in_place: bool,
+    bases_stable: bool,
 }
 
 impl LinkPlan {
@@ -305,20 +316,44 @@ impl LinkPlan {
         }
         Self {
             cells: Vec::with_capacity(planned_cells),
-            heads: Vec::new(),
+            heads: Vec::with_capacity(planned_cells),
             br_flat: Vec::with_capacity(planned_br_entries),
             // Most real functions have no call. One slot per function avoids
             // early growth without reserving in proportion to instruction
             // count or adding a separate call-counting sweep.
             call_fixups: Vec::with_capacity(function_count),
             indirect_types: Vec::new(),
-            planned_cells,
-            planned_br_entries,
+            cell_base_fixups: Vec::new(),
+            branch_base_fixups: Vec::new(),
+            planned_cells: Some(planned_cells),
+            planned_br_entries: Some(planned_br_entries),
             linked_cells: 0,
             in_place: false,
+            bases_stable: true,
         }
     }
 
+    /// Start a production link stream without claiming that either capacity
+    /// is an upper bound. No arena address is observed until `finish_layout`,
+    /// so any growth here moves only ordinary owned values and offsets.
+    pub(super) fn streaming(function_count: usize, cell_capacity_hint: usize) -> Self {
+        Self {
+            cells: Vec::with_capacity(cell_capacity_hint),
+            heads: Vec::with_capacity(cell_capacity_hint),
+            br_flat: Vec::new(),
+            call_fixups: Vec::with_capacity(function_count),
+            indirect_types: Vec::new(),
+            cell_base_fixups: Vec::with_capacity(function_count),
+            branch_base_fixups: Vec::new(),
+            planned_cells: None,
+            planned_br_entries: None,
+            linked_cells: 0,
+            in_place: false,
+            bases_stable: false,
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn from_instr_arena(
         instrs: Vec<Instr>,
         function_count: usize,
@@ -332,10 +367,13 @@ impl LinkPlan {
             br_flat: Vec::with_capacity(planned_br_entries),
             call_fixups: Vec::with_capacity(function_count),
             indirect_types: Vec::new(),
-            planned_cells,
-            planned_br_entries,
+            cell_base_fixups: Vec::new(),
+            branch_base_fixups: Vec::new(),
+            planned_cells: Some(planned_cells),
+            planned_br_entries: Some(planned_br_entries),
             linked_cells: 0,
             in_place: true,
+            bases_stable: true,
         }
     }
 
@@ -346,35 +384,98 @@ impl LinkPlan {
             .linked_cells
             .checked_add(instruction_len + 1)
             .expect("interpreter linked-cell count overflow");
-        debug_assert!(self.linked_cells <= self.planned_cells);
+        debug_assert!(self
+            .planned_cells
+            .is_none_or(|planned| self.linked_cells <= planned));
         start
     }
 
     #[inline]
-    fn write_cell(&mut self, index: usize, cell: DCell) {
+    fn write_cell(&mut self, index: usize, cell: DCell, head: u32) {
         if self.in_place {
+            debug_assert_eq!(self.heads[index], head);
             self.cells[index] = cell;
         } else {
             debug_assert_eq!(index, self.cells.len());
+            debug_assert_eq!(index, self.heads.len());
             self.cells.push(cell);
+            self.heads.push(head);
         }
     }
 
     #[inline]
+    #[cfg(test)]
     fn raw_instr(&self, index: usize) -> Instr {
         let cell = &self.cells[index];
         Instr::from_packed_head(self.heads[index], cell.a, cell.b, cell.c)
     }
 
-    /// Verify that the precomputed storage plan and the completed link agree.
-    pub(super) fn finish_layout(&self) {
-        debug_assert_eq!(self.cells.len(), self.planned_cells);
-        debug_assert_eq!(self.br_flat.len(), self.planned_br_entries);
-        debug_assert_eq!(self.linked_cells, self.planned_cells);
-        debug_assert_eq!(
-            self.heads.len(),
-            if self.in_place { self.planned_cells } else { 0 }
-        );
+    #[inline]
+    fn cells_base(&self, function_start: usize) -> u64 {
+        if self.bases_stable {
+            unsafe { self.cells.as_ptr().add(function_start) as u64 }
+        } else {
+            0
+        }
+    }
+
+    #[inline]
+    fn branch_base(&self) -> u64 {
+        if self.bases_stable {
+            self.br_flat.as_ptr() as u64
+        } else {
+            0
+        }
+    }
+
+    #[inline]
+    fn record_branch_target(&mut self, cell: usize) {
+        if !self.bases_stable {
+            self.cell_base_fixups.push(cell);
+        }
+    }
+
+    #[inline]
+    fn record_branch_table(&mut self, cell: usize) {
+        if !self.bases_stable {
+            self.branch_base_fixups.push(cell);
+        }
+    }
+
+    /// Freeze the arenas and install every absolute payload recorded by the
+    /// streaming pass. No vector is mutated until the fixup list has been
+    /// moved out, so the bases loaded here remain valid for the plan's life.
+    pub(super) fn finish_layout(&mut self) {
+        if let Some(planned) = self.planned_cells {
+            debug_assert_eq!(self.cells.len(), planned);
+            debug_assert_eq!(self.linked_cells, planned);
+        } else {
+            debug_assert_eq!(self.cells.len(), self.linked_cells);
+        }
+        if let Some(planned) = self.planned_br_entries {
+            debug_assert_eq!(self.br_flat.len(), planned);
+        }
+        debug_assert_eq!(self.heads.len(), self.cells.len());
+
+        if !self.bases_stable {
+            let cells_base = self.cells.as_ptr() as u64;
+            let br_base = self.br_flat.as_ptr() as u64;
+            for cell in core::mem::take(&mut self.cell_base_fixups) {
+                self.cells[cell].c += cells_base;
+            }
+            for cell in core::mem::take(&mut self.branch_base_fixups) {
+                self.cells[cell].b += br_base;
+            }
+            self.bases_stable = true;
+        }
+        debug_assert!(self.cell_base_fixups.is_empty());
+        debug_assert!(self.branch_base_fixups.is_empty());
+    }
+
+    /// Publish the now-stable arena address cached by hot call paths.
+    pub(super) fn finish_function(&self, func: &mut LinkedFunction) {
+        debug_assert!(self.bases_stable);
+        func.set_cell_base(self.cells.as_ptr() as u64);
     }
 
     #[inline]
@@ -400,10 +501,7 @@ impl LinkPlan {
     }
 
     pub(super) fn instruction_heads(&self, func: &LinkedFunction) -> &[u32] {
-        let arena_base = self.cells.as_ptr() as u64;
-        let start =
-            ((func.cell_base() - arena_base) / core::mem::size_of::<DCell>() as u64) as usize;
-        &self.heads[start..start + self.instruction_len(func)]
+        &self.heads[func.cell_start..func.cell_start + self.instruction_len(func)]
     }
 
     #[inline]
@@ -480,8 +578,10 @@ trait LinkCode {
     fn is_in_place(&self) -> bool;
 }
 
+#[cfg(test)]
 struct InPlaceCode;
 
+#[cfg(test)]
 impl LinkCode for InPlaceCode {
     #[inline]
     fn get(&self, plan: &LinkPlan, cell_start: usize, index: usize) -> Instr {
@@ -493,10 +593,8 @@ impl LinkCode for InPlaceCode {
     }
 }
 
-#[cfg(test)]
 struct BorrowedCode<'a>(&'a [Instr]);
 
-#[cfg(test)]
 impl LinkCode for BorrowedCode<'_> {
     fn get(&self, _plan: &LinkPlan, _cell_start: usize, index: usize) -> Instr {
         self.0[index]
@@ -948,6 +1046,29 @@ impl NativeEngine {
         )
     }
 
+    /// Link one freshly predecoded function before its reusable instruction
+    /// scratch is cleared for the next body.
+    pub(super) fn link_streaming<F: LinkFunction + ?Sized>(
+        &self,
+        func: &F,
+        code: &[Instr],
+        caller_index: usize,
+        plan: &mut LinkPlan,
+        scratch: &mut LinkScratch,
+        call_indirect_types: &mut Vec<u32>,
+    ) -> LinkedFunction {
+        debug_assert_eq!(func.code_len(), code.len());
+        self.link_source(
+            func,
+            BorrowedCode(code),
+            caller_index,
+            plan,
+            scratch,
+            call_indirect_types,
+        )
+    }
+
+    #[cfg(test)]
     pub(super) fn link_in_place<F: LinkFunction + ?Sized>(
         &self,
         func: &F,
@@ -1012,11 +1133,11 @@ impl NativeEngine {
         if source.is_in_place() {
             debug_assert_eq!(cell_start, func.code_start());
         }
-        // Every linked body contains at least its prefetch pad, so this is
-        // always an in-allocation address rather than a one-past pointer.
-        let cells_base = unsafe { plan.cells.as_ptr().add(cell_start) as u64 };
+        // Streaming plans deliberately publish no arena address here: either
+        // vector may still grow while later functions are decoded. Exact
+        // capacity and in-place test plans take the established fast path.
+        let cells_base = plan.cells_base(cell_start);
         let lf = LinkedFunction {
-            #[cfg(test)]
             cell_start,
             cell_base: cells_base,
             cell_len: code_len + 1,
@@ -1024,10 +1145,9 @@ impl NativeEngine {
             l1_off: off_of(pin.l1),
             fp_pinned: (pin.l0 != u64::MAX && pin.l0_float) || (pin.l1 != u64::MAX && pin.l1_float),
         };
-        // Both relocations are applied as each cell is built rather than in
-        // a second sweep over the finished block: both buffers have their
-        // final allocation from `with_capacity`, and neither is ever grown,
-        // so the base addresses here are the ones the handlers will see.
+        // Exact-capacity plans apply both relocations as cells are built.
+        // A production streaming plan records only address-bearing cells and
+        // applies their bases once after the final vector growth.
         //
         // A branch target becomes absolute for the same reason the JIT
         // prefers absolute targets: it removes one link from the taken
@@ -1035,13 +1155,10 @@ impl NativeEngine {
         // loaded at handler entry rather than after the branch resolves —
         // measured -4.80% of CoreMark cycles. A BrTable cell's `b` becomes
         // the absolute base of its slice of the flat table buffer.
-        // `LinkPlan::for_functions` reserved the exact module totals before
-        // any absolute address is observed. These bases consequently remain
-        // stable through every push below and through all later fixups.
-        if !plan.in_place {
+        if plan.bases_stable && !plan.in_place {
             debug_assert!(plan.cells.capacity() - plan.cells.len() >= lf.cell_len);
         }
-        let br_base = plan.br_flat.as_ptr() as u64;
+        let br_base = plan.branch_base();
         if code_len != 0 {
             let mut prev_index = 0usize;
             let mut prev_ins = source.get(plan, cell_start, 0);
@@ -1060,6 +1177,7 @@ impl NativeEngine {
                     prev,
                     cells_base,
                     br_base,
+                    cell_start,
                     func,
                     table_byte_off,
                 );
@@ -1086,6 +1204,7 @@ impl NativeEngine {
                 prev,
                 cells_base,
                 br_base,
+                cell_start,
                 func,
                 table_byte_off,
             );
@@ -1100,6 +1219,7 @@ impl NativeEngine {
                 b: 0,
                 c: 0,
             },
+            Instr::new(Op::Unreachable, 0, 0, 0, 0).packed_head(),
         );
         lf
     }
@@ -1153,6 +1273,7 @@ impl NativeEngine {
         state: ResolvedCell,
         cells_base: u64,
         br_base: u64,
+        function_start: usize,
         func: &F,
         table_byte_off: &[u64],
     ) {
@@ -1165,6 +1286,8 @@ impl NativeEngine {
         if INTERP_PTR_BYTES == 4 && !offset_fits_word(ins) {
             h = None;
         }
+        let native_branch_table = h.is_some() && ins.op == Op::BrTable;
+        let native_branch_target = h.is_some() && c_is_branch_target(ins.op);
         let cell = match h {
             Some(h) if ins.op == Op::BrTable => {
                 let table = func
@@ -1186,6 +1309,9 @@ impl NativeEngine {
                 let (b, mut c) = transform_bc(ins, fl);
                 if c_is_branch_target(ins.op) {
                     c += cells_base;
+                    if !plan.bases_stable {
+                        c += function_start as u64 * core::mem::size_of::<DCell>() as u64;
+                    }
                 }
                 DCell {
                     h: h as u64,
@@ -1201,7 +1327,12 @@ impl NativeEngine {
                 c: ins.c,
             },
         };
-        plan.write_cell(cell_index, cell);
+        if native_branch_table {
+            plan.record_branch_table(cell_index);
+        } else if native_branch_target {
+            plan.record_branch_target(cell_index);
+        }
+        plan.write_cell(cell_index, cell, ins.packed_head());
     }
 
     /// The entry trampoline as a callable function pointer.
@@ -1217,6 +1348,104 @@ mod tests {
     use super::*;
     use crate::collections::{vec, Vec};
     use crate::vm::interpreter::predecode::linker_test_function;
+
+    #[test]
+    fn streaming_address_fixups_freeze_only_after_growth() {
+        let head = Instr::new(Op::Unreachable, 0, 0, 0, 0).packed_head();
+        let mut plan = LinkPlan::streaming(2, 0);
+        assert_eq!(plan.cells.capacity(), 0);
+
+        let first_start = plan.begin_function(2);
+        assert_eq!(first_start, 0);
+        plan.write_cell(
+            first_start,
+            DCell {
+                h: 1,
+                a: 0,
+                b: 0,
+                c: 32,
+            },
+            head,
+        );
+        plan.record_branch_target(first_start);
+        plan.br_flat.push(7);
+        plan.write_cell(
+            first_start + 1,
+            DCell {
+                h: 1,
+                a: 0,
+                b: 0,
+                c: 0,
+            },
+            head,
+        );
+        plan.record_branch_table(first_start + 1);
+        plan.write_cell(
+            first_start + 2,
+            DCell {
+                h: 1,
+                a: 0,
+                b: 0,
+                c: 0,
+            },
+            head,
+        );
+
+        // A second, larger function forces both arenas beyond their initial
+        // zero capacity after the first function has already been linked.
+        let second_start = plan.begin_function(32);
+        for index in 0..32usize {
+            plan.br_flat.push(index as u32);
+            plan.write_cell(
+                second_start + index,
+                DCell {
+                    h: 1,
+                    a: 0,
+                    b: 0,
+                    c: 0,
+                },
+                head,
+            );
+        }
+        let second_branch = second_start + 31;
+        plan.cells[second_branch].c = second_start as u64 * 32 + 64;
+        plan.record_branch_target(second_branch);
+        plan.write_cell(
+            second_start + 32,
+            DCell {
+                h: 1,
+                a: 0,
+                b: 0,
+                c: 0,
+            },
+            head,
+        );
+
+        let mut first = LinkedFunction {
+            cell_start: first_start,
+            cell_base: 0,
+            cell_len: 3,
+            l0_off: 0,
+            l1_off: 0,
+            fp_pinned: false,
+        };
+        let mut second = LinkedFunction {
+            cell_start: second_start,
+            cell_base: 0,
+            cell_len: 33,
+            l0_off: 0,
+            l1_off: 0,
+            fp_pinned: false,
+        };
+        plan.finish_layout();
+        plan.finish_function(&mut first);
+        plan.finish_function(&mut second);
+
+        assert_eq!(plan.cells[first_start].c, first.cell_base() + 32);
+        assert_eq!(plan.cells[first_start + 1].b, plan.br_flat.as_ptr() as u64);
+        assert_eq!(plan.cells[second_branch].c, second.cell_base() + 64);
+        assert_eq!(plan.heads.len(), plan.cells.len());
+    }
 
     fn reference_cells(
         engine: &NativeEngine,
@@ -1354,6 +1583,26 @@ mod tests {
             "prefetch pad changed"
         );
 
+        // Third implementation: production's growable function-at-a-time
+        // stream. Starting at zero capacity guarantees the link cannot rely
+        // on an up-front allocation contract; all absolute payloads must be
+        // deferred until `finish_layout` freezes the arenas.
+        let mut streamed = LinkPlan::streaming(1, 0);
+        let mut streamed_scratch = LinkScratch::default();
+        let mut streamed_types = Vec::new();
+        let mut streamed_linked = engine.link_streaming(
+            func,
+            &func.code,
+            0,
+            &mut streamed,
+            &mut streamed_scratch,
+            &mut streamed_types,
+        );
+        assert_eq!(streamed_linked.cell_base(), 0);
+        assert!(streamed.cells.capacity() >= func.code.len() + 1);
+        streamed.finish_layout();
+        streamed.finish_function(&mut streamed_linked);
+
         let mut arena = tracked_alloc::from_alloc_vec(func.code.to_vec());
         arena.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
         let allocation = arena.as_ptr() as usize;
@@ -1380,6 +1629,35 @@ mod tests {
             }
             cell
         };
+        let streamed_cells = streamed.cells(&streamed_linked);
+        let streamed_br_base = streamed.br_flat.as_ptr() as u64;
+        for (index, ins) in func.code.iter().enumerate() {
+            assert_eq!(
+                normalize(
+                    streamed_cells[index],
+                    ins.op,
+                    streamed_linked.cell_base(),
+                    streamed_br_base,
+                ),
+                normalize(
+                    cells[index],
+                    ins.op,
+                    linked.cell_base(),
+                    plan.br_flat.as_ptr() as u64,
+                ),
+                "growable streaming linked cell {index} ({:?})",
+                ins.op,
+            );
+        }
+        assert_eq!(streamed_cells.last(), cells.last());
+        assert_eq!(streamed.br_flat, plan.br_flat);
+        assert_eq!(streamed.call_fixups, plan.call_fixups);
+        assert_eq!(streamed_types, call_indirect_types);
+        assert_eq!(streamed.heads, expected_heads);
+        assert_eq!(streamed_linked.l0_off, linked.l0_off);
+        assert_eq!(streamed_linked.l1_off, linked.l1_off);
+        assert_eq!(streamed_linked.fp_pinned, linked.fp_pinned);
+
         let in_place_cells = in_place.cells(&in_place_linked);
         let old_br_base = plan.br_flat.as_ptr() as u64;
         let new_br_base = in_place.br_flat.as_ptr() as u64;

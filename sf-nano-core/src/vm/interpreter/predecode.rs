@@ -80,11 +80,11 @@ pub(crate) struct ExceptionSite {
     handlers_len: u32,
 }
 
-/// Test-only immutable view into the pre-link instruction arena.
+/// Test-only immutable view into the pre-link instruction stream.
 ///
-/// Production transfers that allocation to `LinkPlan` as dispatch cells.
-/// Tests retain one clone so the predecoder and borrowed-linker oracles can
-/// inspect the exact stage-A stream after publication.
+/// Production links from one reusable function scratch and clears it for the
+/// next body. Tests retain one module image so the predecoder and old in-place
+/// linker oracles can inspect the exact stage-A stream after publication.
 #[cfg(test)]
 pub(crate) struct FunctionCode {
     arena: Rc<Vec<Instr>>,
@@ -182,8 +182,7 @@ pub(crate) struct PredecodedFunction {
     exception_handlers: Vec<ExceptionHandler>,
 }
 
-/// Mutable function-relative view used while writing directly into the
-/// module-wide instruction arena.
+/// Mutable function-relative view over the reusable current-function scratch.
 ///
 /// All indices stored by the predecoder are relative to `start`; the wrapper
 /// translates only actual vector access. A safety re-decode truncates the
@@ -328,33 +327,44 @@ pub(crate) fn predecode_function(
     Ok(parts.finish(Some(&code)))
 }
 
-/// Predecode every local body directly into one module-owned instruction
-/// arena. Imported functions retain their index-preserving `None` entries.
+/// Predecode every local body through one reusable function-sized scratch.
+/// `finish_function` runs before that scratch is cleared, letting the caller
+/// consume and link the hot instruction stream immediately. Imported
+/// functions retain their index-preserving `None` entries in both results.
 ///
-/// The capacity hint is deliberately conservative rather than an upper
-/// bound. It removes the small early growth steps for ordinary Wasm while
-/// avoiding a `32 * body_bytes` reservation on memory-constrained no_std
-/// targets. Growth, when needed, remains module-wide instead of per-function.
-pub(crate) fn predecode_functions(
+/// Tests additionally retain one immutable module image for the old
+/// whole-module in-place linker oracle. Production never allocates or fills
+/// that image.
+pub(crate) fn predecode_functions<T>(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
-) -> Result<UnlinkedPredecodedFunctions, WasmError> {
+    mut finish_function: impl FnMut(usize, &UnlinkedFunction<'_>, &[Instr]) -> T,
+) -> Result<(UnlinkedPredecodedFunctions, Vec<Option<T>>), WasmError> {
     let local_count = module.functions().iter().filter(|f| !f.is_import()).count();
     if local_count == 0 {
         let mut funcs = Vec::with_capacity(module.functions().len());
         funcs.resize_with(module.functions().len(), || None);
-        return Ok(UnlinkedPredecodedFunctions {
-            code: Vec::new(),
-            parts: funcs,
-        });
+        let mut linked = Vec::with_capacity(module.functions().len());
+        linked.resize_with(module.functions().len(), || None);
+        return Ok((
+            UnlinkedPredecodedFunctions {
+                #[cfg(test)]
+                code: Vec::new(),
+                parts: funcs,
+            },
+            linked,
+        ));
     }
     let body_bytes = module
         .functions()
         .iter()
         .filter_map(|f| f.spec())
         .fold(0usize, |sum, spec| sum.saturating_add(spec.code().len()));
-    let mut code = Vec::with_capacity(
+    let average_body_bytes = body_bytes / local_count;
+    let mut code = Vec::with_capacity((average_body_bytes / 4).max(1));
+    #[cfg(test)]
+    let mut test_code = Vec::with_capacity(
         (body_bytes / 4)
             .max(local_count)
             .saturating_add(local_count),
@@ -364,10 +374,13 @@ pub(crate) fn predecode_functions(
     // allocating and freeing the same transient shapes per local function.
     let mut scratch = PredecodeScratch::default();
     let mut parts = Vec::with_capacity(module.functions().len());
+    let mut linked = Vec::with_capacity(module.functions().len());
     for (func_index, func) in module.functions().iter().enumerate() {
         if func.is_import() {
             parts.push(None);
+            linked.push(None);
         } else {
+            code.clear();
             let decoded = predecode_function_into(
                 module,
                 tag_identities,
@@ -377,15 +390,35 @@ pub(crate) fn predecode_functions(
                 &mut code,
                 &mut scratch,
             )?;
+            #[cfg(test)]
+            let mut decoded = decoded;
+            debug_assert_eq!(decoded.code_range, 0..code.len());
+            linked.push(Some(finish_function(
+                func_index,
+                &UnlinkedFunction { parts: &decoded },
+                &code,
+            )));
+            #[cfg(test)]
+            {
+                let start = test_code.len();
+                test_code.extend_from_slice(&code);
+                decoded.code_range = start..test_code.len();
+                // Preserve the old exact stage-A arena, including its
+                // prefetch pad, solely for the in-place differential oracle.
+                test_code.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
+            }
             parts.push(Some(decoded));
-            // The linked chain may prefetch one handler word past the final
-            // instruction. Reserve that cell in stage A so stage B can reuse
-            // this exact allocation without inserting/moving any cells.
-            code.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
         }
     }
 
-    Ok(UnlinkedPredecodedFunctions { code, parts })
+    Ok((
+        UnlinkedPredecodedFunctions {
+            #[cfg(test)]
+            code: test_code,
+            parts,
+        },
+        linked,
+    ))
 }
 
 struct PredecodedFunctionParts {
@@ -459,6 +492,7 @@ impl UnlinkedFunction<'_> {
 }
 
 pub(crate) struct UnlinkedPredecodedFunctions {
+    #[cfg(test)]
     code: Vec<Instr>,
     parts: Vec<Option<PredecodedFunctionParts>>,
 }
@@ -468,29 +502,10 @@ impl UnlinkedPredecodedFunctions {
         self.parts.len()
     }
 
-    pub(crate) fn defined_count(&self) -> usize {
-        self.parts.iter().filter(|part| part.is_some()).count()
-    }
-
-    pub(crate) fn br_entry_count(&self) -> usize {
-        self.parts
-            .iter()
-            .flatten()
-            .flat_map(|parts| parts.br_tables.iter())
-            .fold(0usize, |sum, table| {
-                sum.checked_add(table.len())
-                    .expect("interpreter branch-table count overflow")
-            })
-    }
-
     pub(crate) fn function(&self, index: usize) -> Option<UnlinkedFunction<'_>> {
         Some(UnlinkedFunction {
             parts: self.parts.get(index)?.as_ref()?,
         })
-    }
-
-    pub(crate) fn take_code(&mut self) -> Vec<Instr> {
-        core::mem::take(&mut self.code)
     }
 
     #[cfg(test)]
@@ -624,8 +639,8 @@ fn predecode_function_into(
     let mut exception_sites = Vec::new();
     let mut exception_handlers = Vec::new();
     let p = loop {
-        // Roll back an optimistic pass in-place. Earlier functions occupy
-        // the immutable prefix before `code_start` and cannot be disturbed.
+        // Roll back an optimistic pass to its starting cursor. Production's
+        // reusable scratch starts at zero; test callers may retain a prefix.
         code.truncate(code_start);
         stack.clear();
         frames.clear();
@@ -4357,8 +4372,9 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        predecode_functions(&module, &tag_identities, &function_handles)
+        predecode_functions(&module, &tag_identities, &function_handles, |_, _, _| ())
             .expect("predecode module")
+            .0
             .publish_for_test()
     }
 
@@ -4532,8 +4548,9 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        let shared = predecode_functions(&module, &tag_identities, &function_handles)
+        let shared = predecode_functions(&module, &tag_identities, &function_handles, |_, _, _| ())
             .expect("shared predecode")
+            .0
             .publish_for_test();
         for (index, shared) in shared.iter().enumerate() {
             let mut code = Vec::new();

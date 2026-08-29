@@ -584,20 +584,31 @@ struct NativeState {
     dispatches: u64,
 }
 
+/// Cache-local eager compilation result waiting for cross-function fixups.
+/// Each local body has already been linked into `plan` immediately after its
+/// predecode, and the finished arenas already carry their permanent bases.
+struct PreparedFunctions {
+    engine: NativeEngine,
+    plan: LinkPlan,
+    linked: Vec<Option<LinkedFunction>>,
+    used_types: Vec<u32>,
+    funcs: UnlinkedPredecodedFunctions,
+}
+
 /// A self-contained interpreter instance over a parsed module.
 pub struct InterpInstance {
     /// Owned, not borrowed: a predecoded function carries no reference
     /// back into the module, so there is nothing to keep alive separately
     /// and nothing for an embedder to have to outlive.
     module: Module,
-    /// Published only after the shared instruction allocation has been
-    /// transferred into dispatch cells. Each defined body keeps the original
-    /// per-function `Rc` metadata and side-table vectors.
+    /// Published after the streamed dispatch-cell arena has received its
+    /// permanent addresses. Each defined body keeps the original per-function
+    /// `Rc` metadata and side-table vectors.
     funcs: Option<Vec<Option<Rc<PredecodedFunction>>>>,
-    /// Owned stage-A arena. It exists only between `build` and the first
-    /// step of `initialize`, where link consumes it in place and publishes
-    /// immutable function metadata.
-    unlinked_funcs: Option<UnlinkedPredecodedFunctions>,
+    /// Function metadata plus dispatch cells linked while each predecode
+    /// stream was still hot. `initialize` resolves cross-function calls and
+    /// publishes the immutable metadata.
+    prepared_funcs: Option<PreparedFunctions>,
     /// Runtime state only the executor touches. Instance construction still
     /// builds it on every target -- doing so is what rejects
     /// imported/64-bit/non-funcref memories and tables and traps out-of-range
@@ -1283,9 +1294,60 @@ impl InterpInstance {
             }
         }
 
-        // Predecode every local function eagerly; imports are dispatched at
-        // the slow boundary, so import-free modules remain entirely local.
-        let funcs = predecode_functions(&module, &tags, &function_handles)?;
+        // Predecode and link each local function as one cache-local unit.
+        // The cell capacity is only a hint, never a safety claim: LinkPlan
+        // keeps all address-bearing fields relative until the final body has
+        // been appended, so ordinary Vec growth cannot invalidate a pointer.
+        let local_count = module
+            .functions()
+            .iter()
+            .filter(|func| !func.is_import())
+            .count();
+        let body_bytes = module
+            .functions()
+            .iter()
+            .filter_map(|func| func.spec())
+            .fold(0usize, |sum, spec| sum.saturating_add(spec.code().len()));
+        let cell_capacity_hint = (body_bytes / 4)
+            .max(local_count)
+            .saturating_add(local_count);
+        let engine = NativeEngine::new();
+        let mut plan = LinkPlan::streaming(local_count, cell_capacity_hint);
+        let mut link_scratch = LinkScratch::default();
+        let mut used_types: Vec<u32> = module
+            .functions()
+            .iter()
+            .map(|func| func.type_index())
+            .collect();
+        let (funcs, mut linked) = predecode_functions(
+            &module,
+            &tags,
+            &function_handles,
+            |func_index, function, code| {
+                engine.link_streaming(
+                    function,
+                    code,
+                    func_index,
+                    &mut plan,
+                    &mut link_scratch,
+                    &mut used_types,
+                )
+            },
+        )?;
+        // No more cell or branch-table pushes occur after this point. Freeze
+        // both allocations and apply the sparse base fixups while the tail of
+        // the just-linked module is still warm.
+        plan.finish_layout();
+        for function in linked.iter_mut().flatten() {
+            plan.finish_function(function);
+        }
+        let prepared_funcs = PreparedFunctions {
+            engine,
+            plan,
+            linked,
+            used_types,
+            funcs,
+        };
         let import_names = module
             .functions()
             .iter()
@@ -1556,7 +1618,7 @@ impl InterpInstance {
         let inst = InterpInstance {
             module,
             funcs: None,
-            unlinked_funcs: Some(funcs),
+            prepared_funcs: Some(prepared_funcs),
             memories,
             dropped_data,
             dropped_elems,
@@ -1700,9 +1762,9 @@ impl InterpInstance {
     /// remains as the native chain's slow path). A target whose ISA has
     /// no generated handler set fails instantiation cleanly here.
 
-    /// Link every predecoded function against the handler set that was
-    /// generated into this binary at build time. Nothing is emitted or
-    /// mapped here — the engine is already in `.text`.
+    /// Published per-function metadata after the streamed native link is
+    /// finalized. Nothing is emitted or mapped at runtime; the handler engine
+    /// itself already lives in `.text`.
     fn functions(&self) -> &[Option<Rc<PredecodedFunction>>] {
         self.funcs
             .as_deref()
@@ -1710,34 +1772,20 @@ impl InterpInstance {
     }
 
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
-        let engine = NativeEngine::new();
-        let mut scratch = LinkScratch::default();
-        let mut unlinked = self
-            .unlinked_funcs
+        let PreparedFunctions {
+            engine,
+            mut plan,
+            linked,
+            used_types,
+            funcs: unlinked,
+        } = self
+            .prepared_funcs
             .take()
             .ok_or_else(|| WasmError::internal("interpreter functions already linked"))?;
         #[cfg(test)]
         let test_code = Some(unlinked.clone_code_for_oracle());
         #[cfg(not(test))]
         let test_code = None;
-        let function_count = unlinked.defined_count();
-        let br_entry_count = unlinked.br_entry_count();
-        let instrs = unlinked.take_code();
-        let mut plan = LinkPlan::from_instr_arena(instrs, function_count, br_entry_count);
-        // Seeded with every defined function's own type, then extended by
-        // the link pass with each `call_indirect`'s type as it goes.
-        let mut used_types: Vec<u32> = (0..unlinked.len())
-            .filter_map(|i| self.module.functions().get(i).map(|f| f.type_index()))
-            .collect();
-        let linked: Vec<Option<LinkedFunction>> = (0..unlinked.len())
-            .map(|i| {
-                unlinked.function(i).map(|function| {
-                    engine.link_in_place(&function, i, &mut plan, &mut scratch, &mut used_types)
-                })
-            })
-            .collect();
-        plan.finish_layout();
-
         // Cross-function fixup: rewire `Call` cells to the native call
         // handler now that every callee's cell block has its final address.
         // Imports and oversized frames stay on the slow path.
