@@ -1017,6 +1017,7 @@ struct Predecoder<'m, 'code> {
 /// Tests retain the former incremental pinned-local counters as an independent
 /// mutation oracle for the final-stream postpass.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct LocalState {
     /// 1 + index of the last emitted instruction reading this local.
     last_read: u32,
@@ -1653,6 +1654,36 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         }
     }
 
+    /// Resolve one descriptor's cell payload and accumulator residency in a
+    /// single classification. The observable order remains `operand` first:
+    /// local reads and temp-slot sizing happen before any producer edit.
+    #[inline]
+    fn operand_acc(
+        &mut self,
+        d: Desc,
+        at: u32,
+        which_flag: u16,
+        want_float: bool,
+    ) -> (u64, bool, u16) {
+        match d {
+            Desc::Local(local) => {
+                self.locals[local as usize].last_read = at + 1;
+                let acc = self.acc_local(local, which_flag, want_float);
+                (local as u64, false, acc)
+            }
+            Desc::ConstV(value) => (value, true, 0),
+            Desc::Temp {
+                height,
+                def,
+                region,
+            } => {
+                let operand = self.temp_slot_used(height);
+                let acc = self.acc_temp(height, def, region, which_flag, want_float);
+                (operand, false, acc)
+            }
+        }
+    }
+
     // The result temp's slot is NOT marked used here: if the set that
     // consumes it dst-folds, the slot never exists at run time. Every
     // reader/writer path goes through `temp_slot_used`.
@@ -1834,6 +1865,11 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         else {
             return None;
         };
+        self.rewritable_temp(def, region, height)
+    }
+
+    #[inline]
+    fn rewritable_temp(&self, def: u32, region: u32, height: u32) -> Option<u32> {
         if def == NO_DEF || def + 1 != self.code.len() as u32 || region != self.region {
             return None;
         }
@@ -1849,6 +1885,66 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         Some(def)
     }
 
+    #[inline]
+    fn acc_temp(
+        &mut self,
+        height: u32,
+        def: u32,
+        region: u32,
+        which_flag: u16,
+        want_float: bool,
+    ) -> u16 {
+        if let Some(def) = self.rewritable_temp(def, region, height) {
+            let producer_op = self.code[def as usize].op;
+            // The producer result and consumer operand must use the same
+            // integer/float accumulator register file.
+            if result_is_float(producer_op) != want_float {
+                return 0;
+            }
+            // MovPair writes both slots through and exposes only its second
+            // ordered destination in the integer accumulator. Its consumer
+            // hint is valid, but it never receives a producer DST_ACC mark.
+            if producer_op != Op::MovPair {
+                self.edit_instr(def, |ins| ins.flags |= FLAG_DST_ACC);
+            }
+            return which_flag;
+        }
+        if def == NO_DEF
+            && !want_float
+            && self.last_call_idx != NO_DEF
+            && self.last_call_idx + 1 == self.code.len() as u32
+            && height == self.last_call_height
+            && self.last_call_region == self.region
+        {
+            // A single-result native call returns raw bits in the integer
+            // accumulator across the activation boundary.
+            return which_flag;
+        }
+        0
+    }
+
+    #[inline]
+    fn acc_local(&self, local: u32, which_flag: u16, want_float: bool) -> u16 {
+        // last_write is one plus the writer index. Only the immediately
+        // preceding writer in this region can provide write-through residency.
+        let write = self.locals[local as usize].last_write;
+        if write == 0
+            || write != self.code.len() as u32
+            || self.locals[local as usize].last_write_region != self.region
+        {
+            return 0;
+        }
+        let producer = self.code[write as usize - 1];
+        // MovPair leaves only destination two in the accumulator; destination
+        // one must read the authoritative frame slot.
+        if result_is_float(producer.op) != want_float
+            || (producer.op == Op::MovPair && producer.c & 0xffff_ffff != local as u64)
+        {
+            return 0;
+        }
+        which_flag
+    }
+
     /// Try to mark the acc edge for a just-popped operand: if its producer
     /// is rewritable (immediately preceding, same region, dst unfolded),
     /// the producer keeps the value in the accumulator and the consumer —
@@ -1858,21 +1954,31 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     /// valid either way: the hints are droppable by construction.
     fn acc_operand(&mut self, d: Desc, which_flag: u16, want_float: bool) -> u16 {
         match d {
+            Desc::Temp {
+                height,
+                def,
+                region,
+            } => self.acc_temp(height, def, region, which_flag, want_float),
+            // Write-through residency: every native value handler leaves
+            // its result in the accumulator, so a local written by the
+            // immediately preceding instruction (folded dst or mov) can
+            // be read from the accumulator — the slot stays written, no
+            // producer-side mark exists. Both operands of one consumer
+            // may read the same just-written local.
+            Desc::Local(local) => self.acc_local(local, which_flag, want_float),
+            Desc::ConstV(_) => 0,
+        }
+    }
+
+    /// Pre-fusion implementation retained as an independent mutation oracle.
+    #[cfg(test)]
+    fn acc_operand_reference(&mut self, d: Desc, which_flag: u16, want_float: bool) -> u16 {
+        match d {
             Desc::Temp { height, def, .. } => {
                 if let Some(def) = self.rewritable_producer(d) {
-                    // Domain agreement: the producer's result rides the
-                    // accumulator of ITS domain; a consumer reading the
-                    // other domain's register must fall back to the slot.
                     if result_is_float(self.code[def as usize].op) != want_float {
                         return 0;
                     }
-                    // MovPair always writes both destinations through and
-                    // leaves only its SECOND ordered copy in the integer
-                    // accumulator. Its low packed destination is exactly
-                    // the temp accepted by `rewritable_producer` above.
-                    // Keep this paired with the local-destination gate
-                    // below and the native-handler invariant documented on
-                    // `Op::MovPair`.
                     if self.code[def as usize].op != Op::MovPair {
                         self.edit_instr(def, |ins| ins.flags |= FLAG_DST_ACC);
                     }
@@ -1884,39 +1990,19 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     && height == self.last_call_height
                     && self.last_call_region == self.region
                 {
-                    // Adjacent consumer of a single-result call: the native
-                    // Return leaves result 0 in the INTEGER accumulator (it
-                    // is a raw-bits copy), and the driver carries it across
-                    // activation boundaries. No producer-side mark exists;
-                    // float-domain consumers read the slot instead.
                     which_flag
                 } else {
                     0
                 }
             }
-            // Write-through residency: every native value handler leaves
-            // its result in the accumulator, so a local written by the
-            // immediately preceding instruction (folded dst or mov) can
-            // be read from the accumulator — the slot stays written, no
-            // producer-side mark exists. Both operands of one consumer
-            // may read the same just-written local.
-            Desc::Local(x) => {
-                // last_write is 1 + writer index (0 = never written), so
-                // equality with the code length means "written by the
-                // immediately preceding instruction" — and the nonzero
-                // gate keeps never-written locals at function start from
-                // colliding with an empty stream.
-                let write = self.locals[x as usize].last_write;
+            Desc::Local(local) => {
+                let write = self.locals[local as usize].last_write;
                 if write > 0
                     && write == self.code.len() as u32
-                    && self.locals[x as usize].last_write_region == self.region
+                    && self.locals[local as usize].last_write_region == self.region
                     && result_is_float(self.code[write as usize - 1].op) == want_float
-                    // Both packed destinations are written by one MovPair
-                    // cell, but only destination 2 is its accumulator
-                    // result. Let destination 1 fall back to its frame slot.
-                    // Keep this paired with the temp case above.
                     && (self.code[write as usize - 1].op != Op::MovPair
-                        || self.code[write as usize - 1].c & 0xffff_ffff == x as u64)
+                        || self.code[write as usize - 1].c & 0xffff_ffff == local as u64)
                 {
                     which_flag
                 } else {
@@ -1947,15 +2033,16 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         let mut flags = 0u16;
         let (b, b_const) = if n == 2 {
             let d = self.pop()?;
-            let r = self.operand(d, at);
-            flags |= self.acc_operand(d, FLAG_B_ACC, operand_is_float(op, true));
-            r
+            let (b, b_const, b_acc) =
+                self.operand_acc(d, at, FLAG_B_ACC, operand_is_float(op, true));
+            flags |= b_acc;
+            (b, b_const)
         } else {
             (0, false)
         };
         let d = self.pop()?;
-        let (a, a_const) = self.operand(d, at);
-        flags |= self.acc_operand(d, FLAG_A_ACC, operand_is_float(op, false));
+        let (a, a_const, a_acc) = self.operand_acc(d, at, FLAG_A_ACC, operand_is_float(op, false));
+        flags |= a_acc;
         if a_const {
             flags |= FLAG_A_CONST;
         }
@@ -2806,7 +2893,6 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         };
         let at = self.code.len() as u32;
         let d = self.pop()?;
-        let (a, a_const) = self.operand(d, at);
         // Address-add fusion: a single-use, just-emitted i32.add producing
         // this address folds into the load.
         let mut fused = false;
@@ -2842,7 +2928,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             }
         }
         if !fused {
-            let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
+            let (a, a_const, a_acc) = self.operand_acc(d, at, FLAG_A_ACC, false);
+            let mut flags = a_acc;
             if a_const {
                 flags |= FLAG_A_CONST;
             }
@@ -2877,13 +2964,12 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         };
         let at = self.code.len() as u32;
         let v = self.pop()?;
-        let (b, b_const) = self.operand(v, at);
-        let mut flags = self.acc_operand(v, FLAG_B_ACC, operand_is_float(sop, true));
+        let (b, b_const, b_acc) = self.operand_acc(v, at, FLAG_B_ACC, operand_is_float(sop, true));
+        let mut flags = b_acc;
         if b_const {
             flags |= FLAG_B_CONST;
         }
         let ad = self.pop()?;
-        let (a, a_const) = self.operand(ad, at);
         let mut fused = false;
         if let Some(def) = self.rewritable_producer(ad) {
             let add = self.code[def as usize];
@@ -2899,6 +2985,12 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 } else {
                     (add.a, add.b, add.flags & FLAG_A_ACC)
                 };
+                // The old `operand(ad, at)` ran before fusion and counted the
+                // address temp as used even though the fused store replaces
+                // its producer. Preserve the exact frame-size side effect.
+                if let Desc::Temp { height, .. } = ad {
+                    let _ = self.temp_slot_used(height);
+                }
                 self.replace_instr(
                     def,
                     Instr {
@@ -2914,7 +3006,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             }
         }
         if !fused {
-            flags |= self.acc_operand(ad, FLAG_A_ACC, false);
+            let (a, a_const, a_acc) = self.operand_acc(ad, at, FLAG_A_ACC, false);
+            flags |= a_acc;
             if a_const {
                 flags |= FLAG_A_CONST;
             }
@@ -4229,6 +4322,197 @@ mod tests {
     use std::format;
     use std::string::String as StdString;
     use std::vec::Vec as StdVec;
+
+    fn operand_acc_test_decoder<'a>(
+        module: &'a Module,
+        function_handles: &'a [RefValue],
+        arena: &'a mut Vec<Instr>,
+        mut locals: Vec<LocalState>,
+        region: u32,
+        max_height: u32,
+        last_call_idx: u32,
+        last_call_height: u32,
+        last_call_region: u32,
+    ) -> Predecoder<'a, 'a> {
+        for &ins in arena.iter() {
+            update_pin_census(&mut locals, ins, true);
+        }
+        let n_locals = locals.len() as u32;
+        Predecoder {
+            types: module.types(),
+            module,
+            tag_identities: &[],
+            function_handles,
+            code: FunctionCodeBuilder { arena, start: 0 },
+            stack: Vec::new(),
+            frames: Vec::new(),
+            dead: false,
+            region,
+            locals,
+            last_mat_mov: NO_DEF,
+            last_mat_region: 0,
+            br_tables: Vec::new(),
+            wide_memargs: Vec::new(),
+            exception_sites: Vec::new(),
+            exception_handlers: Vec::new(),
+            needs_slow_tail_return: false,
+            slow_tail_return: None,
+            max_height,
+            func_index: 0,
+            n_locals,
+            n_results: 0,
+            last_call_idx,
+            last_call_height,
+            last_call_region,
+            pending_fill: None,
+            canonical_loop_homes: Vec::new(),
+            unsafe_loop_homes: Vec::new(),
+            next_loop_id: 0,
+            force_canonical_loop_homes: false,
+            side_scratch: PredecodeSideScratch::default(),
+        }
+    }
+
+    fn assert_instruction_stream_eq(actual: &[Instr], expected: &[Instr], context: &str) {
+        assert_eq!(actual.len(), expected.len(), "{context}: code length");
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(
+                (actual.op, actual.flags, actual.a, actual.b, actual.c,),
+                (
+                    expected.op,
+                    expected.flags,
+                    expected.a,
+                    expected.b,
+                    expected.c,
+                ),
+                "{context}: instruction {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn fused_operand_acc_matches_the_old_two_helper_sequence_on_generated_states() {
+        let bin = wat::parse_str("(module (func))").expect("wat");
+        let module = Module::new("operand-acc-oracle", &bin).expect("module");
+        let function_handles = [RefValue::new(0)];
+        const N_LOCALS: u32 = 4;
+        const REGION: u32 = 7;
+        const HEIGHT: u32 = 1;
+        let shapes = [
+            (Op::I32_Add, 0u8),
+            (Op::F64_Add, 0),
+            (Op::MovPair, 1),
+            (Op::MovPair, 2),
+            (Op::Call, 0),
+        ];
+
+        let mut case_index = 0usize;
+        for (producer_op, pair_shape) in shapes {
+            for desc_shape in 0..6u8 {
+                for want_float in [false, true] {
+                    for which_flag in [FLAG_A_ACC, FLAG_B_ACC] {
+                        for matching_region in [false, true] {
+                            let target = if desc_shape == 0 {
+                                0
+                            } else {
+                                (N_LOCALS + HEIGHT) as u64
+                            };
+                            let c = match pair_shape {
+                                1 => 1u64 << 32 | target,
+                                2 => target << 32 | 1,
+                                _ => target,
+                            };
+                            let producer = Instr::new(producer_op, 0, 2, 3, c);
+                            let descriptor = match desc_shape {
+                                0 => Desc::Local(0),
+                                1 => Desc::ConstV(0xfeed_face),
+                                2 => Desc::Temp {
+                                    height: HEIGHT,
+                                    def: 0,
+                                    region: REGION,
+                                },
+                                3 => Desc::Temp {
+                                    height: HEIGHT,
+                                    def: 0,
+                                    region: REGION + 1,
+                                },
+                                4 => Desc::Temp {
+                                    height: HEIGHT,
+                                    def: NO_DEF,
+                                    region: REGION,
+                                },
+                                _ => Desc::Temp {
+                                    height: HEIGHT + 1,
+                                    def: 0,
+                                    region: REGION,
+                                },
+                            };
+                            let mut locals = vec![LocalState::default(); N_LOCALS as usize];
+                            if desc_shape == 0 {
+                                locals[0].last_write = 1;
+                                locals[0].last_write_region =
+                                    if matching_region { REGION } else { REGION + 1 };
+                            }
+                            let last_call_idx = if desc_shape == 4 { 0 } else { NO_DEF };
+                            let last_call_region =
+                                if matching_region { REGION } else { REGION + 1 };
+                            let initial_max_height = (case_index % 3) as u32;
+                            let mut actual_code = vec![producer];
+                            let mut expected_code = actual_code.clone();
+                            let mut actual = operand_acc_test_decoder(
+                                &module,
+                                &function_handles,
+                                &mut actual_code,
+                                locals.clone(),
+                                REGION,
+                                initial_max_height,
+                                last_call_idx,
+                                HEIGHT,
+                                last_call_region,
+                            );
+                            let actual_result =
+                                actual.operand_acc(descriptor, 1, which_flag, want_float);
+                            let actual_locals = actual.locals.clone();
+                            let actual_max_height = actual.max_height;
+                            drop(actual);
+
+                            let mut expected = operand_acc_test_decoder(
+                                &module,
+                                &function_handles,
+                                &mut expected_code,
+                                locals,
+                                REGION,
+                                initial_max_height,
+                                last_call_idx,
+                                HEIGHT,
+                                last_call_region,
+                            );
+                            let (operand, constant) = expected.operand(descriptor, 1);
+                            let acc =
+                                expected.acc_operand_reference(descriptor, which_flag, want_float);
+                            let expected_result = (operand, constant, acc);
+                            let expected_locals = expected.locals.clone();
+                            let expected_max_height = expected.max_height;
+                            drop(expected);
+
+                            let context = format!(
+                                "case={case_index} op={producer_op:?} desc={desc_shape} float={want_float} flag={which_flag:#x} region={matching_region}"
+                            );
+                            assert_eq!(actual_result, expected_result, "{context}: result");
+                            assert_eq!(actual_locals, expected_locals, "{context}: locals");
+                            assert_eq!(
+                                actual_max_height, expected_max_height,
+                                "{context}: max height"
+                            );
+                            assert_instruction_stream_eq(&actual_code, &expected_code, &context);
+                            case_index += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(case_index, 5 * 6 * 2 * 2 * 2);
+    }
 
     fn assert_pinned_fields_match(
         code: &[Instr],
