@@ -14,7 +14,8 @@ use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::value_type::ValueType;
 use crate::Value;
 
-const MAX_BASELINE_ACTIVATIONS: usize = 4096;
+const MAX_BASELINE_CALL_DEPTH: usize = 4096;
+const MAX_BASELINE_ACTIVATIONS: usize = MAX_BASELINE_CALL_DEPTH + 1;
 /// Match the hosted interpreter's default two-MiB Wasm stack budget.
 const MAX_BASELINE_VALUE_SLOTS: usize = (2 * 1024 * 1024) / core::mem::size_of::<u64>();
 
@@ -1474,6 +1475,33 @@ mod tests {
     }
 
     #[test]
+    fn recursive_call_depth_matches_folded_4095_4096_boundary() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func $depth (export "depth") (param $remaining i32) (result i32)
+                    local.get $remaining
+                    i32.eqz
+                    if (result i32)
+                        i32.const 73
+                    else
+                        local.get $remaining
+                        i32.const 1
+                        i32.sub
+                        call $depth
+                        i32.const 0
+                        i32.add
+                    end))"#,
+        )
+        .expect("wat");
+        for depth in [4095, 4096] {
+            let args = [Value::I32(depth)];
+            let baseline = baseline(&wasm, "depth", &args).expect("baseline depth boundary");
+            let native = native(&wasm, "depth", &args).expect("native depth boundary");
+            assert_values_equal(&baseline, &native);
+        }
+    }
+
+    #[test]
     fn scalar_numeric_compare_and_conversion_results_match() {
         let wasm = wat::parse_str(
             r#"(module
@@ -1559,11 +1587,17 @@ mod tests {
         let imported = wat::parse_str(
             r#"(module
                 (import "host" "f" (func $host))
+                (func $local (result i32) i32.const 37)
                 (func (export "idle"))
+                (func (export "local") (result i32) call $local)
                 (func (export "run") call $host))"#,
         )
         .expect("wat");
         baseline(&imported, "idle", &[]).expect("an unused import does not block local execution");
+        assert_eq!(
+            baseline(&imported, "local", &[]).expect("local call after import"),
+            [Value::I32(37)]
+        );
         let error = baseline(&imported, "run", &[]).expect_err("imported call unsupported");
         assert!(matches!(
             error,
@@ -1635,6 +1669,59 @@ mod tests {
         assert_eq!(census, crate::test_alloc::Census::default());
         assert_eq!(output, [Value::I32(8256)]);
         assert_eq!(frame.values.as_slice(), &[8256]);
+        assert_eq!(frame.values.as_ptr(), values_pointer);
+        assert_eq!(frame.activations.as_ptr(), activations_pointer);
+        assert_eq!(frame.values.capacity(), values_capacity);
+        assert_eq!(frame.activations.capacity(), activations_capacity);
+    }
+
+    #[cfg(not(feature = "memprof"))]
+    #[test]
+    fn trapped_recursion_can_restart_without_allocating() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func $run (export "run")
+                      (param $remaining i32) (param $must_trap i32) (result i32)
+                    local.get $remaining
+                    i32.eqz
+                    if (result i32)
+                        local.get $must_trap
+                        if (result i32)
+                            unreachable
+                        else
+                            i32.const 42
+                        end
+                    else
+                        local.get $remaining
+                        i32.const 1
+                        i32.sub
+                        local.get $must_trap
+                        call $run
+                    end))"#,
+        )
+        .expect("wat");
+        let module = Module::new("baseline-trap-restart", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let trap_args = [Value::I32(64), Value::I32(1)];
+        let mut frame = BaselineFrame::new(&module, &artifact, 0, &trap_args).expect("frame");
+        let error = frame.run().expect_err("deep invocation must trap");
+        assert!(matches!(
+            error,
+            BaselineExecError::Wasm(WasmError::Trap("unreachable"))
+        ));
+
+        let values_pointer = frame.values.as_ptr();
+        let activations_pointer = frame.activations.as_ptr();
+        let values_capacity = frame.values.capacity();
+        let activations_capacity = frame.activations.capacity();
+        let ok_args = [Value::I32(64), Value::I32(0)];
+        let mut output = [Value::I32(0)];
+        let (result, census) =
+            crate::test_alloc::measure(|| frame.invoke_again(&ok_args, &mut output));
+        result.expect("restart after trap");
+        assert_eq!(census, crate::test_alloc::Census::default());
+        assert_eq!(output, [Value::I32(42)]);
         assert_eq!(frame.values.as_ptr(), values_pointer);
         assert_eq!(frame.activations.as_ptr(), activations_pointer);
         assert_eq!(frame.values.capacity(), values_capacity);
