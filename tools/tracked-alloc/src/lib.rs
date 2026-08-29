@@ -2343,7 +2343,7 @@ pub fn into_alloc_vec<T>(value: Vec<T>) -> inner::Vec<T> {
 /// rebuild an owning collection with [`from_raw_parts`] or otherwise release
 /// the allocation according to `alloc::vec::Vec`'s raw-parts contract.
 pub fn into_raw_parts<T>(value: Vec<T>) -> (*mut T, usize, usize) {
-    let mut inner = mem::ManuallyDrop::new(into_alloc_vec(value));
+    let mut inner = core::mem::ManuallyDrop::new(into_alloc_vec(value));
     (inner.as_mut_ptr(), inner.len(), inner.capacity())
 }
 
