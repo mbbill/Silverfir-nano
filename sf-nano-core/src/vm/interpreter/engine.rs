@@ -97,13 +97,13 @@ pub(super) struct DCell {
     pub c: u64,
 }
 
-/// One linked function: dispatch cells mirroring `PredecodedFunction::code`
-/// index-for-index, plus the flattened branch tables whose entries
-/// `BrTable` cells point into (`b` holds the absolute base address, so the
-/// buffer must live exactly as long as the cells).
+/// One linked function's slice in a module-wide [`LinkPlan`]. Dispatch cells
+/// mirror `PredecodedFunction::code` index-for-index, followed by one prefetch
+/// pad cell. Keeping only offsets here lets all functions share one allocation
+/// without storing self-referential slices.
 pub(super) struct LinkedFunction {
-    pub cells: Vec<DCell>,
-    br_flat: Vec<u32>,
+    cell_start: usize,
+    cell_len: usize,
     /// Byte offsets of the function's pinned locals in its frame (0 when
     /// absent — the unconditional reload then reads slot 0, which no cell
     /// consumes as a pinned class).
@@ -112,6 +112,115 @@ pub(super) struct LinkedFunction {
     /// Whether any pinned slot is float-mode: drives the conditional
     /// float-twin reloads on the call and return paths.
     pub fp_pinned: bool,
+}
+
+/// A native call site deferred until every function has a stable arena
+/// address. Recording these during the cell-build pass avoids rescanning every
+/// instruction in the module for the cross-function fixup.
+pub(super) enum CallFixup {
+    Direct {
+        cell: usize,
+        caller: usize,
+        callee: usize,
+        arg_base: u64,
+    },
+    Indirect {
+        cell: usize,
+        caller: usize,
+        table_slot: u64,
+        arg_base: u64,
+        expected_type: u32,
+    },
+}
+
+/// Module-wide storage planned before linking begins.
+///
+/// The exact cell and branch-table capacities are computed from all
+/// predecoded functions. Neither backing vector can therefore reallocate while
+/// absolute pointers are installed into dispatch cells. Besides replacing two
+/// allocations per function with two per module, the plan carries one compact
+/// list of native call sites for the deferred cross-function fixup.
+pub(super) struct LinkPlan {
+    cells: Vec<DCell>,
+    br_flat: Vec<u32>,
+    call_fixups: Vec<CallFixup>,
+    planned_cells: usize,
+    planned_br_entries: usize,
+}
+
+impl LinkPlan {
+    pub(super) fn for_functions<'a>(
+        functions: impl Iterator<Item = &'a PredecodedFunction>,
+    ) -> Self {
+        let mut function_count = 0usize;
+        let mut planned_cells = 0usize;
+        let mut planned_br_entries = 0usize;
+        for func in functions {
+            function_count += 1;
+            planned_cells = planned_cells
+                .checked_add(func.code.len() + 1)
+                .expect("interpreter dispatch-cell count overflow");
+            for table in func.br_tables.iter() {
+                planned_br_entries = planned_br_entries
+                    .checked_add(table.len())
+                    .expect("interpreter branch-table count overflow");
+            }
+        }
+        Self {
+            cells: Vec::with_capacity(planned_cells),
+            br_flat: Vec::with_capacity(planned_br_entries),
+            // Most real functions have no call. One slot per function avoids
+            // early growth without reserving in proportion to instruction
+            // count or adding a separate call-counting sweep.
+            call_fixups: Vec::with_capacity(function_count),
+            planned_cells,
+            planned_br_entries,
+        }
+    }
+
+    /// Verify that the precomputed storage plan and the completed link agree.
+    pub(super) fn finish_layout(&self) {
+        debug_assert_eq!(self.cells.len(), self.planned_cells);
+        debug_assert_eq!(self.br_flat.len(), self.planned_br_entries);
+    }
+
+    #[inline]
+    #[cfg(test)]
+    pub(super) fn cells(&self, func: &LinkedFunction) -> &[DCell] {
+        &self.cells[func.cell_start..func.cell_start + func.cell_len]
+    }
+
+    #[cfg(test)]
+    pub(super) fn branch_bytes(&self) -> core::ops::Range<u64> {
+        let start = self.br_flat.as_ptr() as u64;
+        start..start + self.br_flat.len() as u64 * core::mem::size_of::<u32>() as u64
+    }
+
+    #[cfg(test)]
+    pub(super) fn call_fixups_are_drained(&self) -> bool {
+        self.call_fixups.is_empty() && self.call_fixups.capacity() == 0
+    }
+
+    #[inline]
+    pub(super) fn cell_base(&self, func: &LinkedFunction) -> u64 {
+        // Every linked body contains at least its prefetch pad, so this is
+        // always an in-allocation address rather than a one-past pointer.
+        unsafe { self.cells.as_ptr().add(func.cell_start) as u64 }
+    }
+
+    #[inline]
+    pub(super) fn instruction_len(&self, func: &LinkedFunction) -> usize {
+        func.cell_len - 1
+    }
+
+    #[inline]
+    pub(super) fn cell_mut(&mut self, index: usize) -> &mut DCell {
+        &mut self.cells[index]
+    }
+
+    pub(super) fn take_call_fixups(&mut self) -> Vec<CallFixup> {
+        core::mem::take(&mut self.call_fixups)
+    }
 }
 
 /// Per-function working buffers the linker reuses across a module.
@@ -421,6 +530,8 @@ impl NativeEngine {
     pub(super) fn link(
         &self,
         func: &PredecodedFunction,
+        caller_index: usize,
+        plan: &mut LinkPlan,
         scratch: &mut LinkScratch,
         call_indirect_types: &mut Vec<u32>,
     ) -> LinkedFunction {
@@ -484,14 +595,12 @@ impl NativeEngine {
 
         // Flatten the branch tables; BrTable cells carry a byte offset
         // into the flat buffer until the final address fixup below.
-        let total: usize = func.br_tables.iter().map(|t| t.len()).sum();
-        let mut br_flat: Vec<u32> = Vec::with_capacity(total);
         let table_byte_off = &mut scratch.table_byte_off;
         table_byte_off.clear();
         for t in func.br_tables.iter() {
-            table_byte_off.push(br_flat.len() as u64 * 4);
+            table_byte_off.push(plan.br_flat.len() as u64 * 4);
             for &target in t.iter() {
-                br_flat.push(target);
+                plan.br_flat.push(target);
             }
         }
 
@@ -511,9 +620,10 @@ impl NativeEngine {
                 (slot * 8) as u32
             }
         };
-        let mut lf = LinkedFunction {
-            cells: Vec::with_capacity(func.code.len() + 1),
-            br_flat,
+        let cell_start = plan.cells.len();
+        let lf = LinkedFunction {
+            cell_start,
+            cell_len: func.code.len() + 1,
             l0_off: off_of(pin.l0),
             l1_off: off_of(pin.l1),
             fp_pinned: (pin.l0 != u64::MAX && pin.l0_float) || (pin.l1 != u64::MAX && pin.l1_float),
@@ -529,9 +639,12 @@ impl NativeEngine {
         // loaded at handler entry rather than after the branch resolves —
         // measured -4.80% of CoreMark cycles. A BrTable cell's `b` becomes
         // the absolute base of its slice of the flat table buffer.
-        let cells_base = lf.cells.as_ptr() as u64;
-        let br_base = lf.br_flat.as_ptr() as u64;
-        let cells = &mut lf.cells;
+        // `LinkPlan::for_functions` reserved the exact module totals before
+        // any absolute address is observed. These bases consequently remain
+        // stable through every push below and through all later fixups.
+        debug_assert!(plan.cells.capacity() - plan.cells.len() >= lf.cell_len);
+        let cells_base = unsafe { plan.cells.as_ptr().add(cell_start) as u64 };
+        let br_base = plan.br_flat.as_ptr() as u64;
         for (i, ins) in func.code.iter().enumerate() {
             if ins.op == Op::CallIndirect {
                 call_indirect_types.push(ins.c as u32);
@@ -548,7 +661,7 @@ impl NativeEngine {
             match h {
                 Some(h) if ins.op == Op::BrTable => {
                     let table = &func.br_tables[ins.c as usize];
-                    cells.push(DCell {
+                    plan.cells.push(DCell {
                         h: h as u64,
                         a: ins.a * 8,
                         b: br_base + table_byte_off[ins.c as usize],
@@ -565,23 +678,54 @@ impl NativeEngine {
                     if c_is_branch_target(ins.op) {
                         c += cells_base;
                     }
-                    cells.push(DCell {
+                    plan.cells.push(DCell {
                         h: h as u64,
                         a,
                         b,
                         c,
                     });
                 }
-                None => cells.push(DCell {
+                None => plan.cells.push(DCell {
                     h: self.slow_stub as u64,
                     a: ins.a,
                     b: ins.b,
                     c: ins.c,
                 }),
             }
+
+            // Protected calls are explicit Rust activation boundaries. All
+            // other eligible calls can be recorded now, while this pass
+            // already has both the instruction and its final arena index.
+            if NATIVE_CALLS {
+                let cell = cell_start + i;
+                match ins.op {
+                    Op::Call if !func.has_exception_handlers_at(i as u32) => {
+                        plan.call_fixups.push(CallFixup::Direct {
+                            cell,
+                            caller: caller_index,
+                            callee: ins.a as usize,
+                            arg_base: ins.b,
+                        });
+                    }
+                    Op::CallIndirect
+                        if ins.flags & FLAG_A_CONST == 0
+                            && ins.c >> 32 == 0
+                            && !func.has_exception_handlers_at(i as u32) =>
+                    {
+                        plan.call_fixups.push(CallFixup::Indirect {
+                            cell,
+                            caller: caller_index,
+                            table_slot: ins.a,
+                            arg_base: ins.b,
+                            expected_type: ins.c as u32,
+                        });
+                    }
+                    _ => {}
+                }
+            }
         }
 
-        cells.push(DCell {
+        plan.cells.push(DCell {
             h: self.slow_stub as u64,
             a: 0,
             b: 0,
