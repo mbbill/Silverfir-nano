@@ -29,6 +29,7 @@ use crate::value_type::ValueType;
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::{ref_to_machine_raw, RefValue};
 use core::ops::{Deref, Index, IndexMut, Range};
+use core::ptr::NonNull;
 use tracked_alloc::rc::Rc;
 
 /// Marks a packed memarg field as a `wide_memargs` index rather than an
@@ -69,7 +70,8 @@ pub(crate) struct ExceptionHandler {
     pub(crate) target_base: u32,
 }
 
-/// A range in `PredecodedFunction::exception_handlers` for one exact cell.
+/// A function-relative range in the flattened exception-handler arena for
+/// one exact cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ExceptionSite {
     pub(crate) pc: u32,
@@ -77,16 +79,56 @@ pub(crate) struct ExceptionSite {
     handlers_len: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FlatBrTable {
+    entries_start: u32,
+    entries_len: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ArenaRange {
+    start: u32,
+    len: u32,
+}
+
+impl ArenaRange {
+    #[inline]
+    fn as_usize(self) -> Range<usize> {
+        let start = self.start as usize;
+        start..start + self.len as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FunctionSideRanges {
+    br_tables: ArenaRange,
+    wide_memargs: ArenaRange,
+    exception_sites: ArenaRange,
+    exception_handlers: ArenaRange,
+}
+
+#[derive(Default)]
+struct SideTableArena {
+    br_tables: Vec<FlatBrTable>,
+    br_entries: Vec<u32>,
+    wide_memargs: Vec<(u32, u64)>,
+    exception_sites: Vec<ExceptionSite>,
+    exception_handlers: Vec<ExceptionHandler>,
+}
+
+#[derive(Default)]
+struct PredecodedArena {
+    code: Vec<Instr>,
+    side_tables: SideTableArena,
+}
+
 /// One function's immutable view into the module-wide instruction arena.
 ///
 /// Function-relative instruction indices remain unchanged: the predecoder,
 /// linker, and slow path all see this as an ordinary `[Instr]`. Sharing the
-/// backing vector removes one long-lived allocation per defined function
-/// without tying a function's lifetime to its originating instance. An
-/// `ExternalCall` can keep its `PredecodedFunction` alive and this `Rc` keeps
-/// the corresponding arena alive with it.
+/// backing vector removes one long-lived allocation per defined function.
 pub(crate) struct FunctionCode {
-    arena: Rc<Vec<Instr>>,
+    arena: Rc<PredecodedArena>,
     range: Range<usize>,
 }
 
@@ -95,7 +137,7 @@ impl Deref for FunctionCode {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &self.arena[self.range.clone()]
+        &self.arena.code[self.range.clone()]
     }
 }
 
@@ -150,15 +192,7 @@ pub(crate) struct PredecodedFunction {
     /// Final pinned-local choice, maintained alongside instruction emission
     /// and mutation so link does not rescan the instruction stream.
     pinned: PackedPinned,
-    /// Side tables for `BrTable`: resolved instruction indices, the last
-    /// entry is the default target.
-    pub br_tables: Vec<Vec<u32>>,
-    /// `(memory index, static offset)` for accesses whose offset does not fit
-    /// the packed `memidx << 48 | offset` form. Memory64 permits a full
-    /// 64-bit offset, which leaves no room to pack an index beside it, so
-    /// those cells carry an index into this table instead. Only `FLAG_ADDR64`
-    /// cells use it, and those never reach a native handler.
-    pub wide_memargs: Vec<(u32, u64)>,
+    side_ranges: FunctionSideRanges,
     /// Total frame slots: params + locals + max temp height.
     pub frame_slots: u32,
     /// params + locals (== the base slot index of temps).
@@ -171,11 +205,77 @@ pub(crate) struct PredecodedFunction {
     /// records route through native-only callers instead of making Rust
     /// guess at their layout.
     pub(crate) slow_tail_return: Option<u32>,
-    /// Sorted by exact instruction index. Only instructions executing under
-    /// one or more active `try_table` clauses have an entry.
-    exception_sites: Vec<ExceptionSite>,
-    /// Flattened handler chains referenced by `exception_sites`.
-    exception_handlers: Vec<ExceptionHandler>,
+}
+
+/// All immutable per-function metadata for one module.
+///
+/// The vector is published behind one `Rc` only after predecode has finished,
+/// so its elements never move again. An activation owns a
+/// [`PredecodedFunctionHandle`], which keeps this arena alive while retaining
+/// a direct pointer to its function. That pointer is important on the slow
+/// path: field and side-table access stays one direct dereference rather than
+/// adding a function-index lookup to every native exit.
+pub(crate) struct PredecodedFunctions {
+    arena: Rc<Vec<Option<PredecodedFunction>>>,
+}
+
+impl PredecodedFunctions {
+    fn new(functions: Vec<Option<PredecodedFunction>>) -> Self {
+        Self {
+            arena: Rc::new(functions),
+        }
+    }
+
+    /// Resolve one module function while preserving the distinction between
+    /// an out-of-range index and an imported function (`None`).
+    #[inline]
+    pub(crate) fn handle(&self, index: usize) -> Option<Option<PredecodedFunctionHandle>> {
+        let slot = self.arena.get(index)?;
+        Some(slot.as_ref().map(|_| PredecodedFunctionHandle {
+            arena: self.arena.clone(),
+            slot: NonNull::from(slot),
+        }))
+    }
+}
+
+impl Deref for PredecodedFunctions {
+    type Target = [Option<PredecodedFunction>];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.arena.as_slice()
+    }
+}
+
+/// An owned, allocation-free reference to one entry in
+/// [`PredecodedFunctions`].
+///
+/// Cloning this handle only increments the module arena's reference count.
+/// The raw pointer is safe to dereference because the private constructor
+/// obtains it from the immutable vector kept alive by `arena`.
+#[derive(Clone)]
+pub(crate) struct PredecodedFunctionHandle {
+    arena: Rc<Vec<Option<PredecodedFunction>>>,
+    slot: NonNull<Option<PredecodedFunction>>,
+}
+
+impl PredecodedFunctionHandle {
+    /// Function-space index of this handle. The pointer and vector base come
+    /// from the same immutable allocation, so their element distance is the
+    /// original module index.
+    #[inline]
+    pub(crate) fn index(&self) -> usize {
+        unsafe { self.slot.as_ptr().offset_from(self.arena.as_ptr()) as usize }
+    }
+}
+
+impl Deref for PredecodedFunctionHandle {
+    type Target = PredecodedFunction;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.slot.as_ref().as_ref().unwrap_unchecked() }
+    }
 }
 
 /// Mutable function-relative view used while writing directly into the
@@ -232,29 +332,214 @@ impl IndexMut<usize> for FunctionCodeBuilder<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SideTableSnapshot {
+    br_tables: usize,
+    br_entries: usize,
+    wide_memargs: usize,
+    exception_sites: usize,
+    exception_handlers: usize,
+}
+
+impl SideTableArena {
+    fn snapshot(&self) -> SideTableSnapshot {
+        SideTableSnapshot {
+            br_tables: self.br_tables.len(),
+            br_entries: self.br_entries.len(),
+            wide_memargs: self.wide_memargs.len(),
+            exception_sites: self.exception_sites.len(),
+            exception_handlers: self.exception_handlers.len(),
+        }
+    }
+
+    fn truncate(&mut self, snapshot: SideTableSnapshot) {
+        self.br_tables.truncate(snapshot.br_tables);
+        self.br_entries.truncate(snapshot.br_entries);
+        self.wide_memargs.truncate(snapshot.wide_memargs);
+        self.exception_sites.truncate(snapshot.exception_sites);
+        self.exception_handlers
+            .truncate(snapshot.exception_handlers);
+    }
+}
+
+struct FunctionSideTablesBuilder<'a> {
+    arena: &'a mut SideTableArena,
+    start: SideTableSnapshot,
+}
+
+impl FunctionSideTablesBuilder<'_> {
+    fn range(start: usize, end: usize) -> ArenaRange {
+        ArenaRange {
+            start: u32::try_from(start).expect("interpreter side-table arena exceeds u32"),
+            len: u32::try_from(end - start).expect("interpreter side-table range exceeds u32"),
+        }
+    }
+
+    fn ranges(&self) -> FunctionSideRanges {
+        FunctionSideRanges {
+            br_tables: Self::range(self.start.br_tables, self.arena.br_tables.len()),
+            wide_memargs: Self::range(self.start.wide_memargs, self.arena.wide_memargs.len()),
+            exception_sites: Self::range(
+                self.start.exception_sites,
+                self.arena.exception_sites.len(),
+            ),
+            exception_handlers: Self::range(
+                self.start.exception_handlers,
+                self.arena.exception_handlers.len(),
+            ),
+        }
+    }
+
+    #[inline]
+    fn br_table_len(&self) -> usize {
+        self.arena.br_tables.len() - self.start.br_tables
+    }
+
+    fn push_br_table(&mut self, entries_len: usize) -> usize {
+        let table = self.br_table_len();
+        let entries_start = self.arena.br_entries.len();
+        self.arena
+            .br_entries
+            .resize(entries_start + entries_len, u32::MAX);
+        self.arena.br_tables.push(FlatBrTable {
+            entries_start: u32::try_from(entries_start)
+                .expect("interpreter branch-table arena exceeds u32"),
+            entries_len: u32::try_from(entries_len).expect("interpreter branch table exceeds u32"),
+        });
+        table
+    }
+
+    fn set_br_table_entry(&mut self, table: usize, entry: usize, target: u32) {
+        let table = self.arena.br_tables[self.start.br_tables + table];
+        assert!(entry < table.entries_len as usize);
+        self.arena.br_entries[table.entries_start as usize + entry] = target;
+    }
+
+    #[inline]
+    fn wide_memargs_len(&self) -> usize {
+        self.arena.wide_memargs.len() - self.start.wide_memargs
+    }
+
+    #[inline]
+    fn push_wide_memarg(&mut self, memarg: (u32, u64)) {
+        self.arena.wide_memargs.push(memarg);
+    }
+
+    #[inline]
+    fn exception_sites_last(&self) -> Option<&ExceptionSite> {
+        (self.arena.exception_sites.len() > self.start.exception_sites)
+            .then(|| self.arena.exception_sites.last().expect("non-empty"))
+    }
+
+    #[inline]
+    fn push_exception_site(&mut self, site: ExceptionSite) {
+        self.arena.exception_sites.push(site);
+    }
+
+    #[inline]
+    fn exception_handlers_len(&self) -> usize {
+        self.arena.exception_handlers.len() - self.start.exception_handlers
+    }
+
+    #[inline]
+    fn push_exception_handler(&mut self, handler: ExceptionHandler) {
+        self.arena.exception_handlers.push(handler);
+    }
+
+    #[inline]
+    fn exception_handler_mut(&mut self, index: usize) -> &mut ExceptionHandler {
+        &mut self.arena.exception_handlers[self.start.exception_handlers + index]
+    }
+
+    #[inline]
+    fn exception_handlers(&self) -> &[ExceptionHandler] {
+        &self.arena.exception_handlers[self.start.exception_handlers..]
+    }
+
+    #[inline]
+    fn exception_handlers_mut(&mut self) -> &mut [ExceptionHandler] {
+        &mut self.arena.exception_handlers[self.start.exception_handlers..]
+    }
+}
+
 impl PredecodedFunction {
     pub(super) fn pinned(&self) -> Pinned {
         self.pinned.expand()
+    }
+
+    /// Resolved branch-table targets for this function. The last entry in
+    /// each returned slice is the default target.
+    pub(crate) fn br_tables(&self) -> impl ExactSizeIterator<Item = &[u32]> + '_ {
+        let sides = &self.code.arena.side_tables;
+        sides.br_tables[self.side_ranges.br_tables.as_usize()]
+            .iter()
+            .map(move |table| {
+                let start = table.entries_start as usize;
+                &sides.br_entries[start..start + table.entries_len as usize]
+            })
+    }
+
+    #[inline]
+    pub(crate) fn br_table(&self, index: usize) -> Option<&[u32]> {
+        let sides = &self.code.arena.side_tables;
+        let table_index = self.side_ranges.br_tables.start as usize + index;
+        if index >= self.side_ranges.br_tables.len as usize {
+            return None;
+        }
+        let table = sides.br_tables[table_index];
+        let start = table.entries_start as usize;
+        Some(&sides.br_entries[start..start + table.entries_len as usize])
+    }
+
+    /// `(memory index, static offset)` for one memory64 access whose offset
+    /// cannot use the packed instruction field.
+    #[inline]
+    pub(crate) fn wide_memarg(&self, index: usize) -> Option<&(u32, u64)> {
+        if index >= self.side_ranges.wide_memargs.len as usize {
+            return None;
+        }
+        self.code
+            .arena
+            .side_tables
+            .wide_memargs
+            .get(self.side_ranges.wide_memargs.start as usize + index)
+    }
+
+    #[cfg(test)]
+    #[inline]
+    fn wide_memargs(&self) -> &[(u32, u64)] {
+        &self.code.arena.side_tables.wide_memargs[self.side_ranges.wide_memargs.as_usize()]
+    }
+
+    #[inline]
+    fn exception_sites(&self) -> &[ExceptionSite] {
+        &self.code.arena.side_tables.exception_sites[self.side_ranges.exception_sites.as_usize()]
+    }
+
+    #[inline]
+    fn exception_handlers(&self) -> &[ExceptionHandler] {
+        &self.code.arena.side_tables.exception_handlers
+            [self.side_ranges.exception_handlers.as_usize()]
     }
 
     /// The active handler chain at `pc`, innermost try first and in source
     /// clause order within each try.
     pub(crate) fn exception_handlers_at(&self, pc: u32) -> &[ExceptionHandler] {
         let Ok(i) = self
-            .exception_sites
+            .exception_sites()
             .binary_search_by_key(&pc, |site| site.pc)
         else {
             return &[];
         };
-        let site = self.exception_sites[i];
+        let site = self.exception_sites()[i];
         let start = site.handlers_start as usize;
-        &self.exception_handlers[start..start + site.handlers_len as usize]
+        &self.exception_handlers()[start..start + site.handlers_len as usize]
     }
 
     /// Whether `pc` must remain a slow-path boundary so an escaping exception
     /// can be matched in this activation.
     pub(crate) fn has_exception_handlers_at(&self, pc: u32) -> bool {
-        self.exception_sites
+        self.exception_sites()
             .binary_search_by_key(&pc, |site| site.pc)
             .is_ok()
     }
@@ -273,21 +558,33 @@ pub(super) fn linker_test_function(
 ) -> PredecodedFunction {
     let code_len = code.len();
     let pinned = PackedPinned::new(super::engine::select_pinned_reference(&code, n_locals));
+    let mut side_tables = SideTableArena::default();
+    let start = side_tables.snapshot();
+    let side_ranges = {
+        let mut builder = FunctionSideTablesBuilder {
+            arena: &mut side_tables,
+            start,
+        };
+        for entries in br_tables {
+            let table = builder.push_br_table(entries.len());
+            for (entry, target) in entries.into_iter().enumerate() {
+                builder.set_br_table_entry(table, entry, target);
+            }
+        }
+        builder.ranges()
+    };
     PredecodedFunction {
         frame_slots: n_locals,
         code: FunctionCode {
-            arena: Rc::new(code),
+            arena: Rc::new(PredecodedArena { code, side_tables }),
             range: 0..code_len,
         },
         pinned,
-        br_tables,
-        wide_memargs: Vec::new(),
+        side_ranges,
         n_locals,
         n_params: 0,
         n_results: 0,
         slow_tail_return: None,
-        exception_sites: Vec::new(),
-        exception_handlers: Vec::new(),
     }
 }
 
@@ -299,16 +596,16 @@ pub(crate) fn predecode_function(
     function_handles: &[RefValue],
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
-    let mut code = Vec::new();
+    let mut arena = PredecodedArena::default();
     let parts = predecode_function_into(
         module,
         tag_identities,
         function_handles,
         func_index,
         false,
-        &mut code,
+        &mut arena,
     )?;
-    Ok(parts.finish(Rc::new(code)))
+    Ok(parts.finish(Rc::new(arena)))
 }
 
 /// Predecode every local body directly into one module-owned instruction
@@ -322,19 +619,22 @@ pub(crate) fn predecode_functions(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
-) -> Result<Vec<Option<Rc<PredecodedFunction>>>, WasmError> {
+) -> Result<PredecodedFunctions, WasmError> {
     let local_count = module.functions().iter().filter(|f| !f.is_import()).count();
     if local_count == 0 {
         let mut funcs = Vec::with_capacity(module.functions().len());
         funcs.resize_with(module.functions().len(), || None);
-        return Ok(funcs);
+        return Ok(PredecodedFunctions::new(funcs));
     }
     let body_bytes = module
         .functions()
         .iter()
         .filter_map(|f| f.spec())
         .fold(0usize, |sum, spec| sum.saturating_add(spec.code().len()));
-    let mut code = Vec::with_capacity((body_bytes / 4).max(local_count));
+    let mut arena = PredecodedArena {
+        code: Vec::with_capacity((body_bytes / 4).max(local_count)),
+        side_tables: SideTableArena::default(),
+    };
     let mut parts = Vec::with_capacity(module.functions().len());
     for (func_index, func) in module.functions().iter().enumerate() {
         if func.is_import() {
@@ -346,51 +646,47 @@ pub(crate) fn predecode_functions(
                 function_handles,
                 func_index,
                 false,
-                &mut code,
+                &mut arena,
             )?));
         }
     }
 
-    // `Rc<Vec<_>>` takes ownership of the completed vector header and its
-    // existing buffer. No instruction stream is copied during publication.
-    let code = Rc::new(code);
-    Ok(parts
-        .into_iter()
-        .map(|parts| parts.map(|parts| Rc::new(parts.finish(code.clone()))))
-        .collect())
+    // The completed instruction and side-table vectors move behind one `Rc`.
+    // Their existing buffers are not copied during publication.
+    let arena = Rc::new(arena);
+    Ok(PredecodedFunctions::new(
+        parts
+            .into_iter()
+            .map(|parts| parts.map(|parts| parts.finish(arena.clone())))
+            .collect(),
+    ))
 }
 
 struct PredecodedFunctionParts {
     code_range: Range<usize>,
     pinned: PackedPinned,
-    br_tables: Vec<Vec<u32>>,
-    wide_memargs: Vec<(u32, u64)>,
+    side_ranges: FunctionSideRanges,
     frame_slots: u32,
     n_locals: u32,
     n_params: u32,
     n_results: u32,
     slow_tail_return: Option<u32>,
-    exception_sites: Vec<ExceptionSite>,
-    exception_handlers: Vec<ExceptionHandler>,
 }
 
 impl PredecodedFunctionParts {
-    fn finish(self, code: Rc<Vec<Instr>>) -> PredecodedFunction {
+    fn finish(self, arena: Rc<PredecodedArena>) -> PredecodedFunction {
         PredecodedFunction {
             code: FunctionCode {
-                arena: code,
+                arena,
                 range: self.code_range,
             },
             pinned: self.pinned,
-            br_tables: self.br_tables,
-            wide_memargs: self.wide_memargs,
+            side_ranges: self.side_ranges,
             frame_slots: self.frame_slots,
             n_locals: self.n_locals,
             n_params: self.n_params,
             n_results: self.n_results,
             slow_tail_return: self.slow_tail_return,
-            exception_sites: self.exception_sites,
-            exception_handlers: self.exception_handlers,
         }
     }
 }
@@ -401,7 +697,7 @@ fn predecode_function_into(
     function_handles: &[RefValue],
     func_index: usize,
     _disable_fast: bool,
-    code: &mut Vec<Instr>,
+    arena: &mut PredecodedArena,
 ) -> Result<PredecodedFunctionParts, WasmError> {
     if tag_identities.len() != module.tags().len() {
         return Err(WasmError::invalid(
@@ -428,12 +724,15 @@ fn predecode_function_into(
     // locals. If a decoded backedge would have to synthesize a write into
     // such a local, repeat the pass with that loop's parameters canonical.
     // Loop ordinals are structural and therefore stable across passes.
-    let code_start = code.len();
+    let code_start = arena.code.len();
+    let side_start = arena.side_tables.snapshot();
     let mut canonical_loop_homes = Vec::new();
     let p = loop {
         // Roll back an optimistic pass in-place. Earlier functions occupy
         // the immutable prefix before `code_start` and cannot be disturbed.
-        code.truncate(code_start);
+        arena.code.truncate(code_start);
+        arena.side_tables.truncate(side_start);
+        let (code, side_tables) = (&mut arena.code, &mut arena.side_tables);
         let mut p = Predecoder {
             types: module.types(),
             module,
@@ -443,6 +742,10 @@ fn predecode_function_into(
                 arena: code,
                 start: code_start,
             },
+            side_tables: FunctionSideTablesBuilder {
+                arena: side_tables,
+                start: side_start,
+            },
             stack: Vec::new(),
             frames: Vec::new(),
             dead: false,
@@ -450,10 +753,6 @@ fn predecode_function_into(
             locals: vec![LocalState::default(); n_locals as usize],
             last_mat_mov: NO_DEF,
             last_mat_region: 0,
-            br_tables: Vec::new(),
-            wide_memargs: Vec::new(),
-            exception_sites: Vec::new(),
-            exception_handlers: Vec::new(),
             needs_slow_tail_return: false,
             slow_tail_return: None,
             max_height: 0,
@@ -504,18 +803,16 @@ fn predecode_function_into(
         super::engine::select_pinned_reference(&p.code.arena[code_range.clone()], n_locals,),
         "incremental pinned-local census disagrees with the original full-stream scan"
     );
+    let side_ranges = p.side_tables.ranges();
     Ok(PredecodedFunctionParts {
         code_range,
         pinned,
+        side_ranges,
         frame_slots: n_locals + p.max_height,
-        br_tables: p.br_tables,
-        wide_memargs: p.wide_memargs,
         n_locals,
         n_params,
         n_results,
         slow_tail_return: p.slow_tail_return,
-        exception_sites: p.exception_sites,
-        exception_handlers: p.exception_handlers,
     })
 }
 
@@ -624,7 +921,7 @@ struct CtlFrame {
     catches: Vec<ActiveExceptionHandler>,
 }
 
-struct Predecoder<'m, 'code> {
+struct Predecoder<'m, 'code, 'side> {
     types: &'m TypeContext,
     module: &'m Module,
     /// Runtime identities resolved by the linker. Module tag indices are
@@ -635,6 +932,7 @@ struct Predecoder<'m, 'code> {
     /// instance's functions and absolute handles for linked imports.
     function_handles: &'m [RefValue],
     code: FunctionCodeBuilder<'code>,
+    side_tables: FunctionSideTablesBuilder<'side>,
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
     dead: bool,
@@ -650,10 +948,6 @@ struct Predecoder<'m, 'code> {
     /// particular Wasm source pattern about `MovPair`.
     last_mat_mov: u32,
     last_mat_region: u32,
-    br_tables: Vec<Vec<u32>>,
-    wide_memargs: Vec<(u32, u64)>,
-    exception_sites: Vec<ExceptionSite>,
-    exception_handlers: Vec<ExceptionHandler>,
     needs_slow_tail_return: bool,
     slow_tail_return: Option<u32>,
     max_height: u32,
@@ -989,7 +1283,7 @@ fn unsupported() -> WasmError {
     WasmError::invalid("interp: opcode not yet supported by the interpreter")
 }
 
-impl<'m, 'code> Predecoder<'m, 'code> {
+impl<'m, 'code, 'side> Predecoder<'m, 'code, 'side> {
     fn allocate_loop_id(&mut self) -> u32 {
         let loop_id = self.next_loop_id;
         self.next_loop_id = self
@@ -1113,21 +1407,24 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             return;
         }
 
-        debug_assert!(self.exception_sites.last().is_none_or(|site| site.pc < pc));
-        let handlers_start = self.exception_handlers.len() as u32;
+        debug_assert!(self
+            .side_tables
+            .exception_sites_last()
+            .is_none_or(|site| site.pc < pc));
+        let handlers_start = self.side_tables.exception_handlers_len() as u32;
         for handler in active {
             let target = match handler.target {
                 PendingExceptionTarget::Function => EH_FUNCTION_TARGET_FIXUP,
                 PendingExceptionTarget::Instruction(pc) => pc,
                 PendingExceptionTarget::FrameEnd(frame_idx) => {
-                    let handler_idx = self.exception_handlers.len() as u32;
+                    let handler_idx = self.side_tables.exception_handlers_len() as u32;
                     self.frames[frame_idx as usize]
                         .fixups
                         .push(Fixup::ExceptionTarget(handler_idx));
                     EH_TARGET_FIXUP
                 }
             };
-            self.exception_handlers.push(ExceptionHandler {
+            self.side_tables.push_exception_handler(ExceptionHandler {
                 tag: handler.tag,
                 payload_arity: handler.payload_arity,
                 forwards_exn: handler.forwards_exn,
@@ -1135,10 +1432,10 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 target_base: handler.target_base,
             });
         }
-        self.exception_sites.push(ExceptionSite {
+        self.side_tables.push_exception_site(ExceptionSite {
             pc,
             handlers_start,
-            handlers_len: self.exception_handlers.len() as u32 - handlers_start,
+            handlers_len: self.side_tables.exception_handlers_len() as u32 - handlers_start,
         });
     }
 
@@ -1152,7 +1449,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     /// consumes the real native return record and preserves native callers.
     fn finish_return_landing(&mut self) {
         let has_function_catch = self
-            .exception_handlers
+            .side_tables
+            .exception_handlers()
             .iter()
             .any(|handler| handler.target == EH_FUNCTION_TARGET_FIXUP);
         if !has_function_catch && !self.needs_slow_tail_return {
@@ -1169,7 +1467,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         if self.needs_slow_tail_return {
             self.slow_tail_return = Some(landing);
         }
-        for handler in &mut self.exception_handlers {
+        for handler in self.side_tables.exception_handlers_mut() {
             if handler.target == EH_FUNCTION_TARGET_FIXUP {
                 handler.target = landing;
             }
@@ -2423,10 +2721,13 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             match f {
                 Fixup::InstrC(i) => self.edit_instr(i, |ins| ins.c = here as u64),
                 Fixup::Table { tbl, entry } => {
-                    self.br_tables[tbl as usize][entry as usize] = here;
+                    self.side_tables
+                        .set_br_table_entry(tbl as usize, entry as usize, here);
                 }
                 Fixup::ExceptionTarget(handler) => {
-                    self.exception_handlers[handler as usize].target = here;
+                    self.side_tables
+                        .exception_handler_mut(handler as usize)
+                        .target = here;
                 }
             }
         }
@@ -2452,8 +2753,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     "interp: static memory offset does not fit the packed form",
                 ));
             }
-            let at = self.wide_memargs.len() as u64;
-            self.wide_memargs.push((memidx, raw_offset));
+            let at = self.side_tables.wide_memargs_len() as u64;
+            self.side_tables.push_wide_memarg((memidx, raw_offset));
             WIDE_MEMARG | at
         } else {
             ((memidx as u64) << 48) | raw_offset
@@ -2522,8 +2823,8 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     "interp: static memory offset does not fit the packed form",
                 ));
             }
-            let at = self.wide_memargs.len() as u64;
-            self.wide_memargs.push((memidx, raw_offset));
+            let at = self.side_tables.wide_memargs_len() as u64;
+            self.side_tables.push_wide_memarg((memidx, raw_offset));
             WIDE_MEMARG | at
         } else {
             ((memidx as u64) << 48) | raw_offset
@@ -2853,7 +3154,7 @@ fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
     true
 }
 
-impl OpcodeHandler for Predecoder<'_, '_> {
+impl OpcodeHandler for Predecoder<'_, '_, '_> {
     fn on_decode_begin(&mut self) -> Result<(), WasmError> {
         Ok(())
     }
@@ -3729,7 +4030,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     // clobber the accumulator — every value handler
                     // computes into it).
                     flags |= self.acc_operand(d0, FLAG_A_ACC, false);
-                    let tbl = self.br_tables.len() as u32;
+                    let tbl = self.side_tables.push_br_table(depths.len()) as u32;
 
                     // Build one transfer per target depth from the shared
                     // source tuple. Copy-free frame targets stay direct.
@@ -3756,8 +4057,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     let mut pad_plans = Vec::new();
                     let mut pad_for_plan = vec![None; plans.len()];
                     let mut entry_pads: Vec<Option<u32>> = Vec::new();
-                    let mut entries = Vec::new();
-                    for &plan_index in &entry_plans {
+                    for (entry, &plan_index) in entry_plans.iter().enumerate() {
                         let plan = &plans[plan_index as usize];
                         let needs_pad = (plan.depth as usize) >= n || !plan.copies.is_empty();
                         if needs_pad {
@@ -3769,18 +4069,22 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                                 pad_for_plan[plan_index as usize] = Some(pad);
                                 pad
                             };
-                            entries.push(u32::MAX);
                             entry_pads.push(Some(pad));
                             continue;
                         }
                         entry_pads.push(None);
                         let i = n - 1 - plan.depth as usize;
                         if self.frames[i].is_loop {
-                            entries.push(self.frames[i].header);
+                            self.side_tables.set_br_table_entry(
+                                tbl as usize,
+                                entry,
+                                self.frames[i].header,
+                            );
                         } else {
-                            let entry = entries.len() as u32;
-                            self.frames[i].fixups.push(Fixup::Table { tbl, entry });
-                            entries.push(u32::MAX);
+                            self.frames[i].fixups.push(Fixup::Table {
+                                tbl,
+                                entry: entry as u32,
+                            });
                         }
                     }
                     self.emit(Op::BrTable, flags, a, 0, tbl as u64);
@@ -3793,13 +4097,15 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         self.emit_branch_copies(plan);
                         self.emit_branch(Op::Br, 0, 0, plan.depth)?;
                     }
-                    for (entry, entry_pad) in entries.iter_mut().zip(entry_pads.iter().copied()) {
+                    for (entry, entry_pad) in entry_pads.iter().copied().enumerate() {
                         if let Some(pad) = entry_pad {
-                            *entry = pad_addresses[pad as usize];
+                            self.side_tables.set_br_table_entry(
+                                tbl as usize,
+                                entry,
+                                pad_addresses[pad as usize],
+                            );
                         }
                     }
-
-                    self.br_tables.push(entries);
                     self.bump_region();
                     self.dead = true;
                 }
@@ -3978,24 +4284,24 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        let mut code = Vec::new();
+        let mut arena = PredecodedArena::default();
         let parts = predecode_function_into(
             &module,
             &tag_identities,
             &function_handles,
             func,
             disable_fast,
-            &mut code,
+            &mut arena,
         )
         .expect("predecode");
-        parts.finish(Rc::new(code))
+        parts.finish(Rc::new(arena))
     }
 
     fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
         predecode_wat_mode(src, func, false)
     }
 
-    fn predecode_module_wat(src: &str) -> Vec<Option<Rc<PredecodedFunction>>> {
+    fn predecode_module_wat(src: &str) -> PredecodedFunctions {
         let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
         let module = Module::new("t", &bin).expect("module");
         let tag_identities: StdVec<TagIdentity> = module
@@ -4021,8 +4327,8 @@ mod tests {
                 "instruction {i}"
             );
         }
-        assert_eq!(fast.br_tables, generic.br_tables, "branch tables");
-        assert_eq!(fast.wide_memargs, generic.wide_memargs, "wide memargs");
+        assert!(fast.br_tables().eq(generic.br_tables()), "branch tables");
+        assert_eq!(fast.wide_memargs(), generic.wide_memargs(), "wide memargs");
         assert_eq!(fast.frame_slots, generic.frame_slots, "frame slots");
         assert_eq!(fast.n_locals, generic.n_locals, "local count");
         assert_eq!(fast.n_params, generic.n_params, "parameter count");
@@ -4033,11 +4339,13 @@ mod tests {
             "slow tail landing"
         );
         assert_eq!(
-            fast.exception_sites, generic.exception_sites,
+            fast.exception_sites(),
+            generic.exception_sites(),
             "exception sites"
         );
         assert_eq!(
-            fast.exception_handlers, generic.exception_handlers,
+            fast.exception_handlers(),
+            generic.exception_handlers(),
             "exception handlers"
         );
     }
@@ -4053,7 +4361,7 @@ mod tests {
         let funcs = predecode_module_wat(&wat);
         let first = funcs[0].as_ref().expect("defined function");
         let arena = Rc::as_ptr(&first.code.arena);
-        let arena_base = first.code.arena.as_ptr();
+        let arena_base = first.code.arena.code.as_ptr();
         let mut cursor = 0usize;
         for func in funcs.iter().flatten() {
             assert_eq!(
@@ -4069,7 +4377,70 @@ mod tests {
             );
             cursor = func.code.range.end;
         }
-        assert_eq!(cursor, first.code.arena.len());
+        assert_eq!(cursor, first.code.arena.code.len());
+    }
+
+    #[test]
+    fn function_handles_share_one_metadata_owner_and_keep_it_alive() {
+        let funcs = predecode_module_wat(
+            r#"(module
+                (func (result i32) i32.const 7)
+                (func (result i64) i64.const 99))"#,
+        );
+        let first = funcs.handle(0).flatten().expect("first body");
+        let second = funcs.handle(1).flatten().expect("second body");
+        assert!(Rc::ptr_eq(&first.arena, &second.arena));
+
+        let first_metadata = first.slot.as_ptr();
+        let cloned = first.clone();
+        drop(funcs);
+        drop(first);
+
+        assert_eq!(cloned.code[0].a, 7);
+        assert_eq!(cloned.slot.as_ptr(), first_metadata);
+        assert_eq!(cloned.index(), 0);
+        assert_eq!(second.index(), 1);
+        assert_eq!(second.code[0].a, 99);
+    }
+
+    #[test]
+    fn module_side_tables_are_flat_ranges_in_the_shared_data_arena() {
+        let funcs = predecode_module_wat(
+            r#"(module
+                (tag $e (param i32))
+                (func (param i32)
+                    (block $exit
+                        local.get 0
+                        br_table $exit $exit))
+                (func (param i32)
+                    (block $exit
+                        local.get 0
+                        br_table $exit $exit))
+                (func (result i32)
+                    (block $h (result i32)
+                        (try_table (result i32) (catch $e $h)
+                            (throw $e (i32.const 7))
+                            (i32.const 2))
+                        (return))
+                    (return)))"#,
+        );
+        let first = funcs[0].as_ref().expect("first body");
+        let second = funcs[1].as_ref().expect("second body");
+        let third = funcs[2].as_ref().expect("third body");
+
+        assert!(Rc::ptr_eq(&first.code.arena, &second.code.arena));
+        assert!(Rc::ptr_eq(&first.code.arena, &third.code.arena));
+        assert_eq!(first.side_ranges.br_tables, ArenaRange { start: 0, len: 1 });
+        assert_eq!(
+            second.side_ranges.br_tables,
+            ArenaRange { start: 1, len: 1 }
+        );
+        assert_eq!(third.side_ranges.br_tables, ArenaRange { start: 2, len: 0 });
+        assert_eq!(first.code.arena.side_tables.br_tables.len(), 2);
+        assert_eq!(first.code.arena.side_tables.br_entries.len(), 4);
+        assert_eq!(third.side_ranges.exception_sites.start, 0);
+        assert!(!third.exception_sites().is_empty());
+        assert!(!third.exception_handlers().is_empty());
     }
 
     #[test]
@@ -4762,8 +5133,8 @@ mod tests {
             0,
         );
 
-        assert_eq!(f.br_tables.len(), 1);
-        let entries = &f.br_tables[0];
+        assert_eq!(f.br_tables().len(), 1);
+        let entries = f.br_table(0).expect("branch table");
         assert_eq!(entries.len(), 3);
         assert!(
             entries.iter().all(|&entry| entry == entries[0]),
@@ -4802,9 +5173,13 @@ mod tests {
         );
 
         assert_eq!(ops(&f), [Op::BrTable]);
-        assert_eq!(f.br_tables.len(), 1);
-        assert_eq!(f.br_tables[0].len(), 2);
-        assert!(f.br_tables[0].iter().all(|&target| target == 0));
+        assert_eq!(f.br_tables().len(), 1);
+        assert_eq!(f.br_table(0).expect("branch table").len(), 2);
+        assert!(f
+            .br_table(0)
+            .expect("branch table")
+            .iter()
+            .all(|&target| target == 0));
     }
 
     #[test]

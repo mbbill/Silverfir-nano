@@ -47,7 +47,10 @@ use super::engine::{
 use super::fmath;
 use super::instr::{op_from_index, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
-use super::predecode::{predecode_functions, PredecodedFunction, WIDE_MEMARG};
+use super::predecode::{
+    predecode_functions, PredecodedFunction, PredecodedFunctionHandle, PredecodedFunctions,
+    WIDE_MEMARG,
+};
 use super::SLOT_GP_UNIT_BYTES;
 
 const PAGE: usize = 65536;
@@ -364,10 +367,7 @@ impl MemoryState {
 /// activation stack in the driver loop, never by host recursion, so call
 /// depth is interpreter data (the classic-interpreter lesson).
 struct Activation {
-    func: Rc<PredecodedFunction>,
-    /// Index of `func` in the module's function space (native dispatch
-    /// resolves its linked cells by this).
-    func_index: usize,
+    func: PredecodedFunctionHandle,
     /// Frame base slot in the shared value stack. Results return to the
     /// caller in place: this base IS the caller's staged-argument slot.
     base: usize,
@@ -584,11 +584,11 @@ struct NativeState {
 
 /// A self-contained interpreter instance over a parsed module.
 pub struct InterpInstance {
-    /// Owned, not borrowed: a predecoded function carries no reference
-    /// back into the module, so there is nothing to keep alive separately
-    /// and nothing for an embedder to have to outlive.
     module: Module,
-    funcs: Vec<Option<Rc<PredecodedFunction>>>,
+    /// One immutable arena owns every function's metadata. Activations clone
+    /// allocation-free handles into this arena so a host re-entry can release
+    /// the instance borrow without invalidating the suspended function.
+    funcs: PredecodedFunctions,
     /// Runtime state only the executor touches. Instance construction still
     /// builds it on every target -- doing so is what rejects
     /// imported/64-bit/non-funcref memories and tables and traps out-of-range
@@ -1696,7 +1696,7 @@ impl InterpInstance {
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         let engine = NativeEngine::new();
         let mut scratch = LinkScratch::default();
-        let mut plan = LinkPlan::for_functions(self.funcs.iter().filter_map(|f| f.as_deref()));
+        let mut plan = LinkPlan::for_functions(self.funcs.iter().filter_map(Option::as_ref));
         // Seeded with every defined function's own type, then extended by
         // the link pass with each `call_indirect`'s type as it goes.
         let mut used_types: Vec<u32> = (0..self.funcs.len())
@@ -2439,7 +2439,7 @@ impl InterpInstance {
         args: &[u64],
         results: &mut [u64],
     ) -> Result<(), WasmError> {
-        let entry = access.with_instance(|instance| instance.funcs.get(func_index).cloned())?;
+        let entry = access.with_instance(|instance| instance.funcs.handle(func_index))?;
         let Some(entry) = entry else {
             return Err(WasmError::invalid("interp: bad function index"));
         };
@@ -2468,7 +2468,6 @@ impl InterpInstance {
         }
         let root = Activation {
             func,
-            func_index,
             base: 0,
             pc: 0,
             route_established: false,
@@ -2629,7 +2628,7 @@ impl InterpInstance {
                     if saved.len() as u32 >= max_depth {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
-                    let f = match self.funcs.get(callee).cloned() {
+                    let f = match self.funcs.handle(callee) {
                         Some(Some(f)) => f,
                         Some(None) => {
                             // Imported function: dispatch to the host. Its
@@ -2658,7 +2657,6 @@ impl InterpInstance {
                     ctx.stack[new_base + np..new_base + nl].fill(0);
                     let callee_act = Activation {
                         func: f,
-                        func_index: callee,
                         base: new_base,
                         pc: 0,
                         route_established: false,
@@ -2680,7 +2678,7 @@ impl InterpInstance {
                     // our results are expected), and the activation is
                     // replaced rather than pushed. Recursion through a tail
                     // call therefore runs at constant depth.
-                    let f = match self.funcs.get(callee).cloned() {
+                    let f = match self.funcs.handle(callee) {
                         Some(Some(f)) => f,
                         Some(None) => {
                             // An imported tail callee: run the host, leave
@@ -2721,7 +2719,6 @@ impl InterpInstance {
                     // function executes and nothing else -- which is also why
                     // depth stays constant.
                     act.func = f;
-                    act.func_index = callee;
                     act.pc = 0;
                 }
                 StepExit::Throw {
@@ -2880,7 +2877,7 @@ impl InterpInstance {
     #[inline]
     fn memarg(func: &PredecodedFunction, packed: u64) -> (usize, u64) {
         if packed & WIDE_MEMARG != 0 {
-            match func.wide_memargs.get((packed & !WIDE_MEMARG) as usize) {
+            match func.wide_memarg((packed & !WIDE_MEMARG) as usize) {
                 Some(&(mi, off)) => (mi as usize, off),
                 None => (usize::MAX, 0),
             }
@@ -3124,7 +3121,7 @@ impl InterpInstance {
             let native = self.native.as_ref().expect("native_step without state");
             native
                 .linked
-                .get(act.func_index)
+                .get(act.func.index())
                 .and_then(|l| l.as_ref())
                 .map(|lf| {
                     (
@@ -3233,11 +3230,10 @@ impl InterpInstance {
             match state.reason {
                 EXIT_SLOW => {
                     let (fi, cstart) = self.native_pc_lookup(state.pc)?;
-                    let f = self.funcs[fi].clone().expect("range map import");
+                    let f = self.funcs.handle(fi).flatten().expect("range map import");
                     let idx = ((state.pc - cstart) / 32) as usize;
                     let base = ((state.frame - stack_ptr) / 8) as usize;
                     act.func = f.clone();
-                    act.func_index = fi;
                     act.base = base;
                     cur_base = base;
                     {
@@ -4336,7 +4332,9 @@ impl InterpInstance {
                 }
             }
             Op::BrTable => {
-                let table = &func.br_tables[ins.c as usize];
+                let table = func
+                    .br_table(ins.c as usize)
+                    .expect("predecoded branch-table index");
                 let idx = (opa!(ins) as u32 as usize).min(table.len() - 1);
                 return Ok(Effect::Jump(table[idx] as usize));
             }
@@ -4530,6 +4528,18 @@ mod tests {
     use crate::module::Module;
     use core::cell::Cell;
     use std::vec::Vec as StdVec;
+
+    #[test]
+    fn module_metadata_handle_does_not_grow_an_activation() {
+        assert_eq!(
+            core::mem::size_of::<PredecodedFunctionHandle>(),
+            2 * core::mem::size_of::<usize>()
+        );
+        assert_eq!(
+            core::mem::size_of::<Activation>(),
+            5 * core::mem::size_of::<usize>()
+        );
+    }
 
     trait TestInterpInstance: Sized {
         fn new(

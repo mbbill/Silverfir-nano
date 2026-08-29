@@ -533,7 +533,7 @@ pub enum Op {
     /// write-through, operand-class, and add-via-sub semantics in sync.
     I64_SubBrIf,
     /// `a` = index operand, `c` = side-table id in
-    /// `PredecodedFunction::br_tables` (last entry is the default).
+    /// the function's branch-table arena (last entry is the default).
     BrTable,
     Return,
     Call,

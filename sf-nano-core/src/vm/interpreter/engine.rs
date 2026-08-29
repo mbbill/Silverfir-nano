@@ -185,7 +185,7 @@ impl LinkPlan {
             planned_cells = planned_cells
                 .checked_add(func.code.len() + 1)
                 .expect("interpreter dispatch-cell count overflow");
-            for table in func.br_tables.iter() {
+            for table in func.br_tables() {
                 planned_br_entries = planned_br_entries
                     .checked_add(table.len())
                     .expect("interpreter branch-table count overflow");
@@ -697,7 +697,7 @@ impl NativeEngine {
         // into the flat buffer until the final address fixup below.
         let table_byte_off = &mut scratch.table_byte_off;
         table_byte_off.clear();
-        for t in func.br_tables.iter() {
+        for t in func.br_tables() {
             table_byte_off.push(plan.br_flat.len() as u64 * 4);
             for &target in t.iter() {
                 plan.br_flat.push(target);
@@ -859,7 +859,9 @@ impl NativeEngine {
         }
         match h {
             Some(h) if ins.op == Op::BrTable => {
-                let table = &func.br_tables[ins.c as usize];
+                let table = func
+                    .br_table(ins.c as usize)
+                    .expect("predecoded branch-table index");
                 cells.push(DCell {
                     h: h as u64,
                     a: ins.a * 8,
@@ -914,9 +916,9 @@ mod tests {
         cells_base: u64,
         br_base: u64,
     ) -> Vec<DCell> {
-        let mut table_byte_off = Vec::with_capacity(func.br_tables.len());
+        let mut table_byte_off = Vec::with_capacity(func.br_tables().len());
         let mut flat_len = 0usize;
-        for table in &func.br_tables {
+        for table in func.br_tables() {
             table_byte_off.push(flat_len as u64 * 4);
             flat_len += table.len();
         }
@@ -930,7 +932,9 @@ mod tests {
             }
             match handler {
                 Some(handler) if ins.op == Op::BrTable => {
-                    let table = &func.br_tables[ins.c as usize];
+                    let table = func
+                        .br_table(ins.c as usize)
+                        .expect("predecoded branch-table index");
                     cells.push(DCell {
                         h: handler as u64,
                         a: ins.a * 8,
@@ -996,8 +1000,7 @@ mod tests {
         plan.finish_layout();
 
         let expected_flat: Vec<u32> = func
-            .br_tables
-            .iter()
+            .br_tables()
             .flat_map(|table| table.iter().copied())
             .collect();
         assert_eq!(plan.br_flat, expected_flat, "branch flattening differs");
