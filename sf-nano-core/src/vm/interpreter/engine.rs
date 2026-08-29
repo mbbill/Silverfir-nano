@@ -258,18 +258,6 @@ struct SlowHeadCandidate {
     head: u32,
 }
 
-/// One direct-index directory entry for 32 dispatch cells.
-///
-/// `mask` says which cells need their original `op | flags` word on a Rust
-/// slow exit. `head_base` points at this block's compact run in `slow_heads`;
-/// one popcount gives the exact slot in O(1), without a binary search on hot
-/// `CallIndirect` failures.
-#[derive(Clone, Copy, Default)]
-struct SlowHeadBlock {
-    mask: u32,
-    head_base: u32,
-}
-
 /// Module-wide storage planned before linking begins.
 ///
 /// The exact cell and branch-table capacities are computed from all
@@ -281,8 +269,9 @@ pub(super) struct LinkPlan {
     cells: Vec<DCell>,
     #[cfg(any(test, feature = "interp-count"))]
     heads: Vec<u32>,
-    slow_heads: Vec<u32>,
-    slow_head_blocks: Vec<SlowHeadBlock>,
+    /// `[mask, head_base]` pairs for every 32 cells, followed by their packed
+    /// heads. One allocation holds both the O(1) directory and compact data.
+    slow_head_sidecar: Vec<u32>,
     slow_head_candidates: Vec<SlowHeadCandidate>,
     br_flat: Vec<u32>,
     call_fixups: Vec<CallFixup>,
@@ -315,8 +304,7 @@ impl LinkPlan {
             cells: Vec::with_capacity(planned_cells),
             #[cfg(any(test, feature = "interp-count"))]
             heads: Vec::new(),
-            slow_heads: Vec::new(),
-            slow_head_blocks: Vec::new(),
+            slow_head_sidecar: Vec::new(),
             slow_head_candidates: Vec::with_capacity(function_count),
             br_flat: Vec::with_capacity(planned_br_entries),
             // Most real functions have no call. One slot per function avoids
@@ -342,8 +330,7 @@ impl LinkPlan {
             cells: into_dispatch_cells(instrs),
             #[cfg(any(test, feature = "interp-count"))]
             heads,
-            slow_heads: Vec::new(),
-            slow_head_blocks: Vec::new(),
+            slow_head_sidecar: Vec::new(),
             slow_head_candidates: Vec::with_capacity(function_count),
             br_flat: Vec::with_capacity(planned_br_entries),
             call_fixups: Vec::with_capacity(function_count),
@@ -459,48 +446,57 @@ impl LinkPlan {
     /// Freeze the compact slow-exit directory after cross-function call
     /// fixups have changed their last cells from static-slow to native.
     pub(super) fn finish_slow_heads(&mut self, slow_stub: u64) {
-        debug_assert!(self.slow_heads.is_empty());
-        debug_assert!(self.slow_head_blocks.is_empty());
+        debug_assert!(self.slow_head_sidecar.is_empty());
         let mut candidates = core::mem::take(&mut self.slow_head_candidates);
         candidates.retain(|candidate| {
             let cell = &self.cells[candidate.cell];
             let op = super::instr::op_from_index((candidate.head & 0xffff) as usize);
             cell.h == slow_stub || native_may_exit_slow(op)
         });
-        self.slow_heads.reserve_exact(candidates.len());
         let block_count = self.cells.len() / 32 + usize::from(self.cells.len() % 32 != 0);
-        self.slow_head_blocks.reserve_exact(block_count);
+        let directory_len = block_count
+            .checked_mul(2)
+            .expect("interpreter slow-head directory overflow");
+        let sidecar_len = directory_len
+            .checked_add(candidates.len())
+            .expect("interpreter slow-head sidecar overflow");
+        let _ = u32::try_from(sidecar_len).expect("interpreter slow-head sidecar exceeds u32");
+        self.slow_head_sidecar.reserve_exact(sidecar_len);
 
-        let mut candidates = candidates.into_iter().peekable();
+        let mut candidate_index = 0usize;
         for block_index in 0..block_count {
-            let head_base =
-                u32::try_from(self.slow_heads.len()).expect("interpreter slow-head count overflow");
             let mut mask = 0u32;
-            while let Some(candidate) = candidates.peek().copied() {
+            let block_head_start = candidate_index;
+            while let Some(candidate) = candidates.get(candidate_index).copied() {
                 if candidate.cell / 32 != block_index {
                     break;
                 }
-                let _ = candidates.next();
                 mask |= 1u32 << (candidate.cell % 32);
-                self.slow_heads.push(candidate.head);
+                candidate_index += 1;
             }
-            self.slow_head_blocks
-                .push(SlowHeadBlock { mask, head_base });
+            let head_base = directory_len
+                .checked_add(block_head_start)
+                .expect("interpreter slow-head index overflow");
+            self.slow_head_sidecar.push(mask);
+            self.slow_head_sidecar
+                .push(u32::try_from(head_base).expect("interpreter slow-head count overflow"));
         }
-        debug_assert!(candidates.next().is_none());
+        debug_assert_eq!(candidate_index, candidates.len());
+        self.slow_head_sidecar
+            .extend(candidates.into_iter().map(|candidate| candidate.head));
     }
 
     #[inline]
     fn slow_head(&self, cell: usize) -> Option<u32> {
-        let block = self.slow_head_blocks.get(cell / 32)?;
+        let directory = (cell / 32).checked_mul(2)?;
+        let mask = *self.slow_head_sidecar.get(directory)?;
+        let head_base = *self.slow_head_sidecar.get(directory + 1)? as usize;
         let bit = 1u32 << (cell % 32);
-        if block.mask & bit == 0 {
+        if mask & bit == 0 {
             return None;
         }
-        let rank = (block.mask & bit.wrapping_sub(1)).count_ones() as usize;
-        self.slow_heads
-            .get(block.head_base as usize + rank)
-            .copied()
+        let rank = (mask & bit.wrapping_sub(1)).count_ones() as usize;
+        self.slow_head_sidecar.get(head_base + rank).copied()
     }
 
     pub(super) fn cell_index(&self, address: u64) -> Option<usize> {
