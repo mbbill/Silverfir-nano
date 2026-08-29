@@ -33,8 +33,9 @@ class WasmiStartupRankingTests(unittest.TestCase):
             for engine in wasmi_startup_ranking.EXPECTED_INTERPRETERS
             if wasmi_startup_ranking.is_lazy_runtime(engine)
         }
-        self.assertEqual(len(lazy), 7)
+        self.assertEqual(len(lazy), 8)
         self.assertNotIn("dlr-wasm-interpreter", lazy)
+        self.assertIn("stitch", lazy)
         self.assertIn("wasmi-v2.lazy-translation.checked", lazy)
 
     def test_nano_gate_covers_every_non_lazy_peer(self) -> None:
@@ -45,8 +46,8 @@ class WasmiStartupRankingTests(unittest.TestCase):
         )
 
         self.assertTrue(document["all_non_lazy_beaten"])
-        self.assertEqual(document["non_lazy_peer_count"], 15)
-        self.assertEqual(document["nano_beaten_peer_count"], 15)
+        self.assertEqual(document["non_lazy_peer_count"], 14)
+        self.assertEqual(document["nano_beaten_peer_count"], 14)
         pulley = next(
             row for row in document["rows"] if row["engine"] == "wasmtime.pulley"
         )
