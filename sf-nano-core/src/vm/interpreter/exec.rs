@@ -1110,8 +1110,11 @@ impl InterpInstance {
         // through to "allocate one" would instantiate a module the JIT
         // refuses, so present-with-no-backing (the embedder saying
         // "allocate") and absent-entirely have to stay distinguishable.
-        let mut imported_memories: Vec<Option<MemInst>> = Vec::new();
-        let mut import_limits: Vec<Option<Limits>> = Vec::new();
+        // One exact-capacity row per declared memory. Keeping the optional
+        // provider limits and backing together avoids two independently
+        // growing vectors and a second import-name search.
+        let mut resolved_memories: Vec<(Option<Limits>, Option<MemInst>)> =
+            Vec::with_capacity(module.memories().len());
         for m in module.memories() {
             if let MemoryDef::Import {
                 module: md, name, ..
@@ -1131,24 +1134,16 @@ impl InterpInstance {
                 // importing module may declare a laxer maximum than the
                 // memory it actually receives, and `memory.grow` must refuse
                 // at the real one.
-                import_limits.push(Some(provided_limits.clone()));
-            } else {
-                import_limits.push(None);
-            }
-            imported_memories.push(match m.def() {
-                MemoryDef::Import {
-                    module: md, name, ..
-                } => imports.iter().find_map(|imp| {
-                    if imp.module != *md || imp.name != *name {
-                        return None;
-                    }
-                    match &imp.value {
+                resolved_memories.push((
+                    Some(provided_limits.clone()),
+                    match &provided.value {
                         ImportValue::Memory(_, shared) => shared.clone(),
-                        _ => None,
-                    }
-                }),
-                MemoryDef::Local(_) => None,
-            });
+                        _ => unreachable!("memory import checked above"),
+                    },
+                ));
+            } else {
+                resolved_memories.push((None, None));
+            }
         }
         // Resolve tag identities before predecode. Catch folding must compare
         // the entities selected by linking, not their module-local indices:
@@ -1298,17 +1293,17 @@ impl InterpInstance {
             .collect();
 
         // Memories.
-        let mut memories = Vec::new();
+        let mut memories = Vec::with_capacity(module.memories().len());
         for (i, m) in module.memories().iter().enumerate() {
-            let limits = import_limits
+            let resolved = resolved_memories
                 .get(i)
-                .and_then(|l| l.as_ref())
-                .unwrap_or_else(|| m.limits());
+                .expect("one resolved memory row per module memory");
+            let limits = resolved.0.as_ref().unwrap_or_else(|| m.limits());
             // An import with a shared backing takes it, so writes are
             // visible on both sides. An import with none declared is the
             // embedder saying "allocate one to these limits" -- the same
             // reading the JIT gives it.
-            let inst = match imported_memories.get(i).cloned().flatten() {
+            let inst = match resolved.1.clone() {
                 Some(shared) => shared,
                 None => MemInst::new(&config, limits.clone())?,
             };
@@ -1327,8 +1322,9 @@ impl InterpInstance {
         }
 
         // Globals.
-        let mut globals = Vec::new();
-        let mut shared_globals: Vec<Option<GlobalInst>> = Vec::new();
+        let mut globals = Vec::with_capacity(module.globals().len());
+        let mut shared_globals: Vec<Option<GlobalInst>> =
+            Vec::with_capacity(module.globals().len());
         for (global_idx, g) in module.globals().iter().enumerate() {
             match g.def() {
                 GlobalDef::Local(spec) => {
@@ -1437,7 +1433,7 @@ impl InterpInstance {
         }
 
         // Tables (any reference type) + active element segments.
-        let mut tables = Vec::new();
+        let mut tables = Vec::with_capacity(module.tables().len());
         for (table_idx, t) in module.tables().iter().enumerate() {
             let mut shared_from_import: Option<TableInst> = None;
             // An imported table's size is the PROVIDER's, not the importing
@@ -1724,18 +1720,37 @@ impl InterpInstance {
         let br_entry_count = unlinked.br_entry_count();
         let instrs = unlinked.take_code();
         let mut plan = LinkPlan::from_instr_arena(instrs, function_count, br_entry_count);
-        // Seeded with every defined function's own type, then extended by
-        // the link pass with each `call_indirect`'s type as it goes.
-        let mut used_types: Vec<u32> = (0..unlinked.len())
-            .filter_map(|i| self.module.functions().get(i).map(|f| f.type_index()))
-            .collect();
+        // One bounded marker/canonical-id table replaces the old growing
+        // list of function and call_indirect type indices. The module type
+        // count is exact, duplicate uses cost no storage, and a malformed
+        // oversized type index cannot provoke an oversized allocation.
+        const CANON_PENDING: u64 = u64::MAX;
+        let mut canon_of: Vec<Option<u64>> = vec![None; self.module.types().len()];
+        for func in self.module.functions() {
+            let slot = canon_of
+                .get_mut(func.type_index() as usize)
+                .ok_or_else(|| WasmError::invalid("function type index out of range"))?;
+            *slot = Some(CANON_PENDING);
+        }
+        let mut mark_call_indirect_type = |type_index: u32| {
+            if let Some(slot) = canon_of.get_mut(type_index as usize) {
+                *slot = Some(CANON_PENDING);
+            }
+        };
         let linked: Vec<Option<LinkedFunction>> = (0..unlinked.len())
             .map(|i| {
                 unlinked.function(i).map(|function| {
-                    engine.link_in_place(&function, i, &mut plan, &mut scratch, &mut used_types)
+                    engine.link_in_place(
+                        &function,
+                        i,
+                        &mut plan,
+                        &mut scratch,
+                        &mut mark_call_indirect_type,
+                    )
                 })
             })
             .collect();
+        drop(mark_call_indirect_type);
         plan.finish_layout();
 
         // Cross-function fixup: rewire `Call` cells to the native call
@@ -1746,41 +1761,18 @@ impl InterpInstance {
         // (b bits 32-47 / 48-63), frame metadata (c low 48). The caller's
         // own l0/l1 offsets ride in c bits 48-63 and a bits 48-63 so the
         // call handler can stamp them into the return record.
-        let callee_info: Vec<Option<(u64, u64, u64, u64, bool)>> = self
-            .module
-            .functions()
-            .iter()
-            .enumerate()
-            .map(|(i, _)| match (unlinked.function(i), &linked[i]) {
-                (Some(f), Some(lf)) => {
-                    let fs = f.frame_slots() as u64;
-                    if fs >= 1 << 16 {
-                        return None;
-                    }
-                    let packed = fs << 32 | (f.n_locals() as u64) << 16 | f.n_params() as u64;
-                    Some((
-                        lf.cell_base(),
-                        packed,
-                        lf.l0_off as u64,
-                        lf.l1_off as u64,
-                        lf.fp_pinned,
-                    ))
-                }
-                _ => None,
-            })
-            .collect();
         // Canonical type ids for the native call_indirect type check:
         // `types_equivalent` is an equivalence relation, so numbering the
         // classes densely lets the handler compare one small id. Class
         // representatives are found by linear scan — real modules carry
         // hundreds of types at most.
-        let max_ti = used_types.iter().max().copied().unwrap_or(0) as usize;
-        let mut canon_of: Vec<Option<u64>> = vec![None; max_ti + 1];
-        let mut reps: Vec<u32> = Vec::new();
-        for &ti in used_types.iter() {
-            if canon_of[ti as usize].is_some() {
+        let used_type_count = canon_of.iter().filter(|entry| entry.is_some()).count();
+        let mut reps: Vec<u32> = Vec::with_capacity(used_type_count);
+        for ti in 0..canon_of.len() {
+            if canon_of[ti].is_none() {
                 continue;
             }
+            let ti = ti as u32;
             let id = reps
                 .iter()
                 .position(|&r| self.module.types().types_equivalent(r, ti))
@@ -1793,15 +1785,28 @@ impl InterpInstance {
 
         let indirect_info: Vec<[u64; 3]> = (0..unlinked.len())
             .map(|i| {
-                let (Some(Some((cells, packed, l0, l1, fp))), Some(func)) =
-                    (callee_info.get(i), self.module.functions().get(i))
-                else {
+                let (Some(predecoded), Some(Some(linked)), Some(func)) = (
+                    unlinked.function(i),
+                    linked.get(i),
+                    self.module.functions().get(i),
+                ) else {
                     return [0; 3];
                 };
+                let frame_slots = predecoded.frame_slots() as u64;
+                if frame_slots >= 1 << 16 {
+                    return [0; 3];
+                }
                 let Some(Some(canon)) = canon_of.get(func.type_index() as usize) else {
                     return [0; 3];
                 };
-                [*cells | *fp as u64, l1 << 48 | l0 << 32 | canon, *packed]
+                let packed = frame_slots << 32
+                    | (predecoded.n_locals() as u64) << 16
+                    | predecoded.n_params() as u64;
+                [
+                    linked.cell_base() | linked.fp_pinned as u64,
+                    (linked.l1_off as u64) << 48 | (linked.l0_off as u64) << 32 | canon,
+                    packed,
+                ]
             })
             .collect();
 
@@ -1828,18 +1833,27 @@ impl InterpInstance {
                     arg_base,
                     ..
                 } => {
-                    if let Some(Some((cells, packed, callee_l0, callee_l1, callee_fp))) =
-                        callee_info.get(callee)
+                    if let Some(&[cells_and_fp, offsets_and_type, packed]) =
+                        indirect_info.get(callee)
                     {
-                        *plan.cell_mut(cell) = DCell {
-                            h: call_h,
-                            a: caller_l1 << 48 | *cells,
-                            b: callee_l1 << 48
-                                | callee_l0 << 32
-                                | (*callee_fp as u64) << 31
-                                | arg_base * 8,
-                            c: (caller_l0 | caller_fp) << 48 | *packed,
-                        };
+                        // A zero first word is the slow/import/oversized-frame
+                        // sentinel. Otherwise bit 0 carries fp_pinned and the
+                        // aligned cell base occupies the remaining bits.
+                        if cells_and_fp != 0 {
+                            let callee_fp = cells_and_fp & 1;
+                            let cells = cells_and_fp & !1;
+                            let callee_l0 = offsets_and_type >> 32 & 0xffff;
+                            let callee_l1 = offsets_and_type >> 48;
+                            *plan.cell_mut(cell) = DCell {
+                                h: call_h,
+                                a: caller_l1 << 48 | cells,
+                                b: callee_l1 << 48
+                                    | callee_l0 << 32
+                                    | callee_fp << 31
+                                    | arg_base * 8,
+                                c: (caller_l0 | caller_fp) << 48 | packed,
+                            };
+                        }
                     }
                 }
                 CallFixup::Indirect {
@@ -4656,6 +4670,49 @@ mod tests {
     fn instantiate(src: &str) -> (StdVec<u8>, ()) {
         let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
         (bin, ())
+    }
+
+    #[cfg(not(feature = "memprof"))]
+    #[test]
+    fn exact_instance_capacities_eliminate_allocator_growth() {
+        use std::fmt::Write as _;
+
+        let mut wat = std::string::String::from("(module\n");
+        for _ in 0..256 {
+            writeln!(wat, "  (func)").unwrap();
+        }
+        for _ in 0..128 {
+            writeln!(wat, "  (global i32 (i32.const 0))").unwrap();
+        }
+        for _ in 0..32 {
+            writeln!(wat, "  (table 0 funcref)").unwrap();
+        }
+        for _ in 0..8 {
+            writeln!(wat, "  (memory 0)").unwrap();
+        }
+        wat.push_str(")");
+        let bin = wat::parse_str(wat).expect("wat");
+        let module = Module::new("large-allocation-census", &bin).expect("module");
+        let engine = crate::vm::engine::Engine::with_defaults();
+
+        let (instance, census) =
+            crate::test_alloc::measure(|| InterpInstance::new(&engine, module, None, &[]));
+        instance.expect("instantiate");
+        assert_eq!(
+            census.reallocations, 0,
+            "the unplanned instance made 22 real realloc calls: {census:?}"
+        );
+        assert_eq!(census.reallocated_bytes, 0);
+        if cfg!(not(sf_jit)) {
+            assert!(
+                census.allocations <= 553,
+                "the interpreter-only unplanned instance made 556 real alloc calls: {census:?}"
+            );
+            assert!(
+                census.allocated_bytes <= 155_972,
+                "the interpreter-only unplanned instance moved 176,384 allocator bytes: {census:?}"
+            );
+        }
     }
 
     fn run1(src: &str, export: &str, args: &[u64]) -> Result<u64, WasmError> {

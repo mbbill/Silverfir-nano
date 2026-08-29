@@ -113,7 +113,7 @@ impl<'a> Payload<'a> {
         ))
     }
 
-    pub fn read_bytes(&mut self, len: usize) -> Result<&[u8], PayloadError> {
+    pub fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], PayloadError> {
         if self.position + len > self.data.len() {
             return Err(PayloadError::UnexpectedEndOfInput("read_bytes"));
         }
@@ -122,7 +122,7 @@ impl<'a> Payload<'a> {
         Ok(bytes)
     }
 
-    pub fn read_length_prefixed_utf8(&mut self) -> Result<&str, PayloadError> {
+    pub fn read_length_prefixed_utf8(&mut self) -> Result<&'a str, PayloadError> {
         let len = self.read_leb128_u32()? as usize;
         let bytes = self.read_bytes(len)?;
         core::str::from_utf8(bytes)

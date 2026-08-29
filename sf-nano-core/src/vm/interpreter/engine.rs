@@ -1023,11 +1023,11 @@ impl NativeEngine {
 
     /// Build the dispatch cells for one predecoded function.
     ///
-    /// Every `call_indirect` type index is appended to `call_indirect_types`
-    /// on the way past. The caller needs them to number the canonical type
-    /// classes for the native indirect-call check, and this pass already
-    /// reads every instruction — collecting them separately cost a second
-    /// sweep of the whole module's instruction stream.
+    /// Every `call_indirect` type index is passed to
+    /// `mark_call_indirect_type` on the way past. The caller marks it directly
+    /// in the module-sized canonical-type table, and this pass already reads
+    /// every instruction, so no growing side list or second instruction sweep
+    /// is needed.
     #[cfg(test)]
     pub(super) fn link(
         &self,
@@ -1035,7 +1035,7 @@ impl NativeEngine {
         caller_index: usize,
         plan: &mut LinkPlan,
         scratch: &mut LinkScratch,
-        call_indirect_types: &mut Vec<u32>,
+        mark_call_indirect_type: &mut impl FnMut(u32),
     ) -> LinkedFunction {
         self.link_source(
             func,
@@ -1043,7 +1043,7 @@ impl NativeEngine {
             caller_index,
             plan,
             scratch,
-            call_indirect_types,
+            mark_call_indirect_type,
         )
     }
 
@@ -1053,7 +1053,7 @@ impl NativeEngine {
         caller_index: usize,
         plan: &mut LinkPlan,
         scratch: &mut LinkScratch,
-        call_indirect_types: &mut Vec<u32>,
+        mark_call_indirect_type: &mut impl FnMut(u32),
     ) -> LinkedFunction {
         self.link_source(
             func,
@@ -1061,7 +1061,7 @@ impl NativeEngine {
             caller_index,
             plan,
             scratch,
-            call_indirect_types,
+            mark_call_indirect_type,
         )
     }
 
@@ -1072,7 +1072,7 @@ impl NativeEngine {
         caller_index: usize,
         plan: &mut LinkPlan,
         scratch: &mut LinkScratch,
-        call_indirect_types: &mut Vec<u32>,
+        mark_call_indirect_type: &mut impl FnMut(u32),
     ) -> LinkedFunction {
         let pin = func.pinned();
         let code_len = func.code_len();
@@ -1150,7 +1150,7 @@ impl NativeEngine {
                 let mut current = self.initial_resolution(&ins, &pin);
                 self.resolve_pair(&prev_ins, &mut prev, &ins, &mut current, &pin);
                 if prev_ins.op == Op::CallIndirect {
-                    call_indirect_types.push(prev_ins.c as u32);
+                    mark_call_indirect_type(prev_ins.c as u32);
                 }
                 self.push_cell(
                     plan,
@@ -1176,7 +1176,7 @@ impl NativeEngine {
             }
             self.finish_last(&prev_ins, &mut prev, &pin);
             if prev_ins.op == Op::CallIndirect {
-                call_indirect_types.push(prev_ins.c as u32);
+                mark_call_indirect_type(prev_ins.c as u32);
             }
             self.push_cell(
                 plan,
@@ -1399,13 +1399,14 @@ mod tests {
 
         let mut link_scratch = LinkScratch::default();
         let mut call_indirect_types = Vec::new();
+        let mut record_call_indirect_type = |type_index| call_indirect_types.push(type_index);
         let mut plan = LinkPlan::for_functions(core::iter::once(func));
         let linked = engine.link(
             func,
             0,
             &mut plan,
             &mut link_scratch,
-            &mut call_indirect_types,
+            &mut record_call_indirect_type,
         );
         plan.finish_layout();
         plan.finish_slow_heads(engine.slow_stub as u64);
@@ -1466,13 +1467,15 @@ mod tests {
         assert_eq!(in_place.cells.as_ptr() as usize, allocation);
         let mut in_place_scratch = LinkScratch::default();
         let mut in_place_types = Vec::new();
+        let mut record_in_place_type = |type_index| in_place_types.push(type_index);
         let in_place_linked = engine.link_in_place(
             func,
             0,
             &mut in_place,
             &mut in_place_scratch,
-            &mut in_place_types,
+            &mut record_in_place_type,
         );
+        drop(record_in_place_type);
         in_place.finish_layout();
         in_place.finish_slow_heads(engine.slow_stub as u64);
 
