@@ -1,6 +1,8 @@
 //! Instruction format of the folded stack machine.
 //!
-//! Fixed-width 32-byte cells, two per cache line (design doc §6):
+//! Fixed-width 32-byte cells, two per cache line (design doc §6). The
+//! production arena is a [`DCell`] for its whole lifetime: its first word
+//! holds the semantic head while editable and the handler after link.
 //!
 //! ```text
 //! stage A: [ op:u16 | flags:u16 | pad:u32 | a:u64 | b:u64 | c:u64 ]
@@ -571,8 +573,9 @@ pub enum Op {
 pub(crate) struct Instr {
     pub op: Op,
     pub flags: u16,
-    /// Initialized explicitly so every byte can be transferred into the
-    /// stage-B dispatch-word representation without reading Rust padding.
+    /// Keeps the full-width semantic oracle layout explicit. Production cells
+    /// carry this head in an integer word and therefore never expose enum
+    /// padding or discriminant validity to the dispatch arena.
     pub(crate) head_pad: u32,
     pub a: u64,
     pub b: u64,
@@ -608,3 +611,34 @@ impl Instr {
         }
     }
 }
+
+/// One always-valid 32-byte interpreter cell.
+///
+/// During predecode `h` contains an [`Instr::packed_head`] in its low word;
+/// after link it contains the native handler address. Keeping both phases in
+/// a plain integer representation lets the module-wide allocation move from
+/// editing to dispatch without ever owning an invalid enum discriminant or
+/// changing its vector element type.
+#[repr(C, align(32))]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(super) struct DCell {
+    pub h: u64,
+    pub a: u64,
+    pub b: u64,
+    pub c: u64,
+}
+
+impl DCell {
+    #[inline]
+    pub(super) const fn draft(ins: Instr) -> Self {
+        Self {
+            h: ins.packed_head() as u64,
+            a: ins.a,
+            b: ins.b,
+            c: ins.c,
+        }
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<DCell>() == 32);

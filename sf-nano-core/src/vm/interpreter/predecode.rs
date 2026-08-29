@@ -31,7 +31,7 @@ use crate::vm::value::{ref_to_machine_raw, RefValue};
 use core::mem;
 #[cfg(test)]
 use core::ops::Deref;
-use core::ops::{Index, IndexMut, Range};
+use core::ops::Range;
 use tracked_alloc::rc::Rc;
 
 /// Marks a packed memarg field as a `wide_memargs` index rather than an
@@ -40,11 +40,11 @@ use tracked_alloc::rc::Rc;
 pub(super) const WIDE_MEMARG: u64 = 1 << 63;
 
 use super::instr::{
-    operand_is_f32, operand_is_float, result_is_f32, result_is_float, Instr, Op, FLAG_ADDR64,
-    FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE,
-    FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
+    operand_is_f32, operand_is_float, result_is_f32, result_is_float, DCell, Instr, Op,
+    FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
+    FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
-use super::layout::{slot_fields, Pinned};
+use super::layout::{decode_draft, slot_fields, stage_draft, Pinned};
 use super::SLOT_GP_UNIT_BYTES;
 
 /// Producer index meaning "no patchable producer" (call results, block
@@ -82,9 +82,9 @@ pub(crate) struct ExceptionSite {
 
 /// Test-only immutable view into the pre-link instruction arena.
 ///
-/// Production transfers that allocation to `LinkPlan` as dispatch cells.
-/// Tests retain one clone so the predecoder and borrowed-linker oracles can
-/// inspect the exact stage-A stream after publication.
+/// Production already owns `DCell` records and moves that same allocation to
+/// `LinkPlan`. Tests retain one decoded clone so the predecoder and old
+/// borrowed-linker oracles can inspect the exact semantic stream.
 #[cfg(test)]
 pub(crate) struct FunctionCode {
     arena: Rc<Vec<Instr>>,
@@ -183,14 +183,14 @@ pub(crate) struct PredecodedFunction {
 }
 
 /// Mutable function-relative view used while writing directly into the
-/// module-wide instruction arena.
+/// module-wide direct-cell arena.
 ///
 /// All indices stored by the predecoder are relative to `start`; the wrapper
 /// translates only actual vector access. A safety re-decode truncates the
 /// arena back to `start`, so the optimistic loop-home pass remains exactly
 /// rollbackable even though it no longer owns a per-function vector.
 struct FunctionCodeBuilder<'a> {
-    arena: &'a mut Vec<Instr>,
+    arena: &'a mut Vec<DCell>,
     start: usize,
 }
 
@@ -202,7 +202,7 @@ impl FunctionCodeBuilder<'_> {
 
     #[inline]
     fn push(&mut self, instr: Instr) {
-        self.arena.push(instr);
+        self.arena.push(stage_draft(instr));
     }
 
     #[inline]
@@ -210,7 +210,7 @@ impl FunctionCodeBuilder<'_> {
         if self.arena.len() == self.start {
             None
         } else {
-            self.arena.pop()
+            self.arena.pop().map(decode_draft)
         }
     }
 
@@ -218,21 +218,15 @@ impl FunctionCodeBuilder<'_> {
     fn range(&self) -> Range<usize> {
         self.start..self.arena.len()
     }
-}
-
-impl Index<usize> for FunctionCodeBuilder<'_> {
-    type Output = Instr;
 
     #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.arena[self.start + index]
+    fn get(&self, index: usize) -> Instr {
+        decode_draft(self.arena[self.start + index])
     }
-}
 
-impl IndexMut<usize> for FunctionCodeBuilder<'_> {
     #[inline]
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.arena[self.start + index]
+    fn replace(&mut self, index: usize, instr: Instr) {
+        self.arena[self.start + index] = stage_draft(instr);
     }
 }
 
@@ -324,7 +318,7 @@ pub(crate) fn predecode_function(
         &mut code,
         &mut scratch,
     )?;
-    let code = Rc::new(code);
+    let code = Rc::new(code.iter().copied().map(decode_draft).collect());
     Ok(parts.finish(Some(&code)))
 }
 
@@ -381,7 +375,7 @@ pub(crate) fn predecode_functions(
             // The linked chain may prefetch one handler word past the final
             // instruction. Reserve that cell in stage A so stage B can reuse
             // this exact allocation without inserting/moving any cells.
-            code.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
+            code.push(stage_draft(Instr::new(Op::Unreachable, 0, 0, 0, 0)));
         }
     }
 
@@ -459,7 +453,7 @@ impl UnlinkedFunction<'_> {
 }
 
 pub(crate) struct UnlinkedPredecodedFunctions {
-    code: Vec<Instr>,
+    code: Vec<DCell>,
     parts: Vec<Option<PredecodedFunctionParts>>,
 }
 
@@ -489,13 +483,13 @@ impl UnlinkedPredecodedFunctions {
         })
     }
 
-    pub(crate) fn take_code(&mut self) -> Vec<Instr> {
+    pub(crate) fn take_code(&mut self) -> Vec<DCell> {
         core::mem::take(&mut self.code)
     }
 
     #[cfg(test)]
     pub(crate) fn clone_code_for_oracle(&self) -> Vec<Instr> {
-        self.code.clone()
+        self.code.iter().copied().map(decode_draft).collect()
     }
 
     pub(crate) fn publish(
@@ -511,7 +505,7 @@ impl UnlinkedPredecodedFunctions {
 
     #[cfg(test)]
     fn publish_for_test(self) -> Vec<Option<Rc<PredecodedFunction>>> {
-        let test_code = Some(self.code.clone());
+        let test_code = Some(self.clone_code_for_oracle());
         self.publish(test_code)
     }
 }
@@ -576,7 +570,7 @@ fn predecode_function_into(
     function_handles: &[RefValue],
     func_index: usize,
     _disable_fast: bool,
-    code: &mut Vec<Instr>,
+    code: &mut Vec<DCell>,
     scratch: &mut PredecodeScratch,
 ) -> Result<PredecodedFunctionParts, WasmError> {
     if tag_identities.len() != module.tags().len() {
@@ -722,7 +716,13 @@ fn predecode_function_into(
     #[cfg(test)]
     assert_eq!(
         pinned.expand(),
-        super::engine::select_pinned_reference(&p.code.arena[code_range.clone()], n_locals,),
+        super::engine::select_pinned_reference_iter(
+            p.code.arena[code_range.clone()]
+                .iter()
+                .copied()
+                .map(decode_draft),
+            n_locals,
+        ),
         "incremental pinned-local census disagrees with the original full-stream scan"
     );
     let mut p = p;
@@ -1547,14 +1547,14 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     /// Replace an emitted cell while keeping the live pinned-local census in
     /// step. Every in-place fusion and destination patch goes through here.
     fn replace_instr(&mut self, index: u32, ins: Instr) {
-        let old = self.code[index as usize];
+        let old = self.code.get(index as usize);
         update_pin_census(&mut self.locals, old, false);
         update_pin_census(&mut self.locals, ins, true);
-        self.code[index as usize] = ins;
+        self.code.replace(index as usize, ins);
     }
 
     fn edit_instr(&mut self, index: u32, edit: impl FnOnce(&mut Instr)) {
-        let mut ins = self.code[index as usize];
+        let mut ins = self.code.get(index as usize);
         edit(&mut ins);
         self.replace_instr(index, ins);
     }
@@ -1577,12 +1577,12 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             && self.last_mat_mov != NO_DEF
             && self.last_mat_mov + 1 == at
             && self.last_mat_region == self.region
-            && self.code[self.last_mat_mov as usize].op == Op::MovSlot
-            && self.code[self.last_mat_mov as usize].flags == 0
-            && self.code[self.last_mat_mov as usize].c != dst
+            && self.code.get(self.last_mat_mov as usize).op == Op::MovSlot
+            && self.code.get(self.last_mat_mov as usize).flags == 0
+            && self.code.get(self.last_mat_mov as usize).c != dst
         {
             let prev = self.last_mat_mov;
-            let pm = self.code[prev as usize];
+            let pm = self.code.get(prev as usize);
             debug_assert!(pm.c <= u32::MAX as u64 && dst <= u32::MAX as u64);
             self.replace_instr(
                 prev,
@@ -1809,7 +1809,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         if def == NO_DEF || def + 1 != self.code.len() as u32 || region != self.region {
             return None;
         }
-        let ins = &self.code[def as usize];
+        let ins = self.code.get(def as usize);
         let cdst = if ins.op == Op::Select || ins.op == Op::MovPair || ins.flags & FLAG_FUSED != 0 {
             ins.c & 0xffff_ffff
         } else {
@@ -1835,7 +1835,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     // Domain agreement: the producer's result rides the
                     // accumulator of ITS domain; a consumer reading the
                     // other domain's register must fall back to the slot.
-                    if result_is_float(self.code[def as usize].op) != want_float {
+                    if result_is_float(self.code.get(def as usize).op) != want_float {
                         return 0;
                     }
                     // MovPair always writes both destinations through and
@@ -1845,7 +1845,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     // Keep this paired with the local-destination gate
                     // below and the native-handler invariant documented on
                     // `Op::MovPair`.
-                    if self.code[def as usize].op != Op::MovPair {
+                    if self.code.get(def as usize).op != Op::MovPair {
                         self.edit_instr(def, |ins| ins.flags |= FLAG_DST_ACC);
                     }
                     which_flag
@@ -1882,13 +1882,13 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 if write > 0
                     && write == self.code.len() as u32
                     && self.locals[x as usize].last_write_region == self.region
-                    && result_is_float(self.code[write as usize - 1].op) == want_float
+                    && result_is_float(self.code.get(write as usize - 1).op) == want_float
                     // Both packed destinations are written by one MovPair
                     // cell, but only destination 2 is its accumulator
                     // result. Let destination 1 fall back to its frame slot.
                     // Keep this paired with the temp case above.
-                    && (self.code[write as usize - 1].op != Op::MovPair
-                        || self.code[write as usize - 1].c & 0xffff_ffff == x as u64)
+                    && (self.code.get(write as usize - 1).op != Op::MovPair
+                        || self.code.get(write as usize - 1).c & 0xffff_ffff == x as u64)
                 {
                     which_flag
                 } else {
@@ -1908,7 +1908,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         if op == Op::I32_Eqz {
             if let Some(&cond) = self.stack.last() {
                 if let Some(def) = self.rewritable_producer(cond) {
-                    if let Some(inv) = invert_cmp(self.code[def as usize].op) {
+                    if let Some(inv) = invert_cmp(self.code.get(def as usize).op) {
                         self.edit_instr(def, |ins| ins.op = inv);
                         return Ok(());
                     }
@@ -1976,7 +1976,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 if def != NO_DEF
                     && region == self.region
                     && !flushed
-                    && self.code[def as usize].op != Op::MovPair
+                    && self.code.get(def as usize).op != Op::MovPair
                     && self.locals[idx as usize].last_read <= def + 1
                     && self.locals[idx as usize].last_write <= def + 1 =>
             {
@@ -2293,7 +2293,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     /// Recognize an in-place arithmetic update that can own a following
     /// nonzero branch. `local` is both the first operand and destination.
     fn sub_br_if_update(&self, def: u32, local: u32, i64_width: bool) -> Option<SubBrIfFusion> {
-        let ins = self.code[def as usize];
+        let ins = self.code.get(def as usize);
         if ins.a != local as u64 || ins.c != local as u64 || ins.flags & FLAG_A_CONST != 0 {
             return None;
         }
@@ -2347,7 +2347,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     /// an immediately preceding `i64.ne local, 0` comparison.
     fn i64_sub_br_if(&self, cond: Desc) -> Option<SubBrIfFusion> {
         let cmp_def = self.rewritable_producer(cond)?;
-        let cmp = self.code[cmp_def as usize];
+        let cmp = self.code.get(cmp_def as usize);
         if cmp.op != Op::I64_Ne {
             return None;
         }
@@ -2783,7 +2783,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         // this address folds into the load.
         let mut fused = false;
         if let Some(def) = self.rewritable_producer(d) {
-            let add = self.code[def as usize];
+            let add = self.code.get(def as usize);
             let dst = self.temp_slot_used(self.height());
             if add.op == Op::I32_Add
                 && !addr64
@@ -2858,7 +2858,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         let (a, a_const) = self.operand(ad, at);
         let mut fused = false;
         if let Some(def) = self.rewritable_producer(ad) {
-            let add = self.code[def as usize];
+            let add = self.code.get(def as usize);
             if add.op == Op::I32_Add
                 && !addr64
                 && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
@@ -3455,7 +3455,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     // the compare fails).
                     let fx = if let Some((def, op)) =
                         self.rewritable_producer(cond).and_then(|def| {
-                            fuse_cmp_br(self.code[def as usize].op, true).map(|op| (def, op))
+                            fuse_cmp_br(self.code.get(def as usize).op, true).map(|op| (def, op))
                         }) {
                         self.edit_instr(def, |ins| {
                             ins.op = op;
@@ -3588,7 +3588,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         None
                     } else {
                         self.rewritable_producer(cond).and_then(|def| {
-                            fuse_br_if(self.code[def as usize].op, needs_moves)
+                            fuse_br_if(self.code.get(def as usize).op, needs_moves)
                                 .map(|fusion| (def, fusion))
                         })
                     };
@@ -4339,7 +4339,7 @@ mod tests {
             &mut scratch,
         )
         .expect("predecode");
-        let code = Rc::new(code);
+        let code = Rc::new(code.into_iter().map(decode_draft).collect());
         parts.finish(Some(&code))
     }
 
@@ -4548,7 +4548,7 @@ mod tests {
                 &mut fresh_scratch,
             )
             .expect("fresh predecode");
-            let code = Rc::new(code);
+            let code = Rc::new(code.into_iter().map(decode_draft).collect());
             let fresh = fresh.finish(Some(&code));
             assert_same_predecode(shared.as_ref().expect("defined function"), &fresh);
         }

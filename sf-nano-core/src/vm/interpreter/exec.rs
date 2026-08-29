@@ -41,11 +41,11 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use super::engine::{
-    CallFixup, DCell, EnterState, LinkPlan, LinkScratch, LinkedFunction, NativeEngine, EXIT_RETURN,
+    CallFixup, EnterState, LinkPlan, LinkScratch, LinkedFunction, NativeEngine, EXIT_RETURN,
     EXIT_SLOW, EXIT_TRAP_BASE, RET_RECORD, TRAP_KINDS,
 };
 use super::fmath;
-use super::instr::{op_from_index, Op};
+use super::instr::{op_from_index, DCell, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{
     predecode_functions, PredecodedFunction, UnlinkedPredecodedFunctions, WIDE_MEMARG,
@@ -590,13 +590,13 @@ pub struct InterpInstance {
     /// back into the module, so there is nothing to keep alive separately
     /// and nothing for an embedder to have to outlive.
     module: Module,
-    /// Published only after the shared instruction allocation has been
-    /// transferred into dispatch cells. Each defined body keeps the original
-    /// per-function `Rc` metadata and side-table vectors.
+    /// Published only after the shared direct-cell allocation has received its
+    /// handlers. Each defined body keeps the original per-function `Rc`
+    /// metadata and side-table vectors.
     funcs: Option<Vec<Option<Rc<PredecodedFunction>>>>,
-    /// Owned stage-A arena. It exists only between `build` and the first
-    /// step of `initialize`, where link consumes it in place and publishes
-    /// immutable function metadata.
+    /// Owned editable direct-cell arena. It exists only between `build` and
+    /// the first step of `initialize`, where link consumes it in place and
+    /// publishes immutable function metadata.
     unlinked_funcs: Option<UnlinkedPredecodedFunctions>,
     /// Runtime state only the executor touches. Instance construction still
     /// builds it on every target -- doing so is what rejects
@@ -1718,8 +1718,8 @@ impl InterpInstance {
         let test_code = None;
         let function_count = unlinked.defined_count();
         let br_entry_count = unlinked.br_entry_count();
-        let instrs = unlinked.take_code();
-        let mut plan = LinkPlan::from_instr_arena(instrs, function_count, br_entry_count);
+        let cells = unlinked.take_code();
+        let mut plan = LinkPlan::from_cell_arena(cells, function_count, br_entry_count);
         // One bounded marker/canonical-id table replaces the old growing
         // list of function and call_indirect type indices. The module type
         // count is exact, duplicate uses cost no storage, and a malformed

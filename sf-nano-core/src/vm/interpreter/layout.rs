@@ -14,8 +14,9 @@
 //! and the dense form costs ~160 KB of table for ~10.5 k live handlers.
 
 use super::instr::{
-    op_from_index, operand_is_float, result_is_float, Instr, Op, FLAG_A_ACC, FLAG_A_CONST,
-    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
+    op_from_index, operand_is_float, result_is_float, DCell, Instr, Op, FLAG_ADDR64, FLAG_A_ACC,
+    FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE,
+    FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
 // The op count belongs to the instruction set, but every table in this
 // module is that wide, and the generator reaches it through `layout`.
@@ -554,6 +555,91 @@ pub(crate) fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
     }
 }
 
+/// Marks a predecode cell whose payload already has the native handler's
+/// byte-scaled layout. The semantic head remains in the low 32 bits until
+/// link replaces the whole word with a handler address.
+const DRAFT_PRELINKED: u64 = 1 << 63;
+
+/// Encode one editable semantic instruction into its eventual native payload
+/// whenever that transform is independent of pinned-local choice and arena
+/// addresses. Statically slow cells and `br_table` stay raw so their generic
+/// executor payload never needs to be rebuilt.
+pub(crate) fn stage_draft(ins: Instr) -> DCell {
+    let mut cell = DCell::draft(ins);
+    if family(ins.op) == Fam::None
+        || ins.op == Op::BrTable
+        || (c_is_branch_target(ins.op) && ins.c == u64::MAX)
+        || ins.flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL | FLAG_NO_NATIVE) != 0
+    {
+        return cell;
+    }
+    cell.h |= DRAFT_PRELINKED;
+    cell.a = if ins.flags & FLAG_A_CONST != 0 {
+        ins.a
+    } else {
+        ins.a * 8
+    };
+    (cell.b, cell.c) = transform_bc(&ins, ins.flags);
+    cell
+}
+
+#[inline]
+pub(crate) const fn draft_payload_is_prelinked(cell: &DCell) -> bool {
+    cell.h & DRAFT_PRELINKED != 0
+}
+
+/// Recover the full semantic instruction for predecode edits, pinned-local
+/// classification, and slow fallback. This is the exact inverse of
+/// [`stage_draft`]; link never calls it merely to rebuild a native payload.
+pub(crate) fn decode_draft(cell: DCell) -> Instr {
+    let head = cell.h as u32;
+    let mut ins = Instr::from_packed_head(head, cell.a, cell.b, cell.c);
+    if !draft_payload_is_prelinked(&cell) {
+        return ins;
+    }
+
+    let unscale = |value: u64| {
+        debug_assert_eq!(value & 7, 0);
+        value / 8
+    };
+    let unscale_operand = |value: u64, constant: bool| {
+        if constant {
+            value
+        } else {
+            unscale(value)
+        }
+    };
+    let unscale_pair = |value: u64| (unscale(value >> 32) << 32) | unscale(value & 0xffff_ffff);
+
+    ins.a = unscale_operand(cell.a, ins.flags & FLAG_A_CONST != 0);
+    let b_const = ins.flags & FLAG_B_CONST != 0;
+    let shape = OP_PROPS[ins.op as usize].bc;
+    (ins.b, ins.c) = if ins.flags & FLAG_FUSED != 0 {
+        if shape == BcShape::LoadOffset {
+            (cell.b, unscale_pair(cell.c))
+        } else {
+            (
+                unscale_operand(cell.b, b_const),
+                (unscale(cell.c >> 32) << 32) | (cell.c & 0xffff_ffff),
+            )
+        }
+    } else {
+        match shape {
+            BcShape::LoadOffset => (cell.b, unscale(cell.c)),
+            BcShape::StoreOffset => (unscale_operand(cell.b, b_const), cell.c),
+            BcShape::BranchRawB => (cell.b, cell.c / CELL as u64),
+            BcShape::BranchScaledB => (unscale_operand(cell.b, b_const), cell.c / CELL as u64),
+            BcShape::GlobalIndex => (cell.b, unscale(cell.c)),
+            BcShape::PackedPairDst => (unscale(cell.b), unscale_pair(cell.c)),
+            BcShape::OperandPackB => (unscale(cell.b), cell.c),
+            BcShape::RawBoth => (cell.b, cell.c),
+            BcShape::PackedCondDst => (unscale_operand(cell.b, b_const), unscale_pair(cell.c)),
+            BcShape::Plain => (unscale_operand(cell.b, b_const), unscale(cell.c)),
+        }
+    };
+    ins
+}
+
 const fn compute_bc_shape(op: Op) -> BcShape {
     use Op::*;
     // Control first: a branch target's `c` is scaled by the cell size, not
@@ -849,6 +935,59 @@ fn op_slot_generic_reference(ins: &Instr, flags: u16, pin: &Pinned) -> Option<us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_draft_round_trips_every_opcode_and_payload_shape() {
+        let flag_cases = [
+            0,
+            FLAG_A_CONST,
+            FLAG_B_CONST,
+            FLAG_A_CONST | FLAG_B_CONST,
+            FLAG_A_ACC | FLAG_B_ACC | FLAG_DST_ACC,
+            FLAG_FUSED,
+            FLAG_FUSED | FLAG_A_CONST | FLAG_B_CONST,
+            FLAG_ADDR64,
+            FLAG_SHARED_TABLE,
+            FLAG_SHARED_GLOBAL,
+            FLAG_NO_NATIVE,
+        ];
+        for op_index in 0..N_OPS {
+            let op = op_from_index(op_index);
+            for flags in flag_cases {
+                let shape = OP_PROPS[op as usize].bc;
+                let c = if flags & FLAG_FUSED != 0
+                    || matches!(shape, BcShape::PackedPairDst | BcShape::PackedCondDst)
+                {
+                    11u64 << 32 | 7
+                } else if c_is_branch_target(op) {
+                    5
+                } else {
+                    7
+                };
+                let expected = Instr::new(op, flags, 13, 29, c);
+                let actual = decode_draft(stage_draft(expected));
+                assert_eq!(
+                    (actual.op, actual.flags, actual.a, actual.b, actual.c),
+                    (
+                        expected.op,
+                        expected.flags,
+                        expected.a,
+                        expected.b,
+                        expected.c,
+                    ),
+                    "{op:?} flags={flags:#x}"
+                );
+            }
+
+            if c_is_branch_target(op) {
+                let unresolved = Instr::new(op, 0, 1, 2, u64::MAX);
+                let draft = stage_draft(unresolved);
+                assert!(!draft_payload_is_prelinked(&draft));
+                let actual = decode_draft(draft);
+                assert_eq!(actual.c, u64::MAX);
+            }
+        }
+    }
 
     /// Exercise the specialized classifier against the exact generic code it
     /// replaced. The low six bits cover every class/fusion combination;
