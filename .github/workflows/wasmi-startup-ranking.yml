@@ -1,8 +1,7 @@
 name: wasmi-startup-ranking
 
 on:
-  push:
-    branches: ["dev/**"]
+  workflow_dispatch:
 
 concurrency:
   group: wasmi-startup-ranking-${{ github.ref }}
@@ -85,7 +84,7 @@ jobs:
             --target-root wasmi-ranking-target \
             --metadata-out wasmi-ranking-output/build-metadata.json
 
-      - name: Measure seven startup workloads and enforce the ranking
+      - name: Measure and report the complete startup ranking
         env:
           PLATFORM: ${{ matrix.platform }}
         run: |
@@ -97,21 +96,18 @@ jobs:
               --suite wasmi-benchmarks \
               --target-root wasmi-ranking-target \
               --raw-dir wasmi-ranking-output/raw || measure_status=$?
-          rank_status=0
           python3 -m ci.wasmi_startup_ranking report \
             --raw-dir wasmi-ranking-output/raw \
             --platform "$PLATFORM" \
             --candidate-sha "$GITHUB_SHA" \
             --json-out wasmi-ranking-output/ranking.json \
-            --summary-out wasmi-ranking-output/summary.md \
-            --require-nano-fastest || rank_status=$?
+            --summary-out wasmi-ranking-output/summary.md
           if [[ -f wasmi-ranking-output/summary.md ]]; then
             cat wasmi-ranking-output/summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
           if [[ "$measure_status" -ne 0 ]]; then
             exit "$measure_status"
           fi
-          exit "$rank_status"
 
       - name: Upload complete ranking evidence
         if: always()

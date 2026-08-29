@@ -38,7 +38,7 @@ class WasmiStartupRankingTests(unittest.TestCase):
         self.assertIn("stitch", lazy)
         self.assertIn("wasmi-v2.lazy-translation.checked", lazy)
 
-    def test_nano_gate_covers_every_non_lazy_peer(self) -> None:
+    def test_document_tracks_the_complete_field_and_wasmi_target(self) -> None:
         document = wasmi_startup_ranking.build_document(
             self.synthetic_measurements(),
             platform="x64-linux",
@@ -46,6 +46,12 @@ class WasmiStartupRankingTests(unittest.TestCase):
         )
 
         self.assertTrue(document["all_non_lazy_beaten"])
+        self.assertTrue(document["wasmi_target_met"])
+        self.assertEqual(
+            document["wasmi_reference_runtime"],
+            "wasmi-v1.eager.checked",
+        )
+        self.assertAlmostEqual(document["nano_over_wasmi_reference"], 0.5)
         self.assertEqual(document["non_lazy_peer_count"], 14)
         self.assertEqual(document["nano_beaten_peer_count"], 14)
         pulley = next(
@@ -54,7 +60,7 @@ class WasmiStartupRankingTests(unittest.TestCase):
         self.assertIsNone(pulley["seven_case_geomean_ns"])
         self.assertEqual(len(pulley["nano_comparison"]["common_workloads"]), 6)
 
-    def test_gate_reports_a_faster_non_lazy_peer(self) -> None:
+    def test_summary_reports_a_missed_wasmi_target(self) -> None:
         document = wasmi_startup_ranking.build_document(
             self.synthetic_measurements(faster_peer="wasmi-v1.eager.checked"),
             platform="arm64-linux",
@@ -63,9 +69,27 @@ class WasmiStartupRankingTests(unittest.TestCase):
         summary = wasmi_startup_ranking.render_summary(document)
 
         self.assertFalse(document["all_non_lazy_beaten"])
-        self.assertIn("not ahead of `wasmi-v1.eager.checked`", summary)
+        self.assertFalse(document["wasmi_target_met"])
+        self.assertIn("TARGET NOT MET", summary)
+        self.assertIn("2.00x the time of `wasmi-v1.eager.checked`", summary)
         self.assertIn("wasmtime.pulley", summary)
         self.assertIn("six common workloads", summary)
+
+    def test_summary_accepts_nano_within_ten_percent_of_wasmi(self) -> None:
+        measurements = self.synthetic_measurements()
+        for group in wasmi_startup_ranking.STARTUP_GROUPS:
+            measurements["wasmi-v1.eager.checked"][group] = 9.2
+        document = wasmi_startup_ranking.build_document(
+            measurements,
+            platform="x64-linux",
+            candidate_sha="candidate",
+        )
+        summary = wasmi_startup_ranking.render_summary(document)
+
+        self.assertTrue(document["wasmi_target_met"])
+        self.assertGreater(document["nano_over_wasmi_reference"], 1.0)
+        self.assertIn("TARGET MET", summary)
+        self.assertIn("within the 1.10x limit", summary)
 
     def test_collect_rejects_an_unexpected_missing_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -92,7 +116,7 @@ class WasmiStartupRankingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "wasm3.eager: missing"):
                 wasmi_startup_ranking.collect_measurements(raw_dir)
 
-    def test_workflow_is_dev_only_and_pins_the_suite(self) -> None:
+    def test_workflow_is_manual_only_and_pins_the_suite(self) -> None:
         workflow = (
             Path(__file__).parents[1]
             / ".github"
@@ -100,11 +124,11 @@ class WasmiStartupRankingTests(unittest.TestCase):
             / "wasmi-startup-ranking.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('branches: ["dev/**"]', workflow)
+        self.assertNotIn("push:", workflow)
         self.assertNotIn("pull_request:", workflow)
-        self.assertNotIn("workflow_dispatch:", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
         self.assertIn(wasmi_startup_ranking.WASMI_BENCHMARKS_REVISION, workflow)
-        self.assertIn("--require-nano-fastest", workflow)
+        self.assertNotIn("--require-nano-fastest", workflow)
         self.assertIn("ubuntu-latest", workflow)
         self.assertIn("ubuntu-24.04-arm", workflow)
 

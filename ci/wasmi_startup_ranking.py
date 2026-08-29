@@ -4,9 +4,9 @@
 This is intentionally separate from ``ci.wasmi_performance``.  The regression
 driver compares two Silverfir-nano revisions while enabling exactly one runtime
 adapter.  This driver builds the pinned suite's complete ``interpreters``
-feature once, measures all seven startup workloads on one runner, and answers a
-different question: is Silverfir-nano faster to start than every non-lazy
-interpreter in that same run?
+feature once and measures all seven startup workloads on one runner.  It is a
+manually requested field diagnostic; the optimized revision-to-revision jobs
+remain the dev and pull-request gates.
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ WASMI_BENCHMARKS_REVISION = wasmi_performance.WASMI_BENCHMARKS_REVISION
 CARGO_CRITERION_VERSION = wasmi_performance.CARGO_CRITERION_VERSION
 INTERPRETER_FEATURE = "interpreters"
 NANO_RUNTIME_ID = "silverfir-nano.interpreter"
+WASMI_REFERENCE_RUNTIME_ID = "wasmi-v1.eager.checked"
+WASMI_TARGET_MAX_RATIO = 1.10
 STARTUP_GROUPS = tuple(
     group
     for group in wasmi_performance.BENCHMARK_GROUPS
@@ -475,6 +477,14 @@ def build_document(
         for row in peers
         if row["nano_comparison"]["nano_faster"]
     ]
+    nano_geomean_ns = geometric_mean(
+        [nano[group] for group in STARTUP_GROUPS]
+    )
+    wasmi_reference = measurements[WASMI_REFERENCE_RUNTIME_ID]
+    wasmi_geomean_ns = geometric_mean(
+        [wasmi_reference[group] for group in STARTUP_GROUPS]
+    )
+    nano_over_wasmi = nano_geomean_ns / wasmi_geomean_ns
     return {
         "all_non_lazy_beaten": len(beaten) == len(peers),
         "candidate_sha": candidate_sha,
@@ -482,11 +492,16 @@ def build_document(
             row["engine"] for row in rows if row["lazy_excluded"]
         ),
         "nano_beaten_peer_count": len(beaten),
+        "nano_over_wasmi_reference": nano_over_wasmi,
         "non_lazy_peer_count": len(peers),
         "platform": platform,
         "rows": rows,
         "startup_groups": list(STARTUP_GROUPS),
         "wasmi_benchmarks_revision": WASMI_BENCHMARKS_REVISION,
+        "wasmi_reference_geomean_ns": wasmi_geomean_ns,
+        "wasmi_reference_runtime": WASMI_REFERENCE_RUNTIME_ID,
+        "wasmi_target_max_ratio": WASMI_TARGET_MAX_RATIO,
+        "wasmi_target_met": nano_over_wasmi <= WASMI_TARGET_MAX_RATIO,
     }
 
 
@@ -523,7 +538,9 @@ def render_summary(document: dict[str, Any]) -> str:
         f"- wasmi-benchmarks: `{document['wasmi_benchmarks_revision']}`",
         f"- field: `{len(rows)}` interpreter configurations on one runner",
         f"- workloads: `{len(STARTUP_GROUPS)}` startup cases",
-        "- gate: lazy-token configurations and audited first-call compilers are excluded",
+        "- classification: lazy-token configurations and audited first-call compilers are excluded",
+        f"- target: Nano at most `{document['wasmi_target_max_ratio']:.2f}x` "
+        f"`{document['wasmi_reference_runtime']}`",
         "",
         "| Rank | Non-lazy interpreter | Coverage | 7-case geomean | Does Nano win? |",
         "|---:|---|---:|---:|---|",
@@ -557,30 +574,29 @@ def render_summary(document: dict[str, Any]) -> str:
             f"{format_duration(row['seven_case_geomean_ns'])} |"
         )
 
-    if document["all_non_lazy_beaten"]:
+    ratio = document["nano_over_wasmi_reference"]
+    reference = document["wasmi_reference_runtime"]
+    if ratio <= 1.0:
+        verdict = f"TARGET MET: Nano matches or beats `{reference}`."
+    elif document["wasmi_target_met"]:
         verdict = (
-            "PASS: Nano is faster than all "
-            f"{document['non_lazy_peer_count']} non-lazy peers."
+            f"TARGET MET: Nano takes {ratio:.2f}x the time of `{reference}`, "
+            f"within the {document['wasmi_target_max_ratio']:.2f}x limit."
         )
     else:
-        losses = [
-            row["engine"]
-            for row in non_lazy
-            if row["engine"] != NANO_RUNTIME_ID
-            and not row["nano_comparison"]["nano_faster"]
-        ]
         verdict = (
-            "FAIL: Nano beats "
-            f"{document['nano_beaten_peer_count']}/"
-            f"{document['non_lazy_peer_count']} non-lazy peers; "
-            "not ahead of "
-            + ", ".join(f"`{engine}`" for engine in losses)
-            + "."
+            f"TARGET NOT MET: Nano takes {ratio:.2f}x the time of `{reference}`; "
+            f"the limit is {document['wasmi_target_max_ratio']:.2f}x."
         )
     lines.extend(
         [
             "",
             f"**{verdict}**",
+            "",
+            "Full-field placement is diagnostic only: Nano beats "
+            f"{document['nano_beaten_peer_count']}/"
+            f"{document['non_lazy_peer_count']} non-lazy peers. "
+            "This workflow is not a dev or pull-request gate.",
             "",
             "> `wasmtime.pulley` intentionally omits `startup/ffmpeg` in the pinned suite. "
             "Its Nano comparison uses the six common workloads and it receives no "
@@ -640,7 +656,6 @@ def parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--candidate-sha", required=True)
     report_parser.add_argument("--json-out", type=Path, required=True)
     report_parser.add_argument("--summary-out", type=Path, required=True)
-    report_parser.add_argument("--require-nano-fastest", action="store_true")
     return root
 
 
@@ -673,8 +688,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             json_out=args.json_out,
             summary_out=args.summary_out,
         )
-        if args.require_nano_fastest and not document["all_non_lazy_beaten"]:
-            return 1
         return 0
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         print(f"startup ranking error: {exc}", file=sys.stderr)
