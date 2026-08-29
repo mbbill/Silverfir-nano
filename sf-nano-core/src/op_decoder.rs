@@ -1228,6 +1228,7 @@ impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
     /// This narrow crate-internal hook lets the interpreter probe its common
     /// opcodes without constructing an owning `DecodedOp`. A miss must leave
     /// the slice untouched and fall back to [`OpStream::next`].
+    #[cfg(sf_interp)]
     #[inline]
     pub(crate) fn predecode_bytes(&self) -> &'b [u8] {
         #[cfg(test)]
@@ -1238,6 +1239,7 @@ impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
     }
 
     /// Commit a predecoder probe that already validated `len` input bytes.
+    #[cfg(sf_interp)]
     #[inline]
     pub(crate) fn consume_predecoded(&mut self, len: usize) {
         self.decoder.payload.advance_known_valid(len);
