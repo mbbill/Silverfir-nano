@@ -11,8 +11,11 @@ use crate::error::WasmError;
 use crate::module::Module;
 use crate::op_decoder::raw_cursor::{RawDecodeError, RawImmediate, RawOpCursor};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
+use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
 use crate::Value;
+
+use super::InterpInstanceAccess;
 
 const MAX_BASELINE_CALL_DEPTH: usize = 4096;
 const MAX_BASELINE_ACTIVATIONS: usize = MAX_BASELINE_CALL_DEPTH + 1;
@@ -67,28 +70,33 @@ impl From<RawDecodeError> for BaselineExecError {
     }
 }
 
-pub(super) struct BaselineDriver<'a> {
-    module: &'a Module,
-    artifact: &'a BaselineArtifact,
+pub(super) struct BaselineDriver<'artifact, 'instance> {
+    access: InterpInstanceAccess<'instance>,
+    artifact: &'artifact BaselineArtifact,
 }
 
-impl<'a> BaselineDriver<'a> {
-    pub(super) const fn new(module: &'a Module, artifact: &'a BaselineArtifact) -> Self {
-        Self { module, artifact }
+impl<'artifact, 'instance> BaselineDriver<'artifact, 'instance> {
+    pub(super) const fn new(
+        access: InterpInstanceAccess<'instance>,
+        artifact: &'artifact BaselineArtifact,
+    ) -> Self {
+        Self { access, artifact }
     }
 
     pub(super) fn invoke_export(
-        &self,
+        self,
         export: &str,
         args: &[Value],
     ) -> Result<Vec<Value>, BaselineExecError> {
-        let function = self
-            .module
-            .functions()
-            .iter()
-            .position(|function| function.export_names().iter().any(|name| name == export))
-            .ok_or_else(|| WasmError::invalid("baseline MVP export was not found"))?;
-        let mut frame = BaselineFrame::new(self.module, self.artifact, function, args)?;
+        let function =
+            self.access
+                .with_instance(|instance| {
+                    instance.module().functions().iter().position(|function| {
+                        function.export_names().iter().any(|name| name == export)
+                    })
+                })?
+                .ok_or_else(|| WasmError::invalid("baseline MVP export was not found"))?;
+        let mut frame = BaselineFrame::new(self.access, self.artifact, function, args)?;
         frame.run()?;
         frame.results()
     }
@@ -116,6 +124,9 @@ enum BaselineImmediate {
     F64(u64),
     LocalIndex(u32),
     FunctionIndex(u32),
+    GlobalIndex(u32),
+    MemoryIndex(u32),
+    MemArg { offset: u64, memidx: u32 },
     Other,
 }
 
@@ -127,9 +138,9 @@ struct BaselineDecoded {
     imm: BaselineImmediate,
 }
 
-pub(super) struct BaselineFrame<'a> {
-    module: &'a Module,
-    artifact: &'a BaselineArtifact,
+pub(super) struct BaselineFrame<'artifact, 'instance> {
+    access: InterpInstanceAccess<'instance>,
+    artifact: &'artifact BaselineArtifact,
     root_function: usize,
     activations: Vec<BaselineActivation>,
     values: Vec<u64>,
@@ -137,15 +148,15 @@ pub(super) struct BaselineFrame<'a> {
     max_value_slots: usize,
 }
 
-impl<'a> BaselineFrame<'a> {
+impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
     pub(super) fn new(
-        module: &'a Module,
-        artifact: &'a BaselineArtifact,
+        access: InterpInstanceAccess<'instance>,
+        artifact: &'artifact BaselineArtifact,
         function_index: usize,
         args: &[Value],
     ) -> Result<Self, BaselineExecError> {
         let mut frame = Self {
-            module,
+            access,
             artifact,
             root_function: function_index,
             activations: Vec::with_capacity(1),
@@ -184,18 +195,13 @@ impl<'a> BaselineFrame<'a> {
         if !self.activations.is_empty() {
             return Err(WasmError::invalid("baseline MVP execution is not finished").into());
         }
-        let result_types = self
-            .module
-            .functions()
-            .get(self.root_function)
-            .ok_or_else(|| WasmError::invalid("baseline MVP result function is missing"))?
-            .func_type()
-            .results();
-        if self.values.len() != result_types.len() {
+        let result_count = self.root_result_count()?;
+        if self.values.len() != result_count {
             return Err(WasmError::invalid("baseline MVP result stack shape mismatch").into());
         }
-        let mut results = Vec::with_capacity(result_types.len());
-        for (&raw, &value_type) in self.values.iter().zip(result_types) {
+        let mut results = Vec::with_capacity(result_count);
+        for (index, &raw) in self.values.iter().enumerate() {
+            let value_type = self.root_result_type(index)?;
             results.push(Value::from_raw(raw, value_type));
         }
         Ok(results)
@@ -205,18 +211,12 @@ impl<'a> BaselineFrame<'a> {
         if !self.activations.is_empty() {
             return Err(WasmError::invalid("baseline MVP execution is not finished").into());
         }
-        let result_types = self
-            .module
-            .functions()
-            .get(self.root_function)
-            .ok_or_else(|| WasmError::invalid("baseline MVP result function is missing"))?
-            .func_type()
-            .results();
-        if self.values.len() != result_types.len() || results.len() != result_types.len() {
+        let result_count = self.root_result_count()?;
+        if self.values.len() != result_count || results.len() != result_count {
             return Err(WasmError::invalid("baseline MVP result stack shape mismatch").into());
         }
-        for ((output, &raw), &value_type) in results.iter_mut().zip(&self.values).zip(result_types)
-        {
+        for (index, (output, &raw)) in results.iter_mut().zip(&self.values).enumerate() {
+            let value_type = self.root_result_type(index)?;
             *output = Value::from_raw(raw, value_type);
         }
         Ok(())
@@ -227,26 +227,31 @@ impl<'a> BaselineFrame<'a> {
             let activation = self.current_activation()?;
             (activation.function_index, activation.pc)
         };
-        let function =
-            self.module.functions().get(function_index).ok_or_else(|| {
-                WasmError::invalid("baseline MVP function index is out of bounds")
-            })?;
-        let spec = function
-            .spec()
-            .ok_or_else(|| WasmError::invalid("baseline MVP activation targets an import"))?;
-        let code_len = spec.code().len();
-        let raw = {
+        let (raw, code_len) = self.access.with_instance(|instance| {
+            let function = instance
+                .module()
+                .functions()
+                .get(function_index)
+                .ok_or_else(|| {
+                    WasmError::invalid("baseline MVP function index is out of bounds")
+                })?;
+            let spec = function
+                .spec()
+                .ok_or_else(|| WasmError::invalid("baseline MVP activation targets an import"))?;
             let mut cursor = RawOpCursor::at(spec.code(), pc);
             let raw = cursor
                 .next()?
                 .ok_or_else(|| WasmError::invalid("baseline MVP reached code end without end"))?;
-            BaselineDecoded {
-                wasm_op: raw.wasm_op,
-                start: raw.start,
-                end: raw.end,
-                imm: copy_immediate(raw.imm),
-            }
-        };
+            Ok::<_, BaselineExecError>((
+                BaselineDecoded {
+                    wasm_op: raw.wasm_op,
+                    start: raw.start,
+                    end: raw.end,
+                    imm: copy_immediate(raw.imm),
+                },
+                spec.code().len(),
+            ))
+        })??;
         self.current_activation_mut()?.pc = raw.end;
         if let WasmOpcode::FC(opcode) = raw.wasm_op {
             if self.exec_saturating_conversion(opcode)? {
@@ -311,6 +316,61 @@ impl<'a> BaselineFrame<'a> {
                     .get_mut(slot)
                     .ok_or_else(|| WasmError::invalid("baseline MVP local index overflow"))? =
                     value;
+            }
+            Opcode::GLOBAL_GET => {
+                let global = raw_global(raw.imm)?;
+                self.require_i32_global(global, raw.wasm_op, raw.start)?;
+                let value = self
+                    .access
+                    .with_instance(|instance| instance.global_get_for_frame(global))?;
+                self.push(value)?;
+            }
+            Opcode::GLOBAL_SET => {
+                let global = raw_global(raw.imm)?;
+                self.require_i32_global(global, raw.wasm_op, raw.start)?;
+                let value = self.pop()?;
+                self.access
+                    .with_instance_mut(|instance| instance.global_set_from_frame(global, value))?;
+            }
+            opcode @ (Opcode::I32_LOAD
+            | Opcode::I64_LOAD
+            | Opcode::F32_LOAD
+            | Opcode::F64_LOAD
+            | Opcode::I32_LOAD8_S
+            | Opcode::I32_LOAD8_U
+            | Opcode::I32_LOAD16_S
+            | Opcode::I32_LOAD16_U
+            | Opcode::I64_LOAD8_S
+            | Opcode::I64_LOAD8_U
+            | Opcode::I64_LOAD16_S
+            | Opcode::I64_LOAD16_U
+            | Opcode::I64_LOAD32_S
+            | Opcode::I64_LOAD32_U) => self.exec_memory_load(opcode, raw.imm)?,
+            opcode @ (Opcode::I32_STORE
+            | Opcode::I64_STORE
+            | Opcode::F32_STORE
+            | Opcode::F64_STORE
+            | Opcode::I32_STORE8
+            | Opcode::I32_STORE16
+            | Opcode::I64_STORE8
+            | Opcode::I64_STORE16
+            | Opcode::I64_STORE32) => self.exec_memory_store(opcode, raw.imm)?,
+            Opcode::MEMORY_SIZE => {
+                let memory = raw_memory(raw.imm)?;
+                self.memory_is_64(memory)?;
+                let pages = self
+                    .access
+                    .with_instance(|instance| instance.memory_size(memory))?;
+                self.push(pages)?;
+            }
+            Opcode::MEMORY_GROW => {
+                let memory = raw_memory(raw.imm)?;
+                self.memory_is_64(memory)?;
+                let delta = self.pop()?;
+                let previous = self
+                    .access
+                    .with_instance_mut(|instance| instance.memory_grow(memory, delta))??;
+                self.push(previous)?;
             }
             Opcode::DROP => {
                 self.pop()?;
@@ -381,6 +441,118 @@ impl<'a> BaselineFrame<'a> {
             _ => return self.unsupported(Some(raw.wasm_op), raw.start, "MVP opcode"),
         }
         Ok(())
+    }
+
+    fn exec_memory_load(
+        &mut self,
+        opcode: Opcode,
+        immediate: BaselineImmediate,
+    ) -> Result<(), BaselineExecError> {
+        let (memory, offset) = raw_memarg(immediate)?;
+        let address_is_64 = self.memory_is_64(memory)?;
+        let address = self.pop()?;
+        let address = if address_is_64 {
+            address
+        } else {
+            address as u32 as u64
+        };
+        let size = match opcode {
+            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I64_LOAD32_S | Opcode::I64_LOAD32_U => 4,
+            Opcode::I64_LOAD | Opcode::F64_LOAD => 8,
+            Opcode::I32_LOAD8_S
+            | Opcode::I32_LOAD8_U
+            | Opcode::I64_LOAD8_S
+            | Opcode::I64_LOAD8_U => 1,
+            Opcode::I32_LOAD16_S
+            | Opcode::I32_LOAD16_U
+            | Opcode::I64_LOAD16_S
+            | Opcode::I64_LOAD16_U => 2,
+            _ => return Err(WasmError::internal("baseline MVP load opcode mismatch").into()),
+        };
+        let loaded = self
+            .access
+            .with_instance(|instance| instance.mem_load(address, memory, offset, size))??;
+        let value = match opcode {
+            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I32_LOAD8_U | Opcode::I32_LOAD16_U => {
+                loaded
+            }
+            Opcode::I64_LOAD
+            | Opcode::F64_LOAD
+            | Opcode::I64_LOAD8_U
+            | Opcode::I64_LOAD16_U
+            | Opcode::I64_LOAD32_U => loaded,
+            Opcode::I32_LOAD8_S => loaded as i8 as i32 as u32 as u64,
+            Opcode::I32_LOAD16_S => loaded as i16 as i32 as u32 as u64,
+            Opcode::I64_LOAD8_S => loaded as i8 as i64 as u64,
+            Opcode::I64_LOAD16_S => loaded as i16 as i64 as u64,
+            Opcode::I64_LOAD32_S => loaded as i32 as i64 as u64,
+            _ => return Err(WasmError::internal("baseline MVP load opcode mismatch").into()),
+        };
+        self.push(value)
+    }
+
+    fn exec_memory_store(
+        &mut self,
+        opcode: Opcode,
+        immediate: BaselineImmediate,
+    ) -> Result<(), BaselineExecError> {
+        let (memory, offset) = raw_memarg(immediate)?;
+        let address_is_64 = self.memory_is_64(memory)?;
+        let value = self.pop()?;
+        let address = self.pop()?;
+        let address = if address_is_64 {
+            address
+        } else {
+            address as u32 as u64
+        };
+        let size = match opcode {
+            Opcode::I32_STORE | Opcode::F32_STORE | Opcode::I64_STORE32 => 4,
+            Opcode::I64_STORE | Opcode::F64_STORE => 8,
+            Opcode::I32_STORE8 | Opcode::I64_STORE8 => 1,
+            Opcode::I32_STORE16 | Opcode::I64_STORE16 => 2,
+            _ => return Err(WasmError::internal("baseline MVP store opcode mismatch").into()),
+        };
+        self.access.with_instance_mut(|instance| {
+            instance.mem_store(address, memory, offset, size, value)
+        })??;
+        Ok(())
+    }
+
+    fn memory_is_64(&self, memory: usize) -> Result<bool, BaselineExecError> {
+        self.access
+            .with_instance(|instance| {
+                instance
+                    .module()
+                    .memories()
+                    .get(memory)
+                    .map(|memory| memory.limits().is64)
+                    .ok_or_else(|| WasmError::invalid("baseline MVP memory index overflow"))
+            })?
+            .map_err(Into::into)
+    }
+
+    fn require_i32_global(
+        &self,
+        global: usize,
+        opcode: WasmOpcode,
+        pc: usize,
+    ) -> Result<(), BaselineExecError> {
+        let value_type = self.access.with_instance(|instance| {
+            instance
+                .module()
+                .globals()
+                .get(global)
+                .map(|global| global.value_type())
+        })?;
+        match value_type {
+            Some(ValueType::I32) => Ok(()),
+            Some(_) => Err(BaselineExecError::Unsupported {
+                opcode: Some(opcode),
+                pc,
+                feature: "non-i32 global",
+            }),
+            None => Err(WasmError::invalid("baseline MVP global index overflow").into()),
+        }
     }
 
     fn exec_numeric(&mut self, opcode: Opcode) -> Result<bool, BaselineExecError> {
@@ -934,9 +1106,9 @@ impl<'a> BaselineFrame<'a> {
     }
 
     fn enter_root(&mut self, args: &[Value]) -> Result<(), BaselineExecError> {
-        let (parameter_count, local_count, max_operand_height) = {
-            let function = self
-                .module
+        let (parameter_count, local_count) = self.access.with_instance(|instance| {
+            let function = instance
+                .module()
                 .functions()
                 .get(self.root_function)
                 .ok_or_else(|| {
@@ -956,13 +1128,11 @@ impl<'a> BaselineFrame<'a> {
                 function_type.results(),
                 spec.locals(),
             )?;
-            (
-                function_type.params().len(),
-                spec.locals().len(),
-                self.baseline_function(self.root_function)?
-                    .max_operand_height as usize,
-            )
-        };
+            Ok::<_, BaselineExecError>((function_type.params().len(), spec.locals().len()))
+        })??;
+        let max_operand_height = self
+            .baseline_function(self.root_function)?
+            .max_operand_height as usize;
         let operand_base = parameter_count
             .checked_add(local_count)
             .ok_or_else(|| WasmError::invalid("baseline MVP local count overflow"))?;
@@ -972,9 +1142,11 @@ impl<'a> BaselineFrame<'a> {
         self.reserve_value_slots(required)?;
         self.reserve_activation()?;
         for (index, value) in args.iter().enumerate() {
-            let expected = self.module.functions()[self.root_function]
-                .func_type()
-                .params()[index];
+            let expected = self.access.with_instance(|instance| {
+                instance.module().functions()[self.root_function]
+                    .func_type()
+                    .params()[index]
+            })?;
             self.values.push(scalar_to_raw(*value, expected)?);
         }
         self.values.resize(operand_base, 0);
@@ -990,9 +1162,9 @@ impl<'a> BaselineFrame<'a> {
     }
 
     fn enter_call(&mut self, callee: usize, source_pc: usize) -> Result<(), BaselineExecError> {
-        let (parameter_count, local_count, max_operand_height) = {
+        let (parameter_count, local_count) = self.access.with_instance(|instance| {
             let function =
-                self.module.functions().get(callee).ok_or_else(|| {
+                instance.module().functions().get(callee).ok_or_else(|| {
                     WasmError::invalid("baseline MVP callee index is out of bounds")
                 })?;
             let spec = function.spec().ok_or(BaselineExecError::Unsupported {
@@ -1006,12 +1178,9 @@ impl<'a> BaselineFrame<'a> {
                 function_type.results(),
                 spec.locals(),
             )?;
-            (
-                function_type.params().len(),
-                spec.locals().len(),
-                self.baseline_function(callee)?.max_operand_height as usize,
-            )
-        };
+            Ok::<_, BaselineExecError>((function_type.params().len(), spec.locals().len()))
+        })??;
+        let max_operand_height = self.baseline_function(callee)?.max_operand_height as usize;
         let caller_operand_base = self.current_activation()?.operand_base;
         // The caller's arguments already occupy the value-stack tail. Reuse
         // them as the callee's parameter locals, append only declared locals,
@@ -1046,14 +1215,14 @@ impl<'a> BaselineFrame<'a> {
 
     fn finish_activation(&mut self) -> Result<(), BaselineExecError> {
         let activation = *self.current_activation()?;
-        let result_count = self
-            .module
-            .functions()
-            .get(activation.function_index)
-            .ok_or_else(|| WasmError::invalid("baseline MVP return function is missing"))?
-            .func_type()
-            .results()
-            .len();
+        let result_count = self.access.with_instance(|instance| {
+            instance
+                .module()
+                .functions()
+                .get(activation.function_index)
+                .map(|function| function.func_type().results().len())
+                .ok_or_else(|| WasmError::invalid("baseline MVP return function is missing"))
+        })??;
         let expected_len = activation
             .operand_base
             .checked_add(result_count)
@@ -1122,6 +1291,33 @@ impl<'a> BaselineFrame<'a> {
         self.baseline_function(self.current_activation()?.function_index)
     }
 
+    fn root_result_count(&self) -> Result<usize, BaselineExecError> {
+        self.access
+            .with_instance(|instance| {
+                instance
+                    .module()
+                    .functions()
+                    .get(self.root_function)
+                    .map(|function| function.func_type().results().len())
+                    .ok_or_else(|| WasmError::invalid("baseline MVP result function is missing"))
+            })?
+            .map_err(Into::into)
+    }
+
+    fn root_result_type(&self, index: usize) -> Result<ValueType, BaselineExecError> {
+        self.access
+            .with_instance(|instance| {
+                instance
+                    .module()
+                    .functions()
+                    .get(self.root_function)
+                    .and_then(|function| function.func_type().results().get(index))
+                    .copied()
+                    .ok_or_else(|| WasmError::invalid("baseline MVP result type is missing"))
+            })?
+            .map_err(Into::into)
+    }
+
     fn current_br_table(&self, source_pc: usize) -> Result<BrTableRange, BaselineExecError> {
         let function = self.current_baseline_function()?;
         self.artifact.br_tables[function.br_tables.clone()]
@@ -1174,6 +1370,9 @@ fn copy_immediate(immediate: RawImmediate<'_>) -> BaselineImmediate {
         RawImmediate::F64(value) => BaselineImmediate::F64(value),
         RawImmediate::LocalIndex(value) => BaselineImmediate::LocalIndex(value),
         RawImmediate::FunctionIndex(value) => BaselineImmediate::FunctionIndex(value),
+        RawImmediate::GlobalIndex(value) => BaselineImmediate::GlobalIndex(value),
+        RawImmediate::MemoryIndex(value) => BaselineImmediate::MemoryIndex(value),
+        RawImmediate::MemArg { offset, memidx, .. } => BaselineImmediate::MemArg { offset, memidx },
         _ => BaselineImmediate::Other,
     }
 }
@@ -1190,6 +1389,27 @@ fn raw_function(immediate: BaselineImmediate) -> Result<usize, BaselineExecError
         return Err(WasmError::internal("baseline MVP function immediate mismatch").into());
     };
     Ok(function as usize)
+}
+
+fn raw_global(immediate: BaselineImmediate) -> Result<usize, BaselineExecError> {
+    let BaselineImmediate::GlobalIndex(global) = immediate else {
+        return Err(WasmError::internal("baseline MVP global immediate mismatch").into());
+    };
+    Ok(global as usize)
+}
+
+fn raw_memory(immediate: BaselineImmediate) -> Result<usize, BaselineExecError> {
+    let BaselineImmediate::MemoryIndex(memory) = immediate else {
+        return Err(WasmError::internal("baseline MVP memory immediate mismatch").into());
+    };
+    Ok(memory as usize)
+}
+
+fn raw_memarg(immediate: BaselineImmediate) -> Result<(usize, u64), BaselineExecError> {
+    let BaselineImmediate::MemArg { offset, memidx } = immediate else {
+        return Err(WasmError::internal("baseline MVP memarg immediate mismatch").into());
+    };
+    Ok((memidx as usize, offset))
 }
 
 fn validate_scalar_function(
@@ -1233,8 +1453,11 @@ mod tests {
     use crate::vm::engine::{Engine, Tier};
     use crate::vm::interpreter::baseline_artifact::artifact_test_guard;
     use crate::vm::interpreter::predecode::build_baseline_artifact;
+    use crate::vm::interpreter::InterpInstance;
+    use crate::vm::link::LinkRegistry;
     use crate::Instance;
     use std::string::ToString;
+    use std::vec;
     use std::vec::Vec as StdVec;
 
     fn baseline(
@@ -1242,16 +1465,73 @@ mod tests {
         export: &str,
         args: &[Value],
     ) -> Result<Vec<Value>, BaselineExecError> {
+        baseline_with_imports(wasm, export, args, &[])
+    }
+
+    fn baseline_with_imports(
+        wasm: &[u8],
+        export: &str,
+        args: &[Value],
+        imports: &[crate::Import],
+    ) -> Result<Vec<Value>, BaselineExecError> {
         let _guard = artifact_test_guard();
         let module = Module::new("baseline-exec", wasm).expect("module");
         let artifact = build_baseline_artifact(&module).expect("artifact");
-        BaselineDriver::new(&module, &artifact).invoke_export(export, args)
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        let mut instance = Instance::from_module(&engine, module, imports).expect("instance");
+        instance
+            .with_interp_mut(|instance| {
+                BaselineDriver::new(InterpInstanceAccess::borrowed(instance), &artifact)
+                    .invoke_export(export, args)
+            })
+            .expect("interpreter instance")
     }
 
     fn native(wasm: &[u8], export: &str, args: &[Value]) -> Result<StdVec<Value>, WasmError> {
+        native_with_imports(wasm, export, args, &[])
+    }
+
+    fn native_with_imports(
+        wasm: &[u8],
+        export: &str,
+        args: &[Value],
+        imports: &[crate::Import],
+    ) -> Result<StdVec<Value>, WasmError> {
         let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
-        let mut instance = Instance::new(&engine, wasm, &[]).expect("instance");
+        let mut instance = Instance::new(&engine, wasm, imports).expect("instance");
         instance.invoke(export, args).map(StdVec::from)
+    }
+
+    fn built_interp(module: Module, imports: &[crate::Import]) -> InterpInstance {
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        let registry = LinkRegistry::new();
+        let (_, instance_backref) = registry.reserve_instance();
+        InterpInstance::build(
+            &engine,
+            module,
+            None,
+            imports,
+            None,
+            registry.arenas(),
+            instance_backref,
+        )
+        .expect("build interpreter instance")
+    }
+
+    fn initialized_interp(module: Module, imports: &[crate::Import]) -> InterpInstance {
+        InterpInstance::initialize(built_interp(module, imports))
+            .map_err(|(_, error)| error)
+            .expect("initialize interpreter instance")
+    }
+
+    fn baseline_on(
+        instance: &mut InterpInstance,
+        artifact: &BaselineArtifact,
+        export: &str,
+        args: &[Value],
+    ) -> Result<Vec<Value>, BaselineExecError> {
+        BaselineDriver::new(InterpInstanceAccess::borrowed(instance), artifact)
+            .invoke_export(export, args)
     }
 
     fn assert_values_equal(baseline: &[Value], native: &[Value]) {
@@ -1563,7 +1843,211 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_stateful_and_imported_call_ops_are_explicit() {
+    fn mvp_memory_load_store_widths_and_active_data_match_folded() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory 1 1)
+                (data (i32.const 48) "\01\02\03\04")
+                (func (export "ops")
+                      (result i32 i32 i32 i32 i32
+                              i64 i64 i64 i64 i64 i64 i64
+                              f32 f64 i32)
+                    i32.const 0 i32.const 0xffff8080 i32.store
+                    i32.const 0 i32.load
+                    i32.const 0 i32.load8_s
+                    i32.const 0 i32.load8_u
+                    i32.const 0 i32.load16_s
+                    i32.const 0 i32.load16_u
+
+                    i32.const 8 i64.const 0xffffffff80008080 i64.store
+                    i32.const 8 i64.load
+                    i32.const 8 i64.load8_s
+                    i32.const 8 i64.load8_u
+                    i32.const 8 i64.load16_s
+                    i32.const 8 i64.load16_u
+                    i32.const 8 i64.load32_s
+                    i32.const 8 i64.load32_u
+
+                    i32.const 24 f32.const 3.25 f32.store
+                    i32.const 24 f32.load
+                    i32.const 32 f64.const -9.5 f64.store
+                    i32.const 32 f64.load
+                    i32.const 48 i32.load)
+                (func (export "size") (result i32) memory.size)
+                (func (export "grow-fail") (result i32)
+                    i32.const 1 memory.grow))"#,
+        )
+        .expect("wat");
+        for export in ["ops", "size", "grow-fail"] {
+            let baseline = baseline(&wasm, export, &[]).expect("baseline memory32");
+            let folded = native(&wasm, export, &[]).expect("folded memory32");
+            assert_values_equal(&baseline, &folded);
+        }
+    }
+
+    #[test]
+    fn memory32_and_memory64_oob_and_effective_address_overflow_match_folded() {
+        let memory32 = wat::parse_str(
+            r#"(module
+                (memory 1)
+                (func (export "oob") (result i32)
+                    i32.const 65534 i32.load)
+                (func (export "offset") (result i32)
+                    i32.const -1 i32.load offset=1))"#,
+        )
+        .expect("memory32 wat");
+        for export in ["oob", "offset"] {
+            let baseline = baseline(&memory32, export, &[]).expect_err("baseline must trap");
+            let BaselineExecError::Wasm(baseline) = baseline else {
+                panic!("baseline returned unsupported for {export}");
+            };
+            let folded = native(&memory32, export, &[]).expect_err("folded must trap");
+            assert_eq!(baseline, folded);
+        }
+
+        let memory64 = wat::parse_str(
+            r#"(module
+                (memory i64 1 2)
+                (func (export "oob") (result i64)
+                    i64.const 65530 i64.load)
+                (func (export "overflow") (result i32)
+                    i64.const -1 i32.load offset=1))"#,
+        )
+        .expect("memory64 wat");
+        for export in ["oob", "overflow"] {
+            let baseline = baseline(&memory64, export, &[]).expect_err("baseline must trap");
+            let BaselineExecError::Wasm(baseline) = baseline else {
+                panic!("baseline returned unsupported for {export}");
+            };
+            let folded = native(&memory64, export, &[]).expect_err("folded must trap");
+            assert_eq!(baseline, folded);
+        }
+    }
+
+    #[test]
+    fn memory64_size_grow_and_scalar_access_match_folded_statefully() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory i64 1 2)
+                (func (export "roundtrip") (param i64) (result i64)
+                    i64.const 8 local.get 0 i64.store
+                    i64.const 8 i64.load)
+                (func (export "float") (param f64) (result f64)
+                    i64.const 24 local.get 0 f64.store
+                    i64.const 24 f64.load)
+                (func (export "size") (result i64) memory.size)
+                (func (export "grow") (param i64) (result i64)
+                    local.get 0 memory.grow))"#,
+        )
+        .expect("wat");
+        let baseline_module = Module::new("baseline-memory64", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&baseline_module).expect("artifact");
+        let mut baseline_instance = initialized_interp(baseline_module, &[]);
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        let mut folded = Instance::new(&engine, &wasm, &[]).expect("folded instance");
+
+        for (export, args) in [
+            ("roundtrip", vec![Value::I64(0x0123_4567_89ab_cdef)]),
+            ("float", vec![Value::F64(-17.25)]),
+            ("size", vec![]),
+            ("grow", vec![Value::I64(1)]),
+            ("size", vec![]),
+            ("grow", vec![Value::I64(1)]),
+        ] {
+            let baseline = baseline_on(&mut baseline_instance, &artifact, export, &args)
+                .expect("baseline memory64");
+            let native = folded.invoke(export, &args).expect("folded memory64");
+            assert_values_equal(&baseline, &native);
+        }
+    }
+
+    #[test]
+    fn active_data_and_shared_memory_import_use_real_instance_state() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "host" "memory" (memory 1 2))
+                (data (i32.const 12) "\2a\00\00\00")
+                (func (export "run") (param i32) (result i32 i32)
+                    i32.const 4 local.get 0 i32.store
+                    i32.const 4 i32.load
+                    i32.const 12 i32.load))"#,
+        )
+        .expect("wat");
+        let limits = crate::utils::limits::Limits::new(1, Some(2)).expect("limits");
+        let config = Config::new();
+        let baseline_memory =
+            crate::vm::entities::MemInst::new(&config, limits.clone()).expect("baseline memory");
+        let folded_memory =
+            crate::vm::entities::MemInst::new(&config, limits.clone()).expect("folded memory");
+        let baseline_import = crate::Import::memory_with_state(
+            "host",
+            "memory",
+            limits.clone(),
+            Some(baseline_memory),
+        );
+        let folded_import =
+            crate::Import::memory_with_state("host", "memory", limits, Some(folded_memory));
+        let args = [Value::I32(0x1234_5678)];
+        let baseline = baseline_with_imports(&wasm, "run", &args, &[baseline_import])
+            .expect("baseline shared memory");
+        let folded = native_with_imports(&wasm, "run", &args, &[folded_import])
+            .expect("folded shared memory");
+        assert_values_equal(&baseline, &folded);
+        assert_eq!(baseline, [Value::I32(0x1234_5678), Value::I32(42)]);
+    }
+
+    #[test]
+    fn private_and_shared_i32_globals_match_folded_statefully() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "host" "shared" (global $shared (mut i32)))
+                (global $private (mut i32) (i32.const 3))
+                (func (export "step") (param i32) (result i32 i32)
+                    local.get 0 global.set $private
+                    global.get $private
+                    global.get $shared i32.const 1 i32.add global.set $shared
+                    global.get $shared))"#,
+        )
+        .expect("wat");
+        let baseline_state = crate::vm::entities::GlobalInst::new_raw(10, true, ValueType::I32);
+        let folded_state = crate::vm::entities::GlobalInst::new_raw(10, true, ValueType::I32);
+        let baseline_import = crate::Import::global_with_state(
+            "host",
+            "shared",
+            crate::vm::imports::ImportedGlobalState {
+                global: baseline_state.clone(),
+                type_ctx: None,
+            },
+        );
+        let folded_import = crate::Import::global_with_state(
+            "host",
+            "shared",
+            crate::vm::imports::ImportedGlobalState {
+                global: folded_state.clone(),
+                type_ctx: None,
+            },
+        );
+
+        let baseline_module = Module::new("baseline-globals", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&baseline_module).expect("artifact");
+        let mut baseline_instance = initialized_interp(baseline_module, &[baseline_import]);
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        let mut folded = Instance::new(&engine, &wasm, &[folded_import]).expect("folded instance");
+        for input in [7, -9] {
+            let args = [Value::I32(input)];
+            let baseline = baseline_on(&mut baseline_instance, &artifact, "step", &args)
+                .expect("baseline globals");
+            let native = folded.invoke("step", &args).expect("folded globals");
+            assert_values_equal(&baseline, &native);
+        }
+        assert_eq!(baseline_state.raw(), folded_state.raw());
+        assert_eq!(baseline_state.raw(), 12);
+    }
+
+    #[test]
+    fn stateful_ops_work_and_imported_call_ops_remain_explicit() {
         let wasm = wat::parse_str(
             r#"(module
                 (memory 1)
@@ -1573,15 +2057,9 @@ mod tests {
         )
         .expect("wat");
         for export in ["memory", "global"] {
-            let error = baseline(&wasm, export, &[]).expect_err("must be unsupported");
-            assert!(matches!(
-                error,
-                BaselineExecError::Unsupported {
-                    opcode: Some(_),
-                    feature: "MVP opcode",
-                    ..
-                }
-            ));
+            let baseline = baseline(&wasm, export, &[]).expect("baseline stateful op");
+            let folded = native(&wasm, export, &[]).expect("folded stateful op");
+            assert_values_equal(&baseline, &folded);
         }
 
         let imported = wat::parse_str(
@@ -1593,12 +2071,16 @@ mod tests {
                 (func (export "run") call $host))"#,
         )
         .expect("wat");
-        baseline(&imported, "idle", &[]).expect("an unused import does not block local execution");
+        let host = || crate::Import::func("host", "f", |_caller, _args, _results| Ok(()));
+        baseline_with_imports(&imported, "idle", &[], &[host()])
+            .expect("an unused import does not block local execution");
         assert_eq!(
-            baseline(&imported, "local", &[]).expect("local call after import"),
+            baseline_with_imports(&imported, "local", &[], &[host()])
+                .expect("local call after import"),
             [Value::I32(37)]
         );
-        let error = baseline(&imported, "run", &[]).expect_err("imported call unsupported");
+        let error = baseline_with_imports(&imported, "run", &[], &[host()])
+            .expect_err("imported call unsupported");
         assert!(matches!(
             error,
             BaselineExecError::Unsupported {
@@ -1654,8 +2136,15 @@ mod tests {
         let module = Module::new("baseline-allocation", &wasm).expect("module");
         let _guard = artifact_test_guard();
         let artifact = build_baseline_artifact(&module).expect("artifact");
+        let mut instance = initialized_interp(module, &[]);
         let args = [Value::I32(128)];
-        let mut frame = BaselineFrame::new(&module, &artifact, 0, &args).expect("frame");
+        let mut frame = BaselineFrame::new(
+            InterpInstanceAccess::borrowed(&mut instance),
+            &artifact,
+            0,
+            &args,
+        )
+        .expect("frame");
         frame.run().expect("warm-up invocation");
         assert_eq!(frame.values.as_slice(), &[8256]);
         let values_pointer = frame.values.as_ptr();
@@ -1673,6 +2162,82 @@ mod tests {
         assert_eq!(frame.activations.as_ptr(), activations_pointer);
         assert_eq!(frame.values.capacity(), values_capacity);
         assert_eq!(frame.activations.capacity(), activations_capacity);
+    }
+
+    #[cfg(not(feature = "memprof"))]
+    #[test]
+    fn warm_instance_memory_and_global_invocation_has_zero_allocations() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory 1)
+                (global $state (mut i32) (i32.const 0))
+                (func (export "run") (param $value i32) (result i32)
+                    i32.const 0 local.get $value i32.store
+                    local.get $value global.set $state
+                    i32.const 0 i32.load
+                    global.get $state
+                    i32.add))"#,
+        )
+        .expect("wat");
+        let module = Module::new("baseline-instance-allocation", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let mut instance = initialized_interp(module, &[]);
+        let args = [Value::I32(21)];
+        let mut frame = BaselineFrame::new(
+            InterpInstanceAccess::borrowed(&mut instance),
+            &artifact,
+            0,
+            &args,
+        )
+        .expect("frame");
+        frame.run().expect("warm-up invocation");
+        assert_eq!(frame.values.as_slice(), &[42]);
+        let values_pointer = frame.values.as_ptr();
+        let activations_pointer = frame.activations.as_ptr();
+        let values_capacity = frame.values.capacity();
+        let activations_capacity = frame.activations.capacity();
+        let mut output = [Value::I32(0)];
+        let (result, census) =
+            crate::test_alloc::measure(|| frame.invoke_again(&args, &mut output));
+        result.expect("warm instance invocation");
+        assert_eq!(census, crate::test_alloc::Census::default());
+        assert_eq!(output, [Value::I32(42)]);
+        assert_eq!(frame.values.as_ptr(), values_pointer);
+        assert_eq!(frame.activations.as_ptr(), activations_pointer);
+        assert_eq!(frame.values.capacity(), values_capacity);
+        assert_eq!(frame.activations.capacity(), activations_capacity);
+    }
+
+    #[test]
+    fn instance_access_memory_and_global_keep_borrows_scoped() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory 1)
+                (global $state (mut i32) (i32.const 5))
+                (func (export "run") (param $value i32) (result i32)
+                    i32.const 0 local.get $value i32.store
+                    i32.const 0 i32.load
+                    global.get $state
+                    i32.add))"#,
+        )
+        .expect("wat");
+        let module = Module::new("baseline-instance-borrows", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        // Build the real runtime entities but deliberately stop before native
+        // linking, so this ownership oracle can execute under Miri.
+        let mut instance = built_interp(module, &[]);
+        let args = [Value::I32(37)];
+        let mut frame = BaselineFrame::new(
+            InterpInstanceAccess::borrowed(&mut instance),
+            &artifact,
+            0,
+            &args,
+        )
+        .expect("frame");
+        frame.run().expect("baseline run");
+        assert_eq!(frame.results().expect("results"), [Value::I32(42)]);
     }
 
     #[cfg(not(feature = "memprof"))]
@@ -1703,8 +2268,15 @@ mod tests {
         let module = Module::new("baseline-trap-restart", &wasm).expect("module");
         let _guard = artifact_test_guard();
         let artifact = build_baseline_artifact(&module).expect("artifact");
+        let mut instance = initialized_interp(module, &[]);
         let trap_args = [Value::I32(64), Value::I32(1)];
-        let mut frame = BaselineFrame::new(&module, &artifact, 0, &trap_args).expect("frame");
+        let mut frame = BaselineFrame::new(
+            InterpInstanceAccess::borrowed(&mut instance),
+            &artifact,
+            0,
+            &trap_args,
+        )
+        .expect("frame");
         let error = frame.run().expect_err("deep invocation must trap");
         assert!(matches!(
             error,

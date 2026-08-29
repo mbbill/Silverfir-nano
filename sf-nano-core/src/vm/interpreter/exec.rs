@@ -692,7 +692,7 @@ impl InterpInstanceAccess<'static> {
 
 impl<'a> InterpInstanceAccess<'a> {
     #[inline]
-    fn borrowed(instance: &'a mut InterpInstance) -> Self {
+    pub(super) fn borrowed(instance: &'a mut InterpInstance) -> Self {
         Self::Borrowed {
             pointer: NonNull::from(instance),
             lifetime: PhantomData,

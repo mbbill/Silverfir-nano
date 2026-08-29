@@ -11,10 +11,9 @@
 use crate::collections::Vec;
 use crate::error::WasmError;
 use crate::module::Module;
-use crate::op_decoder::{
-    raw_cursor::{RawBlockType, RawImmediate, RawOp},
-    CatchClauseKind, DecodedOp, Immediate,
-};
+#[cfg(sf_module_validator)]
+use crate::op_decoder::raw_cursor::{RawBlockType, RawImmediate, RawOp};
+use crate::op_decoder::{CatchClauseKind, DecodedOp, Immediate};
 use crate::opcodes::{Opcode, OpcodeFB, WasmOpcode};
 use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -588,6 +587,7 @@ impl BaselineFunctionBuilder {
     /// Plan the same side-table event directly from the allocation-free raw
     /// cursor. This is intentionally independent of `DecodedOp` and the
     /// folded predecoder: the only shared state is this artifact assembler.
+    #[cfg(sf_module_validator)]
     pub(super) fn plan_raw(
         &self,
         module: &Module,
@@ -1128,6 +1128,7 @@ fn to_u32(value: usize, message: &'static str) -> Result<u32, WasmError> {
     u32::try_from(value).map_err(|_| WasmError::invalid(message))
 }
 
+#[cfg(sf_module_validator)]
 fn raw_block_arity(module: &Module, block: RawBlockType) -> Result<(u32, u32), WasmError> {
     match block {
         RawBlockType::Empty => Ok((0, 0)),
