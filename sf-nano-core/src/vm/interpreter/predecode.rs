@@ -244,16 +244,10 @@ impl PredecodedFunction {
 
     /// Resolved branch-table targets for this function. The last entry in
     /// the selected table is the default target.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn br_table(&self, index: usize) -> Option<&[u32]> {
         self.br_tables.get(index).map(Vec::as_slice)
-    }
-
-    /// `(memory index, static offset)` for one memory64 access whose offset
-    /// cannot use the packed instruction field.
-    #[inline]
-    pub(crate) fn wide_memarg(&self, index: usize) -> Option<&(u32, u64)> {
-        self.wide_memargs.get(index)
     }
 
     /// The active handler chain at `pc`, innermost try first and in source
@@ -4591,6 +4585,35 @@ mod tests {
     }
 
     #[test]
+    fn linked_publication_keeps_metadata_in_per_function_rcs() {
+        let funcs = predecode_module_wat(
+            r#"(module
+                (func (param i32)
+                    (block $exit
+                        local.get 0
+                        br_table $exit $exit))
+                (func (param i32)
+                    (block $exit
+                        local.get 0
+                        br_table $exit $exit)))"#,
+        );
+        let first = funcs[0].as_ref().expect("first defined function");
+        let second = funcs[1].as_ref().expect("second defined function");
+
+        assert!(
+            !Rc::ptr_eq(first, second),
+            "function metadata must retain one Rc allocation per body"
+        );
+        assert_eq!(first.br_tables.len(), 1);
+        assert_eq!(second.br_tables.len(), 1);
+        assert_ne!(
+            first.br_tables.as_ptr(),
+            second.br_tables.as_ptr(),
+            "branch-table vectors must remain function-owned"
+        );
+    }
+
+    #[test]
     fn module_arena_rollback_preserves_neighboring_functions() {
         let wat = r#"(module
             (func (result i32) i32.const 7)
@@ -4660,7 +4683,8 @@ mod tests {
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
         let shared = predecode_functions(&module, &tag_identities, &function_handles)
-            .expect("shared predecode");
+            .expect("shared predecode")
+            .publish_for_test();
         for (index, shared) in shared.iter().enumerate() {
             let mut code = Vec::new();
             let mut fresh_scratch = PredecodeScratch::default();
@@ -4673,8 +4697,9 @@ mod tests {
                 &mut code,
                 &mut fresh_scratch,
             )
-            .expect("fresh predecode")
-            .finish(Rc::new(code));
+            .expect("fresh predecode");
+            let code = Rc::new(code);
+            let fresh = fresh.finish(Some(&code));
             assert_same_predecode(shared.as_ref().expect("defined function"), &fresh);
         }
     }
