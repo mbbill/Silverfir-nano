@@ -444,6 +444,11 @@ pub(super) struct PreparedCall {
     result_types: Vec<ValueType>,
 }
 
+pub(super) enum ResolvedIndirectCall {
+    Local(usize),
+    External(Box<PreparedCall>),
+}
+
 impl PreparedCall {
     fn invoke(&self) -> Result<Vec<u64>, WasmError> {
         let mut results = vec![0u64; self.result_types.len()];
@@ -1595,7 +1600,7 @@ impl InterpInstance {
     /// After construction for the same reason as the data segments: a trap
     /// here leaves writes that already landed -- possibly in another
     /// instance's table -- and the instance holding them must survive.
-    fn apply_element_segments(&mut self) -> Result<(), WasmError> {
+    pub(super) fn apply_element_segments(&mut self) -> Result<(), WasmError> {
         for ei in 0..self.module.elements().len() {
             let Some(Element::Active {
                 table_index,
@@ -3509,22 +3514,36 @@ impl InterpInstance {
         }
     }
 
-    /// Execute the common semantic slow path for `call_indirect` and
-    /// `return_call_indirect` after their operand representation has been
-    /// decoded. Native indirect-call guard exits can enter here directly;
-    /// static slow cells use the same helper through `exec_ins`.
-    fn exec_call_indirect(
-        &mut self,
-        frame: &mut [u64],
-        func: &PredecodedFunction,
+    /// Whether a baseline indirect call can treat this table as closed world.
+    /// Imported/exported or growable tables can change outside the baseline
+    /// executor and remain on its explicit unsupported boundary for now.
+    pub(super) fn call_indirect_table_is_closed(&self, table_index: usize) -> bool {
+        let Some(table) = self.tables.get(table_index) else {
+            return false;
+        };
+        !self
+            .table_reachable
+            .get(table_index)
+            .copied()
+            .unwrap_or(true)
+            && matches!(&table.entries, TableEntries::Private(_))
+            && table.max == table.entries.len() as u64
+    }
+
+    /// Resolve the semantic target shared by the folded and raw baseline
+    /// representations. The result owns any request that must leave the
+    /// instance materialization; local targets carry only their function index.
+    pub(super) fn resolve_call_indirect(
+        &self,
+        frame: &[u64],
         table_element: u64,
         arg_base: usize,
-        table_and_type: u64,
-        tail: bool,
-    ) -> Result<Effect, WasmError> {
+        table_index: usize,
+        expected_type: u32,
+    ) -> Result<ResolvedIndirectCall, WasmError> {
         let table = self
             .tables
-            .get((table_and_type >> 32) as usize)
+            .get(table_index)
             .ok_or(WasmError::trap("undefined element"))?;
         let fi = usize::try_from(table_element)
             .ok()
@@ -3541,7 +3560,7 @@ impl InterpInstance {
         if local.encoded() >= self.module.functions().len() {
             let entry = self.link_registry.functions.entry_for_handle(callee);
             if entry.is_some() {
-                let expected = RefType::non_nullable_concrete(table_and_type as u32);
+                let expected = RefType::non_nullable_concrete(expected_type);
                 if !ref_type_matches(callee, &expected.heap_type, RefTypeOwner::Interp(self))
                     .unwrap_or(false)
                 {
@@ -3551,7 +3570,7 @@ impl InterpInstance {
             let (param_types, result_types) = self
                 .module
                 .types()
-                .get_function_type(table_and_type as u32)
+                .get_function_type(expected_type)
                 .map(|ft| {
                     (
                         ft.params().iter().copied().collect::<Vec<_>>(),
@@ -3567,41 +3586,61 @@ impl InterpInstance {
                 arg_base,
                 entry,
             );
-            let tail_target = if tail {
-                Some(func.slow_tail_return.ok_or(WasmError::invalid(
-                    "interp: tail call has no return landing",
-                ))? as usize)
-            } else {
-                None
-            };
-            return Ok(Effect::ExternalCall {
-                call: Box::new(call),
-                arg_base,
-                tail_target,
-            });
+            return Ok(ResolvedIndirectCall::External(Box::new(call)));
         }
         let fi = local.encoded() as u32;
-        let expected = table_and_type as u32;
         let actual = self
             .module
             .functions()
             .get(fi as usize)
             .ok_or(WasmError::trap("undefined element"))?
             .type_index();
-        if !self.module.types().types_equivalent(expected, actual) {
+        if !self.module.types().types_equivalent(expected_type, actual) {
             return Err(WasmError::trap("indirect call type mismatch"));
         }
-        Ok(if tail {
-            Effect::TailCall {
-                callee: fi as usize,
-                arg_base,
+        Ok(ResolvedIndirectCall::Local(fi as usize))
+    }
+
+    /// Execute the common semantic slow path for `call_indirect` and
+    /// `return_call_indirect` after their operand representation has been
+    /// decoded. Native indirect-call guard exits can enter here directly;
+    /// static slow cells use the same helper through `exec_ins`.
+    fn exec_call_indirect(
+        &mut self,
+        frame: &mut [u64],
+        func: &PredecodedFunction,
+        table_element: u64,
+        arg_base: usize,
+        table_and_type: u64,
+        tail: bool,
+    ) -> Result<Effect, WasmError> {
+        match self.resolve_call_indirect(
+            frame,
+            table_element,
+            arg_base,
+            (table_and_type >> 32) as usize,
+            table_and_type as u32,
+        )? {
+            ResolvedIndirectCall::Local(callee) => Ok(if tail {
+                Effect::TailCall { callee, arg_base }
+            } else {
+                Effect::Call { callee, arg_base }
+            }),
+            ResolvedIndirectCall::External(call) => {
+                let tail_target = if tail {
+                    Some(func.slow_tail_return.ok_or(WasmError::invalid(
+                        "interp: tail call has no return landing",
+                    ))? as usize)
+                } else {
+                    None
+                };
+                Ok(Effect::ExternalCall {
+                    call,
+                    arg_base,
+                    tail_target,
+                })
             }
-        } else {
-            Effect::Call {
-                callee: fi as usize,
-                arg_base,
-            }
-        })
+        }
     }
 
     /// Execute exactly one instruction against `frame` — the native

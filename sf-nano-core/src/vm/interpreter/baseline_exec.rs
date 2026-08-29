@@ -15,6 +15,7 @@ use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
 use crate::Value;
 
+use super::exec::{PreparedCall, ResolvedIndirectCall};
 use super::{InterpInstance, InterpInstanceAccess};
 
 const MAX_BASELINE_CALL_DEPTH: usize = 4096;
@@ -124,6 +125,7 @@ enum BaselineImmediate {
     F64(u64),
     LocalIndex(u32),
     FunctionIndex(u32),
+    CallIndirect { typeidx: u32, tableidx: u32 },
     GlobalIndex(u32),
     MemoryIndex(u32),
     MemArg { offset: u64, memidx: u32 },
@@ -430,6 +432,16 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
             Opcode::CALL => {
                 let callee = raw_function(raw.imm)?;
                 self.exec_direct_call(callee, raw.start)?;
+            }
+            Opcode::CALL_INDIRECT => {
+                let (expected_type, table_index) = raw_call_indirect(raw.imm)?;
+                self.exec_indirect_call(expected_type, table_index, raw.start)?;
+            }
+            Opcode::RETURN_CALL_INDIRECT => {
+                return self.unsupported(Some(raw.wasm_op), raw.start, "return_call_indirect");
+            }
+            Opcode::CALL_REF | Opcode::RETURN_CALL_REF => {
+                return self.unsupported(Some(raw.wasm_op), raw.start, "call_ref");
             }
             Opcode::END => {
                 if raw.end == code_len {
@@ -1205,24 +1217,103 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         let call = self.access.with_instance(|instance| {
             instance.prepare_import_call(callee, &self.values, argument_base)
         })??;
+        self.run_prepared_call(&call, argument_base, result_count, source_pc, Opcode::CALL)
+    }
 
+    fn exec_indirect_call(
+        &mut self,
+        expected_type: u32,
+        table_index: u32,
+        source_pc: usize,
+    ) -> Result<(), BaselineExecError> {
+        let table_index = table_index as usize;
+        let closed = self
+            .access
+            .with_instance(|instance| instance.call_indirect_table_is_closed(table_index))?;
+        if !closed {
+            return Err(BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::CALL_INDIRECT)),
+                pc: source_pc,
+                feature: "open call_indirect table",
+            });
+        }
+        let (parameter_count, result_count) = self.access.with_instance(|instance| {
+            let function_type = instance
+                .module()
+                .types()
+                .get_function_type(expected_type)
+                .ok_or_else(|| WasmError::trap("indirect call type mismatch"))?;
+            if function_type
+                .params()
+                .iter()
+                .chain(function_type.results())
+                .any(|&value_type| !is_baseline_slot_type(value_type))
+            {
+                return Err(BaselineExecError::Unsupported {
+                    opcode: Some(WasmOpcode::OP(Opcode::CALL_INDIRECT)),
+                    pc: source_pc,
+                    feature: "unsupported call_indirect type",
+                });
+            }
+            Ok::<_, BaselineExecError>((
+                function_type.params().len(),
+                function_type.results().len(),
+            ))
+        })??;
+        let table_element = self.pop()?;
+        let caller_operand_base = self.current_activation()?.operand_base;
+        let argument_base = self
+            .values
+            .len()
+            .checked_sub(parameter_count)
+            .filter(|&base| base >= caller_operand_base)
+            .ok_or_else(|| WasmError::invalid("baseline MVP call argument underflow"))?;
+        let resolved = self.access.with_instance(|instance| {
+            instance.resolve_call_indirect(
+                &self.values,
+                table_element,
+                argument_base,
+                table_index,
+                expected_type,
+            )
+        })??;
+        match resolved {
+            ResolvedIndirectCall::Local(callee) => self.exec_direct_call(callee, source_pc),
+            ResolvedIndirectCall::External(call) => self.run_prepared_call(
+                &call,
+                argument_base,
+                result_count,
+                source_pc,
+                Opcode::CALL_INDIRECT,
+            ),
+        }
+    }
+
+    fn run_prepared_call(
+        &mut self,
+        call: &PreparedCall,
+        argument_base: usize,
+        result_count: usize,
+        source_pc: usize,
+        opcode: Opcode,
+    ) -> Result<(), BaselineExecError> {
         // `call` owns arguments, result types, names, and shared entity
         // handles. No materialized instance reference survives this point, so
         // host callbacks and linked foreign instances may safely re-enter the
         // runtime world before results are localized in a fresh short scope.
-        let returned = match InterpInstance::run_external_call(&self.access, &call) {
+        let returned = match InterpInstance::run_external_call(&self.access, call) {
             Ok(returned) => returned,
             Err(WasmError::HostThrow { .. } | WasmError::Exception { .. }) => {
                 return Err(BaselineExecError::Unsupported {
-                    opcode: Some(WasmOpcode::OP(Opcode::CALL)),
+                    opcode: Some(WasmOpcode::OP(opcode)),
                     pc: source_pc,
-                    feature: "imported call exceptions",
+                    feature: "external call exceptions",
                 });
             }
             Err(error) => return Err(error.into()),
         };
         if returned.len() != result_count {
-            return Err(WasmError::invalid("baseline MVP imported result count mismatch").into());
+            return Err(WasmError::invalid("baseline MVP external result count mismatch").into());
         }
         self.values.truncate(argument_base);
         for value in returned {
@@ -1474,6 +1565,9 @@ fn copy_immediate(immediate: RawImmediate<'_>) -> BaselineImmediate {
         RawImmediate::F64(value) => BaselineImmediate::F64(value),
         RawImmediate::LocalIndex(value) => BaselineImmediate::LocalIndex(value),
         RawImmediate::FunctionIndex(value) => BaselineImmediate::FunctionIndex(value),
+        RawImmediate::CallIndirect { typeidx, tableidx } => {
+            BaselineImmediate::CallIndirect { typeidx, tableidx }
+        }
         RawImmediate::GlobalIndex(value) => BaselineImmediate::GlobalIndex(value),
         RawImmediate::MemoryIndex(value) => BaselineImmediate::MemoryIndex(value),
         RawImmediate::MemArg { offset, memidx, .. } => BaselineImmediate::MemArg { offset, memidx },
@@ -1493,6 +1587,13 @@ fn raw_function(immediate: BaselineImmediate) -> Result<usize, BaselineExecError
         return Err(WasmError::internal("baseline MVP function immediate mismatch").into());
     };
     Ok(function as usize)
+}
+
+fn raw_call_indirect(immediate: BaselineImmediate) -> Result<(u32, u32), BaselineExecError> {
+    let BaselineImmediate::CallIndirect { typeidx, tableidx } = immediate else {
+        return Err(WasmError::internal("baseline MVP call_indirect immediate mismatch").into());
+    };
+    Ok((typeidx, tableidx))
 }
 
 fn raw_global(immediate: BaselineImmediate) -> Result<usize, BaselineExecError> {
@@ -1562,6 +1663,7 @@ mod tests {
     use crate::vm::interpreter::baseline_artifact::artifact_test_guard;
     use crate::vm::interpreter::predecode::build_baseline_artifact;
     use crate::vm::link::LinkRegistry;
+    use crate::vm::value::RefValue;
     use crate::Instance;
     use core::cell::Cell;
     use std::rc::Rc;
@@ -2485,6 +2587,252 @@ mod tests {
     }
 
     #[test]
+    fn closed_table_local_call_indirect_and_equivalent_types_match_folded() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $actual (func (param i32) (result i32)))
+                (type $equivalent (func (param i32) (result i32)))
+                (table 1 1 funcref)
+                (func $add (type $actual) (param i32) (result i32)
+                    local.get 0 i32.const 5 i32.add)
+                (elem (i32.const 0) $add)
+                (func (export "run") (param i32) (result i32)
+                    local.get 0 i32.const 0
+                    call_indirect (type $equivalent)))"#,
+        )
+        .expect("wat");
+        for input in [-9, 0, 37] {
+            let args = [Value::I32(input)];
+            let baseline = baseline(&wasm, "run", &args).expect("baseline call_indirect");
+            let folded = native(&wasm, "run", &args).expect("folded call_indirect");
+            assert_values_equal(&baseline, &folded);
+        }
+    }
+
+    #[test]
+    fn closed_table_call_indirect_traps_match_folded_exactly() {
+        let out_of_bounds = wat::parse_str(
+            r#"(module
+                (type $result (func (result i32)))
+                (table 1 1 funcref)
+                (func $value (type $result) (result i32) i32.const 1)
+                (elem (i32.const 0) $value)
+                (func (export "run") (result i32)
+                    i32.const 1 call_indirect (type $result)))"#,
+        )
+        .expect("out-of-bounds wat");
+        let null = wat::parse_str(
+            r#"(module
+                (type $result (func (result i32)))
+                (table 1 1 funcref)
+                (func (export "run") (result i32)
+                    i32.const 0 call_indirect (type $result)))"#,
+        )
+        .expect("null wat");
+        let wrong_type = wat::parse_str(
+            r#"(module
+                (type $expected (func (param i32) (result i32)))
+                (type $actual (func (param i64) (result i64)))
+                (table 1 1 funcref)
+                (func $value (type $actual) (param i64) (result i64) local.get 0)
+                (elem (i32.const 0) $value)
+                (func (export "run") (result i32)
+                    i32.const 7 i32.const 0
+                    call_indirect (type $expected)))"#,
+        )
+        .expect("wrong-type wat");
+        for (wasm, expected) in [
+            (out_of_bounds, "Trap: undefined element"),
+            (null, "Trap: uninitialized element"),
+            (wrong_type, "Trap: indirect call type mismatch"),
+        ] {
+            let baseline = baseline(&wasm, "run", &[]).expect_err("baseline trap");
+            let BaselineExecError::Wasm(baseline) = baseline else {
+                panic!("call_indirect trap became unsupported");
+            };
+            let folded = native(&wasm, "run", &[]).expect_err("folded trap");
+            assert_eq!(baseline, folded);
+            assert_eq!(baseline.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn closed_table_imported_host_call_indirect_is_not_misclassified_local() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (import "host" "add" (func $add (type $unary)))
+                (table 1 1 funcref)
+                (elem (i32.const 0) $add)
+                (func (export "run") (param i32) (result i32)
+                    local.get 0 i32.const 0 call_indirect (type $unary)))"#,
+        )
+        .expect("wat");
+        let function_type = crate::FunctionType::new(
+            crate::collections::vec![ValueType::I32],
+            crate::collections::vec![ValueType::I32],
+        );
+        let host = || {
+            crate::Import::func_typed(
+                "host",
+                "add",
+                |_caller, args, results| {
+                    let Value::I32(value) = args[0] else {
+                        return Err(WasmError::internal("host indirect argument"));
+                    };
+                    results[0] = Value::I32(value.wrapping_add(40));
+                    Ok(())
+                },
+                function_type.clone(),
+            )
+        };
+        let args = [Value::I32(2)];
+        let baseline = baseline_with_imports(&wasm, "run", &args, &[host()])
+            .expect("baseline host call_indirect");
+        let folded =
+            native_with_imports(&wasm, "run", &args, &[host()]).expect("folded host call_indirect");
+        assert_values_equal(&baseline, &folded);
+        assert_eq!(baseline, [Value::I32(42)]);
+    }
+
+    #[test]
+    fn closed_table_foreign_linked_funcref_uses_external_barrier() {
+        let provider_wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (func (export "plus") (type $unary) (param i32) (result i32)
+                    local.get 0 i32.const 40 i32.add))"#,
+        )
+        .expect("provider wat");
+        let importer_wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (import "provider" "plus" (func $plus (type $unary)))
+                (table 1 1 funcref)
+                (elem (i32.const 0) $plus)
+                (func (export "run") (param i32) (result i32)
+                    local.get 0 i32.const 0 call_indirect (type $unary)
+                    i32.const 2 i32.add))"#,
+        )
+        .expect("importer wat");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        let mut world = crate::RuntimeWorld::new();
+        let provider = world
+            .instantiate(
+                &engine,
+                Module::new("indirect-provider", &provider_wasm).expect("module"),
+                &[],
+            )
+            .expect("provider instance");
+        let provider_instance = world.instance(provider).expect("provider facade");
+        let handle = provider_instance
+            .function_handle_at(0)
+            .expect("provider function identity");
+        let function_type = provider_instance
+            .function_type_at(0)
+            .expect("provider function type");
+        let import = crate::Import::linked_func_typed("provider", "plus", handle, function_type);
+        let importer_module = Module::new("indirect-importer", &importer_wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&importer_module).expect("artifact");
+        let importer = world
+            .instantiate(&engine, importer_module, &[import])
+            .expect("importer instance");
+        let args = [Value::I32(0)];
+        let baseline = baseline_on_instance(
+            world.instance(importer).expect("importer facade"),
+            &artifact,
+            "run",
+            &args,
+        )
+        .expect("baseline foreign call_indirect");
+        let folded = world
+            .invoke(importer, "run", &args)
+            .expect("folded foreign call_indirect");
+        assert_values_equal(&baseline, &folded);
+        assert_eq!(baseline, [Value::I32(42)]);
+    }
+
+    #[test]
+    fn open_table_and_deferred_indirect_forms_are_explicitly_unsupported() {
+        let open_table = wat::parse_str(
+            r#"(module
+                (type $result (func (result i32)))
+                (table (export "table") 1 1 funcref)
+                (func $value (type $result) (result i32) i32.const 1)
+                (elem (i32.const 0) $value)
+                (func (export "run") (result i32)
+                    i32.const 0 call_indirect (type $result)))"#,
+        )
+        .expect("open table wat");
+        let error = baseline(&open_table, "run", &[]).expect_err("open table unsupported");
+        assert!(matches!(
+            error,
+            BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::CALL_INDIRECT)),
+                feature: "open call_indirect table",
+                ..
+            }
+        ));
+
+        let tail = wat::parse_str(
+            r#"(module
+                (type $result (func (result i32)))
+                (table 1 1 funcref)
+                (func $value (type $result) (result i32) i32.const 1)
+                (elem (i32.const 0) $value)
+                (func (export "run") (result i32)
+                    i32.const 0 return_call_indirect (type $result)))"#,
+        )
+        .expect("tail wat");
+        let error = baseline(&tail, "run", &[]).expect_err("tail indirect unsupported");
+        assert!(matches!(
+            error,
+            BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::RETURN_CALL_INDIRECT)),
+                feature: "return_call_indirect",
+                ..
+            }
+        ));
+
+        let call_ref = wat::parse_str(
+            r#"(module
+                (type $result (func (result i32)))
+                (func (export "run") (param funcref) (result i32)
+                    local.get 0 call_ref $result))"#,
+        )
+        .expect("call_ref wat");
+        let args = [Value::Ref(RefValue::null(), RefType::funcref())];
+        let error = baseline(&call_ref, "run", &args).expect_err("call_ref unsupported");
+        assert!(matches!(
+            error,
+            BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::CALL_REF)),
+                feature: "call_ref",
+                ..
+            }
+        ));
+
+        let mutation = wat::parse_str(
+            r#"(module
+                (table 1 1 funcref)
+                (func (export "run") (param funcref)
+                    i32.const 0 local.get 0 table.set))"#,
+        )
+        .expect("table mutation wat");
+        let args = [Value::Ref(RefValue::null(), RefType::funcref())];
+        let error = baseline(&mutation, "run", &args).expect_err("table.set unsupported");
+        assert!(matches!(
+            error,
+            BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::TABLE_SET)),
+                feature: "MVP opcode",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn active_try_with_imported_call_is_explicitly_unsupported() {
         let wasm = wat::parse_str(
             r#"(module
@@ -2505,6 +2853,43 @@ mod tests {
         });
         let error = baseline_with_imports(&wasm, "run", &[], &[import])
             .expect_err("active EH is unsupported");
+        assert!(matches!(
+            error,
+            BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::TRY_TABLE)),
+                feature: "MVP opcode",
+                ..
+            }
+        ));
+        assert_eq!(calls.get(), 0);
+
+        let indirect = wat::parse_str(
+            r#"(module
+                (type $call (func))
+                (import "host" "call" (func $call (type $call)))
+                (table 1 1 funcref)
+                (elem (i32.const 0) $call)
+                (func (export "run")
+                    block $done
+                        try_table (catch_all $done)
+                            i32.const 0 call_indirect (type $call)
+                        end
+                    end))"#,
+        )
+        .expect("indirect wat");
+        let calls = Rc::new(Cell::new(0usize));
+        let callback_calls = Rc::clone(&calls);
+        let import = crate::Import::func_typed(
+            "host",
+            "call",
+            move |_caller, _args, _results| {
+                callback_calls.set(callback_calls.get() + 1);
+                Ok(())
+            },
+            crate::FunctionType::new(crate::collections::vec![], crate::collections::vec![]),
+        );
+        let error = baseline_with_imports(&indirect, "run", &[], &[import])
+            .expect_err("active indirect EH is unsupported");
         assert!(matches!(
             error,
             BaselineExecError::Unsupported {
@@ -2612,6 +2997,50 @@ mod tests {
         assert_eq!(frame.activations.capacity(), activations_capacity);
     }
 
+    #[cfg(not(feature = "memprof"))]
+    #[test]
+    fn warm_closed_table_local_call_indirect_has_zero_allocations() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (table 1 1 funcref)
+                (func $add (type $unary) (param i32) (result i32)
+                    local.get 0 i32.const 5 i32.add)
+                (elem (i32.const 0) $add)
+                (func (export "run") (param i32) (result i32)
+                    local.get 0 i32.const 0 call_indirect (type $unary)))"#,
+        )
+        .expect("wat");
+        let module = Module::new("baseline-indirect-allocation", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let mut instance = initialized_interp(module, &[]);
+        let args = [Value::I32(37)];
+        let mut frame = BaselineFrame::new(
+            InterpInstanceAccess::borrowed(&mut instance),
+            &artifact,
+            1,
+            &args,
+        )
+        .expect("frame");
+        frame.run().expect("warm-up indirect invocation");
+        assert_eq!(frame.values.as_slice(), &[42]);
+        let values_pointer = frame.values.as_ptr();
+        let activations_pointer = frame.activations.as_ptr();
+        let values_capacity = frame.values.capacity();
+        let activations_capacity = frame.activations.capacity();
+        let mut output = [Value::I32(0)];
+        let (result, census) =
+            crate::test_alloc::measure(|| frame.invoke_again(&args, &mut output));
+        result.expect("warm indirect invocation");
+        assert_eq!(census, crate::test_alloc::Census::default());
+        assert_eq!(output, [Value::I32(42)]);
+        assert_eq!(frame.values.as_ptr(), values_pointer);
+        assert_eq!(frame.activations.as_ptr(), activations_pointer);
+        assert_eq!(frame.values.capacity(), values_capacity);
+        assert_eq!(frame.activations.capacity(), activations_capacity);
+    }
+
     #[test]
     fn instance_access_memory_and_global_keep_borrows_scoped() {
         let wasm = wat::parse_str(
@@ -2692,6 +3121,40 @@ mod tests {
         .expect("frame");
         frame.run().expect("baseline imported call");
         assert_eq!(frame.results().expect("results"), [Value::I32(21)]);
+    }
+
+    #[test]
+    fn call_indirect_resolver_keeps_instance_borrows_scoped() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (table 1 1 funcref)
+                (func $add (type $unary) (param i32) (result i32)
+                    local.get 0 i32.const 5 i32.add)
+                (elem (i32.const 0) $add)
+                (func (export "run") (param i32) (result i32)
+                    local.get 0 i32.const 0 call_indirect (type $unary)))"#,
+        )
+        .expect("wat");
+        let module = Module::new("baseline-indirect-borrows", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        // Build the real table entity and apply its active segment, but stop
+        // before native linking so Miri can execute the common resolver.
+        let mut instance = built_interp(module, &[]);
+        instance
+            .apply_element_segments()
+            .expect("active element segment");
+        let args = [Value::I32(37)];
+        let mut frame = BaselineFrame::new(
+            InterpInstanceAccess::borrowed(&mut instance),
+            &artifact,
+            1,
+            &args,
+        )
+        .expect("frame");
+        frame.run().expect("baseline call_indirect");
+        assert_eq!(frame.results().expect("results"), [Value::I32(42)]);
     }
 
     #[cfg(not(feature = "memprof"))]
