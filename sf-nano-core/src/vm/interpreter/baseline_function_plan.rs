@@ -3,7 +3,9 @@
 //! This module selects metadata only. It neither enters the executor nor
 //! changes the production interpreter's representation choice.
 
-use super::baseline_artifact::{BaselineArtifact, BaselineFunction, LoopRegion};
+use super::baseline_artifact::{
+    BaselineArtifact, BaselineFunction, BaselineFunctionEligibility, LoopRegion,
+};
 use crate::collections::{vec, Vec};
 use crate::error::WasmError;
 use crate::module::entities::Function;
@@ -104,9 +106,23 @@ pub(crate) fn select_function_plans(
         let Some(spec) = function.spec() else {
             continue;
         };
-        let artifact_function = artifact.functions[index]
-            .as_ref()
-            .ok_or_else(|| WasmError::invalid("baseline plan local artifact missing"))?;
+        let artifact_function = match artifact.function_eligibility(module, index) {
+            Some(BaselineFunctionEligibility::Baseline(function)) => function,
+            Some(BaselineFunctionEligibility::FullFold) => {
+                full[index] = true;
+                continue;
+            }
+            Some(BaselineFunctionEligibility::Import) => {
+                return Err(WasmError::invalid(
+                    "baseline plan local function classified as import",
+                ));
+            }
+            None => {
+                return Err(WasmError::invalid(
+                    "baseline plan function eligibility missing",
+                ));
+            }
+        };
         full[index] |= function_frame_is_unsupported(function);
         full[index] |= has_uncovered_raw_opcode(module, spec.code(), artifact, artifact_function)?;
         full[index] |= eh_crosses_region_boundary(artifact, artifact_function);
@@ -456,6 +472,16 @@ mod tests {
     fn plans(wat: &str) -> StdVec<FunctionPlanKind> {
         let (module, artifact) = fixture(wat);
         select_function_plans(&module, &artifact).expect("function plans")
+    }
+
+    #[test]
+    fn validated_artifact_ineligible_local_is_full_fold() {
+        let (module, mut artifact) = fixture("(module (func nop))");
+        artifact.functions[0] = None;
+        assert_eq!(
+            select_function_plans(&module, &artifact).expect("plans"),
+            [FunctionPlanKind::FullFold]
+        );
     }
 
     #[test]
