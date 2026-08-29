@@ -2966,7 +2966,7 @@ impl InterpInstance {
         mem_idx: usize,
         offset: u64,
         size: usize,
-    ) -> Result<&[u8], WasmError> {
+    ) -> Result<u64, WasmError> {
         let mem = self
             .memories
             .get(mem_idx)
@@ -2982,7 +2982,11 @@ impl InterpInstance {
         if end > mem.len() as u64 {
             return Err(WasmError::trap("out of bounds memory access"));
         }
-        Ok(&mem.bytes()[ea as usize..end as usize])
+        let mut bytes = [0u8; 8];
+        if !mem.inst.read_bytes(ea as usize, &mut bytes[..size]) {
+            return Err(WasmError::trap("out of bounds memory access"));
+        }
+        Ok(u64::from_le_bytes(bytes))
     }
 
     pub(super) fn mem_store(
@@ -2991,7 +2995,8 @@ impl InterpInstance {
         mem_idx: usize,
         offset: u64,
         size: usize,
-    ) -> Result<&mut [u8], WasmError> {
+        value: u64,
+    ) -> Result<(), WasmError> {
         let mem = self
             .memories
             .get_mut(mem_idx)
@@ -3008,7 +3013,13 @@ impl InterpInstance {
         if end > mem.len() as u64 {
             return Err(WasmError::trap("out of bounds memory access"));
         }
-        Ok(&mut mem.bytes_mut()[ea as usize..end as usize])
+        if !mem
+            .inst
+            .write_bytes(ea as usize, &value.to_le_bytes()[..size])
+        {
+            return Err(WasmError::trap("out of bounds memory access"));
+        }
+        Ok(())
     }
 
     /// Current page count in the memory's index type, represented as a raw
@@ -3053,13 +3064,10 @@ impl InterpInstance {
                     && want <= runtime_cap
                     && new_len <= usize::MAX as u64 =>
             {
-                let data = &mut mem.inst.backing_mut().data;
-                let additional = (new_len as usize).saturating_sub(data.len());
-                if data.try_reserve(additional).is_err() {
-                    Ok(fail)
-                } else {
-                    data.resize(new_len as usize, 0);
+                if mem.inst.try_grow_to(new_len as usize) {
                     Ok(cur)
+                } else {
+                    Ok(fail)
                 }
             }
             _ => Ok(fail),
@@ -3740,10 +3748,7 @@ impl InterpInstance {
                     (opa!($ins) as u32 as u64, $ins.c as usize)
                 };
                 let (mi, offset) = Self::memarg(func, $ins.b);
-                let bytes = self.mem_load(addr, mi, offset, $size)?;
-                let mut buf = [0u8; 8];
-                buf[..$size].copy_from_slice(bytes);
-                frame[dst] = $conv(u64::from_le_bytes(buf));
+                frame[dst] = $conv(self.mem_load(addr, mi, offset, $size)?);
             }};
         }
         macro_rules! store {
@@ -3761,8 +3766,7 @@ impl InterpInstance {
                 };
                 let val = opb!($ins);
                 let (mi, offset) = Self::memarg(func, off);
-                let bytes = self.mem_store(addr, mi, offset, $size)?;
-                bytes.copy_from_slice(&val.to_le_bytes()[..$size]);
+                self.mem_store(addr, mi, offset, $size, val)?;
             }};
         }
 
@@ -6150,12 +6154,8 @@ mod tests {
         .expect("folded instance");
 
         let raw = 0x89ab_cdefu32 as u64;
-        helper
-            .mem_store(8, 0, 4, 4)
-            .expect("helper store")
-            .copy_from_slice(&(raw as u32).to_le_bytes());
-        let mut helper_bytes = [0u8; 4];
-        helper_bytes.copy_from_slice(helper.mem_load(8, 0, 4, 4).expect("helper load"));
+        helper.mem_store(8, 0, 4, 4, raw).expect("helper store");
+        let helper_raw = helper.mem_load(8, 0, 4, 4).expect("helper load");
         let mut folded_result = [0u64; 1];
         folded
             .invoke(
@@ -6164,7 +6164,7 @@ mod tests {
                 &mut folded_result,
             )
             .expect("folded roundtrip");
-        assert_eq!(u32::from_le_bytes(helper_bytes) as u64, folded_result[0]);
+        assert_eq!(helper_raw, folded_result[0]);
 
         let helper_oob = helper.mem_load(65_534, 0, 0, 4).expect_err("helper OOB");
         let folded_oob = folded
@@ -6237,12 +6237,8 @@ mod tests {
         .expect("folded instance");
 
         let raw = 0x0123_4567_89ab_cdefu64;
-        helper
-            .mem_store(16, 0, 8, 8)
-            .expect("helper store")
-            .copy_from_slice(&raw.to_le_bytes());
-        let mut helper_bytes = [0u8; 8];
-        helper_bytes.copy_from_slice(helper.mem_load(16, 0, 8, 8).expect("helper load"));
+        helper.mem_store(16, 0, 8, 8, raw).expect("helper store");
+        let helper_raw = helper.mem_load(16, 0, 8, 8).expect("helper load");
         let mut folded_result = [0u64; 1];
         folded
             .invoke(
@@ -6251,7 +6247,7 @@ mod tests {
                 &mut folded_result,
             )
             .expect("folded roundtrip");
-        assert_eq!(u64::from_le_bytes(helper_bytes), folded_result[0]);
+        assert_eq!(helper_raw, folded_result[0]);
 
         let helper_oob = helper.mem_load(65_530, 0, 0, 8).expect_err("helper OOB");
         let folded_oob = folded
@@ -6284,6 +6280,73 @@ mod tests {
             )
             .expect("folded refused grow");
         assert_eq!(folded_result[0], u64::MAX);
+    }
+
+    #[cfg(all(sf_has_guard_pages, sf_jit))]
+    #[test]
+    fn interpreter_grows_a_shared_jit_guarded_memory() {
+        let provider_wasm = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1 3))"#,
+        )
+        .expect("provider wat");
+        let jit =
+            Engine::new(Config::new().tier(crate::vm::engine::Tier::Jit)).expect("jit engine");
+        let provider_module = Module::new("guard-provider", &provider_wasm).expect("module");
+        let provider = crate::Instance::from_module(&jit, provider_module, &[])
+            .expect("jit provider instance");
+        let shared = provider.shared_memory_at(0).expect("exported memory");
+        assert!(shared.has_guard_pages());
+
+        let importer_wasm = wat::parse_str(
+            r#"(module
+                (import "provider" "memory" (memory 1 3))
+                (func (export "grow") (param i32) (result i32)
+                    local.get 0 memory.grow)
+                (func (export "size") (result i32) memory.size)
+                (func (export "roundtrip-new-page") (param i32) (result i32)
+                    i32.const 65536 local.get 0 i32.store
+                    i32.const 65536 i32.load))"#,
+        )
+        .expect("importer wat");
+        let import = Import::memory_with_state(
+            "provider",
+            "memory",
+            shared.limits.clone(),
+            Some(shared.clone()),
+        );
+        let interp = Engine::new(Config::new().tier(crate::vm::engine::Tier::Interp))
+            .expect("interp engine");
+        let importer_module = Module::new("guard-importer", &importer_wasm).expect("module");
+        let mut importer = crate::Instance::from_module(&interp, importer_module, &[import])
+            .expect("interp importer instance");
+
+        assert_eq!(
+            importer
+                .invoke("grow", &[Value::I32(1)])
+                .expect("interpreter grow"),
+            crate::collections::vec![Value::I32(1)]
+        );
+        assert_eq!(provider.memory_pages("memory"), Some(2));
+        assert_eq!(shared.current_pages(), 2);
+        assert_eq!(
+            importer.invoke("size", &[]).expect("interpreter size"),
+            crate::collections::vec![Value::I32(2)]
+        );
+        assert_eq!(
+            importer
+                .invoke("roundtrip-new-page", &[Value::I32(0x1234_5678)])
+                .expect("newly committed page is accessible"),
+            crate::collections::vec![Value::I32(0x1234_5678)]
+        );
+
+        assert_eq!(
+            importer
+                .invoke("grow", &[Value::I32(2)])
+                .expect("over-limit grow returns failure"),
+            crate::collections::vec![Value::I32(-1)]
+        );
+        assert_eq!(provider.memory_pages("memory"), Some(2));
     }
 
     #[test]
@@ -6433,12 +6496,8 @@ mod tests {
         )
         .expect("build instance state");
 
-        inst.mem_store(4, 0, 0, 4)
-            .expect("store")
-            .copy_from_slice(&0x1234_5678u32.to_le_bytes());
-        let mut loaded = [0u8; 4];
-        loaded.copy_from_slice(inst.mem_load(4, 0, 0, 4).expect("load"));
-        assert_eq!(u32::from_le_bytes(loaded), 0x1234_5678);
+        inst.mem_store(4, 0, 0, 4, 0x1234_5678).expect("store");
+        assert_eq!(inst.mem_load(4, 0, 0, 4).expect("load"), 0x1234_5678);
         assert_eq!(inst.memory_grow(0, 1).expect("grow"), 1);
 
         let second_local = ref_to_machine_raw(RefValue::new(1), SLOT_GP_UNIT_BYTES);
