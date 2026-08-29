@@ -3,9 +3,12 @@
 //! Unlike the original oracle in `predecode`, this scanner never constructs
 //! a folded instruction cell. It owns only a height/reachability control
 //! model and feeds raw structural events into the shared artifact assembler.
+//! It is deliberately available only with the standalone module validator:
+//! raw height accounting is not a replacement for full Wasm type validation.
 
 use super::baseline_artifact::{BaselineArtifact, BaselineFunctionBuilder};
 use crate::error::WasmError;
+use crate::module::validator::Validator;
 use crate::module::Module;
 use crate::op_decoder::raw_cursor::{
     RawBlockType, RawDecodeError, RawImmediate, RawOp, RawOpCursor,
@@ -416,6 +419,11 @@ impl RawFunctionScanner {
 pub(super) fn build_baseline_artifact_raw(
     module: &Module,
 ) -> Result<BaselineArtifact, RawArtifactError> {
+    // Publication is conditional on a complete validation pass. The scanner
+    // checks a few bounds as it consumes metadata, but intentionally does not
+    // grow a second, incomplete type validator inside the interpreter.
+    Validator::new(module).validate()?;
+
     let mut artifact = BaselineArtifact::new(module.functions().len());
     for (function_index, function) in module.functions().iter().enumerate() {
         let Some(spec) = function.spec() else {
@@ -507,7 +515,9 @@ fn simple_effect(opcode: Opcode) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::interpreter::baseline_artifact::{artifact_test_guard, BaselineArtifact};
+    use crate::vm::interpreter::baseline_artifact::{
+        artifact_build_count, artifact_test_guard, BaselineArtifact,
+    };
     use crate::vm::interpreter::predecode::build_baseline_artifact;
 
     fn artifacts(wat: &str) -> (BaselineArtifact, BaselineArtifact) {
@@ -580,6 +590,35 @@ mod tests {
                         nop
                     end))"#,
         );
+    }
+
+    #[test]
+    fn full_validation_rejects_bad_indices_before_artifact_publication() {
+        let _guard = artifact_test_guard();
+        for wat in [
+            "(module (func ref.func 1 drop))",
+            "(module (func local.get 0 drop))",
+            "(module (func global.get 0 drop))",
+            "(module (func i32.const 0 table.get 0 drop))",
+            "(module (func memory.size 0 drop))",
+            "(module (func i32.const 0 i32.load 0 drop))",
+            "(module (func ref.null func call_ref 0))",
+            "(module (type (func)) (func i32.const 0 call_indirect (type 0)))",
+        ] {
+            let wasm = wat::parse_str(wat).expect("encode invalid-index fixture");
+            let module = Module::new("raw-artifact-invalid-index", &wasm).expect("parse module");
+            let before = artifact_build_count();
+            let error = build_baseline_artifact_raw(&module).expect_err("validation must reject");
+            assert!(
+                matches!(error, RawArtifactError::Wasm(WasmError::Invalid(_))),
+                "unexpected error for {wat}: {error}"
+            );
+            assert_eq!(
+                artifact_build_count(),
+                before,
+                "invalid module published an artifact for {wat}"
+            );
+        }
     }
 
     #[test]
@@ -670,6 +709,37 @@ mod tests {
                     drop
                     local.get $x))"#,
         );
+    }
+
+    #[test]
+    fn try_table_ranges_survive_canonical_loop_safety_retry() {
+        let (oracle, raw) = artifacts(
+            r#"(module
+                (tag $e (param i32))
+                (func (param $x i32) (param $n i32) (result i32)
+                    local.get $x
+                    loop $unsafe (param i32) (result i32)
+                        drop
+                        i32.const 42
+                        local.get $n
+                        i32.const 1
+                        i32.sub
+                        local.tee $n
+                        br_if $unsafe
+                    end
+                    drop
+                    block $handler (result i32)
+                        try_table (result i32) (catch $e $handler)
+                            local.get $x
+                        end
+                    end))"#,
+        );
+        assert_eq!(raw, oracle);
+        assert_eq!(oracle.try_tables.len(), 1, "retry duplicated try metadata");
+        assert_eq!(oracle.catches.len(), 1, "retry duplicated catch metadata");
+        let function = oracle.functions[0].as_ref().expect("local function");
+        assert_eq!(function.try_tables, 0..1);
+        assert_eq!(function.catches, 0..1);
     }
 
     #[test]
