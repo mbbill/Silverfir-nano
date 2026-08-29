@@ -1,17 +1,15 @@
-//! Allocation-free, single-step decoder used by decoder experiments and tests.
+//! Allocation-free, single-step decoder used by baseline planning and tests.
 //!
-//! This deliberately stays behind `cfg(test)`: it is an oracle/prototyping
-//! surface, not a second production decoder. Every successful `next` commits
-//! exactly one instruction; errors leave the cursor at the original byte.
+//! Every successful `next` commits exactly one instruction; errors leave the
+//! cursor at the original byte.
 
 use super::{decode_block_type, decode_mem_arg, BlockType, CatchClauseKind, Immediate};
+#[cfg(test)]
+use crate::utils::leb128;
 use crate::{
     error::WasmError,
     opcodes::{Opcode, OpcodeFB, OpcodeFC, OpcodeFD, WasmOpcode},
-    utils::{
-        leb128,
-        payload::{Payload, PayloadError},
-    },
+    utils::payload::{Payload, PayloadError},
     value_type::{HeapType, RefType, ValueType},
 };
 
@@ -28,6 +26,7 @@ pub(crate) struct RawU32Range<'a> {
     count: u32,
 }
 
+#[cfg(test)]
 impl<'a> RawU32Range<'a> {
     pub(crate) const fn len(self) -> u32 {
         self.count
@@ -50,6 +49,7 @@ impl<'a> RawU32Range<'a> {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RawU32Iter<'a> {
     bytes: &'a [u8],
@@ -57,6 +57,7 @@ pub(crate) struct RawU32Iter<'a> {
     remaining: u32,
 }
 
+#[cfg(test)]
 impl Iterator for RawU32Iter<'_> {
     type Item = Result<u32, WasmError>;
 
@@ -84,6 +85,7 @@ impl Iterator for RawU32Iter<'_> {
     }
 }
 
+#[cfg(test)]
 impl ExactSizeIterator for RawU32Iter<'_> {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +101,7 @@ pub(crate) struct RawCatchRange<'a> {
     count: u32,
 }
 
+#[cfg(test)]
 impl<'a> RawCatchRange<'a> {
     pub(crate) const fn len(self) -> u32 {
         self.count
@@ -121,6 +124,7 @@ impl<'a> RawCatchRange<'a> {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RawCatchIter<'a> {
     bytes: &'a [u8],
@@ -128,6 +132,7 @@ pub(crate) struct RawCatchIter<'a> {
     remaining: u32,
 }
 
+#[cfg(test)]
 impl Iterator for RawCatchIter<'_> {
     type Item = Result<RawCatch, WasmError>;
 
@@ -155,6 +160,7 @@ impl Iterator for RawCatchIter<'_> {
     }
 }
 
+#[cfg(test)]
 impl ExactSizeIterator for RawCatchIter<'_> {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +169,7 @@ pub(crate) struct RawValueTypeRange<'a> {
     count: u32,
 }
 
+#[cfg(test)]
 impl<'a> RawValueTypeRange<'a> {
     pub(crate) const fn len(self) -> u32 {
         self.count
@@ -185,6 +192,7 @@ impl<'a> RawValueTypeRange<'a> {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RawValueTypeIter<'a> {
     bytes: &'a [u8],
@@ -192,6 +200,7 @@ pub(crate) struct RawValueTypeIter<'a> {
     remaining: u32,
 }
 
+#[cfg(test)]
 impl Iterator for RawValueTypeIter<'_> {
     type Item = Result<ValueType, WasmError>;
 
@@ -214,6 +223,7 @@ impl Iterator for RawValueTypeIter<'_> {
     }
 }
 
+#[cfg(test)]
 impl ExactSizeIterator for RawValueTypeIter<'_> {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -308,10 +318,12 @@ impl<'a> RawOpCursor<'a> {
         Self { bytes, pc: 0 }
     }
 
+    #[cfg(test)]
     pub(crate) const fn at(bytes: &'a [u8], pc: usize) -> Self {
         Self { bytes, pc }
     }
 
+    #[cfg(test)]
     pub(crate) const fn position(&self) -> usize {
         self.pc
     }

@@ -1,29 +1,31 @@
-//! Diagnostic-only eager baseline representation.
+//! Validated baseline planning metadata.
 //!
-//! This records the information a future raw-Wasm execution tier would need
-//! without changing which code representation production builds or executes.
-//! The collector is driven by the interpreter predecoder in tests so its
-//! accepted input language stays identical to today's interpreter. A future
-//! production baseline should move the structural collection into a cheaper
-//! raw scan (or the predecoder's validation work) and must not materialize
-//! [`super::instr::Instr`] cells for baseline-only functions.
+//! Validator-enabled interpreter instances retain this compact structural
+//! artifact and its function plan while still fully predecoding and executing
+//! every function through the folded interpreter.
 
 use crate::collections::Vec;
 use crate::error::WasmError;
 use crate::module::Module;
-#[cfg(sf_module_validator)]
+#[cfg(test)]
 use crate::op_decoder::raw_cursor::{RawBlockType, RawImmediate, RawOp};
 use crate::op_decoder::{CatchClauseKind, DecodedOp, Immediate};
 use crate::opcodes::{Opcode, OpcodeFB, WasmOpcode};
 use crate::value_type::ValueType;
+#[cfg(test)]
+use core::cell::Cell;
 use core::ops::Range;
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 const UNRESOLVED: u32 = u32::MAX;
 
-static ARTIFACT_BUILD_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+std::thread_local! {
+    static ARTIFACT_BUILD_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+#[cfg(test)]
 static ARTIFACT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
 pub(super) fn artifact_test_guard() -> std::sync::MutexGuard<'static, ()> {
     ARTIFACT_TEST_LOCK
         .lock()
@@ -117,7 +119,7 @@ pub(crate) struct LoopRegion {
 }
 
 impl LoopRegion {
-    #[cfg(sf_module_validator)]
+    #[cfg(test)]
     pub(crate) fn execution_switching_available(&self) -> bool {
         matches!(self.boundary_types, LoopBoundaryTypes::Available { .. })
             && self.escaping_types_available
@@ -128,6 +130,7 @@ impl BaselineFunction {
     /// Translate a function-relative side-table cursor into the module-wide
     /// flat arena. The cursor may equal the range end when control transfers
     /// past this function's final side entry.
+    #[cfg(test)]
     pub(crate) fn absolute_stp(&self, relative: u32) -> Option<usize> {
         let absolute = self.control_targets.start.checked_add(relative as usize)?;
         (absolute <= self.control_targets.end).then_some(absolute)
@@ -209,6 +212,7 @@ pub(crate) struct IndirectCallSite {
 }
 
 impl BaselineArtifact {
+    #[cfg(test)]
     pub(super) fn new(function_count: usize) -> Self {
         Self::new_unpublished(function_count).into_published()
     }
@@ -230,7 +234,8 @@ impl BaselineArtifact {
     }
 
     pub(super) fn into_published(self) -> Self {
-        ARTIFACT_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        ARTIFACT_BUILD_COUNT.with(|count| count.set(count.get() + 1));
         self
     }
 
@@ -307,8 +312,9 @@ impl BaselineArtifact {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn artifact_build_count() -> usize {
-    ARTIFACT_BUILD_COUNT.load(Ordering::Relaxed)
+    ARTIFACT_BUILD_COUNT.with(Cell::get)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -800,7 +806,7 @@ impl BaselineFunctionBuilder {
     /// Plan the same side-table event directly from the allocation-free raw
     /// cursor. This is intentionally independent of `DecodedOp` and the
     /// folded predecoder: the only shared state is this artifact assembler.
-    #[cfg(sf_module_validator)]
+    #[cfg(test)]
     pub(super) fn plan_raw(
         &self,
         module: &Module,
@@ -1180,6 +1186,7 @@ impl BaselineFunctionBuilder {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn observe_height(&mut self, stack_height: usize) -> Result<(), WasmError> {
         self.commit(ArtifactEvent::None, stack_height)
     }
@@ -1374,7 +1381,7 @@ fn to_u32(value: usize, message: &'static str) -> Result<u32, WasmError> {
     u32::try_from(value).map_err(|_| WasmError::invalid(message))
 }
 
-#[cfg(sf_module_validator)]
+#[cfg(test)]
 fn raw_block_arity(module: &Module, block: RawBlockType) -> Result<(u32, u32), WasmError> {
     match block {
         RawBlockType::Empty => Ok((0, 0)),

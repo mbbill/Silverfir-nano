@@ -40,13 +40,13 @@ use core::cell::RefCell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
-#[cfg(all(test, sf_module_validator))]
+#[cfg(sf_module_validator)]
 use super::baseline_artifact::BaselineArtifact;
 #[cfg(all(test, sf_module_validator))]
 use super::baseline_exec::{
     raw_stepper_supports_function, RawFrameState, RawSlots, RawStepExit, RawStepper,
 };
-#[cfg(all(test, sf_module_validator))]
+#[cfg(sf_module_validator)]
 use super::baseline_function_plan::FunctionPlanKind;
 use super::engine::{
     CallFixup, DCell, EnterState, LinkPlan, LinkScratch, LinkedFunction, NativeEngine, EXIT_RETURN,
@@ -683,6 +683,12 @@ pub struct InterpInstance {
     /// satisfies it.
     self_abs_base: usize,
     self_local_by_abs: Vec<u32>,
+    /// Single-decode validation output retained for future tier selection.
+    /// Production execution does not consult it yet.
+    #[cfg(sf_module_validator)]
+    baseline_artifact: BaselineArtifact,
+    #[cfg(sf_module_validator)]
+    baseline_plan: Vec<FunctionPlanKind>,
     #[cfg(all(test, sf_module_validator))]
     whole_function_plan: Option<Vec<FunctionPlanKind>>,
     #[cfg(all(test, sf_module_validator))]
@@ -1027,6 +1033,7 @@ impl InterpInstance {
     pub(crate) fn new_partial_with_registry(
         engine: &Engine,
         module: Module,
+        #[cfg(sf_module_validator)] baseline: super::ValidatedBaselinePlan,
         host: Option<HostDispatch>,
         imports: &[Import],
         funcref_host: Option<FuncRefHost>,
@@ -1037,6 +1044,8 @@ impl InterpInstance {
         let inst = match Self::build(
             engine,
             module,
+            #[cfg(sf_module_validator)]
+            baseline,
             host,
             imports,
             funcref_host,
@@ -1107,12 +1116,15 @@ impl InterpInstance {
     pub(in crate::vm) fn build(
         engine: &Engine,
         module: Module,
+        #[cfg(sf_module_validator)] baseline: super::ValidatedBaselinePlan,
         host: Option<HostDispatch>,
         imports: &[Import],
         funcref_host: Option<FuncRefHost>,
         link_registry: LinkArenas,
         instance_backref: InstanceBackref,
     ) -> Result<Self, WasmError> {
+        #[cfg(sf_module_validator)]
+        let (baseline_artifact, baseline_plan) = baseline.into_parts();
         let config = *engine.config();
         let global_reachable: Vec<bool> = module
             .globals()
@@ -1603,6 +1615,10 @@ impl InterpInstance {
             function_handles,
             self_abs_base,
             self_local_by_abs,
+            #[cfg(sf_module_validator)]
+            baseline_artifact,
+            #[cfg(sf_module_validator)]
+            baseline_plan,
             #[cfg(all(test, sf_module_validator))]
             whole_function_plan: None,
             #[cfg(all(test, sf_module_validator))]
@@ -1806,7 +1822,43 @@ impl InterpInstance {
         native.plan.cells(linked)[pc].h != native.engine.call_handler_addr()
     }
 
+    #[cfg(all(test, sf_module_validator))]
+    pub(crate) fn baseline_plan_label_for_test(&self, function: usize) -> Option<&'static str> {
+        self.baseline_plan.get(function).map(|kind| match kind {
+            FunctionPlanKind::Raw => "raw",
+            FunctionPlanKind::Hybrid => "hybrid",
+            FunctionPlanKind::FullFold => "full-fold",
+            FunctionPlanKind::Import => "import",
+        })
+    }
+
+    #[cfg(all(test, sf_module_validator))]
+    pub(crate) fn baseline_artifact_has_function_for_test(&self, function: usize) -> Option<bool> {
+        self.baseline_artifact
+            .functions
+            .get(function)
+            .map(Option::is_some)
+    }
+
+    #[cfg(all(test, sf_module_validator))]
+    pub(crate) fn predecode_is_complete_for_test(&self) -> bool {
+        let functions = self.functions();
+        functions.len() == self.module.functions().len()
+            && functions
+                .iter()
+                .zip(self.module.functions())
+                .all(|(decoded, function)| decoded.is_some() == function.spec().is_some())
+    }
+
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
+        #[cfg(sf_module_validator)]
+        if self.baseline_artifact.functions.len() != self.module.functions().len()
+            || self.baseline_plan.len() != self.module.functions().len()
+        {
+            return Err(WasmError::invalid(
+                "interpreter baseline metadata function count mismatch",
+            ));
+        }
         let engine = NativeEngine::new();
         let mut scratch = LinkScratch::default();
         let mut unlinked = self
@@ -4965,9 +5017,13 @@ mod tests {
         ) -> Result<Self, WasmError> {
             let registry = LinkRegistry::new();
             let (_, instance_backref) = registry.reserve_instance();
+            #[cfg(sf_module_validator)]
+            let baseline = super::super::ValidatedBaselinePlan::validate(&module)?;
             let inst = Self::build(
                 engine,
                 module,
+                #[cfg(sf_module_validator)]
+                baseline,
                 host,
                 imports,
                 None,
@@ -5298,9 +5354,14 @@ mod tests {
             Ok(())
         });
         let engine = Engine::new(Config::new().wasm_stack_bytes(4096)).expect("engine");
+        #[cfg(sf_module_validator)]
+        let baseline =
+            super::super::ValidatedBaselinePlan::validate(&module).expect("validated baseline");
         let built = InterpInstance::build(
             &engine,
             module,
+            #[cfg(sf_module_validator)]
+            baseline,
             Some(host),
             &[import],
             None,
@@ -6746,12 +6807,17 @@ mod tests {
         let module = Module::new("scoped-frame-primitives", &bin).expect("module");
         let registry = LinkRegistry::new();
         let (_, instance_backref) = registry.reserve_instance();
+        #[cfg(sf_module_validator)]
+        let baseline =
+            super::super::ValidatedBaselinePlan::validate(&module).expect("validated baseline");
         // Deliberately stop before native linking. This keeps the ownership
         // oracle executable under Miri while exercising the real memory and
         // global entities built for an interpreter instance.
         let mut inst = InterpInstance::build(
             &Engine::with_defaults(),
             module,
+            #[cfg(sf_module_validator)]
+            baseline,
             None,
             &[],
             None,
@@ -6995,9 +7061,14 @@ mod tests {
         let provider_types = provider_module.types().clone();
         let registry = LinkRegistry::new();
         let engine = crate::vm::engine::Engine::with_defaults();
+        #[cfg(sf_module_validator)]
+        let provider_baseline = super::super::ValidatedBaselinePlan::validate(&provider_module)
+            .expect("validated provider baseline");
         let provider = match InterpInstance::new_partial_with_registry(
             &engine,
             provider_module,
+            #[cfg(sf_module_validator)]
+            provider_baseline,
             None,
             &[],
             None,
@@ -7056,9 +7127,16 @@ mod tests {
                 ),
             ]
         };
+        let hooked_module =
+            Module::new("hooked-consumer", &consumer_bin).expect("hooked consumer module");
+        #[cfg(sf_module_validator)]
+        let hooked_baseline = super::super::ValidatedBaselinePlan::validate(&hooked_module)
+            .expect("validated hooked baseline");
         let hooked = match InterpInstance::new_partial_with_registry(
             &engine,
-            Module::new("hooked-consumer", &consumer_bin).expect("hooked consumer module"),
+            hooked_module,
+            #[cfg(sf_module_validator)]
+            hooked_baseline,
             None,
             &make_imports(),
             Some(FuncRefHost {
@@ -7097,9 +7175,17 @@ mod tests {
             assert_eq!(result[0], expected, "{export}");
         }
 
+        let without_hook_module =
+            Module::new("no-hook-consumer", &consumer_bin).expect("no-hook consumer module");
+        #[cfg(sf_module_validator)]
+        let without_hook_baseline =
+            super::super::ValidatedBaselinePlan::validate(&without_hook_module)
+                .expect("validated no-hook baseline");
         let without_hook = match InterpInstance::new_partial_with_registry(
             &engine,
-            Module::new("no-hook-consumer", &consumer_bin).expect("no-hook consumer module"),
+            without_hook_module,
+            #[cfg(sf_module_validator)]
+            without_hook_baseline,
             None,
             &make_imports(),
             None,

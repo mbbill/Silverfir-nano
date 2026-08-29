@@ -27,6 +27,8 @@ use crate::vm::link::{InstanceFreeError, InstanceId, LinkRegistry, WorldAccess};
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::{RefValue, Value};
 
+#[cfg(all(sf_interp, sf_module_validator))]
+use crate::vm::interpreter::ValidatedBaselinePlan;
 #[cfg(sf_interp)]
 use crate::vm::interpreter::{InterpInstance, InterpInstanceLease};
 #[cfg(sf_jit)]
@@ -51,12 +53,11 @@ enum Inner {
 
 /// Reject a module the spec says is invalid.
 ///
-/// Ahead of the tier split, because validation is not "how code is run":
-/// a module either conforms or it does not, and which engine is about to
-/// run it cannot change that. It used to live inside the JIT's
-/// instantiation, so an interpreter instance accepted modules the spec
-/// requires be rejected.
+/// The ordinary validation path. Validator-enabled interpreter construction
+/// uses the composite validator instead, so the same function-body decode
+/// also produces its retained baseline artifact.
 #[inline]
+#[cfg(any(sf_jit, not(sf_module_validator)))]
 fn validate(module: &Module) -> Result<(), WasmError> {
     module.ensure_simd_supported()?;
     #[cfg(sf_module_validator)]
@@ -165,22 +166,29 @@ impl Instance {
         imports: &[Import],
         registry: &LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
-        validate(&module)?;
         match engine.tier() {
             #[cfg(sf_jit)]
-            Tier::Jit => JitInstanceLease::from_module_with_registry(
-                engine, module, imports, registry,
-            )
-            .map(|inst| Self {
-                inner: Inner::Jit(inst),
-                registry: registry.clone(),
-            }),
+            Tier::Jit => {
+                validate(&module)?;
+                JitInstanceLease::from_module_with_registry(engine, module, imports, registry).map(
+                    |inst| Self {
+                        inner: Inner::Jit(inst),
+                        registry: registry.clone(),
+                    },
+                )
+            }
             #[cfg(sf_interp)]
             Tier::Interp => {
+                #[cfg(sf_module_validator)]
+                let baseline = ValidatedBaselinePlan::validate(&module)?;
+                #[cfg(not(sf_module_validator))]
+                validate(&module)?;
                 let dispatch = interp_imports::bind(&module, imports)?;
                 match InterpInstance::new_partial_with_registry(
                     engine,
                     module,
+                    #[cfg(sf_module_validator)]
+                    baseline,
                     Some(InterpInstance::boxed_caller_host(dispatch)),
                     imports,
                     None,
@@ -254,11 +262,16 @@ impl Instance {
         registry: &crate::vm::link::LinkRegistry,
         funcref_host: crate::vm::interpreter::FuncRefHost,
     ) -> Result<Self, (Option<Self>, WasmError)> {
+        #[cfg(sf_module_validator)]
+        let baseline = ValidatedBaselinePlan::validate(&module).map_err(|e| (None, e))?;
+        #[cfg(not(sf_module_validator))]
         validate(&module).map_err(|e| (None, e))?;
         let dispatch = interp_imports::bind(&module, imports).map_err(|e| (None, e))?;
         match InterpInstance::new_partial_with_registry(
             engine,
             module,
+            #[cfg(sf_module_validator)]
+            baseline,
             Some(InterpInstance::boxed_caller_host(dispatch)),
             imports,
             Some(funcref_host),
@@ -934,6 +947,133 @@ mod tests {
     ];
     #[cfg(feature = "memprof")]
     const EMPTY_WASM: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn interp_validation_retains_one_plan_and_still_predecodes_every_function() {
+        let _guard = crate::vm::interpreter::baseline_artifact_guard_for_test();
+        let wasm = wat::parse_str(
+            r#"(module
+                (func (export "countdown") (param $n i32) (result i32)
+                    block $exit
+                        loop $again
+                            local.get $n
+                            i32.eqz
+                            br_if $exit
+                            local.get $n
+                            i32.const 1
+                            i32.sub
+                            local.set $n
+                            br $again
+                        end
+                    end
+                    local.get $n)
+                (func (export "cold") (result i32) i32.const 7))"#,
+        )
+        .expect("encode baseline plan module");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+        let before = crate::vm::interpreter::baseline_artifact_build_count_for_test();
+        let mut instance = Instance::from_module(
+            &engine,
+            Module::new("retained-baseline-plan", &wasm).expect("parse module"),
+            &[],
+        )
+        .expect("instantiate interpreter");
+        assert_eq!(
+            crate::vm::interpreter::baseline_artifact_build_count_for_test(),
+            before + 1,
+            "one interpreter instance must publish exactly one composite artifact"
+        );
+
+        let interp = match &instance.inner {
+            Inner::Interp(interp) => interp,
+            #[cfg(sf_jit)]
+            Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+        };
+        interp.with_instance(|interp| {
+            assert_eq!(interp.baseline_plan_label_for_test(0), Some("hybrid"));
+            assert_eq!(interp.baseline_plan_label_for_test(1), Some("raw"));
+            assert_eq!(
+                interp.baseline_artifact_has_function_for_test(0),
+                Some(true)
+            );
+            assert_eq!(
+                interp.baseline_artifact_has_function_for_test(1),
+                Some(true)
+            );
+            assert!(
+                interp.predecode_is_complete_for_test(),
+                "retaining baseline metadata must not make predecode selective"
+            );
+        });
+        assert_eq!(
+            instance
+                .invoke("countdown", &[Value::I32(4)])
+                .expect("folded execution remains active"),
+            collections::vec![Value::I32(0)]
+        );
+    }
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn invalid_interp_module_does_not_publish_a_baseline_artifact() {
+        let _guard = crate::vm::interpreter::baseline_artifact_guard_for_test();
+        let wasm = wat::parse_str("(module (global i32 (f64.const 0)) (func nop))")
+            .expect("encode invalid suffix module");
+        let module = Module::new("invalid-baseline-suffix", &wasm).expect("parse module");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+        let before = crate::vm::interpreter::baseline_artifact_build_count_for_test();
+        assert!(
+            Instance::from_module(&engine, module, &[]).is_err(),
+            "validation must reject module"
+        );
+        assert_eq!(
+            crate::vm::interpreter::baseline_artifact_build_count_for_test(),
+            before,
+            "failed validation must not publish staged artifact state"
+        );
+    }
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn interp_validation_plans_artifact_ineligible_functions_for_full_fold() {
+        fn assert_plans(wat: &str, expected: &[&str]) {
+            let wasm = wat::parse_str(wat).expect("encode plan fixture");
+            let module = Module::new("full-fold-plan", &wasm).expect("parse plan fixture");
+            let baseline = crate::vm::interpreter::ValidatedBaselinePlan::validate(&module)
+                .expect("validate and plan fixture");
+            for (index, &expected) in expected.iter().enumerate() {
+                assert_eq!(
+                    baseline.plan_label_for_test(index),
+                    Some(expected),
+                    "function {index}"
+                );
+            }
+        }
+
+        assert_plans(
+            r#"(module
+                (tag $e)
+                (func nop)
+                (func throw $e)
+                (func (param exnref) local.get 0 throw_ref))"#,
+            &["raw", "full-fold", "full-fold"],
+        );
+        assert_plans(
+            r#"(module
+                (type $s (struct))
+                (func nop)
+                (func (result (ref $s)) struct.new $s))"#,
+            &["raw", "full-fold"],
+        );
+        #[cfg(sf_has_simd)]
+        assert_plans(
+            r#"(module
+                (func nop)
+                (func (result v128) v128.const i32x4 0 0 0 0))"#,
+            &["raw", "full-fold"],
+        );
+    }
 
     #[test]
     fn runtime_world_invokes_and_frees_by_generation_checked_id() {

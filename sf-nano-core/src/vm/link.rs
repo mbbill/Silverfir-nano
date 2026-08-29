@@ -1078,6 +1078,8 @@ mod instance_table_tests {
     use crate::module::Module;
     #[cfg(sf_interp)]
     use crate::vm::engine::{Engine, Tier};
+    #[cfg(all(sf_interp, sf_module_validator))]
+    use crate::vm::interpreter::ValidatedBaselinePlan;
     #[cfg(sf_interp)]
     use crate::vm::interpreter::{InterpInstance, InterpInstanceAccess};
     use crate::vm::jit::entities::ModuleInst;
@@ -1118,10 +1120,14 @@ mod instance_table_tests {
         let engine =
             Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter test engine");
         let module = Module::new(name, MEMORY_WASM).expect("interpreter test module");
+        #[cfg(sf_module_validator)]
+        let baseline = ValidatedBaselinePlan::validate(&module).expect("validated baseline");
         let (id, handle) = registry.reserve_instance();
         let instance = InterpInstance::build(
             &engine,
             module,
+            #[cfg(sf_module_validator)]
+            baseline,
             None,
             &[],
             None,
@@ -1151,6 +1157,8 @@ mod instance_table_tests {
             Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter test engine");
         let module =
             Module::new("Miri reentrant import", REENTRANT_IMPORT_WASM).expect("import module");
+        #[cfg(sf_module_validator)]
+        let baseline = ValidatedBaselinePlan::validate(&module).expect("validated baseline");
         let func_type = module.functions()[0].func_type().clone();
         let (id, handle) = registry.reserve_instance();
         let callback_handle = handle.clone();
@@ -1175,6 +1183,8 @@ mod instance_table_tests {
         let instance = InterpInstance::build(
             &engine,
             module,
+            #[cfg(sf_module_validator)]
+            baseline,
             Some(host),
             &[import],
             None,

@@ -1,6 +1,6 @@
 //! Single-decode validation plus baseline-artifact construction.
 //!
-//! This is a test-only architecture probe. Every function body is decoded by
+//! Every function body is decoded by
 //! the generic decoder once: full type validation consumes each borrowed op
 //! first, then an independent height/reachability tracker commits the matching
 //! artifact event. Function parts remain staged until the validator's later

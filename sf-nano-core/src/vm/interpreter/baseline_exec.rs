@@ -2103,9 +2103,14 @@ mod tests {
         let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
         let registry = LinkRegistry::new();
         let (_, instance_backref) = registry.reserve_instance();
+        #[cfg(sf_module_validator)]
+        let baseline =
+            super::super::ValidatedBaselinePlan::validate(&module).expect("validated baseline");
         InterpInstance::build(
             &engine,
             module,
+            #[cfg(sf_module_validator)]
+            baseline,
             None,
             imports,
             None,
@@ -4006,6 +4011,9 @@ mod tests {
         let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
         let registry = LinkRegistry::new();
         let (_, instance_backref) = registry.reserve_instance();
+        #[cfg(sf_module_validator)]
+        let validated_baseline =
+            super::super::ValidatedBaselinePlan::validate(&module).expect("validated baseline");
         let host = InterpInstance::boxed_caller_host(|_module, _name, caller, args, results| {
             let memory = caller
                 .memory_mut()
@@ -4019,6 +4027,8 @@ mod tests {
         let mut instance = InterpInstance::build(
             &engine,
             module,
+            #[cfg(sf_module_validator)]
+            validated_baseline,
             Some(host),
             &[],
             None,

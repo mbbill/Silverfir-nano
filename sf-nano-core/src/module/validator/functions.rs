@@ -298,7 +298,7 @@ impl<'a> FunctionValidator<'a> {
     /// Current validated operand stack after the most recent decoded op.
     /// Callers may copy this slice immediately, but must not retain it across
     /// another [`Self::validate_decoded`] mutation.
-    #[cfg(test)]
+    #[cfg(any(test, all(sf_interp, sf_module_validator)))]
     pub(crate) fn operand_types(&self) -> &[ValueType] {
         self.context.val_stack.as_slice()
     }

@@ -9,7 +9,7 @@ use crate::{
     value_type::{HeapType, RefType, ValueType},
 };
 
-#[cfg(test)]
+#[cfg(any(test, all(sf_interp, sf_module_validator)))]
 pub(crate) mod raw_cursor;
 
 #[cfg(not(sf_has_simd))]

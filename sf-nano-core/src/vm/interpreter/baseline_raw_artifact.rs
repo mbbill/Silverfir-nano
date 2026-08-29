@@ -6,22 +6,29 @@
 //! It is deliberately available only with the standalone module validator:
 //! raw height accounting is not a replacement for full Wasm type validation.
 
-use super::baseline_artifact::{BaselineArtifact, BaselineFunctionBuilder};
+#[cfg(test)]
+use super::baseline_artifact::BaselineArtifact;
+#[cfg(test)]
+use super::baseline_artifact::BaselineFunctionBuilder;
 use crate::error::WasmError;
+#[cfg(test)]
 use crate::module::validator::Validator;
 use crate::module::Module;
+#[cfg(test)]
 use crate::op_decoder::raw_cursor::{
     RawBlockType, RawDecodeError, RawImmediate, RawOp, RawOpCursor,
 };
 use crate::op_decoder::{BlockType, DecodedOp, Immediate};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 
+#[cfg(test)]
 #[derive(Debug)]
 pub(super) enum RawArtifactError {
     Wasm(WasmError),
     Unsupported { opcode: WasmOpcode, offset: usize },
 }
 
+#[cfg(test)]
 impl core::fmt::Display for RawArtifactError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -36,12 +43,14 @@ impl core::fmt::Display for RawArtifactError {
     }
 }
 
+#[cfg(test)]
 impl From<WasmError> for RawArtifactError {
     fn from(error: WasmError) -> Self {
         Self::Wasm(error)
     }
 }
 
+#[cfg(test)]
 impl From<RawDecodeError> for RawArtifactError {
     fn from(error: RawDecodeError) -> Self {
         match error {
@@ -408,6 +417,7 @@ impl RawFunctionScanner {
         Ok(())
     }
 
+    #[cfg(test)]
     fn apply(&mut self, module: &Module, raw: &RawOp<'_>) -> Result<(), WasmError> {
         if self.dead {
             return self.apply_dead(module, raw);
@@ -423,6 +433,7 @@ impl RawFunctionScanner {
         }
     }
 
+    #[cfg(test)]
     fn apply_dead(&mut self, module: &Module, raw: &RawOp<'_>) -> Result<(), WasmError> {
         let WasmOpcode::OP(opcode) = raw.wasm_op else {
             return Ok(());
@@ -492,6 +503,7 @@ impl RawFunctionScanner {
         Ok(())
     }
 
+    #[cfg(test)]
     fn apply_op(
         &mut self,
         module: &Module,
@@ -739,6 +751,7 @@ impl RawFunctionScanner {
     }
 }
 
+#[cfg(test)]
 pub(super) fn build_baseline_artifact_raw(
     module: &Module,
 ) -> Result<BaselineArtifact, RawArtifactError> {
@@ -776,6 +789,7 @@ pub(super) fn build_baseline_artifact_raw(
     Ok(artifact)
 }
 
+#[cfg(test)]
 fn label(immediate: RawImmediate<'_>) -> Result<u32, WasmError> {
     let RawImmediate::LabelIndex(depth) = immediate else {
         return Err(WasmError::internal(
@@ -794,6 +808,7 @@ fn decoded_label(immediate: &Immediate) -> Result<u32, WasmError> {
     Ok(*depth)
 }
 
+#[cfg(test)]
 fn block_arity(module: &Module, block: RawBlockType) -> Result<(usize, usize), WasmError> {
     match block {
         RawBlockType::Empty => Ok((0, 0)),
