@@ -42,7 +42,7 @@ use core::ptr::NonNull;
 
 #[cfg(sf_module_validator)]
 use super::baseline_artifact::BaselineArtifact;
-#[cfg(all(test, sf_module_validator))]
+#[cfg(sf_module_validator)]
 use super::baseline_exec::{
     raw_stepper_supports_function, RawFrameState, RawSlots, RawStepExit, RawStepper,
 };
@@ -86,6 +86,51 @@ fn configured_stack_slots(config: &Config) -> usize {
 /// than the full 4096-deep one (131 KB, a third of a Pico 2's heap).
 fn configured_ret_records(stack_slots: usize) -> usize {
     (stack_slots / 4).clamp(16, MAX_RET_RECORDS as usize)
+}
+
+#[cfg(sf_module_validator)]
+fn normalize_baseline_plan(
+    module: &Module,
+    artifact: &BaselineArtifact,
+    mut plan: Vec<FunctionPlanKind>,
+) -> Result<Vec<FunctionPlanKind>, WasmError> {
+    if plan.len() != module.functions().len() || artifact.functions.len() != plan.len() {
+        return Err(WasmError::invalid("mixed function plan length mismatch"));
+    }
+    for (index, (mode, function)) in plan.iter_mut().zip(module.functions()).enumerate() {
+        *mode = if function.spec().is_none() {
+            FunctionPlanKind::Import
+        } else {
+            match *mode {
+                FunctionPlanKind::Raw => {
+                    if raw_stepper_supports_function(module, artifact, index) {
+                        FunctionPlanKind::Raw
+                    } else {
+                        FunctionPlanKind::FullFold
+                    }
+                }
+                FunctionPlanKind::Hybrid | FunctionPlanKind::FullFold => FunctionPlanKind::FullFold,
+                FunctionPlanKind::Import => {
+                    return Err(WasmError::invalid("local function planned as import"));
+                }
+            }
+        };
+    }
+    // Tail calls reuse the caller's native return route. Until Raw carries
+    // the explicit tail bridge, keep every local direct tail target folded
+    // as well as the tail-calling function selected by the static planner.
+    for edge in &artifact.direct_calls {
+        let callee = edge.callee as usize;
+        if edge.tail
+            && module
+                .functions()
+                .get(callee)
+                .is_some_and(|function| function.spec().is_some())
+        {
+            plan[callee] = FunctionPlanKind::FullFold;
+        }
+    }
+    Ok(plan)
 }
 
 /// Host dispatcher for imported functions: called with the import's module
@@ -475,7 +520,7 @@ struct Activation {
     /// caller record a native call pushed) is already on the native return
     /// stack — set after the first native entry, so resumes never re-plant.
     route_established: bool,
-    #[cfg(all(test, sf_module_validator))]
+    #[cfg(sf_module_validator)]
     raw: Option<RawFrameState>,
 }
 
@@ -492,7 +537,7 @@ struct Activation {
 struct SavedActivation {
     activation: Activation,
     ret_cursor: usize,
-    #[cfg(all(test, sf_module_validator))]
+    #[cfg(sf_module_validator)]
     raw_return_top: Option<usize>,
 }
 
@@ -772,17 +817,15 @@ pub struct InterpInstance {
     /// satisfies it.
     self_abs_base: usize,
     self_local_by_abs: Vec<u32>,
-    /// Single-decode validation output retained for future tier selection.
-    /// Production execution does not consult it yet.
+    /// Single-decode validation output used by the Raw whole-function mode.
+    /// Every local body remains fully predecoded and linked in this phase.
     #[cfg(sf_module_validator)]
-    baseline_artifact: BaselineArtifact,
+    baseline_artifact: Rc<BaselineArtifact>,
     #[cfg(sf_module_validator)]
     baseline_plan: Vec<FunctionPlanKind>,
-    #[cfg(all(test, sf_module_validator))]
-    whole_function_plan: Option<Vec<FunctionPlanKind>>,
-    #[cfg(all(test, sf_module_validator))]
-    whole_function_artifact: Option<Rc<BaselineArtifact>>,
-    #[cfg(all(test, sf_module_validator))]
+    #[cfg(sf_module_validator)]
+    baseline_execution_plan: Vec<FunctionPlanKind>,
+    #[cfg(sf_module_validator)]
     whole_function_saved: Option<Vec<SavedActivation>>,
     native: Option<NativeState>,
 }
@@ -1214,6 +1257,9 @@ impl InterpInstance {
     ) -> Result<Self, WasmError> {
         #[cfg(sf_module_validator)]
         let (baseline_artifact, baseline_plan) = baseline.into_parts_for(&module)?;
+        #[cfg(sf_module_validator)]
+        let baseline_execution_plan =
+            normalize_baseline_plan(&module, &baseline_artifact, baseline_plan.clone())?;
         let config = *engine.config();
         let global_reachable: Vec<bool> = module
             .globals()
@@ -1705,14 +1751,12 @@ impl InterpInstance {
             self_abs_base,
             self_local_by_abs,
             #[cfg(sf_module_validator)]
-            baseline_artifact,
+            baseline_artifact: Rc::new(baseline_artifact),
             #[cfg(sf_module_validator)]
             baseline_plan,
-            #[cfg(all(test, sf_module_validator))]
-            whole_function_plan: None,
-            #[cfg(all(test, sf_module_validator))]
-            whole_function_artifact: None,
-            #[cfg(all(test, sf_module_validator))]
+            #[cfg(sf_module_validator)]
+            baseline_execution_plan,
+            #[cfg(sf_module_validator)]
             whole_function_saved: Some(Vec::new()),
             function_identities,
             native: None,
@@ -1847,45 +1891,24 @@ impl InterpInstance {
     pub(super) fn set_whole_function_plan_for_test(
         &mut self,
         artifact: BaselineArtifact,
-        mut plan: Vec<FunctionPlanKind>,
+        plan: Vec<FunctionPlanKind>,
     ) -> Result<(), WasmError> {
-        if plan.len() != self.module.functions().len()
-            || artifact.functions.len() != self.module.functions().len()
-        {
-            return Err(WasmError::invalid("mixed function plan length mismatch"));
+        if self.native.is_some() {
+            return Err(WasmError::invalid(
+                "mixed test plan must be installed before native linking",
+            ));
         }
-        for (index, (mode, function)) in plan.iter_mut().zip(self.module.functions()).enumerate() {
-            *mode = if function.spec().is_none() {
-                FunctionPlanKind::Import
-            } else {
-                match *mode {
-                    FunctionPlanKind::Raw => {
-                        if raw_stepper_supports_function(&self.module, &artifact, index) {
-                            FunctionPlanKind::Raw
-                        } else {
-                            FunctionPlanKind::FullFold
-                        }
-                    }
-                    FunctionPlanKind::FullFold | FunctionPlanKind::Hybrid => {
-                        FunctionPlanKind::FullFold
-                    }
-                    FunctionPlanKind::Import => {
-                        return Err(WasmError::invalid("local function planned as import"));
-                    }
-                }
-            };
-        }
-        self.whole_function_plan = Some(plan);
-        self.whole_function_artifact = Some(Rc::new(artifact));
+        let plan = normalize_baseline_plan(&self.module, &artifact, plan)?;
+        self.baseline_artifact = Rc::new(artifact);
+        self.baseline_execution_plan = plan;
         Ok(())
     }
 
-    #[cfg(all(test, sf_module_validator))]
+    #[cfg(sf_module_validator)]
     #[inline]
     pub(super) fn whole_function_mode(&self, function: usize) -> FunctionPlanKind {
-        self.whole_function_plan
-            .as_ref()
-            .and_then(|plan| plan.get(function))
+        self.baseline_execution_plan
+            .get(function)
             .copied()
             .unwrap_or(FunctionPlanKind::FullFold)
     }
@@ -1990,7 +2013,7 @@ impl InterpInstance {
             .iter()
             .enumerate()
             .map(|(i, _)| {
-                #[cfg(all(test, sf_module_validator))]
+                #[cfg(sf_module_validator)]
                 if self.whole_function_mode(i) == FunctionPlanKind::Raw {
                     return None;
                 }
@@ -2781,7 +2804,7 @@ impl InterpInstance {
         if args.len() != func.n_params as usize || results.len() != func.n_results as usize {
             return Err(WasmError::invalid("interp: argument/result arity mismatch"));
         }
-        #[cfg(all(test, sf_module_validator))]
+        #[cfg(sf_module_validator)]
         let raw = access.with_instance(|instance| {
             (instance.whole_function_mode(func_index) == FunctionPlanKind::Raw).then_some(
                 RawFrameState {
@@ -2799,7 +2822,7 @@ impl InterpInstance {
             base: 0,
             pc: 0,
             route_established: false,
-            #[cfg(all(test, sf_module_validator))]
+            #[cfg(sf_module_validator)]
             raw,
         };
         Self::drive(access, root, args, results)
@@ -2889,17 +2912,11 @@ impl InterpInstance {
         ctx.stack[args.len()..root.func.n_locals as usize].fill(0);
 
         let mut act = root;
-        #[cfg(all(test, sf_module_validator))]
-        let (mut saved, reuse_saved) = access.with_instance_mut(|instance| {
-            let reuse = instance.whole_function_plan.is_some();
-            let saved = if reuse {
-                instance.whole_function_saved.take().unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            (saved, reuse)
+        #[cfg(sf_module_validator)]
+        let mut saved = access.with_instance_mut(|instance| {
+            instance.whole_function_saved.take().unwrap_or_default()
         })?;
-        #[cfg(not(all(test, sf_module_validator)))]
+        #[cfg(not(sf_module_validator))]
         let mut saved: Vec<SavedActivation> = Vec::new();
         let outcome = (|| -> Result<(), WasmError> {
             loop {
@@ -2949,8 +2966,8 @@ impl InterpInstance {
                 }
             }
         })();
-        #[cfg(all(test, sf_module_validator))]
-        if reuse_saved {
+        #[cfg(sf_module_validator)]
+        {
             saved.clear();
             access.with_instance_mut(|instance| instance.whole_function_saved = Some(saved))?;
         }
@@ -2972,19 +2989,16 @@ impl InterpInstance {
         max_depth: u32,
         results: &mut [u64],
     ) -> Result<MaterializedRunExit, WasmError> {
+        #[cfg(sf_module_validator)]
+        let raw_artifact = Rc::clone(&self.baseline_artifact);
         loop {
-            #[cfg(all(test, sf_module_validator))]
+            #[cfg(sf_module_validator)]
             let step = if act.raw.is_some() {
-                let artifact = Rc::clone(
-                    self.whole_function_artifact
-                        .as_ref()
-                        .ok_or_else(|| WasmError::internal("mixed Raw artifact is missing"))?,
-                );
                 let raw = act.raw.as_mut().expect("checked mixed Raw activation");
                 let mut top = raw.top;
                 let exit = RawStepper {
                     instance: self,
-                    artifact: &artifact,
+                    artifact: &raw_artifact,
                     function_index: act.func_index,
                     frame_base: act.base,
                     state: raw,
@@ -3010,7 +3024,7 @@ impl InterpInstance {
             } else {
                 self.native_step(act, ctx)?
             };
-            #[cfg(not(all(test, sf_module_validator)))]
+            #[cfg(not(sf_module_validator))]
             let step = self.native_step(act, ctx)?;
             match step {
                 StepExit::Call { callee, arg_base } => {
@@ -3044,12 +3058,12 @@ impl InterpInstance {
                     // before read by predecode construction.
                     let (np, nl) = (f.n_params as usize, f.n_locals as usize);
                     ctx.stack[new_base + np..new_base + nl].fill(0);
-                    #[cfg(all(test, sf_module_validator))]
+                    #[cfg(sf_module_validator)]
                     let raw = if self.whole_function_mode(callee) == FunctionPlanKind::Raw {
                         let artifact = self
-                            .whole_function_artifact
-                            .as_ref()
-                            .and_then(|artifact| artifact.functions.get(callee))
+                            .baseline_artifact
+                            .functions
+                            .get(callee)
                             .and_then(Option::as_ref)
                             .ok_or_else(|| {
                                 WasmError::invalid("mixed Raw callee artifact is missing")
@@ -3071,7 +3085,7 @@ impl InterpInstance {
                     } else {
                         None
                     };
-                    #[cfg(all(test, sf_module_validator))]
+                    #[cfg(sf_module_validator)]
                     let raw_return_top = act.raw.as_ref().map(|_| new_base + f.n_results as usize);
                     let callee_act = Activation {
                         func: f,
@@ -3079,7 +3093,7 @@ impl InterpInstance {
                         base: new_base,
                         pc: 0,
                         route_established: false,
-                        #[cfg(all(test, sf_module_validator))]
+                        #[cfg(sf_module_validator)]
                         raw,
                     };
                     // Dominate `push`'s capacity check so the hot path can
@@ -3090,7 +3104,7 @@ impl InterpInstance {
                     saved.push(SavedActivation {
                         activation: core::mem::replace(act, callee_act),
                         ret_cursor: ctx.ret_cursor,
-                        #[cfg(all(test, sf_module_validator))]
+                        #[cfg(sf_module_validator)]
                         raw_return_top,
                     });
                 }
@@ -3180,11 +3194,11 @@ impl InterpInstance {
                             // covers targets whose backend reports Return
                             // without exposing its cursor mechanics.
                             ctx.ret_cursor = parent.ret_cursor;
-                            #[cfg(all(test, sf_module_validator))]
+                            #[cfg(sf_module_validator)]
                             let mut activation = parent.activation;
-                            #[cfg(not(all(test, sf_module_validator)))]
+                            #[cfg(not(sf_module_validator))]
                             let activation = parent.activation;
-                            #[cfg(all(test, sf_module_validator))]
+                            #[cfg(sf_module_validator)]
                             if let (Some(raw), Some(top)) =
                                 (activation.raw.as_mut(), parent.raw_return_top)
                             {

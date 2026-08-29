@@ -1,11 +1,11 @@
-//! Test-only raw-Wasm baseline executor prototype.
+//! Raw-Wasm whole-function executor and its standalone test oracle.
 //!
-//! Production still executes the folded interpreter exclusively. This module
-//! answers a narrower architecture question: can the raw cursor and the eager
-//! control artifact drive execution without allocating or rebuilding a native
-//! instruction stream?
+//! Validator-enabled interpreter instances may execute preflighted `Raw`
+//! functions through [`RawStepper`]. Tests retain a standalone Owned-slot
+//! scheduler as an independent differential oracle.
 
 use super::baseline_artifact::{BaselineArtifact, BaselineFunction, BrTableRange, ControlTarget};
+#[cfg(test)]
 use crate::collections::Vec;
 use crate::error::WasmError;
 use crate::module::Module;
@@ -15,16 +15,23 @@ use crate::op_decoder::raw_cursor::{RawDecodeError, RawImmediate, RawOpCursor};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
+#[cfg(test)]
 use crate::Value;
 
-#[cfg(sf_module_validator)]
+#[cfg(all(test, sf_module_validator))]
 use super::baseline_function_plan::{select_function_plans, FunctionPlanKind};
+#[cfg(test)]
 use super::exec::{PreparedCall, ResolvedIndirectCall};
-use super::{InterpInstance, InterpInstanceAccess};
+use super::InterpInstance;
+#[cfg(test)]
+use super::InterpInstanceAccess;
 
+#[cfg(test)]
 const MAX_BASELINE_CALL_DEPTH: usize = 4096;
+#[cfg(test)]
 const MAX_BASELINE_ACTIVATIONS: usize = MAX_BASELINE_CALL_DEPTH + 1;
 /// Match the hosted interpreter's default two-MiB Wasm stack budget.
+#[cfg(test)]
 const MAX_BASELINE_VALUE_SLOTS: usize = (2 * 1024 * 1024) / core::mem::size_of::<u64>();
 
 #[derive(Debug)]
@@ -75,11 +82,13 @@ impl From<RawDecodeError> for BaselineExecError {
     }
 }
 
+#[cfg(test)]
 pub(super) struct BaselineDriver<'artifact, 'instance> {
     access: InterpInstanceAccess<'instance>,
     artifact: &'artifact BaselineArtifact,
 }
 
+#[cfg(test)]
 impl<'artifact, 'instance> BaselineDriver<'artifact, 'instance> {
     pub(super) const fn new(
         access: InterpInstanceAccess<'instance>,
@@ -107,6 +116,7 @@ impl<'artifact, 'instance> BaselineDriver<'artifact, 'instance> {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 struct BaselineActivation {
     function_index: usize,
@@ -129,10 +139,17 @@ enum BaselineImmediate {
     F64(u64),
     LocalIndex(u32),
     FunctionIndex(u32),
-    CallIndirect { typeidx: u32, tableidx: u32 },
+    #[cfg(test)]
+    CallIndirect {
+        typeidx: u32,
+        tableidx: u32,
+    },
     GlobalIndex(u32),
     MemoryIndex(u32),
-    MemArg { offset: u64, memidx: u32 },
+    MemArg {
+        offset: u64,
+        memidx: u32,
+    },
     Other,
 }
 
@@ -325,6 +342,7 @@ pub(super) fn raw_stepper_supports_function(
 }
 
 pub(super) enum RawSlots<'a> {
+    #[cfg(test)]
     Owned(&'a mut Vec<u64>),
     Fixed {
         slots: &'a mut [u64],
@@ -335,6 +353,7 @@ pub(super) enum RawSlots<'a> {
 impl RawSlots<'_> {
     fn len(&self) -> usize {
         match self {
+            #[cfg(test)]
             Self::Owned(values) => values.len(),
             Self::Fixed { top, .. } => **top,
         }
@@ -342,6 +361,7 @@ impl RawSlots<'_> {
 
     fn get(&self, index: usize) -> Option<u64> {
         match self {
+            #[cfg(test)]
             Self::Owned(values) => values.get(index).copied(),
             Self::Fixed { slots, top } => (index < **top).then(|| slots[index]),
         }
@@ -349,6 +369,7 @@ impl RawSlots<'_> {
 
     fn set(&mut self, index: usize, value: u64) -> Result<(), BaselineExecError> {
         match self {
+            #[cfg(test)]
             Self::Owned(values) => values
                 .get_mut(index)
                 .map(|slot| *slot = value)
@@ -365,6 +386,7 @@ impl RawSlots<'_> {
 
     fn push(&mut self, value: u64) -> Result<(), BaselineExecError> {
         match self {
+            #[cfg(test)]
             Self::Owned(values) => {
                 if values.len() == values.capacity() {
                     return Err(WasmError::invalid("baseline raw slot capacity exhausted").into());
@@ -388,6 +410,7 @@ impl RawSlots<'_> {
             return Err(WasmError::invalid("baseline raw operand stack underflow").into());
         }
         match self {
+            #[cfg(test)]
             Self::Owned(values) => values
                 .pop()
                 .ok_or_else(|| WasmError::invalid("baseline raw operand stack underflow").into()),
@@ -400,6 +423,7 @@ impl RawSlots<'_> {
 
     fn copy_within(&mut self, source: core::ops::Range<usize>, destination: usize) {
         match self {
+            #[cfg(test)]
             Self::Owned(values) => values.copy_within(source, destination),
             Self::Fixed { slots, top } => slots[..**top].copy_within(source, destination),
         }
@@ -407,6 +431,7 @@ impl RawSlots<'_> {
 
     fn truncate(&mut self, len: usize) {
         match self {
+            #[cfg(test)]
             Self::Owned(values) => values.truncate(len),
             Self::Fixed { top, .. } => **top = (**top).min(len),
         }
@@ -1343,6 +1368,7 @@ impl RawStepper<'_, '_> {
     }
 }
 
+#[cfg(test)]
 pub(super) struct BaselineFrame<'artifact, 'instance> {
     access: InterpInstanceAccess<'instance>,
     artifact: &'artifact BaselineArtifact,
@@ -1353,6 +1379,7 @@ pub(super) struct BaselineFrame<'artifact, 'instance> {
     max_value_slots: usize,
 }
 
+#[cfg(test)]
 impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
     pub(super) fn new(
         access: InterpInstanceAccess<'instance>,
@@ -1980,6 +2007,7 @@ fn copy_immediate(immediate: RawImmediate<'_>) -> BaselineImmediate {
         RawImmediate::F64(value) => BaselineImmediate::F64(value),
         RawImmediate::LocalIndex(value) => BaselineImmediate::LocalIndex(value),
         RawImmediate::FunctionIndex(value) => BaselineImmediate::FunctionIndex(value),
+        #[cfg(test)]
         RawImmediate::CallIndirect { typeidx, tableidx } => {
             BaselineImmediate::CallIndirect { typeidx, tableidx }
         }
@@ -2004,6 +2032,7 @@ fn raw_function(immediate: BaselineImmediate) -> Result<usize, BaselineExecError
     Ok(function as usize)
 }
 
+#[cfg(test)]
 fn raw_call_indirect(immediate: BaselineImmediate) -> Result<(u32, u32), BaselineExecError> {
     let BaselineImmediate::CallIndirect { typeidx, tableidx } = immediate else {
         return Err(WasmError::internal("baseline MVP call_indirect immediate mismatch").into());
@@ -2032,6 +2061,7 @@ fn raw_memarg(immediate: BaselineImmediate) -> Result<(usize, u64), BaselineExec
     Ok((memidx as usize, offset))
 }
 
+#[cfg(test)]
 fn validate_baseline_function(
     params: &[ValueType],
     results: &[ValueType],
@@ -2058,6 +2088,7 @@ fn validate_baseline_function(
     Ok(())
 }
 
+#[cfg(test)]
 fn is_baseline_slot_type(value_type: ValueType) -> bool {
     is_mvp_scalar(value_type) || matches!(value_type, ValueType::Ref(_))
 }

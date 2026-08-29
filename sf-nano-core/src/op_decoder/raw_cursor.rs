@@ -318,7 +318,7 @@ impl<'a> RawOpCursor<'a> {
         Self { bytes, pc: 0 }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, sf_module_validator))]
     pub(crate) const fn at(bytes: &'a [u8], pc: usize) -> Self {
         Self { bytes, pc }
     }

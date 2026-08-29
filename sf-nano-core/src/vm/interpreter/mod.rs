@@ -33,7 +33,7 @@
 mod baseline_artifact;
 #[cfg(sf_module_validator)]
 mod baseline_composite_artifact;
-#[cfg(test)]
+#[cfg(any(test, sf_module_validator))]
 mod baseline_exec;
 #[cfg(sf_module_validator)]
 mod baseline_function_plan;
@@ -52,8 +52,9 @@ mod predecode;
 #[cfg(sf_module_validator)]
 /// Owned output of the interpreter's single-decode validation pass.
 ///
-/// This is planning metadata only. Construction still predecodes every local
-/// function and production dispatch remains entirely folded.
+/// Construction still predecodes and links every local function. The
+/// validator-enabled interpreter may route preflighted whole functions Raw;
+/// this correctness rollout does not yet remove eager startup work.
 pub(crate) struct ValidatedBaselinePlan {
     artifact: baseline_artifact::BaselineArtifact,
     function_plan: crate::collections::Vec<baseline_function_plan::FunctionPlanKind>,

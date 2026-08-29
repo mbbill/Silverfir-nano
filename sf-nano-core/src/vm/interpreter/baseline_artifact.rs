@@ -1,8 +1,8 @@
 //! Validated baseline planning metadata.
 //!
 //! Validator-enabled interpreter instances retain this compact structural
-//! artifact and its function plan while still fully predecoding and executing
-//! every function through the folded interpreter.
+//! artifact and its function plan. Preflighted whole functions may execute
+//! Raw, but every local is still fully predecoded and linked in this phase.
 
 use crate::collections::Vec;
 use crate::error::WasmError;
@@ -130,7 +130,7 @@ impl BaselineFunction {
     /// Translate a function-relative side-table cursor into the module-wide
     /// flat arena. The cursor may equal the range end when control transfers
     /// past this function's final side entry.
-    #[cfg(test)]
+    #[cfg(any(test, sf_module_validator))]
     pub(crate) fn absolute_stp(&self, relative: u32) -> Option<usize> {
         let absolute = self.control_targets.start.checked_add(relative as usize)?;
         (absolute <= self.control_targets.end).then_some(absolute)
