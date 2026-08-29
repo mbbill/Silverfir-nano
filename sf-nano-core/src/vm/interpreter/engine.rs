@@ -1172,90 +1172,17 @@ impl NativeEngine {
         func: &F,
         table_byte_off: &[u64],
     ) {
-        let cell = self.build_cell(
-            ins,
-            state,
-            cells_base,
-            br_base,
-            func,
-            table_byte_off,
-            INTERP_PTR_BYTES,
-        );
-        plan.write_cell(cell_index, cell);
-    }
-
-    /// Keep the per-cell caller tiny. On 64-bit hosts ordinary native cells
-    /// bypass `Option`, the 32-bit offset guard, and the special-form match;
-    /// both outlined builders remain single symbols rather than being cloned
-    /// into the link loop's first/middle/last-cell paths.
-    #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    fn build_cell<F: LinkFunction + ?Sized>(
-        &self,
-        ins: &Instr,
-        state: ResolvedCell,
-        cells_base: u64,
-        br_base: u64,
-        func: &F,
-        table_byte_off: &[u64],
-        ptr_bytes: u32,
-    ) -> DCell {
-        if ptr_bytes == 8 && state.handler != 0 && ins.op != Op::BrTable {
-            Self::build_common_native_cell(ins, state, cells_base)
-        } else {
-            self.build_special_cell(
-                ins,
-                state,
-                cells_base,
-                br_base,
-                func,
-                table_byte_off,
-                ptr_bytes,
-            )
+        let fl = state.flags;
+        let mut h = Some(state.handler).filter(|&h| h != 0);
+        // A 32-bit host reads a cell's static offset as one machine
+        // word, so a wasm offset that does not fit in 32 bits cannot
+        // run natively — the handler would silently use the truncated
+        // value and turn an out-of-bounds access into an in-bounds one.
+        if INTERP_PTR_BYTES == 4 && !offset_fits_word(ins) {
+            h = None;
         }
-    }
-
-    #[inline(never)]
-    fn build_common_native_cell(ins: &Instr, state: ResolvedCell, cells_base: u64) -> DCell {
-        debug_assert_ne!(state.handler, 0);
-        debug_assert_ne!(ins.op, Op::BrTable);
-        let a = if state.flags & FLAG_A_CONST != 0 {
-            ins.a
-        } else {
-            ins.a * 8
-        };
-        let (b, mut c) = transform_bc(ins, state.flags);
-        if c_is_branch_target(ins.op) {
-            c += cells_base;
-        }
-        DCell {
-            h: state.handler as u64,
-            a,
-            b,
-            c,
-        }
-    }
-
-    #[inline(never)]
-    #[allow(clippy::too_many_arguments)]
-    fn build_special_cell<F: LinkFunction + ?Sized>(
-        &self,
-        ins: &Instr,
-        state: ResolvedCell,
-        cells_base: u64,
-        br_base: u64,
-        func: &F,
-        table_byte_off: &[u64],
-        ptr_bytes: u32,
-    ) -> DCell {
-        let mut handler = state.handler;
-        // A 32-bit host reads a cell's static offset as one machine word, so
-        // an offset that does not fit must remain a semantic slow-path cell.
-        if ptr_bytes == 4 && !offset_fits_word(ins) {
-            handler = 0;
-        }
-        match handler {
-            h if h != 0 && ins.op == Op::BrTable => {
+        let cell = match h {
+            Some(h) if ins.op == Op::BrTable => {
                 let table = func
                     .br_table(ins.c as usize)
                     .expect("predecoded branch-table index");
@@ -1266,14 +1193,31 @@ impl NativeEngine {
                     c: (table.len() - 1) as u64,
                 }
             }
-            h if h != 0 => Self::build_common_native_cell(ins, state, cells_base),
-            _ => DCell {
+            Some(h) => {
+                let a = if fl & FLAG_A_CONST != 0 {
+                    ins.a
+                } else {
+                    ins.a * 8
+                };
+                let (b, mut c) = transform_bc(ins, fl);
+                if c_is_branch_target(ins.op) {
+                    c += cells_base;
+                }
+                DCell {
+                    h: h as u64,
+                    a,
+                    b,
+                    c,
+                }
+            }
+            None => DCell {
                 h: self.slow_stub as u64,
                 a: ins.a,
                 b: ins.b,
                 c: ins.c,
             },
-        }
+        };
+        plan.write_cell(cell_index, cell);
     }
 
     /// The entry trampoline as a callable function pointer.
@@ -1413,113 +1357,6 @@ mod tests {
             );
         } else {
             assert!(plan.call_fixups.is_empty());
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn legacy_built_cell<F: LinkFunction + ?Sized>(
-        engine: &NativeEngine,
-        ins: &Instr,
-        state: ResolvedCell,
-        cells_base: u64,
-        br_base: u64,
-        func: &F,
-        table_byte_off: &[u64],
-        ptr_bytes: u32,
-    ) -> DCell {
-        let mut handler = Some(state.handler).filter(|&handler| handler != 0);
-        if ptr_bytes == 4 && !offset_fits_word(ins) {
-            handler = None;
-        }
-        match handler {
-            Some(handler) if ins.op == Op::BrTable => {
-                let table = func
-                    .br_table(ins.c as usize)
-                    .expect("predecoded branch-table index");
-                DCell {
-                    h: handler as u64,
-                    a: ins.a * 8,
-                    b: br_base + table_byte_off[ins.c as usize],
-                    c: (table.len() - 1) as u64,
-                }
-            }
-            Some(handler) => {
-                let a = if state.flags & FLAG_A_CONST != 0 {
-                    ins.a
-                } else {
-                    ins.a * 8
-                };
-                let (b, mut c) = transform_bc(ins, state.flags);
-                if c_is_branch_target(ins.op) {
-                    c += cells_base;
-                }
-                DCell {
-                    h: handler as u64,
-                    a,
-                    b,
-                    c,
-                }
-            }
-            None => DCell {
-                h: engine.slow_stub as u64,
-                a: ins.a,
-                b: ins.b,
-                c: ins.c,
-            },
-        }
-    }
-
-    #[test]
-    fn split_push_cell_matches_legacy_for_all_ops_flags_payloads_and_pointer_widths() {
-        let engine = NativeEngine::new();
-        let func = linker_test_function(Vec::new(), vec![vec![3, 7, 11]], 0);
-        let cells_base = 0x0012_3456_7800u64;
-        let br_base = 0x0076_5432_1000u64;
-        let table_byte_off = [20u64];
-        let payloads = [
-            (0, 0, 0),
-            (1, 2, 3),
-            (7, 1u64 << 32, 1u64 << 32),
-            (13, 1u64 << 48, 1u64 << 48),
-            (29, (1u64 << 48) | 7, (1u64 << 48) | 9),
-        ];
-
-        for op_index in 0..N_OPS {
-            let op = op_from_index(op_index);
-            for flags in 0..(FLAG_NO_NATIVE << 1) {
-                for &(a, b, payload_c) in &payloads {
-                    let c = if op == Op::BrTable { 0 } else { payload_c };
-                    let ins = Instr::new(op, flags, a, b, c);
-                    for handler in [0, 0x1234_5678usize] {
-                        let state = ResolvedCell { flags, handler };
-                        for ptr_bytes in [4, 8] {
-                            let expected = legacy_built_cell(
-                                &engine,
-                                &ins,
-                                state,
-                                cells_base,
-                                br_base,
-                                &func,
-                                &table_byte_off,
-                                ptr_bytes,
-                            );
-                            let actual = engine.build_cell(
-                                &ins,
-                                state,
-                                cells_base,
-                                br_base,
-                                &func,
-                                &table_byte_off,
-                                ptr_bytes,
-                            );
-                            assert_eq!(
-                                actual, expected,
-                                "op={op:?} flags={flags:#x} a={a:#x} b={b:#x} c={c:#x} handler={handler:#x} ptr={ptr_bytes}"
-                            );
-                        }
-                    }
-                }
-            }
         }
     }
 
