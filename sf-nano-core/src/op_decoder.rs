@@ -295,6 +295,9 @@ pub struct Decoder<'a, 'b> {
     /// reference to it is handed out.
     current: DecodedOp,
     end_reached: bool,
+    /// Test-only switch for differential coverage of predecoder fast paths.
+    #[cfg(test)]
+    predecode_fast_disabled: bool,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
@@ -310,7 +313,14 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 imm: Immediate::None,
             },
             end_reached: false,
+            #[cfg(test)]
+            predecode_fast_disabled: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn disable_predecode_fast_for_test(&mut self) {
+        self.predecode_fast_disabled = true;
     }
 
     pub fn add_handler(&mut self, handler: &'a mut dyn OpcodeHandler) {
@@ -1213,6 +1223,26 @@ pub struct OpStream<'d, 'a, 'b> {
 }
 
 impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
+    /// Bytes not yet consumed by the generic decoder.
+    ///
+    /// This narrow crate-internal hook lets the interpreter probe its common
+    /// opcodes without constructing an owning `DecodedOp`. A miss must leave
+    /// the slice untouched and fall back to [`OpStream::next`].
+    #[inline]
+    pub(crate) fn predecode_bytes(&self) -> &'b [u8] {
+        #[cfg(test)]
+        if self.decoder.predecode_fast_disabled {
+            return &[];
+        }
+        self.decoder.payload.remaining_slice()
+    }
+
+    /// Commit a predecoder probe that already validated `len` input bytes.
+    #[inline]
+    pub(crate) fn consume_predecoded(&mut self, len: usize) {
+        self.decoder.payload.advance_known_valid(len);
+    }
+
     /// Decode and return the next op, or `None` at the end of the body.
     ///
     /// The reference borrows the stream, so it is valid until the next
