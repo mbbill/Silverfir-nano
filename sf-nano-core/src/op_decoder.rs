@@ -9,6 +9,9 @@ use crate::{
     value_type::{HeapType, RefType, ValueType},
 };
 
+#[cfg(test)]
+pub(crate) mod raw_cursor;
+
 #[cfg(not(sf_has_simd))]
 #[inline]
 fn simd_unsupported_target_error() -> WasmError {
