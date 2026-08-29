@@ -2947,6 +2947,17 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         }
         Ok(())
     }
+
+    /// Apply the shared state transition before a committed byte fast path.
+    /// Routing-only ops may keep a deferred fill fusible; every semantic op
+    /// must flush it before dead-code handling and lowering.
+    #[inline]
+    fn begin_fast_lowering(&mut self, preserves_pending_fill: bool) -> bool {
+        if !preserves_pending_fill && self.pending_fill.is_some() {
+            self.flush_pending_fill();
+        }
+        !self.dead
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -3147,15 +3158,12 @@ fn probe_fixed<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Option<[u8; 
     Some(value)
 }
 
-/// Probe one common opcode without mutating the decoder cursor. A malformed
-/// immediate deliberately reports a miss: the unchanged generic fallback then
-/// produces the same public error it did before this fast lane existed.
+/// Probe one already-classified common opcode without mutating the decoder
+/// cursor. A malformed immediate deliberately reports a miss: the unchanged
+/// generic fallback then produces the same public error it did before this
+/// fast lane existed.
 #[inline(never)]
-fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
-    let Some(&opcode) = bytes.first() else {
-        return false;
-    };
-    let lowering = FAST_LOWERINGS[opcode as usize];
+fn probe_fast_lowering(bytes: &[u8], lowering: FastLowering, decoded: &mut FastDecoded) -> bool {
     let mut cursor = 1;
     let (imm0, imm1) = match lowering {
         FastLowering::Fallback => return false,
@@ -3220,6 +3228,17 @@ fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
     true
 }
 
+/// Test oracle for the full common-op probe. Production classifies the first
+/// byte once in `on_stream` so direct Value1/Value2 lowering and the remaining
+/// probe do not duplicate the table lookup.
+#[cfg(test)]
+fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
+    let Some(&opcode) = bytes.first() else {
+        return false;
+    };
+    probe_fast_lowering(bytes, FAST_LOWERINGS[opcode as usize], decoded)
+}
+
 impl OpcodeHandler for Predecoder<'_, '_> {
     fn on_decode_begin(&mut self) -> Result<(), WasmError> {
         Ok(())
@@ -3234,21 +3253,34 @@ impl OpcodeHandler for Predecoder<'_, '_> {
             #[cfg(feature = "startup-profile")]
             let decode_span =
                 crate::startup_profile::Span::new(crate::startup_profile::Stage::PredecodeDecode);
-            if probe_fast(stream.predecode_bytes(), &mut fast) {
+            let bytes = stream.predecode_bytes();
+            let lowering = bytes.first().map_or(FastLowering::Fallback, |&opcode| {
+                FAST_LOWERINGS[opcode as usize]
+            });
+            let direct_value = match lowering {
+                FastLowering::Value1(op) => Some((op, 1)),
+                FastLowering::Value2(op) => Some((op, 2)),
+                _ => None,
+            };
+            if let Some((op, arity)) = direct_value {
+                #[cfg(feature = "startup-profile")]
+                drop(decode_span);
+                stream.consume_predecoded(1);
+                if self.begin_fast_lowering(false) {
+                    self.value_op(op, arity)?;
+                }
+                continue;
+            }
+            if probe_fast_lowering(bytes, lowering, &mut fast) {
                 #[cfg(feature = "startup-profile")]
                 drop(decode_span);
                 // Probe first, commit second: every miss leaves the generic
                 // decoder at the exact byte where it started.
                 stream.consume_predecoded(fast.consumed);
-                if self.pending_fill.is_some()
-                    && !matches!(
-                        fast.lowering,
-                        FastLowering::LocalGet | FastLowering::I32Const | FastLowering::I64Const
-                    )
-                {
-                    self.flush_pending_fill();
-                }
-                if self.dead {
+                if !self.begin_fast_lowering(matches!(
+                    fast.lowering,
+                    FastLowering::LocalGet | FastLowering::I32Const | FastLowering::I64Const
+                )) {
                     continue;
                 }
                 match fast.lowering {
@@ -4393,9 +4425,8 @@ mod tests {
         }
     }
 
-    fn predecode_wat_mode(src: &str, func: usize, disable_fast: bool) -> PredecodedFunction {
-        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
-        let module = Module::new("t", &bin).expect("module");
+    fn predecode_bytes_mode(bin: &[u8], func: usize, disable_fast: bool) -> PredecodedFunction {
+        let module = Module::new("t", bin).expect("module");
         let tag_identities: StdVec<TagIdentity> = module
             .tags()
             .iter()
@@ -4417,6 +4448,11 @@ mod tests {
         .expect("predecode");
         let code = Rc::new(code);
         parts.finish(Some(&code))
+    }
+
+    fn predecode_wat_mode(src: &str, func: usize, disable_fast: bool) -> PredecodedFunction {
+        let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
+        predecode_bytes_mode(&bin, func, disable_fast)
     }
 
     fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
@@ -4738,6 +4774,101 @@ mod tests {
         let fast = predecode_wat_mode(wat, 0, false);
         let generic = predecode_wat_mode(wat, 0, true);
         assert_same_predecode(&fast, &generic);
+    }
+
+    fn module_with_patched_value_opcode(arity: u8, opcode: u8) -> StdVec<u8> {
+        let (wat, pattern, opcode_at): (&str, &[u8], usize) = match arity {
+            1 => (
+                "(module (func (result i32) i64.const 0 i64.eqz))",
+                &[
+                    Opcode::I64_CONST as u8,
+                    0,
+                    Opcode::I64_EQZ as u8,
+                    Opcode::END as u8,
+                ],
+                2,
+            ),
+            2 => (
+                "(module (func (result i64) i64.const 0 i64.const 0 i64.add))",
+                &[
+                    Opcode::I64_CONST as u8,
+                    0,
+                    Opcode::I64_CONST as u8,
+                    0,
+                    Opcode::I64_ADD as u8,
+                    Opcode::END as u8,
+                ],
+                4,
+            ),
+            _ => unreachable!("value-op arity"),
+        };
+        let mut bin: StdVec<u8> = wat::parse_str(wat).expect("value template");
+        let matches: StdVec<usize> = bin
+            .windows(pattern.len())
+            .enumerate()
+            .filter_map(|(at, bytes)| (bytes == pattern).then_some(at))
+            .collect();
+        assert_eq!(matches.len(), 1, "unique value template body");
+        bin[matches[0] + opcode_at] = opcode;
+        bin
+    }
+
+    #[test]
+    fn every_direct_value_opcode_matches_generic_decoder() {
+        let mut value1_count = 0usize;
+        let mut value2_count = 0usize;
+        for opcode in 0u16..=u8::MAX as u16 {
+            let (expected, arity) = match FAST_LOWERINGS[opcode as usize] {
+                FastLowering::Value1(op) => {
+                    value1_count += 1;
+                    (op, 1)
+                }
+                FastLowering::Value2(op) => {
+                    value2_count += 1;
+                    (op, 2)
+                }
+                _ => continue,
+            };
+            let bin = module_with_patched_value_opcode(arity, opcode as u8);
+            let fast = predecode_bytes_mode(&bin, 0, false);
+            let generic = predecode_bytes_mode(&bin, 0, true);
+            assert_same_predecode(&fast, &generic);
+            assert!(
+                fast.code.iter().any(|ins| ins.op == expected),
+                "direct opcode {opcode:#04x} did not lower to {expected:?}"
+            );
+
+            let mut decoded = FastDecoded::EMPTY;
+            assert!(probe_fast(&[opcode as u8], &mut decoded));
+            assert_eq!(decoded.consumed, 1);
+            match (decoded.lowering, arity) {
+                (FastLowering::Value1(actual), 1) | (FastLowering::Value2(actual), 2) => {
+                    assert_eq!(actual, expected)
+                }
+                _ => panic!("direct opcode {opcode:#04x} changed arity"),
+            }
+        }
+        assert!(value1_count > 0);
+        assert!(value2_count > 0);
+    }
+
+    #[test]
+    fn direct_value_fast_lane_preserves_pending_fill_and_dead_code() {
+        let wat = r#"(module
+            (memory 1)
+            (func (param i32 i32 i32) (result i32)
+                local.get 0 local.get 1 local.get 2 memory.fill
+                i32.const 9
+                i32.clz)
+            (func
+                unreachable
+                i32.add
+                drop))"#;
+        for func in 0..2 {
+            let fast = predecode_wat_mode(wat, func, false);
+            let generic = predecode_wat_mode(wat, func, true);
+            assert_same_predecode(&fast, &generic);
+        }
     }
 
     #[test]
