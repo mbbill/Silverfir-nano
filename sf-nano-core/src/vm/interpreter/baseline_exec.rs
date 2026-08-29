@@ -9,6 +9,8 @@ use super::baseline_artifact::{BaselineArtifact, BaselineFunction, BrTableRange,
 use crate::collections::Vec;
 use crate::error::WasmError;
 use crate::module::Module;
+#[cfg(sf_module_validator)]
+use crate::op_decoder::raw_cursor::RawOp;
 use crate::op_decoder::raw_cursor::{RawDecodeError, RawImmediate, RawOpCursor};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
@@ -262,6 +264,29 @@ pub(super) fn raw_stepper_supports_opcode(opcode: WasmOpcode) -> bool {
     raw_stepper_opcode_kind(opcode).is_some()
 }
 
+fn raw_stepper_i32_global(module: &Module, global: usize) -> Option<bool> {
+    module
+        .globals()
+        .get(global)
+        .map(|global| global.value_type() == ValueType::I32)
+}
+
+#[cfg(sf_module_validator)]
+fn raw_stepper_supports_raw_op(module: &Module, raw: &RawOp<'_>) -> bool {
+    if !raw_stepper_supports_opcode(raw.wasm_op) {
+        return false;
+    }
+    match raw.wasm_op {
+        WasmOpcode::OP(Opcode::GLOBAL_GET | Opcode::GLOBAL_SET) => {
+            let RawImmediate::GlobalIndex(global) = raw.imm else {
+                return false;
+            };
+            raw_stepper_i32_global(module, global as usize) == Some(true)
+        }
+        _ => true,
+    }
+}
+
 #[cfg(sf_module_validator)]
 pub(super) fn raw_stepper_supports_function(
     module: &Module,
@@ -292,7 +317,7 @@ pub(super) fn raw_stepper_supports_function(
     let mut cursor = RawOpCursor::new(spec.code());
     loop {
         match cursor.next() {
-            Ok(Some(raw)) if raw_stepper_supports_opcode(raw.wasm_op) => {}
+            Ok(Some(raw)) if raw_stepper_supports_raw_op(module, &raw) => {}
             Ok(Some(_)) | Err(_) => return false,
             Ok(None) => return true,
         }
@@ -983,15 +1008,9 @@ impl RawStepper<'_, '_> {
         opcode: WasmOpcode,
         pc: usize,
     ) -> Result<(), BaselineExecError> {
-        match self
-            .instance
-            .module()
-            .globals()
-            .get(global)
-            .map(|global| global.value_type())
-        {
-            Some(ValueType::I32) => Ok(()),
-            Some(_) => Err(BaselineExecError::Unsupported {
+        match raw_stepper_i32_global(self.instance.module(), global) {
+            Some(true) => Ok(()),
+            Some(false) => Err(BaselineExecError::Unsupported {
                 opcode: Some(opcode),
                 pc,
                 feature: "non-i32 global",
@@ -2473,6 +2492,47 @@ mod tests {
             .expect("forced plan must be safely promoted");
         for index in 0..6 {
             assert_eq!(forced.whole_function_mode(index), FunctionPlanKind::Raw);
+        }
+    }
+
+    #[cfg(sf_module_validator)]
+    #[test]
+    fn forced_raw_promotes_non_i32_globals_but_keeps_i32_globals() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (global $wide (mut i64) (i64.const 5))
+                (global $narrow (mut i32) (i32.const 7))
+                (func (export "wide") (param i64) (result i64)
+                    local.get 0 global.set $wide
+                    global.get $wide)
+                (func (export "narrow") (param i32) (result i32)
+                    local.get 0 global.set $narrow
+                    global.get $narrow))"#,
+        )
+        .expect("wat");
+        let module = Module::new("whole-plan-global-types", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let mut instance = built_interp(module, &[]);
+        instance
+            .set_whole_function_plan_for_test(artifact, vec![FunctionPlanKind::Raw; 2])
+            .expect("forced plan must be safely promoted");
+        assert_eq!(instance.whole_function_mode(0), FunctionPlanKind::FullFold);
+        assert_eq!(instance.whole_function_mode(1), FunctionPlanKind::Raw);
+
+        let mut instance = InterpInstance::initialize(instance)
+            .map_err(|(_, error)| error)
+            .expect("initialize mixed instance");
+        for (export, input) in [
+            ("wide", 0x0123_4567_89ab_cdef),
+            ("narrow", 0x0000_0000_89ab_cdef),
+        ] {
+            let function = instance.find_export(export).expect("export");
+            let mut result = [0u64; 1];
+            instance
+                .invoke(function, &[input], &mut result)
+                .expect("global roundtrip");
+            assert_eq!(result[0], input, "{export}");
         }
     }
 
