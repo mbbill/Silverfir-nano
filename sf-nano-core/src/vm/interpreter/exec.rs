@@ -47,7 +47,7 @@ use super::engine::{
 use super::fmath;
 use super::instr::{op_from_index, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
-use super::predecode::{predecode_function, PredecodedFunction, WIDE_MEMARG};
+use super::predecode::{predecode_functions, PredecodedFunction, WIDE_MEMARG};
 use super::SLOT_GP_UNIT_BYTES;
 
 const PAGE: usize = 65536;
@@ -1276,19 +1276,7 @@ impl InterpInstance {
 
         // Predecode every local function eagerly; imports are dispatched at
         // the slow boundary, so import-free modules remain entirely local.
-        let mut funcs = Vec::new();
-        for (i, f) in module.functions().iter().enumerate() {
-            if f.is_import() {
-                funcs.push(None);
-            } else {
-                funcs.push(Some(Rc::new(predecode_function(
-                    &module,
-                    &tags,
-                    &function_handles,
-                    i,
-                )?)));
-            }
-        }
+        let funcs = predecode_functions(&module, &tags, &function_handles)?;
         let import_names = module
             .functions()
             .iter()
