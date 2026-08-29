@@ -1941,191 +1941,100 @@ impl<'m> Predecoder<'m> {
     }
 }
 
-fn wasm_binop(o: Opcode) -> Option<Op> {
-    use Opcode::*;
-    Some(match o {
-        I32_ADD => Op::I32_Add,
-        I32_SUB => Op::I32_Sub,
-        I32_MUL => Op::I32_Mul,
-        I32_DIV_S => Op::I32_DivS,
-        I32_DIV_U => Op::I32_DivU,
-        I32_REM_S => Op::I32_RemS,
-        I32_REM_U => Op::I32_RemU,
-        I32_AND => Op::I32_And,
-        I32_OR => Op::I32_Or,
-        I32_XOR => Op::I32_Xor,
-        I32_SHL => Op::I32_Shl,
-        I32_SHR_S => Op::I32_ShrS,
-        I32_SHR_U => Op::I32_ShrU,
-        I32_ROTL => Op::I32_Rotl,
-        I32_ROTR => Op::I32_Rotr,
-        I32_EQ => Op::I32_Eq,
-        I32_NE => Op::I32_Ne,
-        I32_LT_S => Op::I32_LtS,
-        I32_LT_U => Op::I32_LtU,
-        I32_GT_S => Op::I32_GtS,
-        I32_GT_U => Op::I32_GtU,
-        I32_LE_S => Op::I32_LeS,
-        I32_LE_U => Op::I32_LeU,
-        I32_GE_S => Op::I32_GeS,
-        I32_GE_U => Op::I32_GeU,
-        I64_ADD => Op::I64_Add,
-        I64_SUB => Op::I64_Sub,
-        I64_MUL => Op::I64_Mul,
-        I64_DIV_S => Op::I64_DivS,
-        I64_DIV_U => Op::I64_DivU,
-        I64_REM_S => Op::I64_RemS,
-        I64_REM_U => Op::I64_RemU,
-        I64_AND => Op::I64_And,
-        I64_OR => Op::I64_Or,
-        I64_XOR => Op::I64_Xor,
-        I64_SHL => Op::I64_Shl,
-        I64_SHR_S => Op::I64_ShrS,
-        I64_SHR_U => Op::I64_ShrU,
-        I64_ROTL => Op::I64_Rotl,
-        I64_ROTR => Op::I64_Rotr,
-        I64_EQ => Op::I64_Eq,
-        I64_NE => Op::I64_Ne,
-        I64_LT_S => Op::I64_LtS,
-        I64_LT_U => Op::I64_LtU,
-        I64_GT_S => Op::I64_GtS,
-        I64_GT_U => Op::I64_GtU,
-        I64_LE_S => Op::I64_LeS,
-        I64_LE_U => Op::I64_LeU,
-        I64_GE_S => Op::I64_GeS,
-        I64_GE_U => Op::I64_GeU,
-        _ => return None,
-    })
+#[derive(Clone, Copy)]
+enum SimpleLowering {
+    Unsupported,
+    Value1(Op),
+    Value2(Op),
+    Load(Op),
+    Store(Op),
 }
 
-fn wasm_unop(o: Opcode) -> Option<Op> {
-    use Opcode::*;
-    Some(match o {
-        I32_CLZ => Op::I32_Clz,
-        I32_CTZ => Op::I32_Ctz,
-        I32_POPCNT => Op::I32_Popcnt,
-        I32_EXTEND8_S => Op::I32_Extend8S,
-        I32_EXTEND16_S => Op::I32_Extend16S,
-        I32_EQZ => Op::I32_Eqz,
-        I64_CLZ => Op::I64_Clz,
-        I64_CTZ => Op::I64_Ctz,
-        I64_POPCNT => Op::I64_Popcnt,
-        I64_EXTEND8_S => Op::I64_Extend8S,
-        I64_EXTEND16_S => Op::I64_Extend16S,
-        I64_EXTEND32_S => Op::I64_Extend32S,
-        I64_EQZ => Op::I64_Eqz,
-        I32_WRAP_I64 => Op::I32_WrapI64,
-        I64_EXTEND_I32_S => Op::I64_ExtendI32S,
-        I64_EXTEND_I32_U => Op::I64_ExtendI32U,
-        F32_ABS => Op::F32_Abs,
-        F32_NEG => Op::F32_Neg,
-        F32_CEIL => Op::F32_Ceil,
-        F32_FLOOR => Op::F32_Floor,
-        F32_TRUNC => Op::F32_Trunc,
-        F32_NEAREST => Op::F32_Nearest,
-        F32_SQRT => Op::F32_Sqrt,
-        F64_ABS => Op::F64_Abs,
-        F64_NEG => Op::F64_Neg,
-        F64_CEIL => Op::F64_Ceil,
-        F64_FLOOR => Op::F64_Floor,
-        F64_TRUNC => Op::F64_Trunc,
-        F64_NEAREST => Op::F64_Nearest,
-        F64_SQRT => Op::F64_Sqrt,
-        I32_TRUNC_F32_S => Op::I32_TruncF32S,
-        I32_TRUNC_F32_U => Op::I32_TruncF32U,
-        I32_TRUNC_F64_S => Op::I32_TruncF64S,
-        I32_TRUNC_F64_U => Op::I32_TruncF64U,
-        I64_TRUNC_F32_S => Op::I64_TruncF32S,
-        I64_TRUNC_F32_U => Op::I64_TruncF32U,
-        I64_TRUNC_F64_S => Op::I64_TruncF64S,
-        I64_TRUNC_F64_U => Op::I64_TruncF64U,
-        F32_CONVERT_I32_S => Op::F32_ConvertI32S,
-        F32_CONVERT_I32_U => Op::F32_ConvertI32U,
-        F32_CONVERT_I64_S => Op::F32_ConvertI64S,
-        F32_CONVERT_I64_U => Op::F32_ConvertI64U,
-        F32_DEMOTE_F64 => Op::F32_DemoteF64,
-        F64_CONVERT_I32_S => Op::F64_ConvertI32S,
-        F64_CONVERT_I32_U => Op::F64_ConvertI32U,
-        F64_CONVERT_I64_S => Op::F64_ConvertI64S,
-        F64_CONVERT_I64_U => Op::F64_ConvertI64U,
-        F64_PROMOTE_F32 => Op::F64_PromoteF32,
-        I32_REINTERPRET_F32 => Op::I32_ReinterpretF32,
-        I64_REINTERPRET_F64 => Op::I64_ReinterpretF64,
-        F32_REINTERPRET_I32 => Op::F32_ReinterpretI32,
-        F64_REINTERPRET_I64 => Op::F64_ReinterpretI64,
-        _ => return None,
-    })
+macro_rules! set_simple_lowerings {
+    ($table:ident, $kind:ident, $($wasm:ident => $lowered:ident),+ $(,)?) => {
+        $($table[Opcode::$wasm as usize] = SimpleLowering::$kind(Op::$lowered);)+
+    };
 }
 
-fn wasm_fbinop(o: Opcode) -> Option<Op> {
-    use Opcode::*;
-    Some(match o {
-        F32_ADD => Op::F32_Add,
-        F32_SUB => Op::F32_Sub,
-        F32_MUL => Op::F32_Mul,
-        F32_DIV => Op::F32_Div,
-        F32_MIN => Op::F32_Min,
-        F32_MAX => Op::F32_Max,
-        F32_COPYSIGN => Op::F32_Copysign,
-        F32_EQ => Op::F32_Eq,
-        F32_NE => Op::F32_Ne,
-        F32_LT => Op::F32_Lt,
-        F32_GT => Op::F32_Gt,
-        F32_LE => Op::F32_Le,
-        F32_GE => Op::F32_Ge,
-        F64_ADD => Op::F64_Add,
-        F64_SUB => Op::F64_Sub,
-        F64_MUL => Op::F64_Mul,
-        F64_DIV => Op::F64_Div,
-        F64_MIN => Op::F64_Min,
-        F64_MAX => Op::F64_Max,
-        F64_COPYSIGN => Op::F64_Copysign,
-        F64_EQ => Op::F64_Eq,
-        F64_NE => Op::F64_Ne,
-        F64_LT => Op::F64_Lt,
-        F64_GT => Op::F64_Gt,
-        F64_LE => Op::F64_Le,
-        F64_GE => Op::F64_Ge,
-        _ => return None,
-    })
-}
-
-fn wasm_load(o: Opcode) -> Option<Op> {
-    use Opcode::*;
-    Some(match o {
-        I32_LOAD => Op::I32_Load,
-        I64_LOAD => Op::I64_Load,
-        F32_LOAD => Op::F32_Load,
-        F64_LOAD => Op::F64_Load,
-        I32_LOAD8_S => Op::I32_Load8S,
-        I32_LOAD8_U => Op::I32_Load8U,
-        I32_LOAD16_S => Op::I32_Load16S,
-        I32_LOAD16_U => Op::I32_Load16U,
-        I64_LOAD8_S => Op::I64_Load8S,
-        I64_LOAD8_U => Op::I64_Load8U,
-        I64_LOAD16_S => Op::I64_Load16S,
-        I64_LOAD16_U => Op::I64_Load16U,
-        I64_LOAD32_S => Op::I64_Load32S,
-        I64_LOAD32_U => Op::I64_Load32U,
-        _ => return None,
-    })
-}
-
-fn wasm_store(o: Opcode) -> Option<Op> {
-    use Opcode::*;
-    Some(match o {
-        I32_STORE => Op::I32_Store,
-        I64_STORE => Op::I64_Store,
-        F32_STORE => Op::F32_Store,
-        F64_STORE => Op::F64_Store,
-        I32_STORE8 => Op::I32_Store8,
-        I32_STORE16 => Op::I32_Store16,
-        I64_STORE8 => Op::I64_Store8,
-        I64_STORE16 => Op::I64_Store16,
-        I64_STORE32 => Op::I64_Store32,
-        _ => return None,
-    })
-}
+/// Table-driven lowering for the numeric and memory opcodes handled by the
+/// generic tail of `on_stream`. These are the common case in compiled Wasm;
+/// keeping their large mapping out of `on_stream` shrinks its hot instruction
+/// footprint without changing any lowering rule.
+const SIMPLE_LOWERINGS: [SimpleLowering; 256] = {
+    let mut table = [SimpleLowering::Unsupported; 256];
+    set_simple_lowerings!(table, Value2,
+        I32_ADD => I32_Add, I32_SUB => I32_Sub, I32_MUL => I32_Mul,
+        I32_DIV_S => I32_DivS, I32_DIV_U => I32_DivU, I32_REM_S => I32_RemS,
+        I32_REM_U => I32_RemU, I32_AND => I32_And, I32_OR => I32_Or,
+        I32_XOR => I32_Xor, I32_SHL => I32_Shl, I32_SHR_S => I32_ShrS,
+        I32_SHR_U => I32_ShrU, I32_ROTL => I32_Rotl, I32_ROTR => I32_Rotr,
+        I32_EQ => I32_Eq, I32_NE => I32_Ne, I32_LT_S => I32_LtS,
+        I32_LT_U => I32_LtU, I32_GT_S => I32_GtS, I32_GT_U => I32_GtU,
+        I32_LE_S => I32_LeS, I32_LE_U => I32_LeU, I32_GE_S => I32_GeS,
+        I32_GE_U => I32_GeU, I64_ADD => I64_Add, I64_SUB => I64_Sub,
+        I64_MUL => I64_Mul, I64_DIV_S => I64_DivS, I64_DIV_U => I64_DivU,
+        I64_REM_S => I64_RemS, I64_REM_U => I64_RemU, I64_AND => I64_And,
+        I64_OR => I64_Or, I64_XOR => I64_Xor, I64_SHL => I64_Shl,
+        I64_SHR_S => I64_ShrS, I64_SHR_U => I64_ShrU, I64_ROTL => I64_Rotl,
+        I64_ROTR => I64_Rotr, I64_EQ => I64_Eq, I64_NE => I64_Ne,
+        I64_LT_S => I64_LtS, I64_LT_U => I64_LtU, I64_GT_S => I64_GtS,
+        I64_GT_U => I64_GtU, I64_LE_S => I64_LeS, I64_LE_U => I64_LeU,
+        I64_GE_S => I64_GeS, I64_GE_U => I64_GeU,
+        F32_ADD => F32_Add, F32_SUB => F32_Sub, F32_MUL => F32_Mul,
+        F32_DIV => F32_Div, F32_MIN => F32_Min, F32_MAX => F32_Max,
+        F32_COPYSIGN => F32_Copysign, F32_EQ => F32_Eq, F32_NE => F32_Ne,
+        F32_LT => F32_Lt, F32_GT => F32_Gt, F32_LE => F32_Le,
+        F32_GE => F32_Ge, F64_ADD => F64_Add, F64_SUB => F64_Sub,
+        F64_MUL => F64_Mul, F64_DIV => F64_Div, F64_MIN => F64_Min,
+        F64_MAX => F64_Max, F64_COPYSIGN => F64_Copysign, F64_EQ => F64_Eq,
+        F64_NE => F64_Ne, F64_LT => F64_Lt, F64_GT => F64_Gt,
+        F64_LE => F64_Le, F64_GE => F64_Ge,
+    );
+    set_simple_lowerings!(table, Value1,
+        I32_CLZ => I32_Clz, I32_CTZ => I32_Ctz, I32_POPCNT => I32_Popcnt,
+        I32_EXTEND8_S => I32_Extend8S, I32_EXTEND16_S => I32_Extend16S,
+        I32_EQZ => I32_Eqz, I64_CLZ => I64_Clz, I64_CTZ => I64_Ctz,
+        I64_POPCNT => I64_Popcnt, I64_EXTEND8_S => I64_Extend8S,
+        I64_EXTEND16_S => I64_Extend16S, I64_EXTEND32_S => I64_Extend32S,
+        I64_EQZ => I64_Eqz, I32_WRAP_I64 => I32_WrapI64,
+        I64_EXTEND_I32_S => I64_ExtendI32S, I64_EXTEND_I32_U => I64_ExtendI32U,
+        F32_ABS => F32_Abs, F32_NEG => F32_Neg, F32_CEIL => F32_Ceil,
+        F32_FLOOR => F32_Floor, F32_TRUNC => F32_Trunc,
+        F32_NEAREST => F32_Nearest, F32_SQRT => F32_Sqrt,
+        F64_ABS => F64_Abs, F64_NEG => F64_Neg, F64_CEIL => F64_Ceil,
+        F64_FLOOR => F64_Floor, F64_TRUNC => F64_Trunc,
+        F64_NEAREST => F64_Nearest, F64_SQRT => F64_Sqrt,
+        I32_TRUNC_F32_S => I32_TruncF32S, I32_TRUNC_F32_U => I32_TruncF32U,
+        I32_TRUNC_F64_S => I32_TruncF64S, I32_TRUNC_F64_U => I32_TruncF64U,
+        I64_TRUNC_F32_S => I64_TruncF32S, I64_TRUNC_F32_U => I64_TruncF32U,
+        I64_TRUNC_F64_S => I64_TruncF64S, I64_TRUNC_F64_U => I64_TruncF64U,
+        F32_CONVERT_I32_S => F32_ConvertI32S, F32_CONVERT_I32_U => F32_ConvertI32U,
+        F32_CONVERT_I64_S => F32_ConvertI64S, F32_CONVERT_I64_U => F32_ConvertI64U,
+        F32_DEMOTE_F64 => F32_DemoteF64, F64_CONVERT_I32_S => F64_ConvertI32S,
+        F64_CONVERT_I32_U => F64_ConvertI32U, F64_CONVERT_I64_S => F64_ConvertI64S,
+        F64_CONVERT_I64_U => F64_ConvertI64U, F64_PROMOTE_F32 => F64_PromoteF32,
+        I32_REINTERPRET_F32 => I32_ReinterpretF32,
+        I64_REINTERPRET_F64 => I64_ReinterpretF64,
+        F32_REINTERPRET_I32 => F32_ReinterpretI32,
+        F64_REINTERPRET_I64 => F64_ReinterpretI64,
+    );
+    set_simple_lowerings!(table, Load,
+        I32_LOAD => I32_Load, I64_LOAD => I64_Load, F32_LOAD => F32_Load,
+        F64_LOAD => F64_Load, I32_LOAD8_S => I32_Load8S,
+        I32_LOAD8_U => I32_Load8U, I32_LOAD16_S => I32_Load16S,
+        I32_LOAD16_U => I32_Load16U, I64_LOAD8_S => I64_Load8S,
+        I64_LOAD8_U => I64_Load8U, I64_LOAD16_S => I64_Load16S,
+        I64_LOAD16_U => I64_Load16U, I64_LOAD32_S => I64_Load32S,
+        I64_LOAD32_U => I64_Load32U,
+    );
+    set_simple_lowerings!(table, Store,
+        I32_STORE => I32_Store, I64_STORE => I64_Store, F32_STORE => F32_Store,
+        F64_STORE => F64_Store, I32_STORE8 => I32_Store8,
+        I32_STORE16 => I32_Store16, I64_STORE8 => I64_Store8,
+        I64_STORE16 => I64_Store16, I64_STORE32 => I64_Store32,
+    );
+    table
+};
 
 impl<'m> OpcodeHandler for Predecoder<'m> {
     fn on_decode_begin(&mut self) -> Result<(), WasmError> {
@@ -3030,153 +2939,153 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.dead = true;
                 }
                 o => {
-                    if let Some(vop) = wasm_binop(o).or_else(|| wasm_fbinop(o)) {
-                        self.value_op(vop, 2)?;
-                    } else if let Some(vop) = wasm_unop(o) {
-                        self.value_op(vop, 1)?;
-                    } else if let Some(lop) = wasm_load(o) {
-                        let offset = match imm {
-                            Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
-                            _ => return Err(desync()),
-                        };
-                        let (memidx, raw_offset) = offset;
-                        let addr64 = self.memory_is_64(memidx as u64);
-                        // A memory64 offset can use all 64 bits, leaving no
-                        // room for the index beside it; such a cell carries a
-                        // side-table index instead. It is always a slow cell,
-                        // so nothing native reads the packed form.
-                        let offset = if raw_offset >= 1u64 << 48 {
-                            if !addr64 {
-                                return Err(WasmError::invalid(
-                                    "interp: static memory offset does not fit the packed form",
-                                ));
+                    match SIMPLE_LOWERINGS[o as usize] {
+                        SimpleLowering::Value2(vop) => self.value_op(vop, 2)?,
+                        SimpleLowering::Value1(vop) => self.value_op(vop, 1)?,
+                        SimpleLowering::Load(lop) => {
+                            let offset = match imm {
+                                Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
+                                _ => return Err(desync()),
+                            };
+                            let (memidx, raw_offset) = offset;
+                            let addr64 = self.memory_is_64(memidx as u64);
+                            // A memory64 offset can use all 64 bits, leaving no
+                            // room for the index beside it; such a cell carries a
+                            // side-table index instead. It is always a slow cell,
+                            // so nothing native reads the packed form.
+                            let offset = if raw_offset >= 1u64 << 48 {
+                                if !addr64 {
+                                    return Err(WasmError::invalid(
+                                        "interp: static memory offset does not fit the packed form",
+                                    ));
+                                }
+                                let at = self.wide_memargs.len() as u64;
+                                self.wide_memargs.push((memidx, raw_offset));
+                                WIDE_MEMARG | at
+                            } else {
+                                ((memidx as u64) << 48) | raw_offset
+                            };
+                            let at = self.code.len() as u32;
+                            let d = self.pop()?;
+                            let (a, a_const) = self.operand(d, at);
+                            // Address-add fusion: a single-use, just-emitted
+                            // i32.add producing this address folds into the
+                            // load (the corpus-universal base+index pattern).
+                            let mut fused = false;
+                            if let Some(def) = self.rewritable_producer(d) {
+                                let add = self.code[def as usize];
+                                let dst = self.temp_slot_used(self.height());
+                                if add.op == Op::I32_Add
+                                    && !addr64
+                                    && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
+                                    && offset >> 48 == 0
+                                    && add.a < 1 << 16
+                                    && add.b < 1 << 16
+                                    && dst < 1 << 16
+                                {
+                                    let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
+                                        (add.b, add.a, FLAG_A_ACC)
+                                    } else {
+                                        (add.a, add.b, add.flags & FLAG_A_ACC)
+                                    };
+                                    self.code[def as usize] = Instr {
+                                        op: lop,
+                                        flags: afl | FLAG_FUSED,
+                                        a: a1,
+                                        b: offset,
+                                        c: a2 << 32 | dst,
+                                    };
+                                    self.push_result_temp(def);
+                                    fused = true;
+                                }
                             }
-                            let at = self.wide_memargs.len() as u64;
-                            self.wide_memargs.push((memidx, raw_offset));
-                            WIDE_MEMARG | at
-                        } else {
-                            ((memidx as u64) << 48) | raw_offset
-                        };
-                        let at = self.code.len() as u32;
-                        let d = self.pop()?;
-                        let (a, a_const) = self.operand(d, at);
-                        // Address-add fusion: a single-use, just-emitted
-                        // i32.add producing this address folds into the
-                        // load (the corpus-universal base+index pattern).
-                        let mut fused = false;
-                        if let Some(def) = self.rewritable_producer(d) {
-                            let add = self.code[def as usize];
-                            let dst = self.temp_slot_used(self.height());
-                            if add.op == Op::I32_Add
-                                && !addr64
-                                && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
-                                && offset >> 48 == 0
-                                && add.a < 1 << 16
-                                && add.b < 1 << 16
-                                && dst < 1 << 16
-                            {
-                                let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
-                                    (add.b, add.a, FLAG_A_ACC)
-                                } else {
-                                    (add.a, add.b, add.flags & FLAG_A_ACC)
-                                };
-                                self.code[def as usize] = Instr {
-                                    op: lop,
-                                    flags: afl | FLAG_FUSED,
-                                    a: a1,
-                                    b: offset,
-                                    c: a2 << 32 | dst,
-                                };
-                                self.push_result_temp(def);
-                                fused = true;
-                            }
-                        }
-                        if !fused {
-                            let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
-                            if a_const {
-                                flags |= FLAG_A_CONST;
-                            }
-                            if addr64 {
-                                flags |= FLAG_ADDR64;
-                            }
-                            let dst = self.temp_slot_used(self.height());
-                            let idx = self.emit(lop, flags, a, offset, dst);
-                            self.push_result_temp(idx);
-                        }
-                    } else if let Some(sop) = wasm_store(o) {
-                        let offset = match imm {
-                            Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
-                            _ => return Err(desync()),
-                        };
-                        let (memidx, raw_offset) = offset;
-                        let addr64 = self.memory_is_64(memidx as u64);
-                        // A memory64 offset can use all 64 bits, leaving no
-                        // room for the index beside it; such a cell carries a
-                        // side-table index instead. It is always a slow cell,
-                        // so nothing native reads the packed form.
-                        let offset = if raw_offset >= 1u64 << 48 {
-                            if !addr64 {
-                                return Err(WasmError::invalid(
-                                    "interp: static memory offset does not fit the packed form",
-                                ));
-                            }
-                            let at = self.wide_memargs.len() as u64;
-                            self.wide_memargs.push((memidx, raw_offset));
-                            WIDE_MEMARG | at
-                        } else {
-                            ((memidx as u64) << 48) | raw_offset
-                        };
-                        let at = self.code.len() as u32;
-                        let v = self.pop()?;
-                        let (b, b_const) = self.operand(v, at);
-                        let mut flags =
-                            self.acc_operand(v, FLAG_B_ACC, operand_is_float(sop, true));
-                        if b_const {
-                            flags |= FLAG_B_CONST;
-                        }
-                        let ad = self.pop()?;
-                        let (a, a_const) = self.operand(ad, at);
-                        // Address-add fusion (see the load arm). When it
-                        // fires the value was necessarily folded (the add
-                        // is the last instruction), so the value's flags
-                        // carry no adjacency marks.
-                        let mut fused = false;
-                        if let Some(def) = self.rewritable_producer(ad) {
-                            let add = self.code[def as usize];
-                            if add.op == Op::I32_Add
-                                && !addr64
-                                && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
-                                && offset >> 32 == 0
-                                && add.a < 1 << 16
-                                && add.b < 1 << 16
-                            {
-                                let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
-                                    (add.b, add.a, FLAG_A_ACC)
-                                } else {
-                                    (add.a, add.b, add.flags & FLAG_A_ACC)
-                                };
-                                self.code[def as usize] = Instr {
-                                    op: sop,
-                                    flags: flags | afl | FLAG_FUSED,
-                                    a: a1,
-                                    b,
-                                    c: a2 << 32 | offset,
-                                };
-                                fused = true;
+                            if !fused {
+                                let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
+                                if a_const {
+                                    flags |= FLAG_A_CONST;
+                                }
+                                if addr64 {
+                                    flags |= FLAG_ADDR64;
+                                }
+                                let dst = self.temp_slot_used(self.height());
+                                let idx = self.emit(lop, flags, a, offset, dst);
+                                self.push_result_temp(idx);
                             }
                         }
-                        if !fused {
-                            flags |= self.acc_operand(ad, FLAG_A_ACC, false);
-                            if a_const {
-                                flags |= FLAG_A_CONST;
+                        SimpleLowering::Store(sop) => {
+                            let offset = match imm {
+                                Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
+                                _ => return Err(desync()),
+                            };
+                            let (memidx, raw_offset) = offset;
+                            let addr64 = self.memory_is_64(memidx as u64);
+                            // A memory64 offset can use all 64 bits, leaving no
+                            // room for the index beside it; such a cell carries a
+                            // side-table index instead. It is always a slow cell,
+                            // so nothing native reads the packed form.
+                            let offset = if raw_offset >= 1u64 << 48 {
+                                if !addr64 {
+                                    return Err(WasmError::invalid(
+                                        "interp: static memory offset does not fit the packed form",
+                                    ));
+                                }
+                                let at = self.wide_memargs.len() as u64;
+                                self.wide_memargs.push((memidx, raw_offset));
+                                WIDE_MEMARG | at
+                            } else {
+                                ((memidx as u64) << 48) | raw_offset
+                            };
+                            let at = self.code.len() as u32;
+                            let v = self.pop()?;
+                            let (b, b_const) = self.operand(v, at);
+                            let mut flags =
+                                self.acc_operand(v, FLAG_B_ACC, operand_is_float(sop, true));
+                            if b_const {
+                                flags |= FLAG_B_CONST;
                             }
-                            if addr64 {
-                                flags |= FLAG_ADDR64;
+                            let ad = self.pop()?;
+                            let (a, a_const) = self.operand(ad, at);
+                            // Address-add fusion (see the load arm). When it
+                            // fires the value was necessarily folded (the add
+                            // is the last instruction), so the value's flags
+                            // carry no adjacency marks.
+                            let mut fused = false;
+                            if let Some(def) = self.rewritable_producer(ad) {
+                                let add = self.code[def as usize];
+                                if add.op == Op::I32_Add
+                                    && !addr64
+                                    && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
+                                    && offset >> 32 == 0
+                                    && add.a < 1 << 16
+                                    && add.b < 1 << 16
+                                {
+                                    let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
+                                        (add.b, add.a, FLAG_A_ACC)
+                                    } else {
+                                        (add.a, add.b, add.flags & FLAG_A_ACC)
+                                    };
+                                    self.code[def as usize] = Instr {
+                                        op: sop,
+                                        flags: flags | afl | FLAG_FUSED,
+                                        a: a1,
+                                        b,
+                                        c: a2 << 32 | offset,
+                                    };
+                                    fused = true;
+                                }
                             }
-                            self.emit(sop, flags, a, b, offset);
+                            if !fused {
+                                flags |= self.acc_operand(ad, FLAG_A_ACC, false);
+                                if a_const {
+                                    flags |= FLAG_A_CONST;
+                                }
+                                if addr64 {
+                                    flags |= FLAG_ADDR64;
+                                }
+                                self.emit(sop, flags, a, b, offset);
+                            }
                         }
-                    } else {
-                        return Err(unsupported());
+                        SimpleLowering::Unsupported => return Err(unsupported()),
                     }
                 }
             }
