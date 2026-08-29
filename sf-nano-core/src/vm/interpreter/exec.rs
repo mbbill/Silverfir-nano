@@ -123,13 +123,12 @@ fn normalize_baseline_plan(
     // Tail calls reuse the caller's native return route. Until Raw carries
     // the explicit tail bridge, keep every local direct tail target folded
     // as well as the tail-calling function selected by the static planner.
-    for edge in &artifact.direct_calls {
-        let callee = edge.callee as usize;
-        if edge.tail
-            && module
-                .functions()
-                .get(callee)
-                .is_some_and(|function| function.spec().is_some())
+    for &callee in &artifact.syntactic_direct_tail_callees {
+        let callee = callee as usize;
+        if module
+            .functions()
+            .get(callee)
+            .is_some_and(|function| function.spec().is_some())
         {
             plan[callee] = FunctionPlanKind::FullFold;
         }
@@ -137,7 +136,7 @@ fn normalize_baseline_plan(
     // A dynamic tail call can resolve to any local function of a compatible
     // type. Raw does not yet carry the native caller's tail return route, so
     // a module containing one keeps every local target Folded.
-    if artifact.indirect_calls.iter().any(|site| site.tail) {
+    if artifact.has_syntactic_dynamic_tail {
         for (mode, function) in plan.iter_mut().zip(module.functions()) {
             if !function.is_import() {
                 *mode = FunctionPlanKind::FullFold;
@@ -875,9 +874,9 @@ pub struct InterpInstance {
     /// A Raw body executes from this artifact and owns no folded instructions.
     #[cfg(sf_module_validator)]
     baseline_artifact: Rc<BaselineArtifact>,
-    #[cfg(sf_module_validator)]
+    #[cfg(all(test, sf_module_validator))]
     baseline_plan: Vec<FunctionPlanKind>,
-    #[cfg(sf_module_validator)]
+    #[cfg(all(test, sf_module_validator))]
     baseline_execution_plan: Vec<FunctionPlanKind>,
     #[cfg(sf_module_validator)]
     whole_function_saved: Option<Vec<SavedActivation>>,
@@ -1311,9 +1310,11 @@ impl InterpInstance {
     ) -> Result<Self, WasmError> {
         #[cfg(sf_module_validator)]
         let (baseline_artifact, baseline_plan) = baseline.into_parts_for(&module)?;
+        #[cfg(all(test, sf_module_validator))]
+        let baseline_plan_for_test = baseline_plan.clone();
         #[cfg(sf_module_validator)]
         let baseline_execution_plan =
-            normalize_baseline_plan(&module, &baseline_artifact, baseline_plan.clone())?;
+            normalize_baseline_plan(&module, &baseline_artifact, baseline_plan)?;
         let config = *engine.config();
         let global_reachable: Vec<bool> = module
             .globals()
@@ -1814,9 +1815,9 @@ impl InterpInstance {
             self_local_by_abs,
             #[cfg(sf_module_validator)]
             baseline_artifact: Rc::new(baseline_artifact),
-            #[cfg(sf_module_validator)]
-            baseline_plan,
-            #[cfg(sf_module_validator)]
+            #[cfg(all(test, sf_module_validator))]
+            baseline_plan: baseline_plan_for_test,
+            #[cfg(all(test, sf_module_validator))]
             baseline_execution_plan,
             #[cfg(sf_module_validator)]
             whole_function_saved: Some(Vec::new()),
@@ -2214,6 +2215,7 @@ impl InterpInstance {
                 self.baseline_artifact.functions.len(),
                 self.module.functions().len()
             );
+            #[cfg(test)]
             debug_assert_eq!(self.baseline_plan.len(), self.module.functions().len());
         }
         let engine = NativeEngine::new();
@@ -2387,7 +2389,7 @@ impl InterpInstance {
         }
 
         let functions = unlinked.publish(test_code);
-        #[cfg(sf_module_validator)]
+        #[cfg(all(test, sf_module_validator))]
         for ((runtime, mode), function) in functions
             .iter()
             .zip(&self.baseline_execution_plan)

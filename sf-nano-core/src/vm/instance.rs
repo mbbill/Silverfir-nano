@@ -1475,8 +1475,10 @@ mod tests {
                 (func $target (type $unary) local.get 0)
                 (elem (i32.const 0) func $target)
                 (func (export "tail_indirect") (type $unary)
+                    ref.null func drop
                     local.get 0 i32.const 0 return_call_indirect (type $unary))
                 (func (export "tail_ref") (type $unary)
+                    ref.null func drop
                     local.get 0 ref.func $target return_call_ref $unary)
                 (func (export "otherwise_raw") (type $unary)
                     local.get 0 i32.const 1 i32.add))"#,
@@ -1503,6 +1505,50 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn ineligible_prefix_still_folds_a_later_direct_tail_target() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func $target (param i32) (result i32) local.get 0)
+                (func (export "tail") (param i32) (result i32)
+                    ref.null func drop
+                    local.get 0 return_call $target)
+                (func (export "otherwise_raw") (param i32) (result i32)
+                    local.get 0 i32.const 1 i32.add))"#,
+        )
+        .expect("encode ineligible direct-tail module");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+        let mut instance = Instance::from_module(
+            &engine,
+            Module::new("ineligible-direct-tail", &wasm).expect("parse module"),
+            &[],
+        )
+        .expect("instantiate ineligible direct-tail module");
+        let interp = match &instance.inner {
+            Inner::Interp(interp) => interp,
+            #[cfg(sf_jit)]
+            Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+        };
+        interp.with_instance(|interp| {
+            assert_eq!(interp.function_runtime_label_for_test(0), Some("folded"));
+            assert_eq!(interp.function_runtime_label_for_test(1), Some("folded"));
+            assert_eq!(interp.function_runtime_label_for_test(2), Some("raw"));
+        });
+        assert_eq!(
+            instance
+                .invoke("tail", &[Value::I32(17)])
+                .expect("Folded tail invocation"),
+            collections::vec![Value::I32(17)]
+        );
+        assert_eq!(
+            instance
+                .invoke("otherwise_raw", &[Value::I32(17)])
+                .expect("unrelated Raw invocation"),
+            collections::vec![Value::I32(18)]
+        );
     }
 
     #[cfg(all(sf_interp, sf_module_validator))]

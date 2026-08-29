@@ -14,7 +14,8 @@ use crate::error::WasmError;
 use crate::module::entities::FunctionSpec;
 use crate::module::validator::{FunctionValidator, Validator};
 use crate::module::Module;
-use crate::op_decoder::{DecodedOp, Decoder, OpStream, OpcodeHandler};
+use crate::op_decoder::{DecodedOp, Decoder, Immediate, OpStream, OpcodeHandler};
+use crate::opcodes::{Opcode, WasmOpcode};
 
 struct ValidatingArtifactHandler<'a, 't> {
     module: &'a Module,
@@ -24,6 +25,8 @@ struct ValidatingArtifactHandler<'a, 't> {
     parts: Option<BaselineFunctionParts>,
     boundary_types: &'t mut Vec<crate::value_type::ValueType>,
     boundary_start: usize,
+    syntactic_direct_tail_callees: Vec<u32>,
+    has_syntactic_dynamic_tail: bool,
 }
 
 impl<'a, 't> ValidatingArtifactHandler<'a, 't> {
@@ -51,6 +54,8 @@ impl<'a, 't> ValidatingArtifactHandler<'a, 't> {
             parts: None,
             boundary_types,
             boundary_start,
+            syntactic_direct_tail_callees: Vec::new(),
+            has_syntactic_dynamic_tail: false,
         })
     }
 
@@ -63,6 +68,20 @@ impl<'a, 't> ValidatingArtifactHandler<'a, 't> {
 
     fn validate_and_plan(&mut self, decoded: &DecodedOp) -> Result<(), WasmError> {
         self.validator.validate_decoded(decoded)?;
+        match decoded.wasm_op {
+            WasmOpcode::OP(Opcode::RETURN_CALL) => {
+                let Immediate::FunctionIndex(callee) = &decoded.imm else {
+                    return Err(WasmError::invalid("return_call immediate mismatch"));
+                };
+                if !self.syntactic_direct_tail_callees.contains(callee) {
+                    self.syntactic_direct_tail_callees.push(*callee);
+                }
+            }
+            WasmOpcode::OP(Opcode::RETURN_CALL_INDIRECT | Opcode::RETURN_CALL_REF) => {
+                self.has_syntactic_dynamic_tail = true;
+            }
+            _ => {}
+        }
         let Some(builder) = self.builder.as_ref() else {
             return Ok(());
         };
@@ -97,8 +116,12 @@ impl<'a, 't> ValidatingArtifactHandler<'a, 't> {
         Ok(())
     }
 
-    fn into_parts(self) -> Option<BaselineFunctionParts> {
-        self.parts
+    fn into_output(self) -> (Option<BaselineFunctionParts>, Vec<u32>, bool) {
+        (
+            self.parts,
+            self.syntactic_direct_tail_callees,
+            self.has_syntactic_dynamic_tail,
+        )
     }
 }
 
@@ -146,7 +169,14 @@ pub(super) fn build_baseline_artifact_composite(
             let mut decoder = Decoder::new(function.code());
             decoder.add_handler(&mut handler);
             decoder.decode_function()?;
-            if let Some(parts) = handler.into_parts() {
+            let (parts, direct_tail_callees, has_dynamic_tail) = handler.into_output();
+            for callee in direct_tail_callees {
+                artifact.record_syntactic_direct_tail(callee);
+            }
+            if has_dynamic_tail {
+                artifact.record_syntactic_dynamic_tail();
+            }
+            if let Some(parts) = parts {
                 artifact.publish_function(function_index, parts)?;
             }
             Ok(())
@@ -421,6 +451,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn syntactic_tail_census_survives_ineligible_eh_and_gc_prefixes() {
+        let _guard = artifact_test_guard();
+        for wat in [
+            r#"(module
+                (tag $e)
+                (func $target)
+                (func
+                    throw $e
+                    return_call $target))"#,
+            r#"(module
+                (type $s (struct))
+                (func $target)
+                (func
+                    struct.new $s drop
+                    return_call $target))"#,
+        ] {
+            let module = module(wat);
+            let artifact = build_baseline_artifact_composite(&module).expect("composite artifact");
+            assert_eq!(artifact.syntactic_direct_tail_callees, [0]);
+            assert!(!artifact.has_syntactic_dynamic_tail);
+            assert!(artifact.functions[1].is_none(), "prefix must be ineligible");
+        }
+
+        let module = module(
+            r#"(module
+                (type $s (struct))
+                (type $f (func))
+                (table 1 funcref)
+                (func $target (type $f))
+                (elem (i32.const 0) func $target)
+                (func
+                    struct.new $s drop
+                    i32.const 0 return_call_indirect (type $f))
+                (func
+                    struct.new $s drop
+                    ref.func $target return_call_ref $f))"#,
+        );
+        let artifact = build_baseline_artifact_composite(&module).expect("composite artifact");
+        assert!(artifact.has_syntactic_dynamic_tail);
+        assert!(artifact.functions[1].is_none());
+        assert!(artifact.functions[2].is_none());
+    }
+
+    #[cfg(sf_has_simd)]
+    #[test]
+    fn syntactic_tail_census_survives_an_ineligible_simd_prefix() {
+        let _guard = artifact_test_guard();
+        let module = module(
+            r#"(module
+                (func $target)
+                (func
+                    v128.const i32x4 0 0 0 0 drop
+                    return_call $target))"#,
+        );
+        let artifact = build_baseline_artifact_composite(&module).expect("composite artifact");
+        assert_eq!(artifact.syntactic_direct_tail_callees, [0]);
+        assert!(artifact.functions[1].is_none());
     }
 
     #[cfg(sf_has_simd)]

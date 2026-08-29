@@ -49,6 +49,13 @@ pub(crate) struct BaselineArtifact {
     pub(crate) catches: Vec<CatchMeta>,
     pub(crate) direct_calls: Vec<DirectCallEdge>,
     pub(crate) indirect_calls: Vec<IndirectCallSite>,
+    /// Eligibility-independent syntactic direct-tail targets. Composite
+    /// validation records these even after an unsupported opcode has made the
+    /// function FullFold, so selective predecode cannot drop a later target.
+    pub(crate) syntactic_direct_tail_callees: Vec<u32>,
+    /// Whether any function contains return_call_indirect/ref, independent of
+    /// baseline eligibility and reachability.
+    pub(crate) has_syntactic_dynamic_tail: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,6 +237,8 @@ impl BaselineArtifact {
             catches: Vec::new(),
             direct_calls: Vec::new(),
             indirect_calls: Vec::new(),
+            syntactic_direct_tail_callees: Vec::new(),
+            has_syntactic_dynamic_tail: false,
         }
     }
 
@@ -284,6 +293,15 @@ impl BaselineArtifact {
         let direct_start = self.direct_calls.len();
         let indirect_start = self.indirect_calls.len();
 
+        for edge in &parts.direct_calls {
+            if edge.tail {
+                self.record_syntactic_direct_tail(edge.callee);
+            }
+        }
+        if parts.indirect_calls.iter().any(|site| site.tail) {
+            self.record_syntactic_dynamic_tail();
+        }
+
         self.loop_regions.extend(parts.loop_regions);
         self.control_targets.extend(parts.control_targets);
         self.br_tables.extend(parts.br_tables);
@@ -309,6 +327,16 @@ impl BaselineArtifact {
             indirect_calls: indirect_start..self.indirect_calls.len(),
         });
         Ok(())
+    }
+
+    pub(super) fn record_syntactic_direct_tail(&mut self, callee: u32) {
+        if !self.syntactic_direct_tail_callees.contains(&callee) {
+            self.syntactic_direct_tail_callees.push(callee);
+        }
+    }
+
+    pub(super) fn record_syntactic_dynamic_tail(&mut self) {
+        self.has_syntactic_dynamic_tail = true;
     }
 }
 
