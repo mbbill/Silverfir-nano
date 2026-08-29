@@ -2050,7 +2050,7 @@ impl InterpInstance {
         Ok(())
     }
 
-    #[cfg(sf_module_validator)]
+    #[cfg(all(test, sf_module_validator))]
     #[inline]
     pub(super) fn whole_function_mode(&self, function: usize) -> FunctionPlanKind {
         self.baseline_execution_plan
