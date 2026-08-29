@@ -2535,6 +2535,23 @@ impl InterpInstance {
         Self::drive(access, root, args, results)
     }
 
+    /// Exercise the imported-host re-entry boundary without entering the
+    /// native dispatch chain, whose generated extern symbols Miri cannot
+    /// interpret. This retains the part the instance-table test is proving:
+    /// the outer token-derived instance reference ends before the callback
+    /// checks out and materializes the same slot, and is materialized again
+    /// only after that callback returns.
+    #[cfg(all(test, miri))]
+    pub(in crate::vm) fn invoke_import_for_miri_instance_table_test(
+        access: &mut InterpInstanceAccess<'_>,
+        func_index: usize,
+    ) -> Result<(), WasmError> {
+        let call =
+            access.with_instance(|instance| instance.prepare_import_call(func_index, &[], 0))??;
+        Self::run_external_call(access, &call)?;
+        Ok(())
+    }
+
     /// Stub for targets without a native backend: [`Self::new`] fails
     /// there, so no instance exists to invoke — this only keeps
     /// cross-target callers compiling.
