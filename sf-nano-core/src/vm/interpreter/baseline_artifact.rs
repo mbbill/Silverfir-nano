@@ -32,6 +32,7 @@ pub(super) fn artifact_test_guard() -> std::sync::MutexGuard<'static, ()> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaselineArtifact {
     pub(crate) functions: Vec<Option<BaselineFunction>>,
+    pub(crate) loop_regions: Vec<LoopRegion>,
     pub(crate) control_targets: Vec<ControlTarget>,
     pub(crate) br_tables: Vec<BrTableRange>,
     pub(crate) try_tables: Vec<TryTableMeta>,
@@ -45,12 +46,49 @@ pub(crate) struct BaselineFunction {
     pub(crate) raw_code: Range<usize>,
     pub(crate) max_operand_height: u32,
     pub(crate) max_control_height: u32,
+    pub(crate) loop_regions: Range<usize>,
     pub(crate) control_targets: Range<usize>,
     pub(crate) br_tables: Range<usize>,
     pub(crate) try_tables: Range<usize>,
     pub(crate) catches: Range<usize>,
     pub(crate) direct_calls: Range<usize>,
     pub(crate) indirect_calls: Range<usize>,
+}
+
+/// The type contract required to transfer an operand stack across a raw/folded
+/// region boundary. The current artifact records exact heights but not the
+/// validator's boundary value types, so execution must not infer them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LoopBoundaryTypes {
+    Unavailable,
+}
+
+/// One outermost structurally reachable loop in raw function-expression PCs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LoopRegion {
+    /// PC of the `loop` opcode itself.
+    pub(crate) entry_pc: u32,
+    /// First opcode in the loop body, also the branch-label destination.
+    pub(crate) body_start_pc: u32,
+    /// PC of this loop's matching `end` opcode.
+    pub(crate) matching_end_pc: u32,
+    /// First PC after the matching `end`. This is only the syntactic
+    /// fallthrough boundary: branches, returns, tail calls, and EH transfers
+    /// may escape the region without visiting it, and entry reachability does
+    /// not imply that this fallthrough is reachable.
+    pub(crate) exit_pc: u32,
+    /// Side-table cursor at the body entry, relative to this function.
+    pub(crate) relative_stp: u32,
+    /// Operand height at body entry, including loop parameters.
+    pub(crate) operand_height: u32,
+    /// Active artifact control depth at body entry, including function+loop.
+    pub(crate) control_depth: u32,
+    /// Active `try_table` depth at body entry.
+    pub(crate) eh_depth: u32,
+    /// Kept unavailable until validator boundary types (and exit state) can
+    /// be published; this prevents the metadata-only region from being used
+    /// as an execution-tier transfer contract.
+    pub(crate) boundary_types: LoopBoundaryTypes,
 }
 
 impl BaselineFunction {
@@ -109,6 +147,8 @@ pub(crate) struct CatchMeta {
     pub(crate) eh_depth: u32,
 }
 
+/// A direct call encountered while the structural scanner is live. Dead
+/// non-structural instructions are suppressed before call events are emitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DirectCallEdge {
     pub(crate) caller: u32,
@@ -124,6 +164,7 @@ pub(crate) enum IndirectCallKind {
     Ref,
 }
 
+/// A dynamic call encountered while the structural scanner is live.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct IndirectCallSite {
     pub(crate) function: u32,
@@ -141,6 +182,7 @@ impl BaselineArtifact {
         functions.resize_with(function_count, || None);
         Self {
             functions,
+            loop_regions: Vec::new(),
             control_targets: Vec::new(),
             br_tables: Vec::new(),
             try_tables: Vec::new(),
@@ -156,6 +198,7 @@ impl BaselineArtifact {
         mut parts: BaselineFunctionParts,
     ) -> Result<(), WasmError> {
         let control_start = self.control_targets.len();
+        let loop_start = self.loop_regions.len();
         let control_base = to_u32(control_start, "baseline control target base overflow")?;
         for table in &mut parts.br_tables {
             table.targets_start = table
@@ -178,6 +221,7 @@ impl BaselineArtifact {
         let direct_start = self.direct_calls.len();
         let indirect_start = self.indirect_calls.len();
 
+        self.loop_regions.extend(parts.loop_regions);
         self.control_targets.extend(parts.control_targets);
         self.br_tables.extend(parts.br_tables);
         self.try_tables.extend(parts.try_tables);
@@ -193,6 +237,7 @@ impl BaselineArtifact {
             raw_code: parts.raw_code,
             max_operand_height: parts.max_operand_height,
             max_control_height: parts.max_control_height,
+            loop_regions: loop_start..self.loop_regions.len(),
             control_targets: control_start..self.control_targets.len(),
             br_tables: br_start..self.br_tables.len(),
             try_tables: try_start..self.try_tables.len(),
@@ -226,7 +271,18 @@ struct ArtifactFrame {
     label_pc: u32,
     label_stp: u32,
     if_false: Option<usize>,
+    loop_region: Option<PendingLoopRegion>,
     fixups: Vec<TargetPatch>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PendingLoopRegion {
+    entry_pc: u32,
+    body_start_pc: u32,
+    relative_stp: u32,
+    operand_height: u32,
+    control_depth: u32,
+    eh_depth: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -261,6 +317,7 @@ pub(super) enum ArtifactEvent {
         params: u32,
         results: u32,
         catches: Vec<PendingCatch>,
+        loop_region: Option<PendingLoopRegion>,
     },
     Else {
         source_pc: u32,
@@ -290,6 +347,7 @@ pub(super) struct BaselineFunctionBuilder {
     frames: Vec<ArtifactFrame>,
     max_operand_height: u32,
     max_control_height: u32,
+    loop_regions: Vec<LoopRegion>,
     control_targets: Vec<ControlTarget>,
     br_tables: Vec<BrTableRange>,
     try_tables: Vec<TryTableMeta>,
@@ -302,6 +360,7 @@ pub(super) struct BaselineFunctionParts {
     raw_code: Range<usize>,
     max_operand_height: u32,
     max_control_height: u32,
+    loop_regions: Vec<LoopRegion>,
     control_targets: Vec<ControlTarget>,
     br_tables: Vec<BrTableRange>,
     try_tables: Vec<TryTableMeta>,
@@ -325,6 +384,7 @@ impl BaselineFunctionBuilder {
             frames: Vec::new(),
             max_operand_height: 0,
             max_control_height: 0,
+            loop_regions: Vec::new(),
             control_targets: Vec::new(),
             br_tables: Vec::new(),
             try_tables: Vec::new(),
@@ -347,16 +407,42 @@ impl BaselineFunctionBuilder {
             label_pc: UNRESOLVED,
             label_stp: 0,
             if_false: None,
+            loop_region: None,
             fixups: Vec::new(),
         });
         self.max_operand_height = 0;
         self.max_control_height = 1;
+        self.loop_regions.clear();
         self.control_targets.clear();
         self.br_tables.clear();
         self.try_tables.clear();
         self.catches.clear();
         self.direct_calls.clear();
         self.indirect_calls.clear();
+    }
+
+    fn pending_loop_region(
+        &self,
+        kind: ArtifactFrameKind,
+        dead: bool,
+        source_pc: u32,
+        next_pc: u32,
+        stack_height: usize,
+    ) -> Result<Option<PendingLoopRegion>, WasmError> {
+        if kind != ArtifactFrameKind::Loop || dead || self.loop_depth()? != 0 {
+            return Ok(None);
+        }
+        Ok(Some(PendingLoopRegion {
+            entry_pc: source_pc,
+            body_start_pc: next_pc,
+            relative_stp: self.current_stp()?,
+            operand_height: to_u32(stack_height, "baseline loop operand height overflow")?,
+            control_depth: to_u32(
+                self.frames.len() + 1,
+                "baseline loop control depth overflow",
+            )?,
+            eh_depth: self.eh_depth()?,
+        }))
     }
 
     pub(super) fn plan(
@@ -428,6 +514,13 @@ impl BaselineFunctionBuilder {
                     params,
                     results,
                     catches: Vec::new(),
+                    loop_region: self.pending_loop_region(
+                        kind,
+                        dead,
+                        source_pc,
+                        next_pc,
+                        stack_height,
+                    )?,
                 })
             }
             WasmOpcode::OP(Opcode::TRY_TABLE) => {
@@ -485,6 +578,7 @@ impl BaselineFunctionBuilder {
                     params,
                     results,
                     catches: pending,
+                    loop_region: None,
                 })
             }
             WasmOpcode::OP(Opcode::ELSE) => Ok(ArtifactEvent::Else {
@@ -649,6 +743,13 @@ impl BaselineFunctionBuilder {
                     params,
                     results,
                     catches: Vec::new(),
+                    loop_region: self.pending_loop_region(
+                        kind,
+                        dead,
+                        source_pc,
+                        next_pc,
+                        stack_height,
+                    )?,
                 })
             }
             WasmOpcode::OP(Opcode::TRY_TABLE) => {
@@ -705,6 +806,7 @@ impl BaselineFunctionBuilder {
                     params,
                     results,
                     catches: pending,
+                    loop_region: None,
                 })
             }
             WasmOpcode::OP(Opcode::ELSE) => Ok(ArtifactEvent::Else {
@@ -808,6 +910,7 @@ impl BaselineFunctionBuilder {
                 params,
                 results,
                 catches,
+                loop_region,
             } => {
                 if kind == ArtifactFrameKind::TryTable {
                     let catches_start = to_u32(
@@ -845,6 +948,7 @@ impl BaselineFunctionBuilder {
                     label_pc,
                     label_stp,
                     if_false: None,
+                    loop_region,
                     fixups: Vec::new(),
                 });
                 if kind == ArtifactFrameKind::If {
@@ -899,6 +1003,19 @@ impl BaselineFunctionBuilder {
                 let target_stp = self.current_stp()?;
                 if let Some(false_target) = frame.if_false {
                     self.patch(TargetPatch::Control(false_target), target_pc, target_stp)?;
+                }
+                if let Some(region) = frame.loop_region {
+                    self.loop_regions.push(LoopRegion {
+                        entry_pc: region.entry_pc,
+                        body_start_pc: region.body_start_pc,
+                        matching_end_pc: source_pc,
+                        exit_pc: next_pc,
+                        relative_stp: region.relative_stp,
+                        operand_height: region.operand_height,
+                        control_depth: region.control_depth,
+                        eh_depth: region.eh_depth,
+                        boundary_types: LoopBoundaryTypes::Unavailable,
+                    });
                 }
                 for fixup in frame.fixups {
                     self.patch(fixup, target_pc, target_stp)?;
@@ -962,6 +1079,7 @@ impl BaselineFunctionBuilder {
             raw_code: self.raw_code,
             max_operand_height: self.max_operand_height,
             max_control_height: self.max_control_height,
+            loop_regions: self.loop_regions,
             control_targets: self.control_targets,
             br_tables: self.br_tables,
             try_tables: self.try_tables,

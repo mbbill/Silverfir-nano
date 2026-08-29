@@ -34,6 +34,8 @@ mod baseline_artifact;
 #[cfg(test)]
 mod baseline_exec;
 #[cfg(all(test, sf_module_validator))]
+mod baseline_function_plan;
+#[cfg(all(test, sf_module_validator))]
 mod baseline_raw_artifact;
 mod engine;
 mod exec;
