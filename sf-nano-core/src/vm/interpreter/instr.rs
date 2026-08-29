@@ -592,11 +592,13 @@ impl Instr {
     }
 
     #[inline]
+    #[cfg(test)]
     pub(crate) const fn packed_head(self) -> u32 {
         self.op as u32 | (self.flags as u32) << 16
     }
 
     #[inline]
+    #[cfg(test)]
     pub(crate) const fn from_packed_head(head: u32, a: u64, b: u64, c: u64) -> Self {
         Self {
             op: op_from_index((head & 0xffff) as usize),

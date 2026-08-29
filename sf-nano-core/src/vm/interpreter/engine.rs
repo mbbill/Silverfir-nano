@@ -243,6 +243,7 @@ impl LinkedFunction {
 /// A native call site deferred until every function has a stable arena
 /// address. Recording these during the cell-build pass avoids rescanning every
 /// instruction in the module for the cross-function fixup.
+#[cfg_attr(test, derive(Clone, Copy, Debug, PartialEq, Eq))]
 pub(super) enum CallFixup {
     Direct {
         cell: usize,
@@ -268,10 +269,13 @@ pub(super) enum CallFixup {
 /// list of native call sites for the deferred cross-function fixup.
 pub(super) struct LinkPlan {
     cells: Vec<DCell>,
+    heads: Vec<u32>,
     br_flat: Vec<u32>,
     call_fixups: Vec<CallFixup>,
     planned_cells: usize,
     planned_br_entries: usize,
+    linked_cells: usize,
+    in_place: bool,
 }
 
 impl LinkPlan {
@@ -294,6 +298,7 @@ impl LinkPlan {
         }
         Self {
             cells: Vec::with_capacity(planned_cells),
+            heads: Vec::new(),
             br_flat: Vec::with_capacity(planned_br_entries),
             // Most real functions have no call. One slot per function avoids
             // early growth without reserving in proportion to instruction
@@ -301,6 +306,49 @@ impl LinkPlan {
             call_fixups: Vec::with_capacity(function_count),
             planned_cells,
             planned_br_entries,
+            linked_cells: 0,
+            in_place: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_instr_arena(
+        instrs: Vec<Instr>,
+        function_count: usize,
+        planned_br_entries: usize,
+    ) -> Self {
+        let heads = instrs.iter().copied().map(Instr::packed_head).collect();
+        let planned_cells = instrs.len();
+        Self {
+            cells: into_dispatch_cells(instrs),
+            heads,
+            br_flat: Vec::with_capacity(planned_br_entries),
+            call_fixups: Vec::with_capacity(function_count),
+            planned_cells,
+            planned_br_entries,
+            linked_cells: 0,
+            in_place: true,
+        }
+    }
+
+    #[inline]
+    fn begin_function(&mut self, instruction_len: usize) -> usize {
+        let start = self.linked_cells;
+        self.linked_cells = self
+            .linked_cells
+            .checked_add(instruction_len + 1)
+            .expect("interpreter linked-cell count overflow");
+        debug_assert!(self.linked_cells <= self.planned_cells);
+        start
+    }
+
+    #[inline]
+    fn write_cell(&mut self, index: usize, cell: DCell) {
+        if self.in_place {
+            self.cells[index] = cell;
+        } else {
+            debug_assert_eq!(index, self.cells.len());
+            self.cells.push(cell);
         }
     }
 
@@ -308,6 +356,8 @@ impl LinkPlan {
     pub(super) fn finish_layout(&self) {
         debug_assert_eq!(self.cells.len(), self.planned_cells);
         debug_assert_eq!(self.br_flat.len(), self.planned_br_entries);
+        debug_assert_eq!(self.linked_cells, self.planned_cells);
+        debug_assert_eq!(self.heads.is_empty(), !self.in_place);
     }
 
     #[inline]
@@ -821,7 +871,7 @@ impl NativeEngine {
                 (slot * 8) as u32
             }
         };
-        let cell_start = plan.cells.len();
+        let cell_start = plan.begin_function(func.code.len());
         // Every linked body contains at least its prefetch pad, so this is
         // always an in-allocation address rather than a one-past pointer.
         let cells_base = unsafe { plan.cells.as_ptr().add(cell_start) as u64 };
@@ -848,7 +898,9 @@ impl NativeEngine {
         // `LinkPlan::for_functions` reserved the exact module totals before
         // any absolute address is observed. These bases consequently remain
         // stable through every push below and through all later fixups.
-        debug_assert!(plan.cells.capacity() - plan.cells.len() >= lf.cell_len);
+        if !plan.in_place {
+            debug_assert!(plan.cells.capacity() - plan.cells.len() >= lf.cell_len);
+        }
         let br_base = plan.br_flat.as_ptr() as u64;
         let mut iter = func.code.iter().enumerate();
         if let Some((mut prev_index, mut prev_ins)) = iter.next() {
@@ -860,7 +912,8 @@ impl NativeEngine {
                     call_indirect_types.push(prev_ins.c as u32);
                 }
                 self.push_cell(
-                    &mut plan.cells,
+                    plan,
+                    cell_start + prev_index,
                     prev_ins,
                     prev,
                     cells_base,
@@ -878,7 +931,8 @@ impl NativeEngine {
                 call_indirect_types.push(prev_ins.c as u32);
             }
             self.push_cell(
-                &mut plan.cells,
+                plan,
+                cell_start + prev_index,
                 prev_ins,
                 prev,
                 cells_base,
@@ -889,12 +943,15 @@ impl NativeEngine {
             Self::record_call_fixup(plan, func, caller_index, cell_start, prev_index, prev_ins);
         }
 
-        plan.cells.push(DCell {
-            h: self.slow_stub as u64,
-            a: 0,
-            b: 0,
-            c: 0,
-        });
+        plan.write_cell(
+            cell_start + func.code.len(),
+            DCell {
+                h: self.slow_stub as u64,
+                a: 0,
+                b: 0,
+                c: 0,
+            },
+        );
         lf
     }
 
@@ -941,7 +998,8 @@ impl NativeEngine {
     #[allow(clippy::too_many_arguments)]
     fn push_cell(
         &self,
-        cells: &mut Vec<DCell>,
+        plan: &mut LinkPlan,
+        cell_index: usize,
         ins: &Instr,
         state: ResolvedCell,
         cells_base: u64,
@@ -958,17 +1016,17 @@ impl NativeEngine {
         if INTERP_PTR_BYTES == 4 && !offset_fits_word(ins) {
             h = None;
         }
-        match h {
+        let cell = match h {
             Some(h) if ins.op == Op::BrTable => {
                 let table = func
                     .br_table(ins.c as usize)
                     .expect("predecoded branch-table index");
-                cells.push(DCell {
+                DCell {
                     h: h as u64,
                     a: ins.a * 8,
                     b: br_base + table_byte_off[ins.c as usize],
                     c: (table.len() - 1) as u64,
-                });
+                }
             }
             Some(h) => {
                 let a = if fl & FLAG_A_CONST != 0 {
@@ -980,20 +1038,21 @@ impl NativeEngine {
                 if c_is_branch_target(ins.op) {
                     c += cells_base;
                 }
-                cells.push(DCell {
+                DCell {
                     h: h as u64,
                     a,
                     b,
                     c,
-                });
+                }
             }
-            None => cells.push(DCell {
+            None => DCell {
                 h: self.slow_stub as u64,
                 a: ins.a,
                 b: ins.b,
                 c: ins.c,
-            }),
-        }
+            },
+        };
+        plan.write_cell(cell_index, cell);
     }
 
     /// The entry trampoline as a callable function pointer.
