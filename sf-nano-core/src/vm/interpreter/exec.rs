@@ -1124,7 +1124,7 @@ impl InterpInstance {
         instance_backref: InstanceBackref,
     ) -> Result<Self, WasmError> {
         #[cfg(sf_module_validator)]
-        let (baseline_artifact, baseline_plan) = baseline.into_parts();
+        let (baseline_artifact, baseline_plan) = baseline.into_parts_for(&module)?;
         let config = *engine.config();
         let global_reachable: Vec<bool> = module
             .globals()
@@ -1852,12 +1852,12 @@ impl InterpInstance {
 
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         #[cfg(sf_module_validator)]
-        if self.baseline_artifact.functions.len() != self.module.functions().len()
-            || self.baseline_plan.len() != self.module.functions().len()
         {
-            return Err(WasmError::invalid(
-                "interpreter baseline metadata function count mismatch",
-            ));
+            debug_assert_eq!(
+                self.baseline_artifact.functions.len(),
+                self.module.functions().len()
+            );
+            debug_assert_eq!(self.baseline_plan.len(), self.module.functions().len());
         }
         let engine = NativeEngine::new();
         let mut scratch = LinkScratch::default();
@@ -5056,6 +5056,94 @@ mod tests {
         {
             self.host = Some(Self::boxed_host(host));
         }
+    }
+
+    #[cfg(sf_module_validator)]
+    #[test]
+    fn baseline_bundle_mismatch_precedes_function_registry_mutation() {
+        fn parsed(name: &str, wat: &str) -> Module {
+            let wasm = wat::parse_str(wat).expect("encode baseline bundle fixture");
+            Module::new(name, &wasm).expect("parse baseline bundle fixture")
+        }
+
+        fn assert_rejected_without_registry_mutation(
+            engine: &Engine,
+            module: Module,
+            baseline: super::super::ValidatedBaselinePlan,
+        ) {
+            let registry = LinkRegistry::new();
+            let before = registry.function_registry_census_for_test();
+            let (instance_id, instance_backref) = registry.reserve_instance();
+            let outcome = InterpInstance::build(
+                engine,
+                module,
+                baseline,
+                None,
+                &[],
+                None,
+                registry.arenas(),
+                instance_backref,
+            );
+            assert!(outcome.is_err(), "mismatched bundle must be rejected");
+            assert_eq!(
+                registry.function_registry_census_for_test(),
+                before,
+                "bundle rejection changed function-registry high-water or entries"
+            );
+            registry
+                .instance_table()
+                .abandon(instance_id)
+                .expect("failed build left a vacant reservation");
+        }
+
+        let engine = Engine::new(Config::new().tier(crate::vm::engine::Tier::Interp))
+            .expect("interpreter engine");
+
+        let short = parsed("bundle-short", "(module (func))");
+        let short_baseline =
+            super::super::ValidatedBaselinePlan::validate(&short).expect("validate short bundle");
+        let longer = parsed(
+            "module-longer",
+            r#"(module (func (export "a")) (func (export "b")))"#,
+        );
+        assert_rejected_without_registry_mutation(&engine, longer, short_baseline);
+
+        let imported = parsed(
+            "bundle-imported",
+            r#"(module (import "host" "f" (func)) (func))"#,
+        );
+        let imported_baseline = super::super::ValidatedBaselinePlan::validate(&imported)
+            .expect("validate imported bundle");
+        let all_local = parsed(
+            "module-all-local",
+            r#"(module (func (export "a")) (func (export "b")))"#,
+        );
+        assert_rejected_without_registry_mutation(&engine, all_local, imported_baseline);
+
+        let matching = parsed(
+            "module-matching",
+            r#"(module (func (export "a")) (func (export "b")))"#,
+        );
+        let matching_baseline = super::super::ValidatedBaselinePlan::validate(&matching)
+            .expect("validate matching bundle");
+        let registry = LinkRegistry::new();
+        let (instance_id, instance_backref) = registry.reserve_instance();
+        let instance = InterpInstance::build(
+            &engine,
+            matching,
+            matching_baseline,
+            None,
+            &[],
+            None,
+            registry.arenas(),
+            instance_backref,
+        )
+        .expect("same-module bundle must build normally");
+        drop(instance);
+        registry
+            .instance_table()
+            .abandon(instance_id)
+            .expect("unoccupied matching build reservation remains abandonable");
     }
 
     fn instantiate(src: &str) -> (StdVec<u8>, ()) {

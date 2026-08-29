@@ -612,6 +612,14 @@ impl SharedFunctionRegistry {
         let funcaddr = FUNCADDR_TOP.checked_sub(handle.encoded())?;
         self.borrow().get(funcaddr).copied()
     }
+
+    #[cfg(test)]
+    fn census_for_test(&self) -> (usize, usize) {
+        (
+            self.max_local_functions_ever.get(),
+            self.entries.borrow().len(),
+        )
+    }
 }
 
 pub(crate) type SharedRefRegistry = Rc<RefCell<collections::Vec<RefRegistryEntry>>>;
@@ -1027,6 +1035,11 @@ impl LinkRegistry {
     #[inline]
     pub(crate) fn instance_table(&self) -> InstanceTable {
         self.instances.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn function_registry_census_for_test(&self) -> (usize, usize) {
+        self.arenas.functions.census_for_test()
     }
 
     #[cfg(sf_jit)]

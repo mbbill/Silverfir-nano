@@ -70,13 +70,45 @@ impl ValidatedBaselinePlan {
         })
     }
 
-    fn into_parts(
+    fn into_parts_for(
         self,
-    ) -> (
-        baseline_artifact::BaselineArtifact,
-        crate::collections::Vec<baseline_function_plan::FunctionPlanKind>,
-    ) {
-        (self.artifact, self.function_plan)
+        module: &crate::module::Module,
+    ) -> Result<
+        (
+            baseline_artifact::BaselineArtifact,
+            crate::collections::Vec<baseline_function_plan::FunctionPlanKind>,
+        ),
+        crate::WasmError,
+    > {
+        use baseline_function_plan::FunctionPlanKind::{FullFold, Hybrid, Import, Raw};
+
+        let function_count = module.functions().len();
+        if self.artifact.functions.len() != function_count
+            || self.function_plan.len() != function_count
+        {
+            return Err(crate::WasmError::invalid(
+                "interpreter baseline metadata function count mismatch",
+            ));
+        }
+        for ((function, artifact), plan) in module
+            .functions()
+            .iter()
+            .zip(&self.artifact.functions)
+            .zip(&self.function_plan)
+        {
+            let classification_matches = match (function.is_import(), artifact.is_some(), *plan) {
+                (true, false, Import) => true,
+                (false, false, FullFold) => true,
+                (false, true, Raw | Hybrid | FullFold) => true,
+                _ => false,
+            };
+            if !classification_matches {
+                return Err(crate::WasmError::invalid(
+                    "interpreter baseline metadata function classification mismatch",
+                ));
+            }
+        }
+        Ok((self.artifact, self.function_plan))
     }
 
     #[cfg(test)]
