@@ -29,6 +29,8 @@
 //!   handler, plus host calls, traps with messages, and the activation
 //!   boundary.
 
+#[cfg(test)]
+mod baseline_artifact;
 mod engine;
 mod exec;
 mod fmath;

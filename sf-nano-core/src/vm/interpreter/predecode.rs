@@ -39,6 +39,8 @@ use tracked_alloc::rc::Rc;
 /// index occupies bits 48..63.
 pub(super) const WIDE_MEMARG: u64 = 1 << 63;
 
+#[cfg(test)]
+use super::baseline_artifact::{ArtifactEvent, BaselineArtifact, BaselineFunctionBuilder};
 use super::engine::PinCensus;
 #[cfg(test)]
 use super::instr::{operand_is_f32, result_is_f32};
@@ -328,6 +330,7 @@ pub(crate) fn predecode_function(
         false,
         &mut code,
         &mut scratch,
+        None,
     )?;
     let code = Rc::new(code);
     Ok(parts.finish(Some(&code)))
@@ -381,6 +384,8 @@ pub(crate) fn predecode_functions(
                 false,
                 &mut code,
                 &mut scratch,
+                #[cfg(test)]
+                None,
             )?;
             parts.push(Some(decoded));
             // The linked chain may prefetch one handler word past the final
@@ -391,6 +396,58 @@ pub(crate) fn predecode_functions(
     }
 
     Ok(UnlinkedPredecodedFunctions { code, parts })
+}
+
+/// Build the diagnostic eager-baseline artifact with the same accepted opcode
+/// surface and symbolic-stack rules as today's interpreter predecoder.
+///
+/// This deliberately runs as a separate test-only scan. Production
+/// interpreter-only builds do not enable the standalone module validator, so
+/// treating this as a by-product of a pre-existing validation pass would hide
+/// new startup work. A later production phase must either collect it directly
+/// in the predecode checks it replaces or make full validation an explicit
+/// option.
+#[cfg(test)]
+pub(super) fn build_baseline_artifact(module: &Module) -> Result<BaselineArtifact, WasmError> {
+    let tag_identities: Vec<TagIdentity> = module
+        .tags()
+        .iter()
+        .map(|_| TagIdentity::mint_fresh())
+        .collect();
+    let function_handles: Vec<RefValue> = (0..module.functions().len())
+        .map(|index| RefValue::new(index))
+        .collect();
+    let mut artifact = BaselineArtifact::new(module.functions().len());
+    let mut code = Vec::new();
+    let mut scratch = PredecodeScratch::default();
+
+    for (func_index, function) in module.functions().iter().enumerate() {
+        let Some(spec) = function.spec() else {
+            continue;
+        };
+        let raw_end = spec
+            .code_offset()
+            .checked_add(spec.code().len())
+            .ok_or_else(|| WasmError::invalid("baseline raw code range overflow"))?;
+        let mut builder = BaselineFunctionBuilder::new(
+            func_index,
+            spec.code_offset()..raw_end,
+            function.func_type().results().len(),
+        )?;
+        code.clear();
+        let _ = predecode_function_into(
+            module,
+            &tag_identities,
+            &function_handles,
+            func_index,
+            false,
+            &mut code,
+            &mut scratch,
+            Some(&mut builder),
+        )?;
+        artifact.publish_function(func_index, builder.finish()?)?;
+    }
+    Ok(artifact)
 }
 
 struct PredecodedFunctionParts {
@@ -583,6 +640,7 @@ fn predecode_function_into(
     _disable_fast: bool,
     code: &mut Vec<Instr>,
     scratch: &mut PredecodeScratch,
+    #[cfg(test)] mut baseline_artifact: Option<&mut BaselineFunctionBuilder>,
 ) -> Result<PredecodedFunctionParts, WasmError> {
     if tag_identities.len() != module.tags().len() {
         return Err(WasmError::invalid(
@@ -629,6 +687,10 @@ fn predecode_function_into(
     let mut exception_sites = Vec::new();
     let mut exception_handlers = Vec::new();
     let p = loop {
+        #[cfg(test)]
+        if let Some(artifact) = baseline_artifact.as_deref_mut() {
+            artifact.reset();
+        }
         // Roll back an optimistic pass in-place. Earlier functions occupy
         // the immutable prefix before `code_start` and cannot be disturbed.
         code.truncate(code_start);
@@ -647,6 +709,8 @@ fn predecode_function_into(
             module,
             tag_identities,
             function_handles,
+            #[cfg(test)]
+            baseline_artifact: baseline_artifact.as_deref_mut(),
             code: FunctionCodeBuilder {
                 arena: code,
                 start: code_start,
@@ -721,6 +785,7 @@ fn predecode_function_into(
         wide_memargs = mem::take(&mut p.wide_memargs);
         exception_sites = mem::take(&mut p.exception_sites);
         exception_handlers = mem::take(&mut p.exception_handlers);
+        drop(p);
     };
     let code_range = p.code.range();
     let pinned = PackedPinned::new(
@@ -953,6 +1018,8 @@ struct Predecoder<'m, 'code> {
     /// Frame-form identities for `ref.func`: local indices for this
     /// instance's functions and absolute handles for linked imports.
     function_handles: &'m [RefValue],
+    #[cfg(test)]
+    baseline_artifact: Option<&'code mut BaselineFunctionBuilder>,
     code: FunctionCodeBuilder<'code>,
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
@@ -1193,7 +1260,7 @@ fn select_pinned_incremental(locals: &[LocalState]) -> Pinned {
     }
 }
 
-fn block_arity(types: &TypeContext, bt: &BlockType) -> Result<(u32, u32), WasmError> {
+pub(super) fn block_arity(types: &TypeContext, bt: &BlockType) -> Result<(u32, u32), WasmError> {
     match bt {
         BlockType::Empty => Ok((0, 0)),
         BlockType::ValueType(_) => Ok((0, 1)),
@@ -1325,6 +1392,35 @@ fn unsupported() -> WasmError {
 }
 
 impl<'m, 'code> Predecoder<'m, 'code> {
+    #[cfg(test)]
+    fn plan_baseline_artifact(
+        &self,
+        decoded: &crate::op_decoder::DecodedOp,
+    ) -> Result<ArtifactEvent, WasmError> {
+        match self.baseline_artifact.as_deref() {
+            Some(artifact) => artifact.plan(self.module, decoded, self.stack.len(), self.dead),
+            None => Ok(ArtifactEvent::None),
+        }
+    }
+
+    #[cfg(test)]
+    fn commit_baseline_artifact(&mut self, event: ArtifactEvent) -> Result<(), WasmError> {
+        let stack_height = self.stack.len();
+        if let Some(artifact) = self.baseline_artifact.as_deref_mut() {
+            artifact.commit(event, stack_height)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn observe_baseline_height(&mut self) -> Result<(), WasmError> {
+        let stack_height = self.stack.len();
+        if let Some(artifact) = self.baseline_artifact.as_deref_mut() {
+            artifact.observe_height(stack_height)?;
+        }
+        Ok(())
+    }
+
     fn allocate_loop_id(&mut self) -> u32 {
         let loop_id = self.next_loop_id;
         self.next_loop_id = self
@@ -3247,6 +3343,8 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     }
                     FastLowering::Fallback => unreachable!(),
                 }
+                #[cfg(test)]
+                self.observe_baseline_height()?;
                 continue;
             }
 
@@ -3262,20 +3360,24 @@ impl OpcodeHandler for Predecoder<'_, '_> {
             {
                 self.flush_pending_fill();
             }
+            #[cfg(test)]
+            let artifact_event = self.plan_baseline_artifact(op)?;
             let o = match op.wasm_op {
                 WasmOpcode::OP(o) => o,
                 WasmOpcode::FC(fc) => {
-                    if self.dead {
-                        continue;
+                    if !self.dead {
+                        self.fc_op(fc, &op.imm)?;
                     }
-                    self.fc_op(fc, &op.imm)?;
+                    #[cfg(test)]
+                    self.commit_baseline_artifact(artifact_event)?;
                     continue;
                 }
                 WasmOpcode::FB(fb) => {
-                    if self.dead {
-                        continue;
+                    if !self.dead {
+                        self.fb_op(fb, &op.imm)?;
                     }
-                    self.fb_op(fb, &op.imm)?;
+                    #[cfg(test)]
+                    self.commit_baseline_artifact(artifact_event)?;
                     continue;
                 }
                 other => return Err(unsupported_opcode(other)),
@@ -3383,6 +3485,8 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     }
                     _ => {}
                 }
+                #[cfg(test)]
+                self.commit_baseline_artifact(artifact_event)?;
                 continue;
             }
 
@@ -4205,6 +4309,8 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     | FastLowering::F64Const => return Err(unsupported()),
                 },
             }
+            #[cfg(test)]
+            self.commit_baseline_artifact(artifact_event)?;
         }
         Ok(())
     }
@@ -4386,6 +4492,7 @@ mod tests {
             disable_fast,
             &mut code,
             &mut scratch,
+            None,
         )
         .expect("predecode");
         let code = Rc::new(code);
@@ -4595,6 +4702,7 @@ mod tests {
                 false,
                 &mut code,
                 &mut fresh_scratch,
+                None,
             )
             .expect("fresh predecode");
             let code = Rc::new(code);
@@ -4642,6 +4750,7 @@ mod tests {
                 false,
                 &mut code,
                 &mut scratch,
+                None,
             )
             .expect("predecode");
             drop(parts);
