@@ -2136,6 +2136,19 @@ impl<'m> Predecoder<'m> {
 #[derive(Clone, Copy)]
 enum FastLowering {
     Fallback,
+    /// Decode a no-immediate opcode at the byte boundary, then feed it to
+    /// the existing semantic lowering below. Unlike the routing and numeric
+    /// cases, these opcodes intentionally share their control/call lowering
+    /// with the generic decoder so there is only one control-stack model.
+    DeferredNone(Opcode),
+    DeferredBlock(Opcode),
+    DeferredLabel(Opcode),
+    DeferredFunction(Opcode),
+    DeferredGlobal(Opcode),
+    DeferredTable(Opcode),
+    DeferredMemory(Opcode),
+    DeferredCallIndirect(Opcode),
+    DeferredType(Opcode),
     LocalGet,
     LocalSet,
     LocalTee,
@@ -2160,6 +2173,38 @@ macro_rules! set_simple_lowerings {
 /// same table remains the generic fallback's authoritative opcode-to-op map.
 const FAST_LOWERINGS: [FastLowering; 256] = {
     let mut table = [FastLowering::Fallback; 256];
+    table[Opcode::NOP as usize] = FastLowering::DeferredNone(Opcode::NOP);
+    table[Opcode::UNREACHABLE as usize] = FastLowering::DeferredNone(Opcode::UNREACHABLE);
+    table[Opcode::ELSE as usize] = FastLowering::DeferredNone(Opcode::ELSE);
+    table[Opcode::END as usize] = FastLowering::DeferredNone(Opcode::END);
+    table[Opcode::RETURN as usize] = FastLowering::DeferredNone(Opcode::RETURN);
+    table[Opcode::DROP as usize] = FastLowering::DeferredNone(Opcode::DROP);
+    table[Opcode::SELECT as usize] = FastLowering::DeferredNone(Opcode::SELECT);
+    table[Opcode::REF_IS_NULL as usize] = FastLowering::DeferredNone(Opcode::REF_IS_NULL);
+    table[Opcode::REF_AS_NON_NULL as usize] = FastLowering::DeferredNone(Opcode::REF_AS_NON_NULL);
+    table[Opcode::REF_EQ as usize] = FastLowering::DeferredNone(Opcode::REF_EQ);
+    table[Opcode::BLOCK as usize] = FastLowering::DeferredBlock(Opcode::BLOCK);
+    table[Opcode::LOOP as usize] = FastLowering::DeferredBlock(Opcode::LOOP);
+    table[Opcode::IF as usize] = FastLowering::DeferredBlock(Opcode::IF);
+    table[Opcode::BR as usize] = FastLowering::DeferredLabel(Opcode::BR);
+    table[Opcode::BR_IF as usize] = FastLowering::DeferredLabel(Opcode::BR_IF);
+    table[Opcode::BR_ON_NULL as usize] = FastLowering::DeferredLabel(Opcode::BR_ON_NULL);
+    table[Opcode::BR_ON_NON_NULL as usize] = FastLowering::DeferredLabel(Opcode::BR_ON_NON_NULL);
+    table[Opcode::CALL as usize] = FastLowering::DeferredFunction(Opcode::CALL);
+    table[Opcode::RETURN_CALL as usize] = FastLowering::DeferredFunction(Opcode::RETURN_CALL);
+    table[Opcode::REF_FUNC as usize] = FastLowering::DeferredFunction(Opcode::REF_FUNC);
+    table[Opcode::GLOBAL_GET as usize] = FastLowering::DeferredGlobal(Opcode::GLOBAL_GET);
+    table[Opcode::GLOBAL_SET as usize] = FastLowering::DeferredGlobal(Opcode::GLOBAL_SET);
+    table[Opcode::TABLE_GET as usize] = FastLowering::DeferredTable(Opcode::TABLE_GET);
+    table[Opcode::TABLE_SET as usize] = FastLowering::DeferredTable(Opcode::TABLE_SET);
+    table[Opcode::MEMORY_SIZE as usize] = FastLowering::DeferredMemory(Opcode::MEMORY_SIZE);
+    table[Opcode::MEMORY_GROW as usize] = FastLowering::DeferredMemory(Opcode::MEMORY_GROW);
+    table[Opcode::CALL_INDIRECT as usize] =
+        FastLowering::DeferredCallIndirect(Opcode::CALL_INDIRECT);
+    table[Opcode::RETURN_CALL_INDIRECT as usize] =
+        FastLowering::DeferredCallIndirect(Opcode::RETURN_CALL_INDIRECT);
+    table[Opcode::CALL_REF as usize] = FastLowering::DeferredType(Opcode::CALL_REF);
+    table[Opcode::RETURN_CALL_REF as usize] = FastLowering::DeferredType(Opcode::RETURN_CALL_REF);
     table[Opcode::LOCAL_GET as usize] = FastLowering::LocalGet;
     table[Opcode::LOCAL_SET as usize] = FastLowering::LocalSet;
     table[Opcode::LOCAL_TEE as usize] = FastLowering::LocalTee;
@@ -2259,7 +2304,50 @@ impl FastDecoded {
         imm1: 0,
         consumed: 0,
     };
+
+    /// Turn a second-stage byte decode into the same immediate shape the
+    /// generic decoder would have produced. Semantic lowering deliberately
+    /// stays shared: only the byte parser is bypassed.
+    fn deferred(self) -> Option<(Opcode, Immediate)> {
+        let (opcode, immediate) = match self.lowering {
+            FastLowering::DeferredNone(op) => return Some((op, Immediate::None)),
+            FastLowering::DeferredBlock(op) => {
+                let block_type = match self.imm1 {
+                    FAST_BLOCK_EMPTY => BlockType::Empty,
+                    FAST_BLOCK_I32 => BlockType::ValueType(ValueType::I32),
+                    FAST_BLOCK_I64 => BlockType::ValueType(ValueType::I64),
+                    FAST_BLOCK_F32 => BlockType::ValueType(ValueType::F32),
+                    FAST_BLOCK_F64 => BlockType::ValueType(ValueType::F64),
+                    FAST_BLOCK_TYPE_INDEX => BlockType::TypeIndex(self.imm0 as usize),
+                    _ => return None,
+                };
+                return Some((op, Immediate::Block(block_type)));
+            }
+            FastLowering::DeferredLabel(op) => (op, Immediate::LabelIndex(self.imm0 as u32)),
+            FastLowering::DeferredFunction(op) => (op, Immediate::FunctionIndex(self.imm0 as u32)),
+            FastLowering::DeferredGlobal(op) => (op, Immediate::GlobalIndex(self.imm0 as u32)),
+            FastLowering::DeferredTable(op) => (op, Immediate::TableIndex(self.imm0 as u32)),
+            FastLowering::DeferredMemory(op) => (op, Immediate::MemoryIndex(self.imm0 as u32)),
+            FastLowering::DeferredCallIndirect(op) => (
+                op,
+                Immediate::CallIndirectArgs {
+                    typeidx: self.imm0 as u32,
+                    tableidx: self.imm1,
+                },
+            ),
+            FastLowering::DeferredType(op) => (op, Immediate::TypeIndex(self.imm0 as u32)),
+            _ => return None,
+        };
+        Some((opcode, immediate))
+    }
 }
+
+const FAST_BLOCK_EMPTY: u32 = 0;
+const FAST_BLOCK_I32: u32 = 1;
+const FAST_BLOCK_I64: u32 = 2;
+const FAST_BLOCK_F32: u32 = 3;
+const FAST_BLOCK_F64: u32 = 4;
+const FAST_BLOCK_TYPE_INDEX: u32 = 5;
 
 #[inline]
 fn probe_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
@@ -2323,6 +2411,28 @@ fn probe_i64(bytes: &[u8], cursor: &mut usize) -> Option<i64> {
     Some(value)
 }
 
+/// Probe the compact block types emitted by the startup corpus. Structured
+/// reference types deliberately miss so the authoritative feature-gated
+/// parser still handles them. Positive type indices retain their signed-LEB
+/// validation here and are encoded without allocation.
+#[inline]
+fn probe_block_type(bytes: &[u8], cursor: &mut usize) -> Option<(u64, u32)> {
+    let first = *bytes.get(*cursor)?;
+    let kind = match first {
+        0x40 => FAST_BLOCK_EMPTY,
+        0x7f => FAST_BLOCK_I32,
+        0x7e => FAST_BLOCK_I64,
+        0x7d => FAST_BLOCK_F32,
+        0x7c => FAST_BLOCK_F64,
+        _ => {
+            let value = probe_i32(bytes, cursor)?;
+            return (value >= 0).then_some((value as u64, FAST_BLOCK_TYPE_INDEX));
+        }
+    };
+    *cursor += 1;
+    Some((0, kind))
+}
+
 #[inline]
 fn probe_fixed<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Option<[u8; N]> {
     let end = cursor.checked_add(N)?;
@@ -2343,6 +2453,33 @@ fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
     let mut cursor = 1;
     let (imm0, imm1) = match lowering {
         FastLowering::Fallback => return false,
+        FastLowering::DeferredNone(_) => (0, 0),
+        FastLowering::DeferredBlock(_) => {
+            let Some(block_type) = probe_block_type(bytes, &mut cursor) else {
+                return false;
+            };
+            block_type
+        }
+        FastLowering::DeferredLabel(_)
+        | FastLowering::DeferredFunction(_)
+        | FastLowering::DeferredGlobal(_)
+        | FastLowering::DeferredTable(_)
+        | FastLowering::DeferredMemory(_)
+        | FastLowering::DeferredType(_) => {
+            let Some(index) = probe_u32(bytes, &mut cursor) else {
+                return false;
+            };
+            (index as u64, 0)
+        }
+        FastLowering::DeferredCallIndirect(_) => {
+            let Some(typeidx) = probe_u32(bytes, &mut cursor) else {
+                return false;
+            };
+            let Some(tableidx) = probe_u32(bytes, &mut cursor) else {
+                return false;
+            };
+            (typeidx as u64, tableidx)
+        }
         FastLowering::LocalGet | FastLowering::LocalSet | FastLowering::LocalTee => {
             let Some(index) = probe_u32(bytes, &mut cursor) else {
                 return false;
@@ -2415,10 +2552,24 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
     ) -> Result<(), WasmError> {
         let mut fast = FastDecoded::EMPTY;
         loop {
-            if probe_fast(stream.predecode_bytes(), &mut fast) {
-                // Probe first, commit second: every miss leaves the generic
-                // decoder at the exact byte where it started.
-                stream.consume_predecoded(fast.consumed);
+            let mut deferred = None;
+            let fast_hit = probe_fast(stream.predecode_bytes(), &mut fast);
+            if fast_hit {
+                if let Some((opcode, immediate)) = fast.deferred() {
+                    // Probe first, commit second: every miss leaves the generic
+                    // decoder at the exact byte where it started. The final
+                    // `end` additionally mirrors Decoder::end_reached.
+                    if opcode == Opcode::END {
+                        stream.consume_predecoded_end(fast.consumed);
+                    } else {
+                        stream.consume_predecoded(fast.consumed);
+                    }
+                    deferred = Some((opcode, immediate));
+                } else {
+                    stream.consume_predecoded(fast.consumed);
+                }
+            }
+            if fast_hit && deferred.is_none() {
                 if self.pending_fill.is_some()
                     && !matches!(
                         fast.lowering,
@@ -2448,44 +2599,59 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     FastLowering::Store(op) => {
                         self.lower_store(op, fast.imm1, fast.imm0)?;
                     }
-                    FastLowering::Fallback => unreachable!(),
+                    FastLowering::Fallback
+                    | FastLowering::DeferredNone(_)
+                    | FastLowering::DeferredBlock(_)
+                    | FastLowering::DeferredLabel(_)
+                    | FastLowering::DeferredFunction(_)
+                    | FastLowering::DeferredGlobal(_)
+                    | FastLowering::DeferredTable(_)
+                    | FastLowering::DeferredMemory(_)
+                    | FastLowering::DeferredCallIndirect(_)
+                    | FastLowering::DeferredType(_) => unreachable!(),
                 }
                 continue;
             }
 
-            let Some(op) = stream.next()? else {
-                break;
+            let deferred_imm;
+            let (wasm_op, imm) = if let Some((opcode, immediate)) = deferred {
+                deferred_imm = immediate;
+                (WasmOpcode::OP(opcode), &deferred_imm)
+            } else {
+                let Some(op) = stream.next()? else {
+                    break;
+                };
+                (op.wasm_op, &op.imm)
             };
             if self.pending_fill.is_some()
                 && !matches!(
-                    op.wasm_op,
+                    wasm_op,
                     WasmOpcode::OP(Opcode::LOCAL_GET | Opcode::I32_CONST | Opcode::I64_CONST)
                         | WasmOpcode::FC(OpcodeFC::MEMORY_COPY)
                 )
             {
                 self.flush_pending_fill();
             }
-            let o = match op.wasm_op {
+            let o = match wasm_op {
                 WasmOpcode::OP(o) => o,
                 WasmOpcode::FC(fc) => {
                     if self.dead {
                         continue;
                     }
-                    self.fc_op(fc, &op.imm)?;
+                    self.fc_op(fc, imm)?;
                     continue;
                 }
                 WasmOpcode::FB(fb) => {
                     if self.dead {
                         continue;
                     }
-                    self.fb_op(fb, &op.imm)?;
+                    self.fb_op(fb, imm)?;
                     continue;
                 }
                 other => return Err(unsupported_opcode(other)),
             };
             // Borrowed, not cloned: the decoded op outlives the iteration
             // and nothing in the body touches the stream again.
-            let imm = &op.imm;
             if o == Opcode::TRY_TABLE {
                 self.force_canonical_loop_homes = true;
             }
@@ -3365,6 +3531,15 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         _ => return Err(desync()),
                     },
                     FastLowering::Fallback
+                    | FastLowering::DeferredNone(_)
+                    | FastLowering::DeferredBlock(_)
+                    | FastLowering::DeferredLabel(_)
+                    | FastLowering::DeferredFunction(_)
+                    | FastLowering::DeferredGlobal(_)
+                    | FastLowering::DeferredTable(_)
+                    | FastLowering::DeferredMemory(_)
+                    | FastLowering::DeferredCallIndirect(_)
+                    | FastLowering::DeferredType(_)
                     | FastLowering::LocalGet
                     | FastLowering::LocalSet
                     | FastLowering::LocalTee
@@ -3493,10 +3668,111 @@ mod tests {
     }
 
     #[test]
+    fn structural_byte_fast_lane_matches_generic_decoder() {
+        let wat = r#"(module
+            (type $unary (func (param i32) (result i32)))
+            (table 2 funcref)
+            (memory 1)
+            (global $g (mut i32) (i32.const 0))
+            (func $callee (type $unary)
+                local.get 0)
+            (elem (i32.const 0) func $callee)
+            (func (export "phase2") (param $x i32) (result i32) (local $tmp i32)
+                nop
+                global.get $g
+                local.set $tmp
+                local.get $x
+                global.set $g
+
+                i32.const 0
+                ref.func $callee
+                table.set 0
+                i32.const 0
+                table.get 0
+                ref.as_non_null
+                ref.is_null
+                drop
+                ref.func $callee
+                ref.func $callee
+                ref.eq
+                drop
+
+                memory.size 0
+                drop
+                i32.const 0
+                memory.grow 0
+                drop
+
+                local.get $x
+                call $callee
+                drop
+                local.get $x
+                i32.const 0
+                call_indirect 0 (type $unary)
+                drop
+                local.get $x
+                ref.func $callee
+                call_ref $unary
+                drop
+
+                block $exit
+                    local.get $x
+                    br_if $exit
+                    br $exit
+                    unreachable
+                end
+                block $done
+                    loop $again
+                        br $done
+                    end
+                end
+                local.get $x
+                block (type $unary)
+                end
+                drop
+
+                i32.const 10
+                i32.const 20
+                local.get $x
+                select
+                drop
+                local.get $x
+                if (result i32)
+                    i32.const 7
+                else
+                    i32.const 9
+                end
+                return)
+            (func (type $unary)
+                local.get 0
+                return_call $callee)
+            (func (type $unary)
+                local.get 0
+                i32.const 0
+                return_call_indirect 0 (type $unary))
+            (func (type $unary)
+                local.get 0
+                ref.func $callee
+                return_call_ref $unary))"#;
+
+        for func in 0..5 {
+            let fast = predecode_wat_mode(wat, func, false);
+            let generic = predecode_wat_mode(wat, func, true);
+            assert_same_predecode(&fast, &generic);
+        }
+    }
+
+    #[test]
     fn malformed_fast_immediate_is_a_non_consuming_miss() {
         let mut decoded = FastDecoded::EMPTY;
         assert!(!probe_fast(&[Opcode::LOCAL_GET as u8, 0x80], &mut decoded));
         assert!(!probe_fast(&[Opcode::I64_CONST as u8, 0x80], &mut decoded));
+        assert!(!probe_fast(&[Opcode::CALL as u8, 0x80], &mut decoded));
+        assert!(!probe_fast(
+            &[Opcode::CALL_INDIRECT as u8, 0x00, 0x80],
+            &mut decoded
+        ));
+        assert!(!probe_fast(&[Opcode::BLOCK as u8, 0x80], &mut decoded));
         assert_eq!(decoded.consumed, 0);
     }
 

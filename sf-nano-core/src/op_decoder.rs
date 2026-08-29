@@ -1245,6 +1245,19 @@ impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
         self.decoder.payload.advance_known_valid(len);
     }
 
+    /// Commit a predecoded `end`. The generic decoder records that the final
+    /// function-level `end` exhausted the body; a byte-boundary fast path has
+    /// to mirror that bookkeeping or the next fetch would report a spurious
+    /// unexpected EOF.
+    #[cfg(sf_interp)]
+    #[inline]
+    pub(crate) fn consume_predecoded_end(&mut self, len: usize) {
+        self.decoder.payload.advance_known_valid(len);
+        if self.decoder.payload.is_empty() {
+            self.decoder.end_reached = true;
+        }
+    }
+
     /// Decode and return the next op, or `None` at the end of the body.
     ///
     /// The reference borrows the stream, so it is valid until the next
