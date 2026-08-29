@@ -30,13 +30,35 @@ pub use super::type_defs::FunctionType;
 #[derive(Clone, Debug)]
 pub struct Bytecode {
     data: Rc<[u8]>,
+    start: usize,
+    end: usize,
 }
 
 impl From<&[u8]> for Bytecode {
     fn from(data: &[u8]) -> Self {
+        let end = data.len();
         Bytecode {
             data: Rc::from(data),
+            start: 0,
+            end,
         }
+    }
+}
+
+impl Bytecode {
+    /// A function-body view into one module-wide code-section allocation.
+    pub(crate) fn from_shared(data: Rc<[u8]>, start: usize, end: usize) -> Result<Self, WasmError> {
+        if start > end || end > data.len() {
+            return Err(WasmError::malformed(
+                "Function body range exceeds code section",
+            ));
+        }
+        Ok(Self { data, start, end })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_storage_with(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.data, &other.data)
     }
 }
 
@@ -44,13 +66,17 @@ impl Deref for Bytecode {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.data
+        &self.data[self.start..self.end]
     }
 }
 
 impl Default for Bytecode {
     fn default() -> Self {
-        Bytecode { data: Rc::from([]) }
+        Bytecode {
+            data: Rc::from([]),
+            start: 0,
+            end: 0,
+        }
     }
 }
 

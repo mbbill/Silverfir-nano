@@ -972,7 +972,7 @@ fn parse_element<'a>(payload: &mut Payload<'a>) -> Result<Element, WasmError> {
 
 fn parse_code(
     payload: &mut Payload,
-) -> Result<(collections::Vec<ValueType>, Bytecode, usize), WasmError> {
+) -> Result<(collections::Vec<ValueType>, usize, usize), WasmError> {
     let total_size = payload.read_leb128_u32()? as usize;
     let local_begin = payload.position();
 
@@ -1000,13 +1000,15 @@ fn parse_code(
     }
 
     let code_begin = payload.position();
-    let code_size = total_size - (code_begin - local_begin);
+    let code_size = total_size
+        .checked_sub(code_begin - local_begin)
+        .ok_or_else(|| WasmError::malformed("Function locals exceed body size"))?;
     let code = payload.advance_and_split_at(code_size)?;
     // WASM spec: every function body must end with the END (0x0b) opcode
     if code.last() != Some(&0x0b) {
         return Err(WasmError::malformed("END opcode expected"));
     }
-    Ok((locals, code.into(), code_begin))
+    Ok((locals, code_begin, code_size))
 }
 
 fn parse_code_section(
@@ -1016,9 +1018,23 @@ fn parse_code_section(
 ) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()? as usize;
     let imported_count = functions.iter().filter(|f| f.is_import()).count();
+    // Own the code section once. Each FunctionSpec below keeps a cheap Rc
+    // clone plus a range instead of allocating and copying one Rc<[u8]> per
+    // body. The parser still advances over the caller's bytes, so section
+    // length/error behavior is unchanged.
+    let arena_base = payload.position();
+    let code_arena: Rc<[u8]> = Rc::from(payload.remaining_slice());
 
     for index in 0..count {
-        let (locals, code, mut code_offset) = parse_code(payload)?;
+        let (locals, code_begin, code_size) = parse_code(payload)?;
+        let arena_start = code_begin
+            .checked_sub(arena_base)
+            .ok_or_else(|| WasmError::malformed("Invalid function body range"))?;
+        let arena_end = arena_start
+            .checked_add(code_size)
+            .ok_or_else(|| WasmError::malformed("Function body range overflow"))?;
+        let code = Bytecode::from_shared(code_arena.clone(), arena_start, arena_end)?;
+        let mut code_offset = code_begin;
         code_offset += payload_offset;
         let function_index = index
             .checked_add(imported_count)
@@ -1108,6 +1124,31 @@ mod tests {
             out.extend(encode_uleb_u64(value));
         }
         out
+    }
+
+    #[test]
+    fn function_bodies_are_ranges_in_one_code_section_arena() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func (result i32) i32.const 7)
+                (func (param i64) local.get 0 drop))"#,
+        )
+        .expect("wat");
+        let module = parse_module("shared-code", &wasm).expect("module");
+        let first = module.functions()[0].spec().expect("first local").code();
+        let second = module.functions()[1].spec().expect("second local").code();
+
+        assert_eq!(&**first, &[Opcode::I32_CONST as u8, 7, Opcode::END as u8]);
+        assert_eq!(
+            &**second,
+            &[
+                Opcode::LOCAL_GET as u8,
+                0,
+                Opcode::DROP as u8,
+                Opcode::END as u8,
+            ]
+        );
+        assert!(first.shares_storage_with(second));
     }
 
     #[test]
