@@ -654,8 +654,8 @@ pub(crate) fn predecode_functions(
         side_tables: SideTableArena::default(),
     };
     // These vectors are compile-time state, not part of any published
-    // function. Keep their allocations for the next body rather than
-    // allocating and freeing the same transient shapes per local function.
+    // function. Retain their top-level capacities for the next body rather
+    // than constructing the same transient owners per local function.
     let mut scratch = PredecodeScratch::default();
     let mut parts = Vec::with_capacity(module.functions().len());
     for (func_index, func) in module.functions().iter().enumerate() {
@@ -910,7 +910,8 @@ fn predecode_function_into(
     let side_start = arena.side_tables.snapshot();
     // Move the vector headers out of the module scratch while a Predecoder
     // owns them. `mem::take` itself does not allocate. Every retry and every
-    // following function receives the capacities grown by the prior pass.
+    // following function receives the top-level capacities grown by the
+    // prior pass.
     let mut stack = mem::take(&mut scratch.stack);
     let mut frames = mem::take(&mut scratch.frames);
     let mut locals = mem::take(&mut scratch.locals);
@@ -925,13 +926,15 @@ fn predecode_function_into(
         arena.code.truncate(code_start);
         arena.side_tables.truncate(side_start);
         stack.clear();
+        // Clearing frames deliberately drops their nested fixup/catch/local
+        // vectors. The shared scratch retains only this outer Vec's capacity.
         frames.clear();
         locals.clear();
         locals.resize(n_locals as usize, LocalState::default());
         unsafe_loop_homes.clear();
         side_scratch.clear();
         let (code, side_tables) = (&mut arena.code, &mut arena.side_tables);
-        let mut p = Predecoder {
+        let p = Predecoder {
             types: module.types(),
             module,
             tag_identities,
@@ -967,14 +970,16 @@ fn predecode_function_into(
             force_canonical_loop_homes: false,
             side_scratch,
         };
+        let mut attempt = PredecodeAttempt::new(scratch, p, code_start, side_start);
         let mut decoder = Decoder::new(spec.code());
         #[cfg(test)]
         if _disable_fast {
             decoder.disable_predecode_fast_for_test();
         }
-        decoder.add_handler(&mut p);
+        decoder.add_handler(attempt.predecoder_mut());
         decoder.decode_function()?;
         drop(decoder);
+        let mut p = attempt.finish();
         let mut learned_unsafe_home = false;
         p.canonical_loop_homes
             .resize(p.next_loop_id as usize, false);
@@ -997,9 +1002,9 @@ fn predecode_function_into(
             break p;
         }
 
-        // Reclaim every buffer before retrying. In particular, a safety
-        // re-decode no longer repeats the local-state and control-stack
-        // allocations that prompted the retry.
+        // Reclaim every top-level buffer before retrying. In particular, a
+        // safety re-decode retains the local-state and outer control-stack
+        // capacities grown by the optimistic pass.
         stack = mem::take(&mut p.stack);
         frames = mem::take(&mut p.frames);
         locals = mem::take(&mut p.locals);
@@ -1027,12 +1032,7 @@ fn predecode_function_into(
         n_results,
         slow_tail_return: p.slow_tail_return,
     };
-    scratch.stack = mem::take(&mut p.stack);
-    scratch.frames = mem::take(&mut p.frames);
-    scratch.locals = mem::take(&mut p.locals);
-    scratch.canonical_loop_homes = mem::take(&mut p.canonical_loop_homes);
-    scratch.unsafe_loop_homes = mem::take(&mut p.unsafe_loop_homes);
-    scratch.side = mem::take(&mut p.side_scratch);
+    scratch.reclaim_from(&mut p);
     Ok(parts)
 }
 
@@ -1146,10 +1146,12 @@ struct CtlFrame {
 /// Module-scoped capacity cache for state that exists only while translating
 /// one function body.
 ///
-/// Contents are cleared between passes and functions; only allocations are
-/// retained. None of these values is referenced by a `PredecodedFunction`,
-/// so sharing the scratch cannot affect published code, side tables,
-/// exception metadata, or activation/re-entry lifetimes.
+/// Contents are cleared between passes and functions; the listed top-level
+/// `Vec` capacities are retained. Nested vectors owned by a `CtlFrame` are
+/// intentionally dropped when the frame stack is cleared. None of these
+/// values is referenced by a `PredecodedFunction`, so sharing the scratch
+/// cannot affect published code, side tables, exception metadata, or
+/// activation/re-entry lifetimes.
 #[derive(Default)]
 struct PredecodeScratch {
     stack: Vec<Desc>,
@@ -1196,9 +1198,10 @@ impl PredecodeSideScratch {
 
 #[cfg(test)]
 impl PredecodeScratch {
-    /// Capacities of every allocation-owning transient vector. Persistent
-    /// module output (`Instr`, branch tables, wide memargs, exceptions) is
-    /// intentionally absent from this census.
+    /// Capacities of the fifteen reusable top-level transient vectors.
+    /// Nested `CtlFrame` vectors and persistent module output (`Instr`, branch
+    /// tables, wide memargs, exceptions) are intentionally absent. This is an
+    /// owner/capacity census, not a count of allocator calls or reallocations.
     fn capacities(&self) -> [usize; 15] {
         [
             self.stack.capacity(),
@@ -1283,6 +1286,62 @@ struct Predecoder<'m, 'code, 'side> {
     /// at each opcode that owns their contents and never enter published
     /// metadata.
     side_scratch: PredecodeSideScratch,
+}
+
+impl PredecodeScratch {
+    fn reclaim_from(&mut self, predecoder: &mut Predecoder<'_, '_, '_>) {
+        self.stack = mem::take(&mut predecoder.stack);
+        self.frames = mem::take(&mut predecoder.frames);
+        self.locals = mem::take(&mut predecoder.locals);
+        self.canonical_loop_homes = mem::take(&mut predecoder.canonical_loop_homes);
+        self.unsafe_loop_homes = mem::take(&mut predecoder.unsafe_loop_homes);
+        self.side = mem::take(&mut predecoder.side_scratch);
+    }
+}
+
+/// Owns one decode attempt until the generic decoder has accepted the whole
+/// body. An early validation error returns every reusable top-level buffer to
+/// the module scratch and rolls both output arenas back to their snapshots.
+struct PredecodeAttempt<'scratch, 'module, 'code, 'side> {
+    scratch: &'scratch mut PredecodeScratch,
+    predecoder: Option<Predecoder<'module, 'code, 'side>>,
+    code_start: usize,
+    side_start: SideTableSnapshot,
+}
+
+impl<'scratch, 'module, 'code, 'side> PredecodeAttempt<'scratch, 'module, 'code, 'side> {
+    fn new(
+        scratch: &'scratch mut PredecodeScratch,
+        predecoder: Predecoder<'module, 'code, 'side>,
+        code_start: usize,
+        side_start: SideTableSnapshot,
+    ) -> Self {
+        Self {
+            scratch,
+            predecoder: Some(predecoder),
+            code_start,
+            side_start,
+        }
+    }
+
+    fn predecoder_mut(&mut self) -> &mut Predecoder<'module, 'code, 'side> {
+        self.predecoder.as_mut().expect("decode attempt is armed")
+    }
+
+    fn finish(mut self) -> Predecoder<'module, 'code, 'side> {
+        self.predecoder.take().expect("decode attempt is armed")
+    }
+}
+
+impl Drop for PredecodeAttempt<'_, '_, '_, '_> {
+    fn drop(&mut self) {
+        let Some(predecoder) = self.predecoder.as_mut() else {
+            return;
+        };
+        self.scratch.reclaim_from(predecoder);
+        predecoder.code.arena.truncate(self.code_start);
+        predecoder.side_tables.arena.truncate(self.side_start);
+    }
 }
 
 /// Predecode state for one WebAssembly local.
@@ -5035,7 +5094,108 @@ mod tests {
     }
 
     #[test]
-    fn fourteen_thousand_functions_share_transient_allocation_owners() {
+    fn warmed_scratch_survives_a_malformed_body_and_recovers() {
+        let wat = r#"(module
+            (func (param i32) (result i32)
+                (block $exit (result i32)
+                    local.get 0
+                    (loop $again (param i32) (result i32)
+                        local.get 0
+                        br_table $again $exit))))"#;
+        let bin: StdVec<u8> = wat::parse_str(wat).expect("wat");
+        let module = Module::new("scratch-recovery-valid", &bin).expect("module");
+        let function_handles: StdVec<RefValue> =
+            (0..module.functions().len()).map(RefValue::new).collect();
+        let mut arena = PredecodedArena::default();
+        let mut scratch = PredecodeScratch::default();
+
+        let first = predecode_function_into(
+            &module,
+            &[],
+            &function_handles,
+            0,
+            false,
+            &mut arena,
+            &mut scratch,
+        )
+        .expect("warm predecode");
+        let warmed = scratch.capacities();
+        assert!(
+            warmed.iter().all(|&capacity| capacity != 0),
+            "fixture must warm every top-level scratch vector"
+        );
+
+        let arena_lengths = |arena: &PredecodedArena| {
+            [
+                arena.code.len(),
+                arena.side_tables.br_tables.len(),
+                arena.side_tables.br_entries.len(),
+                arena.side_tables.wide_memargs.len(),
+                arena.side_tables.exception_sites.len(),
+                arena.side_tables.exception_handlers.len(),
+            ]
+        };
+        let before_failure = arena_lengths(&arena);
+
+        // Module parsing checks the body's structural end but leaves opcode
+        // validation to the decoder. Replacing the first instruction with an
+        // unknown byte makes that validation fail after borrowing the warmed
+        // scratch while retaining a well-formed code-section shell.
+        let valid_code = module.functions()[0].spec().expect("local body").code();
+        let code_start = bin
+            .windows(valid_code.len())
+            .rposition(|candidate| candidate == &**valid_code)
+            .expect("encoded function body");
+        let mut malformed_bin = bin.clone();
+        assert_eq!(malformed_bin[code_start], Opcode::BLOCK as u8);
+        malformed_bin[code_start] = 0xff;
+        let malformed =
+            Module::new("scratch-recovery-malformed", &malformed_bin).expect("module shell");
+        let malformed_handles: StdVec<RefValue> = (0..malformed.functions().len())
+            .map(RefValue::new)
+            .collect();
+        let failed = predecode_function_into(
+            &malformed,
+            &[],
+            &malformed_handles,
+            0,
+            false,
+            &mut arena,
+            &mut scratch,
+        );
+        assert!(failed.is_err(), "malformed body must fail predecode");
+        assert_eq!(
+            arena_lengths(&arena),
+            before_failure,
+            "failed attempt must roll both module arenas back"
+        );
+        assert!(
+            scratch
+                .capacities()
+                .iter()
+                .zip(warmed)
+                .all(|(&after, before)| after >= before),
+            "failed attempt must return every warmed top-level buffer"
+        );
+
+        let recovered = predecode_function_into(
+            &module,
+            &[],
+            &function_handles,
+            0,
+            false,
+            &mut arena,
+            &mut scratch,
+        )
+        .expect("recovery predecode");
+        let arena = Rc::new(arena);
+        let first = first.finish(arena.clone());
+        let recovered = recovered.finish(arena);
+        assert_same_predecode(&first, &recovered);
+    }
+
+    #[test]
+    fn fourteen_thousand_functions_reuse_transient_vector_owners() {
         const FUNCTION_COUNT: usize = 14_000;
         let mut wat = StdString::from("(module");
         for _ in 0..FUNCTION_COUNT {
@@ -5060,8 +5220,8 @@ mod tests {
         let mut arena = PredecodedArena::default();
         let mut scratch = PredecodeScratch::default();
         let mut prior = scratch.capacities();
-        let mut shared_growth_owners = 0usize;
-        let mut legacy_fresh_owners = 0usize;
+        let mut shared_capacity_growth_events = 0usize;
+        let mut fresh_top_level_owners = 0usize;
         let mut owner_count = None;
 
         for func_index in 0..FUNCTION_COUNT {
@@ -5078,7 +5238,7 @@ mod tests {
             drop(parts);
 
             let capacities = scratch.capacities();
-            shared_growth_owners += capacities
+            shared_capacity_growth_events += capacities
                 .iter()
                 .zip(prior.iter())
                 .filter(|(after, before)| after > before)
@@ -5089,19 +5249,20 @@ mod tests {
                 allocated_owners,
                 "identical bodies must exercise the same transient owners"
             );
-            // The pre-change path created these allocation-owning Vecs anew
-            // for each body. This is a static owner census, independent of
-            // allocator implementation and benchmark timing.
-            legacy_fresh_owners += allocated_owners;
+            // The pre-change path constructed these top-level Vec owners anew
+            // for each body. This static topology/capacity census deliberately
+            // makes no claim about allocator calls, reallocations, or nested
+            // vectors owned by individual control frames.
+            fresh_top_level_owners += allocated_owners;
             prior = capacities;
         }
 
         let owner_count = owner_count.expect("at least one function");
         assert_eq!(owner_count, 15, "the fixture must cover every scratch Vec");
         assert_eq!(
-            (legacy_fresh_owners, shared_growth_owners),
+            (fresh_top_level_owners, shared_capacity_growth_events),
             (210_000, 15),
-            "14k fresh-scratch owner allocations must collapse to one module-scoped growth per owner"
+            "14k bodies must reuse fifteen top-level owners after their first capacity growth"
         );
     }
 
