@@ -1068,14 +1068,16 @@ impl NativeEngine {
                     func,
                     table_byte_off,
                 );
-                Self::record_call_fixup(
-                    plan,
-                    func,
-                    caller_index,
-                    cell_start,
-                    prev_index,
-                    &prev_ins,
-                );
+                if call_fixup_op(prev_ins.op) {
+                    Self::record_call_fixup(
+                        plan,
+                        func,
+                        caller_index,
+                        cell_start,
+                        prev_index,
+                        &prev_ins,
+                    );
+                }
                 prev_index = index;
                 prev_ins = ins;
                 prev = current;
@@ -1094,7 +1096,16 @@ impl NativeEngine {
                 func,
                 table_byte_off,
             );
-            Self::record_call_fixup(plan, func, caller_index, cell_start, prev_index, &prev_ins);
+            if call_fixup_op(prev_ins.op) {
+                Self::record_call_fixup(
+                    plan,
+                    func,
+                    caller_index,
+                    cell_start,
+                    prev_index,
+                    &prev_ins,
+                );
+            }
         }
 
         plan.write_cell(
@@ -1215,6 +1226,15 @@ impl NativeEngine {
     }
 }
 
+/// Whether a cell can possibly contribute a deferred cross-function fixup.
+/// Keep this tiny caller-side gate separate from the metadata-heavy outlined
+/// recorder: ordinary cells dominate every real module and must never enter
+/// that function merely to fail its opcode match.
+#[inline(always)]
+const fn call_fixup_op(op: Op) -> bool {
+    matches!(op, Op::Call | Op::CallIndirect)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::instr::{op_from_index, N_OPS};
@@ -1222,6 +1242,123 @@ mod tests {
     use super::*;
     use crate::collections::{vec, Vec};
     use crate::vm::interpreter::predecode::linker_test_function;
+
+    #[test]
+    fn caller_call_fixup_gate_matches_the_legacy_match_for_all_ops_and_flags() {
+        let mut gated_ops = 0usize;
+        for op_index in 0..N_OPS {
+            let op = op_from_index(op_index);
+            gated_ops += usize::from(call_fixup_op(op));
+            for flags in u16::MIN..=u16::MAX {
+                // Bits: table0/no-EH, table0/EH, table1/no-EH,
+                // table1/EH. This crosses every condition the old callee
+                // evaluated after entering for every final cell.
+                let legacy = if !NATIVE_CALLS {
+                    0
+                } else {
+                    match op {
+                        Op::Call => 0b0101,
+                        Op::CallIndirect if flags & FLAG_A_CONST == 0 => 0b0001,
+                        _ => 0,
+                    }
+                };
+                let gated = if !call_fixup_op(op) || !NATIVE_CALLS {
+                    0
+                } else {
+                    match op {
+                        Op::Call => 0b0101,
+                        Op::CallIndirect if flags & FLAG_A_CONST == 0 => 0b0001,
+                        _ => 0,
+                    }
+                };
+                assert_eq!(gated, legacy, "op={op:?} flags={flags:#06x}");
+            }
+        }
+        assert_eq!(gated_ops, 2);
+        assert_eq!(N_OPS - gated_ops, N_OPS - 2);
+    }
+
+    struct FixupTestFunction {
+        has_exception_handlers: bool,
+    }
+
+    impl LinkFunction for FixupTestFunction {
+        fn code_start(&self) -> usize {
+            0
+        }
+
+        fn code_len(&self) -> usize {
+            0
+        }
+
+        fn pinned(&self) -> Pinned {
+            Pinned::NONE
+        }
+
+        fn br_table_count(&self) -> usize {
+            0
+        }
+
+        fn br_table(&self, _index: usize) -> Option<&[u32]> {
+            None
+        }
+
+        fn has_exception_handlers_at(&self, _pc: u32) -> bool {
+            self.has_exception_handlers
+        }
+    }
+
+    #[test]
+    fn gated_call_fixups_preserve_every_recorded_field_and_slow_condition() {
+        let mut plan = LinkPlan::for_functions(core::iter::empty::<&PredecodedFunction>());
+        let plain = FixupTestFunction {
+            has_exception_handlers: false,
+        };
+        let trapped = FixupTestFunction {
+            has_exception_handlers: true,
+        };
+        let cases = [
+            (Instr::new(Op::Call, 0, 5, 9, 0), &plain),
+            (Instr::new(Op::CallIndirect, 0, 4, 8, 21), &plain),
+            (Instr::new(Op::Call, 0, 5, 9, 0), &trapped),
+            (Instr::new(Op::CallIndirect, FLAG_A_CONST, 4, 8, 21), &plain),
+            (
+                Instr::new(Op::CallIndirect, 0, 4, 8, (1u64 << 32) | 21),
+                &plain,
+            ),
+            (Instr::new(Op::CallIndirect, 0, 4, 8, 21), &trapped),
+            (Instr::new(Op::ReturnCall, 0, 5, 9, 0), &plain),
+            (Instr::new(Op::ReturnCallIndirect, 0, 4, 8, 21), &plain),
+        ];
+        for (index, (ins, func)) in cases.into_iter().enumerate() {
+            if call_fixup_op(ins.op) {
+                NativeEngine::record_call_fixup(&mut plan, func, 7, 10, index, &ins);
+            }
+        }
+
+        if NATIVE_CALLS {
+            assert_eq!(
+                plan.call_fixups,
+                vec![
+                    CallFixup::Direct {
+                        cell: 10,
+                        caller: 7,
+                        callee: 5,
+                        arg_base: 9,
+                    },
+                    CallFixup::Indirect {
+                        cell: 11,
+                        caller: 7,
+                        table_slot: 4,
+                        arg_base: 8,
+                        expected_type: 21,
+                    },
+                ]
+            );
+        } else {
+            assert!(plan.call_fixups.is_empty());
+        }
+    }
 
     fn reference_cells(
         engine: &NativeEngine,
