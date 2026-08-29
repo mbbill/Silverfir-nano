@@ -4,7 +4,7 @@
 //! surface, not a second production decoder. Every successful `next` commits
 //! exactly one instruction; errors leave the cursor at the original byte.
 
-use super::{decode_block_type, decode_mem_arg, BlockType, Immediate};
+use super::{decode_block_type, decode_mem_arg, BlockType, CatchClauseKind, Immediate};
 use crate::{
     error::WasmError,
     opcodes::{Opcode, OpcodeFB, OpcodeFC, OpcodeFD, WasmOpcode},
@@ -86,6 +86,77 @@ impl Iterator for RawU32Iter<'_> {
 
 impl ExactSizeIterator for RawU32Iter<'_> {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawCatch {
+    pub(crate) kind: CatchClauseKind,
+    pub(crate) tag_index: Option<u32>,
+    pub(crate) label_depth: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawCatchRange<'a> {
+    bytes: &'a [u8],
+    count: u32,
+}
+
+impl<'a> RawCatchRange<'a> {
+    pub(crate) const fn len(self) -> u32 {
+        self.count
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.count == 0
+    }
+
+    pub(crate) const fn encoded(self) -> &'a [u8] {
+        self.bytes
+    }
+
+    pub(crate) const fn iter(self) -> RawCatchIter<'a> {
+        RawCatchIter {
+            bytes: self.bytes,
+            pc: 0,
+            remaining: self.count,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RawCatchIter<'a> {
+    bytes: &'a [u8],
+    pc: usize,
+    remaining: u32,
+}
+
+impl Iterator for RawCatchIter<'_> {
+    type Item = Result<RawCatch, WasmError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let mut payload = Payload::from(&self.bytes[self.pc..]);
+        match decode_raw_catch(&mut payload) {
+            Ok(catch) => {
+                self.pc += payload.position();
+                self.remaining -= 1;
+                Some(Ok(catch))
+            }
+            Err(error) => {
+                self.remaining = 0;
+                Some(Err(error))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.remaining as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for RawCatchIter<'_> {}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RawImmediate<'a> {
     None,
@@ -94,6 +165,10 @@ pub(crate) enum RawImmediate<'a> {
     F32(u32),
     F64(u64),
     Block(RawBlockType),
+    TryTable {
+        block: RawBlockType,
+        catches: RawCatchRange<'a>,
+    },
     RefType(ValueType),
     BrTable {
         labels: RawU32Range<'a>,
@@ -232,6 +307,29 @@ impl<'a> RawOpCursor<'a> {
                 };
                 (OP(op), RawImmediate::Block(block))
             }
+            TRY_TABLE => {
+                let block = match decode_block_type(payload)? {
+                    BlockType::Empty => RawBlockType::Empty,
+                    BlockType::ValueType(value) => RawBlockType::Value(value),
+                    BlockType::TypeIndex(index) => RawBlockType::TypeIndex(index),
+                };
+                let count = payload.read_leb128_u32()?;
+                let catches_start = start + payload.position();
+                for _ in 0..count {
+                    decode_raw_catch(payload)?;
+                }
+                let catches_end = start + payload.position();
+                (
+                    OP(op),
+                    RawImmediate::TryTable {
+                        block,
+                        catches: RawCatchRange {
+                            bytes: &self.bytes[catches_start..catches_end],
+                            count,
+                        },
+                    },
+                )
+            }
             BR | BR_IF | BR_ON_NULL | BR_ON_NON_NULL => {
                 (OP(op), RawImmediate::LabelIndex(payload.read_leb128_u32()?))
             }
@@ -343,7 +441,7 @@ impl<'a> RawOpCursor<'a> {
                 };
                 (FC(ext), imm)
             }
-            THROW | THROW_REF | TRY_TABLE | SELECT_T => return self.unsupported(OP(op), start),
+            THROW | THROW_REF | SELECT_T => return self.unsupported(OP(op), start),
             PREFIX_FB => {
                 let ext: OpcodeFB = payload.read_leb128_u32()?.try_into()?;
                 return self.unsupported(FB(ext), start);
@@ -381,6 +479,26 @@ impl<'a> RawOpCursor<'a> {
     }
 }
 
+fn decode_raw_catch(payload: &mut Payload<'_>) -> Result<RawCatch, WasmError> {
+    let tag = payload.read_u8()?;
+    let (kind, tag_index) = match tag {
+        0x00 => (CatchClauseKind::Catch, Some(payload.read_leb128_u32()?)),
+        0x01 => (CatchClauseKind::CatchRef, Some(payload.read_leb128_u32()?)),
+        0x02 => (CatchClauseKind::CatchAll, None),
+        0x03 => (CatchClauseKind::CatchAllRef, None),
+        _ => {
+            return Err(WasmError::malformed(
+                "invalid catch clause tag in try_table",
+            ))
+        }
+    };
+    Ok(RawCatch {
+        kind,
+        tag_index,
+        label_depth: payload.read_leb128_u32()?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +532,29 @@ mod tests {
                 (RawBlockType::TypeIndex(a), BlockType::TypeIndex(b)) => assert_eq!(a, *b),
                 _ => panic!("block mismatch: raw={a:?}, generic={b:?}"),
             },
+            (
+                RawImmediate::TryTable { block, catches },
+                Immediate::TryTable {
+                    block_type,
+                    catches: generic,
+                },
+            ) => {
+                match (block, block_type) {
+                    (RawBlockType::Empty, BlockType::Empty) => {}
+                    (RawBlockType::Value(a), BlockType::ValueType(b)) => assert_eq!(a, *b),
+                    (RawBlockType::TypeIndex(a), BlockType::TypeIndex(b)) => assert_eq!(a, *b),
+                    _ => panic!("try block mismatch: raw={block:?}, generic={block_type:?}"),
+                }
+                assert_eq!(catches.len() as usize, generic.len());
+                assert_eq!(catches.is_empty(), generic.is_empty());
+                assert!(!catches.encoded().is_empty() || catches.is_empty());
+                for (raw, generic) in catches.iter().zip(generic) {
+                    let raw = raw.expect("validated raw catch range");
+                    assert_eq!(raw.kind, generic.kind);
+                    assert_eq!(raw.tag_index, generic.tag_idx);
+                    assert_eq!(raw.label_depth, generic.label_idx);
+                }
+            }
             (RawImmediate::RefType(a), Immediate::RefType(b)) => assert_eq!(a, *b),
             (RawImmediate::LabelIndex(a), Immediate::LabelIndex(b)) => assert_eq!(a, *b),
             (RawImmediate::FunctionIndex(a), Immediate::FunctionIndex(b)) => assert_eq!(a, *b),
@@ -586,12 +727,12 @@ mod tests {
         assert_eq!(raw.next(), Err(RawDecodeError::Decode(generic)));
         assert_eq!(raw.position(), 0);
 
-        let unsupported = [Opcode::TRY_TABLE as u8, 0x40, 0x00];
+        let unsupported = [Opcode::THROW_REF as u8];
         let mut raw = RawOpCursor::new(&unsupported);
         assert_eq!(
             raw.next(),
             Err(RawDecodeError::Unsupported {
-                opcode: WasmOpcode::OP(Opcode::TRY_TABLE),
+                opcode: WasmOpcode::OP(Opcode::THROW_REF),
                 offset: 0,
             })
         );
@@ -616,7 +757,7 @@ mod tests {
             }
         }
         assert!(supported >= 190, "supported primary bytes={supported}");
-        assert_eq!(unsupported, 6, "EH/typed-select/GC/SIMD families");
+        assert_eq!(unsupported, 5, "throw/typed-select/GC/SIMD families");
     }
 
     #[test]
@@ -682,6 +823,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn try_table_borrows_all_four_catch_kinds_and_matches_generic() {
+        let code = [
+            Opcode::I32_CONST as u8,
+            0,
+            Opcode::DROP as u8,
+            Opcode::TRY_TABLE as u8,
+            0x40,
+            0x04,
+            0x00,
+            0x82,
+            0x01,
+            0x00,
+            0x01,
+            0x00,
+            0x81,
+            0x00,
+            0x02,
+            0x02,
+            0x03,
+            0x03,
+            Opcode::END as u8,
+        ];
+        let try_pc = 3;
+        let generic = decode_generic_at(&code, try_pc).expect("generic try_table");
+        let mut cursor = RawOpCursor::at(&code, try_pc);
+        let raw = cursor.next().expect("raw try_table").expect("one op");
+        assert_equivalent(raw, &generic);
+        assert_eq!(raw.start, try_pc);
+        assert_eq!(raw.end, generic.next_op_offset);
+        assert_eq!(cursor.position(), raw.end);
+
+        let RawImmediate::TryTable { catches, .. } = raw.imm else {
+            panic!("expected raw try_table");
+        };
+        let decoded: Vec<RawCatch> = catches.iter().collect::<Result<_, _>>().unwrap();
+        assert_eq!(
+            decoded,
+            [
+                RawCatch {
+                    kind: CatchClauseKind::Catch,
+                    tag_index: Some(130),
+                    label_depth: 0,
+                },
+                RawCatch {
+                    kind: CatchClauseKind::CatchRef,
+                    tag_index: Some(0),
+                    label_depth: 1,
+                },
+                RawCatch {
+                    kind: CatchClauseKind::CatchAll,
+                    tag_index: None,
+                    label_depth: 2,
+                },
+                RawCatch {
+                    kind: CatchClauseKind::CatchAllRef,
+                    tag_index: None,
+                    label_depth: 3,
+                },
+            ]
+        );
+
+        // Resume at every legal instruction boundary in a non-sequential order.
+        for pc in [try_pc, raw.end, 0, 2] {
+            assert!(assert_one_matches_or_is_explicitly_unsupported(&code, pc));
+        }
+    }
+
+    #[test]
+    fn malformed_try_table_matches_generic_and_never_commits_pc() {
+        for bytes in [
+            &[Opcode::TRY_TABLE as u8][..],
+            &[Opcode::TRY_TABLE as u8, 0x40, 0x80][..],
+            &[Opcode::TRY_TABLE as u8, 0x40, 0x01, 0x04][..],
+            &[Opcode::TRY_TABLE as u8, 0x40, 0x01, 0x00, 0x80][..],
+            &[Opcode::TRY_TABLE as u8, 0x40, 0x01, 0x00, 0x00, 0x80][..],
+            &[Opcode::TRY_TABLE as u8, 0x40, 0x01, 0x02, 0x80][..],
+            &[Opcode::TRY_TABLE as u8, 0x40, 0x80, 0x80, 0x80, 0x80, 0x80][..],
+            &[
+                Opcode::TRY_TABLE as u8,
+                0x40,
+                0x01,
+                0x00,
+                0x80,
+                0x80,
+                0x80,
+                0x80,
+                0x80,
+            ][..],
+        ] {
+            assert!(assert_one_matches_or_is_explicitly_unsupported(bytes, 0));
+            let mut cursor = RawOpCursor::new(bytes);
+            assert!(matches!(cursor.next(), Err(RawDecodeError::Decode(_))));
+            assert_eq!(cursor.position(), 0);
+        }
+    }
+
     fn compare_module_bodies(name: &str, wasm: &[u8]) -> (usize, usize, usize) {
         let module = Module::new(name, wasm).expect("parse corpus module");
         let mut supported = 0usize;
@@ -735,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn eh_gc_typed_select_and_simd_are_explicitly_unsupported() {
+    fn throw_gc_typed_select_and_simd_are_explicitly_unsupported() {
         for (bytes, expected) in [
             (
                 &[Opcode::THROW as u8, 0x00][..],
@@ -744,10 +982,6 @@ mod tests {
             (
                 &[Opcode::THROW_REF as u8][..],
                 WasmOpcode::OP(Opcode::THROW_REF),
-            ),
-            (
-                &[Opcode::TRY_TABLE as u8, 0x40, 0x00][..],
-                WasmOpcode::OP(Opcode::TRY_TABLE),
             ),
             (
                 &[Opcode::SELECT_T as u8, 0x00][..],
