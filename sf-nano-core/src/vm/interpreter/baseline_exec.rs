@@ -167,6 +167,8 @@ enum RawOpcodeKind {
     LocalGet,
     LocalSet,
     LocalTee,
+    GlobalGet,
+    GlobalSet,
     Drop,
     Select,
     If,
@@ -175,6 +177,10 @@ enum RawOpcodeKind {
     BrTable,
     Numeric(Opcode),
     Saturating(OpcodeFC),
+    MemoryLoad(Opcode),
+    MemoryStore(Opcode),
+    MemorySize,
+    MemoryGrow,
     Call,
     End,
     Unreachable,
@@ -192,6 +198,8 @@ fn raw_stepper_opcode_kind(opcode: WasmOpcode) -> Option<RawOpcodeKind> {
         WasmOpcode::OP(Opcode::LOCAL_GET) => Some(RawOpcodeKind::LocalGet),
         WasmOpcode::OP(Opcode::LOCAL_SET) => Some(RawOpcodeKind::LocalSet),
         WasmOpcode::OP(Opcode::LOCAL_TEE) => Some(RawOpcodeKind::LocalTee),
+        WasmOpcode::OP(Opcode::GLOBAL_GET) => Some(RawOpcodeKind::GlobalGet),
+        WasmOpcode::OP(Opcode::GLOBAL_SET) => Some(RawOpcodeKind::GlobalSet),
         WasmOpcode::OP(Opcode::DROP) => Some(RawOpcodeKind::Drop),
         WasmOpcode::OP(Opcode::SELECT) => Some(RawOpcodeKind::Select),
         WasmOpcode::OP(Opcode::IF) => Some(RawOpcodeKind::If),
@@ -203,6 +211,35 @@ fn raw_stepper_opcode_kind(opcode: WasmOpcode) -> Option<RawOpcodeKind> {
         {
             Some(RawOpcodeKind::Numeric(opcode))
         }
+        WasmOpcode::OP(
+            opcode @ (Opcode::I32_LOAD
+            | Opcode::I64_LOAD
+            | Opcode::F32_LOAD
+            | Opcode::F64_LOAD
+            | Opcode::I32_LOAD8_S
+            | Opcode::I32_LOAD8_U
+            | Opcode::I32_LOAD16_S
+            | Opcode::I32_LOAD16_U
+            | Opcode::I64_LOAD8_S
+            | Opcode::I64_LOAD8_U
+            | Opcode::I64_LOAD16_S
+            | Opcode::I64_LOAD16_U
+            | Opcode::I64_LOAD32_S
+            | Opcode::I64_LOAD32_U),
+        ) => Some(RawOpcodeKind::MemoryLoad(opcode)),
+        WasmOpcode::OP(
+            opcode @ (Opcode::I32_STORE
+            | Opcode::I64_STORE
+            | Opcode::F32_STORE
+            | Opcode::F64_STORE
+            | Opcode::I32_STORE8
+            | Opcode::I32_STORE16
+            | Opcode::I64_STORE8
+            | Opcode::I64_STORE16
+            | Opcode::I64_STORE32),
+        ) => Some(RawOpcodeKind::MemoryStore(opcode)),
+        WasmOpcode::OP(Opcode::MEMORY_SIZE) => Some(RawOpcodeKind::MemorySize),
+        WasmOpcode::OP(Opcode::MEMORY_GROW) => Some(RawOpcodeKind::MemoryGrow),
         WasmOpcode::OP(Opcode::CALL) => Some(RawOpcodeKind::Call),
         WasmOpcode::OP(Opcode::END) => Some(RawOpcodeKind::End),
         WasmOpcode::OP(Opcode::UNREACHABLE) => Some(RawOpcodeKind::Unreachable),
@@ -931,6 +968,110 @@ impl RawStepper<'_, '_> {
             .ok_or_else(|| WasmError::invalid("baseline raw operand stack underflow").into())
     }
 
+    fn memory_is_64(&self, memory: usize) -> Result<bool, BaselineExecError> {
+        self.instance
+            .module()
+            .memories()
+            .get(memory)
+            .map(|memory| memory.limits().is64)
+            .ok_or_else(|| WasmError::invalid("baseline raw memory index overflow").into())
+    }
+
+    fn require_i32_global(
+        &self,
+        global: usize,
+        opcode: WasmOpcode,
+        pc: usize,
+    ) -> Result<(), BaselineExecError> {
+        match self
+            .instance
+            .module()
+            .globals()
+            .get(global)
+            .map(|global| global.value_type())
+        {
+            Some(ValueType::I32) => Ok(()),
+            Some(_) => Err(BaselineExecError::Unsupported {
+                opcode: Some(opcode),
+                pc,
+                feature: "non-i32 global",
+            }),
+            None => Err(WasmError::invalid("baseline raw global index overflow").into()),
+        }
+    }
+
+    fn exec_memory_load(
+        &mut self,
+        opcode: Opcode,
+        immediate: BaselineImmediate,
+    ) -> Result<(), BaselineExecError> {
+        let (memory, offset) = raw_memarg(immediate)?;
+        let address_is_64 = self.memory_is_64(memory)?;
+        let address = self.pop()?;
+        let address = if address_is_64 {
+            address
+        } else {
+            address as u32 as u64
+        };
+        let size = match opcode {
+            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I64_LOAD32_S | Opcode::I64_LOAD32_U => 4,
+            Opcode::I64_LOAD | Opcode::F64_LOAD => 8,
+            Opcode::I32_LOAD8_S
+            | Opcode::I32_LOAD8_U
+            | Opcode::I64_LOAD8_S
+            | Opcode::I64_LOAD8_U => 1,
+            Opcode::I32_LOAD16_S
+            | Opcode::I32_LOAD16_U
+            | Opcode::I64_LOAD16_S
+            | Opcode::I64_LOAD16_U => 2,
+            _ => return Err(WasmError::internal("baseline raw load opcode mismatch").into()),
+        };
+        let loaded = self.instance.mem_load(address, memory, offset, size)?;
+        let value = match opcode {
+            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I32_LOAD8_U | Opcode::I32_LOAD16_U => {
+                loaded
+            }
+            Opcode::I64_LOAD
+            | Opcode::F64_LOAD
+            | Opcode::I64_LOAD8_U
+            | Opcode::I64_LOAD16_U
+            | Opcode::I64_LOAD32_U => loaded,
+            Opcode::I32_LOAD8_S => loaded as i8 as i32 as u32 as u64,
+            Opcode::I32_LOAD16_S => loaded as i16 as i32 as u32 as u64,
+            Opcode::I64_LOAD8_S => loaded as i8 as i64 as u64,
+            Opcode::I64_LOAD16_S => loaded as i16 as i64 as u64,
+            Opcode::I64_LOAD32_S => loaded as i32 as i64 as u64,
+            _ => return Err(WasmError::internal("baseline raw load opcode mismatch").into()),
+        };
+        self.push(value)
+    }
+
+    fn exec_memory_store(
+        &mut self,
+        opcode: Opcode,
+        immediate: BaselineImmediate,
+    ) -> Result<(), BaselineExecError> {
+        let (memory, offset) = raw_memarg(immediate)?;
+        let address_is_64 = self.memory_is_64(memory)?;
+        let value = self.pop()?;
+        let address = self.pop()?;
+        let address = if address_is_64 {
+            address
+        } else {
+            address as u32 as u64
+        };
+        let size = match opcode {
+            Opcode::I32_STORE | Opcode::F32_STORE | Opcode::I64_STORE32 => 4,
+            Opcode::I64_STORE | Opcode::F64_STORE => 8,
+            Opcode::I32_STORE8 | Opcode::I64_STORE8 => 1,
+            Opcode::I32_STORE16 | Opcode::I64_STORE16 => 2,
+            _ => return Err(WasmError::internal("baseline raw store opcode mismatch").into()),
+        };
+        self.instance
+            .mem_store(address, memory, offset, size, value)?;
+        Ok(())
+    }
+
     pub(super) fn step(&mut self) -> Result<RawStepExit, BaselineExecError> {
         let (decoded, code_len, result_count) = {
             let function = self
@@ -1035,6 +1176,18 @@ impl RawStepper<'_, '_> {
                     .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
                 self.slots.set(slot, value)?;
             }
+            RawOpcodeKind::GlobalGet => {
+                let global = raw_global(decoded.imm)?;
+                self.require_i32_global(global, decoded.wasm_op, decoded.start)?;
+                let value = self.instance.global_get_for_frame(global);
+                self.push(value)?;
+            }
+            RawOpcodeKind::GlobalSet => {
+                let global = raw_global(decoded.imm)?;
+                self.require_i32_global(global, decoded.wasm_op, decoded.start)?;
+                let value = self.pop()?;
+                self.instance.global_set_from_frame(global, value);
+            }
             RawOpcodeKind::Drop => {
                 self.slots.pop(self.state.operand_base)?;
             }
@@ -1102,6 +1255,25 @@ impl RawStepper<'_, '_> {
                         WasmError::internal("RawStepper saturating capability mismatch").into(),
                     );
                 }
+            }
+            RawOpcodeKind::MemoryLoad(opcode) => {
+                self.exec_memory_load(opcode, decoded.imm)?;
+            }
+            RawOpcodeKind::MemoryStore(opcode) => {
+                self.exec_memory_store(opcode, decoded.imm)?;
+            }
+            RawOpcodeKind::MemorySize => {
+                let memory = raw_memory(decoded.imm)?;
+                self.memory_is_64(memory)?;
+                let pages = self.instance.memory_size(memory);
+                self.push(pages)?;
+            }
+            RawOpcodeKind::MemoryGrow => {
+                let memory = raw_memory(decoded.imm)?;
+                self.memory_is_64(memory)?;
+                let delta = self.pop()?;
+                let previous = self.instance.memory_grow(memory, delta)?;
+                self.push(previous)?;
             }
             RawOpcodeKind::Call => {
                 let callee = raw_function(decoded.imm)?;
@@ -1314,61 +1486,6 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
             return self.unsupported(Some(raw.wasm_op), raw.start, "prefixed opcode");
         };
         match opcode {
-            Opcode::GLOBAL_GET => {
-                let global = raw_global(raw.imm)?;
-                self.require_i32_global(global, raw.wasm_op, raw.start)?;
-                let value = self
-                    .access
-                    .with_instance(|instance| instance.global_get_for_frame(global))?;
-                self.push(value)?;
-            }
-            Opcode::GLOBAL_SET => {
-                let global = raw_global(raw.imm)?;
-                self.require_i32_global(global, raw.wasm_op, raw.start)?;
-                let value = self.pop()?;
-                self.access
-                    .with_instance_mut(|instance| instance.global_set_from_frame(global, value))?;
-            }
-            opcode @ (Opcode::I32_LOAD
-            | Opcode::I64_LOAD
-            | Opcode::F32_LOAD
-            | Opcode::F64_LOAD
-            | Opcode::I32_LOAD8_S
-            | Opcode::I32_LOAD8_U
-            | Opcode::I32_LOAD16_S
-            | Opcode::I32_LOAD16_U
-            | Opcode::I64_LOAD8_S
-            | Opcode::I64_LOAD8_U
-            | Opcode::I64_LOAD16_S
-            | Opcode::I64_LOAD16_U
-            | Opcode::I64_LOAD32_S
-            | Opcode::I64_LOAD32_U) => self.exec_memory_load(opcode, raw.imm)?,
-            opcode @ (Opcode::I32_STORE
-            | Opcode::I64_STORE
-            | Opcode::F32_STORE
-            | Opcode::F64_STORE
-            | Opcode::I32_STORE8
-            | Opcode::I32_STORE16
-            | Opcode::I64_STORE8
-            | Opcode::I64_STORE16
-            | Opcode::I64_STORE32) => self.exec_memory_store(opcode, raw.imm)?,
-            Opcode::MEMORY_SIZE => {
-                let memory = raw_memory(raw.imm)?;
-                self.memory_is_64(memory)?;
-                let pages = self
-                    .access
-                    .with_instance(|instance| instance.memory_size(memory))?;
-                self.push(pages)?;
-            }
-            Opcode::MEMORY_GROW => {
-                let memory = raw_memory(raw.imm)?;
-                self.memory_is_64(memory)?;
-                let delta = self.pop()?;
-                let previous = self
-                    .access
-                    .with_instance_mut(|instance| instance.memory_grow(memory, delta))??;
-                self.push(previous)?;
-            }
             Opcode::RETURN_CALL => {
                 let callee = raw_function(raw.imm)?;
                 self.enter_tail_call(callee, raw.start)?;
@@ -1386,118 +1503,6 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
             _ => return self.unsupported(Some(raw.wasm_op), raw.start, "MVP opcode"),
         }
         Ok(())
-    }
-
-    fn exec_memory_load(
-        &mut self,
-        opcode: Opcode,
-        immediate: BaselineImmediate,
-    ) -> Result<(), BaselineExecError> {
-        let (memory, offset) = raw_memarg(immediate)?;
-        let address_is_64 = self.memory_is_64(memory)?;
-        let address = self.pop()?;
-        let address = if address_is_64 {
-            address
-        } else {
-            address as u32 as u64
-        };
-        let size = match opcode {
-            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I64_LOAD32_S | Opcode::I64_LOAD32_U => 4,
-            Opcode::I64_LOAD | Opcode::F64_LOAD => 8,
-            Opcode::I32_LOAD8_S
-            | Opcode::I32_LOAD8_U
-            | Opcode::I64_LOAD8_S
-            | Opcode::I64_LOAD8_U => 1,
-            Opcode::I32_LOAD16_S
-            | Opcode::I32_LOAD16_U
-            | Opcode::I64_LOAD16_S
-            | Opcode::I64_LOAD16_U => 2,
-            _ => return Err(WasmError::internal("baseline MVP load opcode mismatch").into()),
-        };
-        let loaded = self
-            .access
-            .with_instance(|instance| instance.mem_load(address, memory, offset, size))??;
-        let value = match opcode {
-            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I32_LOAD8_U | Opcode::I32_LOAD16_U => {
-                loaded
-            }
-            Opcode::I64_LOAD
-            | Opcode::F64_LOAD
-            | Opcode::I64_LOAD8_U
-            | Opcode::I64_LOAD16_U
-            | Opcode::I64_LOAD32_U => loaded,
-            Opcode::I32_LOAD8_S => loaded as i8 as i32 as u32 as u64,
-            Opcode::I32_LOAD16_S => loaded as i16 as i32 as u32 as u64,
-            Opcode::I64_LOAD8_S => loaded as i8 as i64 as u64,
-            Opcode::I64_LOAD16_S => loaded as i16 as i64 as u64,
-            Opcode::I64_LOAD32_S => loaded as i32 as i64 as u64,
-            _ => return Err(WasmError::internal("baseline MVP load opcode mismatch").into()),
-        };
-        self.push(value)
-    }
-
-    fn exec_memory_store(
-        &mut self,
-        opcode: Opcode,
-        immediate: BaselineImmediate,
-    ) -> Result<(), BaselineExecError> {
-        let (memory, offset) = raw_memarg(immediate)?;
-        let address_is_64 = self.memory_is_64(memory)?;
-        let value = self.pop()?;
-        let address = self.pop()?;
-        let address = if address_is_64 {
-            address
-        } else {
-            address as u32 as u64
-        };
-        let size = match opcode {
-            Opcode::I32_STORE | Opcode::F32_STORE | Opcode::I64_STORE32 => 4,
-            Opcode::I64_STORE | Opcode::F64_STORE => 8,
-            Opcode::I32_STORE8 | Opcode::I64_STORE8 => 1,
-            Opcode::I32_STORE16 | Opcode::I64_STORE16 => 2,
-            _ => return Err(WasmError::internal("baseline MVP store opcode mismatch").into()),
-        };
-        self.access.with_instance_mut(|instance| {
-            instance.mem_store(address, memory, offset, size, value)
-        })??;
-        Ok(())
-    }
-
-    fn memory_is_64(&self, memory: usize) -> Result<bool, BaselineExecError> {
-        self.access
-            .with_instance(|instance| {
-                instance
-                    .module()
-                    .memories()
-                    .get(memory)
-                    .map(|memory| memory.limits().is64)
-                    .ok_or_else(|| WasmError::invalid("baseline MVP memory index overflow"))
-            })?
-            .map_err(Into::into)
-    }
-
-    fn require_i32_global(
-        &self,
-        global: usize,
-        opcode: WasmOpcode,
-        pc: usize,
-    ) -> Result<(), BaselineExecError> {
-        let value_type = self.access.with_instance(|instance| {
-            instance
-                .module()
-                .globals()
-                .get(global)
-                .map(|global| global.value_type())
-        })?;
-        match value_type {
-            Some(ValueType::I32) => Ok(()),
-            Some(_) => Err(BaselineExecError::Unsupported {
-                opcode: Some(opcode),
-                pc,
-                feature: "non-i32 global",
-            }),
-            None => Err(WasmError::invalid("baseline MVP global index overflow").into()),
-        }
     }
 
     fn push(&mut self, value: u64) -> Result<(), BaselineExecError> {
@@ -2381,6 +2386,8 @@ mod tests {
         let wasm = wat::parse_str(
             r#"(module
                 (memory 1)
+                (data (i32.const 0) "\07\00\00\00")
+                (global $state (mut i32) (i32.const 0))
                 (func $pure (export "pure") (param i32) (result i32)
                     local.get 0 i32.const 2 i32.add)
                 (func (export "with_if") (param i32) (result i32)
@@ -2401,30 +2408,27 @@ mod tests {
                         i32.const 2
                     end)
                 (func (export "memory") (result i32)
-                    i32.const 0 i32.load))"#,
+                    i32.const 0 i32.load)
+                (func (export "global") (param i32) (result i32)
+                    local.get 0 global.set $state
+                    global.get $state))"#,
         )
         .expect("wat");
         let module = Module::new("whole-plan-selector", &wasm).expect("module");
         let _guard = artifact_test_guard();
         let artifact = build_baseline_artifact(&module).expect("artifact");
         let selected = select_function_plans(&module, &artifact).expect("selector plan");
-        assert_eq!(selected, [FunctionPlanKind::Raw; 5]);
+        assert_eq!(selected, [FunctionPlanKind::Raw; 6]);
 
         let mut selected_instance = built_interp(module, &[]);
         selected_instance
             .set_whole_function_plan_for_test(artifact, selected)
             .expect("install selector plan");
         assert_eq!(
-            (0..5)
+            (0..6)
                 .map(|index| selected_instance.whole_function_mode(index))
                 .collect::<StdVec<_>>(),
-            [
-                FunctionPlanKind::Raw,
-                FunctionPlanKind::Raw,
-                FunctionPlanKind::Raw,
-                FunctionPlanKind::Raw,
-                FunctionPlanKind::FullFold,
-            ]
+            [FunctionPlanKind::Raw; 6]
         );
         let mut selected_instance = InterpInstance::initialize(selected_instance)
             .map_err(|(_, error)| error)
@@ -2434,7 +2438,8 @@ mod tests {
             ("with_if", &[Value::I32(0)][..], Value::I32(7)),
             ("explicit", &[][..], Value::I32(9)),
             ("cross", &[Value::I32(5)][..], Value::I32(2)),
-            ("memory", &[][..], Value::I32(0)),
+            ("memory", &[][..], Value::I32(7)),
+            ("global", &[Value::I32(11)][..], Value::I32(11)),
         ] {
             let function = selected_instance.find_export(export).expect("export");
             let raw_args = args.iter().map(Value::to_raw).collect::<StdVec<_>>();
@@ -2445,16 +2450,30 @@ mod tests {
             assert_eq!(result[0], expected.to_raw(), "{export}");
         }
 
+        #[cfg(not(feature = "memprof"))]
+        {
+            let memory = selected_instance.find_export("memory").expect("export");
+            let global = selected_instance.find_export("global").expect("export");
+            let mut memory_result = [0u64; 1];
+            let mut global_result = [0u64; 1];
+            let (outcome, census) = crate::test_alloc::measure(|| {
+                selected_instance.invoke(memory, &[], &mut memory_result)?;
+                selected_instance.invoke(global, &[13], &mut global_result)
+            });
+            outcome.expect("warm stateful mixed invoke");
+            assert_eq!(census, crate::test_alloc::Census::default());
+            assert_eq!((memory_result[0], global_result[0]), (7, 13));
+        }
+
         let forced_module = Module::new("whole-plan-forced", &wasm).expect("module");
         let forced_artifact = build_baseline_artifact(&forced_module).expect("artifact");
         let mut forced = built_interp(forced_module, &[]);
         forced
-            .set_whole_function_plan_for_test(forced_artifact, vec![FunctionPlanKind::Raw; 5])
+            .set_whole_function_plan_for_test(forced_artifact, vec![FunctionPlanKind::Raw; 6])
             .expect("forced plan must be safely promoted");
-        for index in 0..4 {
+        for index in 0..6 {
             assert_eq!(forced.whole_function_mode(index), FunctionPlanKind::Raw);
         }
-        assert_eq!(forced.whole_function_mode(4), FunctionPlanKind::FullFold);
     }
 
     #[test]
