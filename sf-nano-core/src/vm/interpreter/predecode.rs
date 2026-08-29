@@ -29,7 +29,9 @@ use crate::value_type::ValueType;
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::{ref_to_machine_raw, RefValue};
 use core::mem;
-use core::ops::{Deref, Index, IndexMut, Range};
+#[cfg(test)]
+use core::ops::Deref;
+use core::ops::{Index, IndexMut, Range};
 use tracked_alloc::rc::Rc;
 
 /// Marks a packed memarg field as a `wide_memargs` index rather than an
@@ -78,19 +80,18 @@ pub(crate) struct ExceptionSite {
     handlers_len: u32,
 }
 
-/// One function's immutable view into the module-wide instruction arena.
+/// Test-only immutable view into the pre-link instruction arena.
 ///
-/// Function-relative instruction indices remain unchanged: the predecoder,
-/// linker, and slow path all see this as an ordinary `[Instr]`. Sharing the
-/// backing vector removes one long-lived allocation per defined function
-/// without tying a function's lifetime to its originating instance. An
-/// `ExternalCall` can keep its `PredecodedFunction` alive and this `Rc` keeps
-/// the corresponding arena alive with it.
+/// Production transfers that allocation to `LinkPlan` as dispatch cells.
+/// Tests retain one clone so the predecoder and borrowed-linker oracles can
+/// inspect the exact stage-A stream after publication.
+#[cfg(test)]
 pub(crate) struct FunctionCode {
     arena: Rc<Vec<Instr>>,
     range: Range<usize>,
 }
 
+#[cfg(test)]
 impl Deref for FunctionCode {
     type Target = [Instr];
 
@@ -147,9 +148,11 @@ impl PackedPinned {
 }
 
 pub(crate) struct PredecodedFunction {
+    #[cfg(test)]
     pub code: FunctionCode,
     /// Final pinned-local choice, maintained alongside instruction emission
     /// and mutation so link does not rescan the instruction stream.
+    #[cfg(test)]
     pinned: PackedPinned,
     /// Side tables for `BrTable`: resolved instruction indices, the last
     /// entry is the default target.
@@ -234,8 +237,23 @@ impl IndexMut<usize> for FunctionCodeBuilder<'_> {
 }
 
 impl PredecodedFunction {
+    #[cfg(test)]
     pub(super) fn pinned(&self) -> Pinned {
         self.pinned.expand()
+    }
+
+    /// Resolved branch-table targets for this function. The last entry in
+    /// the selected table is the default target.
+    #[inline]
+    pub(crate) fn br_table(&self, index: usize) -> Option<&[u32]> {
+        self.br_tables.get(index).map(Vec::as_slice)
+    }
+
+    /// `(memory index, static offset)` for one memory64 access whose offset
+    /// cannot use the packed instruction field.
+    #[inline]
+    pub(crate) fn wide_memarg(&self, index: usize) -> Option<&(u32, u64)> {
+        self.wide_memargs.get(index)
     }
 
     /// The active handler chain at `pc`, innermost try first and in source
@@ -254,6 +272,7 @@ impl PredecodedFunction {
 
     /// Whether `pc` must remain a slow-path boundary so an escaping exception
     /// can be matched in this activation.
+    #[cfg(test)]
     pub(crate) fn has_exception_handlers_at(&self, pc: u32) -> bool {
         self.exception_sites
             .binary_search_by_key(&pc, |site| site.pc)
@@ -311,7 +330,8 @@ pub(crate) fn predecode_function(
         &mut code,
         &mut scratch,
     )?;
-    Ok(parts.finish(Rc::new(code)))
+    let code = Rc::new(code);
+    Ok(parts.finish(Some(&code)))
 }
 
 /// Predecode every local body directly into one module-owned instruction
@@ -325,19 +345,26 @@ pub(crate) fn predecode_functions(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
-) -> Result<Vec<Option<Rc<PredecodedFunction>>>, WasmError> {
+) -> Result<UnlinkedPredecodedFunctions, WasmError> {
     let local_count = module.functions().iter().filter(|f| !f.is_import()).count();
     if local_count == 0 {
         let mut funcs = Vec::with_capacity(module.functions().len());
         funcs.resize_with(module.functions().len(), || None);
-        return Ok(funcs);
+        return Ok(UnlinkedPredecodedFunctions {
+            code: Vec::new(),
+            parts: funcs,
+        });
     }
     let body_bytes = module
         .functions()
         .iter()
         .filter_map(|f| f.spec())
         .fold(0usize, |sum, spec| sum.saturating_add(spec.code().len()));
-    let mut code = Vec::with_capacity((body_bytes / 4).max(local_count));
+    let mut code = Vec::with_capacity(
+        (body_bytes / 4)
+            .max(local_count)
+            .saturating_add(local_count),
+    );
     // These vectors are compile-time state, not part of any published
     // function. Keep their allocations for the next body rather than
     // allocating and freeing the same transient shapes per local function.
@@ -347,7 +374,7 @@ pub(crate) fn predecode_functions(
         if func.is_import() {
             parts.push(None);
         } else {
-            parts.push(Some(predecode_function_into(
+            let decoded = predecode_function_into(
                 module,
                 tag_identities,
                 function_handles,
@@ -355,17 +382,16 @@ pub(crate) fn predecode_functions(
                 false,
                 &mut code,
                 &mut scratch,
-            )?));
+            )?;
+            parts.push(Some(decoded));
+            // The linked chain may prefetch one handler word past the final
+            // instruction. Reserve that cell in stage A so stage B can reuse
+            // this exact allocation without inserting/moving any cells.
+            code.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
         }
     }
 
-    // `Rc<Vec<_>>` takes ownership of the completed vector header and its
-    // existing buffer. No instruction stream is copied during publication.
-    let code = Rc::new(code);
-    Ok(parts
-        .into_iter()
-        .map(|parts| parts.map(|parts| Rc::new(parts.finish(code.clone()))))
-        .collect())
+    Ok(UnlinkedPredecodedFunctions { code, parts })
 }
 
 struct PredecodedFunctionParts {
@@ -382,13 +408,160 @@ struct PredecodedFunctionParts {
     exception_handlers: Vec<ExceptionHandler>,
 }
 
+pub(crate) trait LinkFunction {
+    fn code_start(&self) -> usize;
+    fn code_len(&self) -> usize;
+    fn pinned(&self) -> Pinned;
+    fn br_table_count(&self) -> usize;
+    fn br_table(&self, index: usize) -> Option<&[u32]>;
+    fn has_exception_handlers_at(&self, pc: u32) -> bool;
+}
+
+pub(crate) struct UnlinkedFunction<'a> {
+    parts: &'a PredecodedFunctionParts,
+}
+
+impl LinkFunction for UnlinkedFunction<'_> {
+    fn code_start(&self) -> usize {
+        self.parts.code_range.start
+    }
+
+    fn code_len(&self) -> usize {
+        self.parts.code_range.len()
+    }
+
+    fn pinned(&self) -> Pinned {
+        self.parts.pinned.expand()
+    }
+
+    fn br_table_count(&self) -> usize {
+        self.parts.br_tables.len()
+    }
+
+    fn br_table(&self, index: usize) -> Option<&[u32]> {
+        self.parts.br_tables.get(index).map(Vec::as_slice)
+    }
+
+    fn has_exception_handlers_at(&self, pc: u32) -> bool {
+        self.parts
+            .exception_sites
+            .binary_search_by_key(&pc, |site| site.pc)
+            .is_ok()
+    }
+}
+
+impl UnlinkedFunction<'_> {
+    pub(crate) fn frame_slots(&self) -> u32 {
+        self.parts.frame_slots
+    }
+
+    pub(crate) fn n_locals(&self) -> u32 {
+        self.parts.n_locals
+    }
+
+    pub(crate) fn n_params(&self) -> u32 {
+        self.parts.n_params
+    }
+}
+
+pub(crate) struct UnlinkedPredecodedFunctions {
+    code: Vec<Instr>,
+    parts: Vec<Option<PredecodedFunctionParts>>,
+}
+
+impl UnlinkedPredecodedFunctions {
+    pub(crate) fn len(&self) -> usize {
+        self.parts.len()
+    }
+
+    pub(crate) fn defined_count(&self) -> usize {
+        self.parts.iter().filter(|part| part.is_some()).count()
+    }
+
+    pub(crate) fn br_entry_count(&self) -> usize {
+        self.parts
+            .iter()
+            .flatten()
+            .flat_map(|parts| parts.br_tables.iter())
+            .fold(0usize, |sum, table| {
+                sum.checked_add(table.len())
+                    .expect("interpreter branch-table count overflow")
+            })
+    }
+
+    pub(crate) fn function(&self, index: usize) -> Option<UnlinkedFunction<'_>> {
+        Some(UnlinkedFunction {
+            parts: self.parts.get(index)?.as_ref()?,
+        })
+    }
+
+    pub(crate) fn take_code(&mut self) -> Vec<Instr> {
+        core::mem::take(&mut self.code)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clone_code_for_oracle(&self) -> Vec<Instr> {
+        self.code.clone()
+    }
+
+    pub(crate) fn publish(
+        self,
+        test_code: Option<Vec<Instr>>,
+    ) -> Vec<Option<Rc<PredecodedFunction>>> {
+        let test_code = test_code.map(Rc::new);
+        self.parts
+            .into_iter()
+            .map(|parts| parts.map(|parts| Rc::new(parts.finish(test_code.as_ref()))))
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn publish_for_test(self) -> Vec<Option<Rc<PredecodedFunction>>> {
+        let test_code = Some(self.code.clone());
+        self.publish(test_code)
+    }
+}
+
+#[cfg(test)]
+impl LinkFunction for PredecodedFunction {
+    fn code_start(&self) -> usize {
+        0
+    }
+
+    fn code_len(&self) -> usize {
+        self.code.len()
+    }
+
+    fn pinned(&self) -> Pinned {
+        self.pinned.expand()
+    }
+
+    fn br_table_count(&self) -> usize {
+        self.br_tables.len()
+    }
+
+    fn br_table(&self, index: usize) -> Option<&[u32]> {
+        PredecodedFunction::br_table(self, index)
+    }
+
+    fn has_exception_handlers_at(&self, pc: u32) -> bool {
+        PredecodedFunction::has_exception_handlers_at(self, pc)
+    }
+}
+
 impl PredecodedFunctionParts {
-    fn finish(self, code: Rc<Vec<Instr>>) -> PredecodedFunction {
+    fn finish(self, test_code: Option<&Rc<Vec<Instr>>>) -> PredecodedFunction {
+        #[cfg(not(test))]
+        let _ = test_code;
         PredecodedFunction {
+            #[cfg(test)]
             code: FunctionCode {
-                arena: code,
+                arena: test_code
+                    .expect("test publication retains stage-A code")
+                    .clone(),
                 range: self.code_range,
             },
+            #[cfg(test)]
             pinned: self.pinned,
             br_tables: self.br_tables,
             wide_memargs: self.wide_memargs,
@@ -4322,7 +4495,8 @@ mod tests {
             &mut scratch,
         )
         .expect("predecode");
-        parts.finish(Rc::new(code))
+        let code = Rc::new(code);
+        parts.finish(Some(&code))
     }
 
     fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
@@ -4339,7 +4513,9 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        predecode_functions(&module, &tag_identities, &function_handles).expect("predecode module")
+        predecode_functions(&module, &tag_identities, &function_handles)
+            .expect("predecode module")
+            .publish_for_test()
     }
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
@@ -4395,13 +4571,21 @@ mod tests {
                 arena,
                 "every defined function must share one Vec<Instr> owner"
             );
-            assert_eq!(func.code.range.start, cursor, "code ranges stay packed");
+            assert_eq!(
+                func.code.range.start, cursor,
+                "code ranges follow their pads"
+            );
             assert_eq!(
                 func.code.as_ptr(),
                 unsafe { arena_base.add(func.code.range.start) },
                 "the published slice points into the original arena buffer"
             );
-            cursor = func.code.range.end;
+            assert_eq!(
+                func.code.arena[func.code.range.end].op,
+                Op::Unreachable,
+                "every body owns one prefetch pad"
+            );
+            cursor = func.code.range.end + 1;
         }
         assert_eq!(cursor, first.code.arena.len());
     }
