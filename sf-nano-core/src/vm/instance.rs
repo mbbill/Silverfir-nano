@@ -1402,6 +1402,109 @@ mod tests {
         );
     }
 
+    #[cfg(all(sf_interp, sf_module_validator, not(feature = "memprof")))]
+    #[test]
+    fn selective_predecode_reduces_instance_allocation_census() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func (export "run") (param $x i32) (result i32)
+                    local.get $x i32.const 1 i32.add
+                    i32.const 2 i32.mul
+                    i32.const 3 i32.add
+                    i32.const 4 i32.mul
+                    i32.const 5 i32.add
+                    i32.const 6 i32.mul
+                    i32.const 7 i32.add
+                    i32.const 8 i32.mul
+                    i32.const 9 i32.add
+                    i32.const 10 i32.mul
+                    i32.const 11 i32.add
+                    i32.const 12 i32.mul))"#,
+        )
+        .expect("encode allocation census module");
+        let raw_module = Module::new("selective-allocation-raw", &wasm).expect("parse Raw module");
+        let folded_module =
+            Module::new("selective-allocation-folded", &wasm).expect("parse Folded module");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+
+        let (raw, raw_census) =
+            crate::test_alloc::measure(|| Instance::from_module(&engine, raw_module, &[]));
+        let raw = raw.expect("instantiate selective Raw module");
+        let (folded, folded_census) = crate::test_alloc::measure(|| {
+            Instance::from_module_full_fold_for_test(&engine, folded_module, &[])
+        });
+        let folded = folded.expect("instantiate forced Folded module");
+
+        assert!(
+            raw_census.allocations < folded_census.allocations,
+            "Raw should remove the Instr/DCell arena allocations: Raw={raw_census:?}, Folded={folded_census:?}"
+        );
+        assert!(
+            raw_census.allocated_bytes < folded_census.allocated_bytes,
+            "Raw should retain fewer startup bytes: Raw={raw_census:?}, Folded={folded_census:?}"
+        );
+        let assert_storage = |instance: &Instance, expected_raw: bool| {
+            let interp = match &instance.inner {
+                Inner::Interp(interp) => interp,
+                #[cfg(sf_jit)]
+                Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+            };
+            interp.with_instance(|interp| {
+                let (instructions, cells) = interp
+                    .function_instr_and_cell_count_for_test(0)
+                    .expect("function census");
+                if expected_raw {
+                    assert_eq!((instructions, cells), (0, 0));
+                } else {
+                    assert!(instructions > 0);
+                    assert_eq!(cells, instructions + 1);
+                }
+            });
+        };
+        assert_storage(&raw, true);
+        assert_storage(&folded, false);
+    }
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn dynamic_tail_sites_keep_every_local_runtime_folded() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (table 1 funcref)
+                (func $target (type $unary) local.get 0)
+                (elem (i32.const 0) func $target)
+                (func (export "tail_indirect") (type $unary)
+                    local.get 0 i32.const 0 return_call_indirect (type $unary))
+                (func (export "tail_ref") (type $unary)
+                    local.get 0 ref.func $target return_call_ref $unary)
+                (func (export "otherwise_raw") (type $unary)
+                    local.get 0 i32.const 1 i32.add))"#,
+        )
+        .expect("encode dynamic tail module");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+        let instance = Instance::from_module(
+            &engine,
+            Module::new("dynamic-tail-folded", &wasm).expect("parse module"),
+            &[],
+        )
+        .expect("instantiate dynamic tail module");
+        let interp = match &instance.inner {
+            Inner::Interp(interp) => interp,
+            #[cfg(sf_jit)]
+            Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+        };
+        interp.with_instance(|interp| {
+            for function in 0..4 {
+                assert_eq!(
+                    interp.function_runtime_label_for_test(function),
+                    Some("folded"),
+                    "dynamic tail target set is not closed at function {function}"
+                );
+            }
+        });
+    }
+
     #[cfg(all(sf_interp, sf_module_validator))]
     #[test]
     fn invalid_interp_module_does_not_publish_a_baseline_artifact() {
