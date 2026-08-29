@@ -1129,6 +1129,8 @@ mod instance_table_tests {
             handle.clone(),
         )
         .expect("interpreter test instance");
+        let instance = InterpInstance::initialize(instance)
+            .unwrap_or_else(|(_, error)| panic!("initialize interpreter test instance: {error:?}"));
         registry
             .instance_table()
             .occupy_interp(id, Box::new(instance))
@@ -1180,6 +1182,8 @@ mod instance_table_tests {
             handle,
         )
         .expect("reentrant import instance");
+        let instance = InterpInstance::initialize(instance)
+            .unwrap_or_else(|(_, error)| panic!("initialize reentrant import: {error:?}"));
         registry
             .instance_table()
             .occupy_interp(id, Box::new(instance))

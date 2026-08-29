@@ -17,18 +17,18 @@ use tracked_alloc::boxed::Box;
 use crate::collections::Vec;
 
 #[cfg(test)]
+use super::instr::{operand_is_f32, operand_is_float, result_is_f32, result_is_float};
 use super::instr::{
-    operand_is_f32, operand_is_float, result_is_f32, result_is_float, FLAG_B_CONST,
-};
-use super::instr::{
-    Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_DST_ACC, FLAG_FUSED,
-    FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
+    Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC,
+    FLAG_FUSED, FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
 #[cfg(test)]
 use super::layout::slot_fields;
 use super::layout::{
     c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
 };
+use super::predecode::LinkFunction;
+#[cfg(test)]
 use super::predecode::PredecodedFunction;
 
 // Build-time facts about the generated engine: which operand classes it
@@ -115,6 +115,8 @@ pub(super) struct DCell {
 const _: () = {
     assert!(core::mem::size_of::<Instr>() == core::mem::size_of::<DCell>());
     assert!(core::mem::align_of::<Instr>() == core::mem::align_of::<DCell>());
+    assert!(!core::mem::needs_drop::<Instr>());
+    assert!(!core::mem::needs_drop::<DCell>());
     assert!(core::mem::offset_of!(Instr, a) == core::mem::offset_of!(DCell, a));
     assert!(core::mem::offset_of!(Instr, b) == core::mem::offset_of!(DCell, b));
     assert!(core::mem::offset_of!(Instr, c) == core::mem::offset_of!(DCell, c));
@@ -260,6 +262,12 @@ pub(super) enum CallFixup {
     },
 }
 
+#[derive(Clone, Copy)]
+struct IndirectTypeSite {
+    cell: usize,
+    type_index: u32,
+}
+
 /// Module-wide storage planned before linking begins.
 ///
 /// The exact cell and branch-table capacities are computed from all
@@ -272,6 +280,7 @@ pub(super) struct LinkPlan {
     heads: Vec<u32>,
     br_flat: Vec<u32>,
     call_fixups: Vec<CallFixup>,
+    indirect_types: Vec<IndirectTypeSite>,
     planned_cells: usize,
     planned_br_entries: usize,
     linked_cells: usize,
@@ -279,6 +288,7 @@ pub(super) struct LinkPlan {
 }
 
 impl LinkPlan {
+    #[cfg(test)]
     pub(super) fn for_functions<'a>(
         functions: impl Iterator<Item = &'a PredecodedFunction>,
     ) -> Self {
@@ -304,6 +314,7 @@ impl LinkPlan {
             // early growth without reserving in proportion to instruction
             // count or adding a separate call-counting sweep.
             call_fixups: Vec::with_capacity(function_count),
+            indirect_types: Vec::new(),
             planned_cells,
             planned_br_entries,
             linked_cells: 0,
@@ -311,8 +322,7 @@ impl LinkPlan {
         }
     }
 
-    #[cfg(test)]
-    fn from_instr_arena(
+    pub(super) fn from_instr_arena(
         instrs: Vec<Instr>,
         function_count: usize,
         planned_br_entries: usize,
@@ -324,6 +334,7 @@ impl LinkPlan {
             heads,
             br_flat: Vec::with_capacity(planned_br_entries),
             call_fixups: Vec::with_capacity(function_count),
+            indirect_types: Vec::new(),
             planned_cells,
             planned_br_entries,
             linked_cells: 0,
@@ -352,12 +363,21 @@ impl LinkPlan {
         }
     }
 
+    #[inline]
+    fn raw_instr(&self, index: usize) -> Instr {
+        let cell = &self.cells[index];
+        Instr::from_packed_head(self.heads[index], cell.a, cell.b, cell.c)
+    }
+
     /// Verify that the precomputed storage plan and the completed link agree.
     pub(super) fn finish_layout(&self) {
         debug_assert_eq!(self.cells.len(), self.planned_cells);
         debug_assert_eq!(self.br_flat.len(), self.planned_br_entries);
         debug_assert_eq!(self.linked_cells, self.planned_cells);
-        debug_assert_eq!(self.heads.is_empty(), !self.in_place);
+        debug_assert_eq!(
+            self.heads.len(),
+            if self.in_place { self.planned_cells } else { 0 }
+        );
     }
 
     #[inline]
@@ -382,6 +402,13 @@ impl LinkPlan {
         func.cell_len - 1
     }
 
+    pub(super) fn instruction_heads(&self, func: &LinkedFunction) -> &[u32] {
+        let arena_base = self.cells.as_ptr() as u64;
+        let start =
+            ((func.cell_base() - arena_base) / core::mem::size_of::<DCell>() as u64) as usize;
+        &self.heads[start..start + self.instruction_len(func)]
+    }
+
     #[inline]
     pub(super) fn cell_mut(&mut self, index: usize) -> &mut DCell {
         &mut self.cells[index]
@@ -389,6 +416,41 @@ impl LinkPlan {
 
     pub(super) fn take_call_fixups(&mut self) -> Vec<CallFixup> {
         core::mem::take(&mut self.call_fixups)
+    }
+
+    pub(super) fn record_indirect_type(&mut self, cell: usize, type_index: u32) {
+        debug_assert!(self
+            .indirect_types
+            .last()
+            .is_none_or(|site| site.cell < cell));
+        self.indirect_types
+            .push(IndirectTypeSite { cell, type_index });
+    }
+
+    fn indirect_type(&self, cell: usize) -> Option<u32> {
+        self.indirect_types
+            .binary_search_by_key(&cell, |site| site.cell)
+            .ok()
+            .map(|index| self.indirect_types[index].type_index)
+    }
+
+    pub(super) fn cell_index(&self, address: u64) -> Option<usize> {
+        let base = self.cells.as_ptr() as u64;
+        let bytes = address.checked_sub(base)?;
+        if bytes % core::mem::size_of::<DCell>() as u64 != 0 {
+            return None;
+        }
+        let index = (bytes / core::mem::size_of::<DCell>() as u64) as usize;
+        (index < self.cells.len()).then_some(index)
+    }
+
+    pub(super) fn restore_slow_instr(&self, index: usize, slow_stub: u64) -> Option<Instr> {
+        let cell = self.cells.get(index)?;
+        let head = *self.heads.get(index)?;
+        if cell.h == slow_stub {
+            return Some(Instr::from_packed_head(head, cell.a, cell.b, cell.c));
+        }
+        restore_native_slow_instr(head, cell, self.indirect_type(index))
     }
 }
 
@@ -414,6 +476,38 @@ struct ResolvedCell {
     flags: u16,
     /// `handler_for(ins, flags, pin)`, with 0 meaning no native form.
     handler: usize,
+}
+
+trait LinkCode {
+    fn get(&self, plan: &LinkPlan, cell_start: usize, index: usize) -> Instr;
+    fn is_in_place(&self) -> bool;
+}
+
+struct InPlaceCode;
+
+impl LinkCode for InPlaceCode {
+    #[inline]
+    fn get(&self, plan: &LinkPlan, cell_start: usize, index: usize) -> Instr {
+        plan.raw_instr(cell_start + index)
+    }
+
+    fn is_in_place(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+struct BorrowedCode<'a>(&'a [Instr]);
+
+#[cfg(test)]
+impl LinkCode for BorrowedCode<'_> {
+    fn get(&self, _plan: &LinkPlan, _cell_start: usize, index: usize) -> Instr {
+        self.0[index]
+    }
+
+    fn is_in_place(&self) -> bool {
+        false
+    }
 }
 
 /// What [`select_pinned_reference`] records about one frame slot.
@@ -653,6 +747,10 @@ impl NativeEngine {
         self.callindirect_handler as u64
     }
 
+    pub(super) fn slow_stub_addr(&self) -> u64 {
+        self.slow_stub as u64
+    }
+
     /// Handler address for a packed slot, or `None` when the backend has
     /// no native form (slot offset 0 is the blob base, which is never a
     /// handler, so it doubles as the sentinel).
@@ -834,6 +932,7 @@ impl NativeEngine {
     /// classes for the native indirect-call check, and this pass already
     /// reads every instruction — collecting them separately cost a second
     /// sweep of the whole module's instruction stream.
+    #[cfg(test)]
     pub(super) fn link(
         &self,
         func: &PredecodedFunction,
@@ -842,13 +941,54 @@ impl NativeEngine {
         scratch: &mut LinkScratch,
         call_indirect_types: &mut Vec<u32>,
     ) -> LinkedFunction {
+        self.link_source(
+            func,
+            BorrowedCode(&func.code),
+            caller_index,
+            plan,
+            scratch,
+            call_indirect_types,
+        )
+    }
+
+    pub(super) fn link_in_place<F: LinkFunction + ?Sized>(
+        &self,
+        func: &F,
+        caller_index: usize,
+        plan: &mut LinkPlan,
+        scratch: &mut LinkScratch,
+        call_indirect_types: &mut Vec<u32>,
+    ) -> LinkedFunction {
+        self.link_source(
+            func,
+            InPlaceCode,
+            caller_index,
+            plan,
+            scratch,
+            call_indirect_types,
+        )
+    }
+
+    fn link_source<F: LinkFunction + ?Sized, S: LinkCode>(
+        &self,
+        func: &F,
+        source: S,
+        caller_index: usize,
+        plan: &mut LinkPlan,
+        scratch: &mut LinkScratch,
+        call_indirect_types: &mut Vec<u32>,
+    ) -> LinkedFunction {
         let pin = func.pinned();
+        let code_len = func.code_len();
 
         // Flatten the branch tables; BrTable cells carry a byte offset
         // into the flat buffer until the final address fixup below.
         let table_byte_off = &mut scratch.table_byte_off;
         table_byte_off.clear();
-        for t in func.br_tables.iter() {
+        for table_index in 0..func.br_table_count() {
+            let t = func
+                .br_table(table_index)
+                .expect("predecoded branch-table index");
             table_byte_off.push(plan.br_flat.len() as u64 * 4);
             for &target in t.iter() {
                 plan.br_flat.push(target);
@@ -871,7 +1011,10 @@ impl NativeEngine {
                 (slot * 8) as u32
             }
         };
-        let cell_start = plan.begin_function(func.code.len());
+        let cell_start = plan.begin_function(code_len);
+        if source.is_in_place() {
+            debug_assert_eq!(cell_start, func.code_start());
+        }
         // Every linked body contains at least its prefetch pad, so this is
         // always an in-allocation address rather than a one-past pointer.
         let cells_base = unsafe { plan.cells.as_ptr().add(cell_start) as u64 };
@@ -879,7 +1022,7 @@ impl NativeEngine {
             #[cfg(test)]
             cell_start,
             cell_base: cells_base,
-            cell_len: func.code.len() + 1,
+            cell_len: code_len + 1,
             l0_off: off_of(pin.l0),
             l1_off: off_of(pin.l1),
             fp_pinned: (pin.l0 != u64::MAX && pin.l0_float) || (pin.l1 != u64::MAX && pin.l1_float),
@@ -902,49 +1045,58 @@ impl NativeEngine {
             debug_assert!(plan.cells.capacity() - plan.cells.len() >= lf.cell_len);
         }
         let br_base = plan.br_flat.as_ptr() as u64;
-        let mut iter = func.code.iter().enumerate();
-        if let Some((mut prev_index, mut prev_ins)) = iter.next() {
-            let mut prev = self.first_resolution(prev_ins, &pin);
-            for (index, ins) in iter {
-                let mut current = self.initial_resolution(ins, &pin);
-                self.resolve_pair(prev_ins, &mut prev, ins, &mut current, &pin);
+        if code_len != 0 {
+            let mut prev_index = 0usize;
+            let mut prev_ins = source.get(plan, cell_start, 0);
+            let mut prev = self.first_resolution(&prev_ins, &pin);
+            for index in 1..code_len {
+                let ins = source.get(plan, cell_start, index);
+                let mut current = self.initial_resolution(&ins, &pin);
+                self.resolve_pair(&prev_ins, &mut prev, &ins, &mut current, &pin);
                 if prev_ins.op == Op::CallIndirect {
                     call_indirect_types.push(prev_ins.c as u32);
                 }
                 self.push_cell(
                     plan,
                     cell_start + prev_index,
-                    prev_ins,
+                    &prev_ins,
                     prev,
                     cells_base,
                     br_base,
                     func,
                     table_byte_off,
                 );
-                Self::record_call_fixup(plan, func, caller_index, cell_start, prev_index, prev_ins);
+                Self::record_call_fixup(
+                    plan,
+                    func,
+                    caller_index,
+                    cell_start,
+                    prev_index,
+                    &prev_ins,
+                );
                 prev_index = index;
                 prev_ins = ins;
                 prev = current;
             }
-            self.finish_last(prev_ins, &mut prev, &pin);
+            self.finish_last(&prev_ins, &mut prev, &pin);
             if prev_ins.op == Op::CallIndirect {
                 call_indirect_types.push(prev_ins.c as u32);
             }
             self.push_cell(
                 plan,
                 cell_start + prev_index,
-                prev_ins,
+                &prev_ins,
                 prev,
                 cells_base,
                 br_base,
                 func,
                 table_byte_off,
             );
-            Self::record_call_fixup(plan, func, caller_index, cell_start, prev_index, prev_ins);
+            Self::record_call_fixup(plan, func, caller_index, cell_start, prev_index, &prev_ins);
         }
 
         plan.write_cell(
-            cell_start + func.code.len(),
+            cell_start + code_len,
             DCell {
                 h: self.slow_stub as u64,
                 a: 0,
@@ -956,9 +1108,9 @@ impl NativeEngine {
     }
 
     #[inline]
-    fn record_call_fixup(
+    fn record_call_fixup<F: LinkFunction + ?Sized>(
         plan: &mut LinkPlan,
-        func: &PredecodedFunction,
+        func: &F,
         caller_index: usize,
         cell_start: usize,
         index: usize,
@@ -996,7 +1148,7 @@ impl NativeEngine {
 
     #[inline]
     #[allow(clippy::too_many_arguments)]
-    fn push_cell(
+    fn push_cell<F: LinkFunction + ?Sized>(
         &self,
         plan: &mut LinkPlan,
         cell_index: usize,
@@ -1004,7 +1156,7 @@ impl NativeEngine {
         state: ResolvedCell,
         cells_base: u64,
         br_base: u64,
-        func: &PredecodedFunction,
+        func: &F,
         table_byte_off: &[u64],
     ) {
         let fl = state.flags;
@@ -1018,7 +1170,9 @@ impl NativeEngine {
         }
         let cell = match h {
             Some(h) if ins.op == Op::BrTable => {
-                let table = &func.br_tables[ins.c as usize];
+                let table = func
+                    .br_table(ins.c as usize)
+                    .expect("predecoded branch-table index");
                 DCell {
                     h: h as u64,
                     a: ins.a * 8,
@@ -1201,6 +1355,157 @@ mod tests {
                 c: 0,
             }),
             "prefetch pad changed"
+        );
+
+        let mut arena = func.code.to_vec();
+        arena.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
+        let allocation = arena.as_ptr() as usize;
+        let expected_heads: Vec<u32> = arena.iter().copied().map(Instr::packed_head).collect();
+        let mut in_place = LinkPlan::from_instr_arena(arena, 1, expected_flat.len());
+        assert_eq!(in_place.cells.as_ptr() as usize, allocation);
+        let mut in_place_scratch = LinkScratch::default();
+        let mut in_place_types = Vec::new();
+        let in_place_linked = engine.link_in_place(
+            func,
+            0,
+            &mut in_place,
+            &mut in_place_scratch,
+            &mut in_place_types,
+        );
+        in_place.finish_layout();
+
+        let normalize = |mut cell: DCell, op: Op, cells_base: u64, br_base: u64| -> DCell {
+            if op == Op::BrTable && cell.h != engine.slow_stub as u64 {
+                cell.b -= br_base;
+            }
+            if c_is_branch_target(op) && cell.h != engine.slow_stub as u64 {
+                cell.c -= cells_base;
+            }
+            cell
+        };
+        let in_place_cells = in_place.cells(&in_place_linked);
+        let old_br_base = plan.br_flat.as_ptr() as u64;
+        let new_br_base = in_place.br_flat.as_ptr() as u64;
+        for (index, ins) in func.code.iter().enumerate() {
+            assert_eq!(
+                normalize(
+                    in_place_cells[index],
+                    ins.op,
+                    in_place_linked.cell_base(),
+                    new_br_base,
+                ),
+                normalize(cells[index], ins.op, linked.cell_base(), old_br_base),
+                "in-place linked cell {index} ({:?})",
+                ins.op,
+            );
+        }
+        assert_eq!(in_place_cells.last(), cells.last());
+        assert_eq!(in_place.br_flat, plan.br_flat);
+        assert_eq!(in_place.call_fixups, plan.call_fixups);
+        assert_eq!(in_place_types, call_indirect_types);
+        assert_eq!(in_place.heads, expected_heads);
+        assert_eq!(in_place_linked.l0_off, linked.l0_off);
+        assert_eq!(in_place_linked.l1_off, linked.l1_off);
+        assert_eq!(in_place_linked.fp_pinned, linked.fp_pinned);
+    }
+
+    #[test]
+    fn instruction_arena_transfer_keeps_one_owner_and_allocation() {
+        let instrs = vec![
+            Instr::new(Op::I32_Add, FLAG_B_CONST, 3, 41, 7),
+            Instr::new(Op::Return, 0, 7, 1, 0),
+        ];
+        let allocation = instrs.as_ptr() as usize;
+        let capacity = instrs.capacity();
+        let cells = into_dispatch_cells(instrs);
+        assert_eq!(cells.as_ptr() as usize, allocation);
+        assert_eq!(cells.capacity(), capacity);
+        assert_eq!((cells[0].a, cells[0].b, cells[0].c), (3, 41, 7));
+        assert_eq!((cells[1].a, cells[1].b, cells[1].c), (7, 1, 0));
+    }
+
+    #[test]
+    fn dynamic_native_slow_payloads_round_trip() {
+        use Op::*;
+        let dynamic = [
+            I32_DivS,
+            I32_DivU,
+            I32_RemS,
+            I32_RemU,
+            I64_DivS,
+            I64_DivU,
+            I64_RemS,
+            I64_RemU,
+            I32_TruncF32S,
+            I32_TruncF32U,
+            I32_TruncF64S,
+            I32_TruncF64U,
+            I64_TruncF32S,
+            I64_TruncF32U,
+            I64_TruncF64S,
+            I64_TruncF64U,
+        ];
+        for op in dynamic {
+            for flags in [0, FLAG_A_CONST, FLAG_B_CONST, FLAG_A_CONST | FLAG_B_CONST] {
+                let ins = Instr::new(op, flags, 13, 29, 41);
+                let a = if flags & FLAG_A_CONST != 0 {
+                    ins.a
+                } else {
+                    ins.a * 8
+                };
+                let (b, c) = transform_bc(&ins, flags);
+                let cell = DCell { h: 1, a, b, c };
+                let restored = restore_native_slow_instr(ins.packed_head(), &cell, None)
+                    .expect("dynamic slow op");
+                assert_eq!(
+                    (
+                        restored.op,
+                        restored.flags,
+                        restored.a,
+                        restored.b,
+                        restored.c
+                    ),
+                    (ins.op, ins.flags, ins.a, ins.b, ins.c),
+                    "{op:?} flags={flags:#x}"
+                );
+            }
+        }
+
+        for op in [MemoryFill, MemoryCopy, MemoryFillCopy] {
+            let ins = if op == MemoryFillCopy {
+                Instr::new(op, 0, 17, 23, 0)
+            } else {
+                Instr::new(op, 0, 17, 0, 0)
+            };
+            let (b, c) = transform_bc(&ins, 0);
+            let cell = DCell {
+                h: 1,
+                a: ins.a * 8,
+                b,
+                c,
+            };
+            let restored =
+                restore_native_slow_instr(ins.packed_head(), &cell, None).expect("bulk slow op");
+            assert_eq!(
+                (restored.op, restored.a, restored.b, restored.c),
+                (ins.op, ins.a, ins.b, ins.c)
+            );
+        }
+
+        let indirect = Instr::new(CallIndirect, 0, 37, 43, 47);
+        let linked = DCell {
+            h: 1,
+            a: 17u64 << 48 | indirect.a * 8,
+            b: 13u64 << 48 | 19u64 << 32 | indirect.b * 8,
+            c: 0,
+        };
+        assert!(restore_native_slow_instr(indirect.packed_head(), &linked, None).is_none());
+        let restored =
+            restore_native_slow_instr(indirect.packed_head(), &linked, Some(indirect.c as u32))
+                .expect("call_indirect type sidecar");
+        assert_eq!(
+            (restored.op, restored.a, restored.b, restored.c),
+            (indirect.op, indirect.a, indirect.b, indirect.c)
         );
     }
 
