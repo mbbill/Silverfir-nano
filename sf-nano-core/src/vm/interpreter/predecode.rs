@@ -36,7 +36,8 @@ pub(super) const WIDE_MEMARG: u64 = 1 << 63;
 
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
-    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
+    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL,
+    FLAG_SHARED_TABLE,
 };
 use super::SLOT_GP_UNIT_BYTES;
 
@@ -977,11 +978,14 @@ impl<'m> Predecoder<'m> {
         };
         self.stage_three(fill.operands, fill.base_height);
         let base = self.temp_slot_used(fill.base_height);
-        let flags = if self.memory_is_64(fill.memory as u64) {
+        let mut flags = if self.memory_is_64(fill.memory as u64) {
             FLAG_ADDR64
         } else {
             0
         };
+        if fill.memory != 0 {
+            flags |= FLAG_NO_NATIVE;
+        }
         self.emit(Op::MemoryFill, flags, base, fill.memory as u64, 0);
     }
 
@@ -1017,9 +1021,10 @@ impl<'m> Predecoder<'m> {
         self.stage_three(copy, fill.base_height + 3);
         let fill_base = self.temp_slot_used(fill.base_height);
         let copy_base = self.temp_slot_used(fill.base_height + 3);
+        let flags = if fill.memory == 0 { 0 } else { FLAG_NO_NATIVE };
         self.emit(
             Op::MemoryFillCopy,
-            0,
+            flags,
             fill_base,
             copy_base,
             fill.memory as u64,
@@ -1804,7 +1809,17 @@ impl<'m> Predecoder<'m> {
         for _ in 0..3 {
             let _ = self.pop()?;
         }
-        let flags = if address_is_64 { FLAG_ADDR64 } else { 0 };
+        let mut flags = if address_is_64 { FLAG_ADDR64 } else { 0 };
+        let memory_is_zero = match op {
+            Op::MemoryFill => packed_indices == 0,
+            // `MemoryCopy::b` packs `dst << 32 | src`, so zero proves both
+            // memory indices at once.
+            Op::MemoryCopy => packed_indices == 0,
+            _ => true,
+        };
+        if !memory_is_zero {
+            flags |= FLAG_NO_NATIVE;
+        }
         self.emit(op, flags, base, packed_indices, 0);
         Ok(())
     }
@@ -2041,6 +2056,9 @@ impl<'m> Predecoder<'m> {
             if addr64 {
                 flags |= FLAG_ADDR64;
             }
+            if memidx != 0 {
+                flags |= FLAG_NO_NATIVE;
+            }
             let dst = self.temp_slot_used(self.height());
             let idx = self.emit(lop, flags, a, offset, dst);
             self.push_result_temp(idx);
@@ -2105,6 +2123,9 @@ impl<'m> Predecoder<'m> {
             }
             if addr64 {
                 flags |= FLAG_ADDR64;
+            }
+            if memidx != 0 {
+                flags |= FLAG_NO_NATIVE;
             }
             self.emit(sop, flags, a, b, offset);
         }
@@ -3369,6 +3390,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::layout::native_guard;
     use super::*;
     use crate::module::Module;
     use std::format;
@@ -3476,6 +3498,57 @@ mod tests {
         assert!(!probe_fast(&[Opcode::LOCAL_GET as u8, 0x80], &mut decoded));
         assert!(!probe_fast(&[Opcode::I64_CONST as u8, 0x80], &mut decoded));
         assert_eq!(decoded.consumed, 0);
+    }
+
+    #[test]
+    fn predecode_caches_every_memory_guard_failure() {
+        let wat = r#"(module
+            (memory $m0 1)
+            (memory $m1 1)
+            (func (param i32 i32)
+                local.get 0
+                i32.load $m0
+                drop
+                local.get 0
+                i32.load $m1
+                drop
+                local.get 0
+                local.get 1
+                i32.store $m0
+                local.get 0
+                local.get 1
+                i32.store $m1)
+            (func (param i32 i32 i32)
+                local.get 0 local.get 1 local.get 2 memory.fill $m0
+                local.get 0 local.get 1 local.get 2 memory.fill $m1)
+            (func (param i32 i32 i32)
+                local.get 0 local.get 1 local.get 2 memory.copy $m0 $m0
+                local.get 0 local.get 1 local.get 2 memory.copy $m1 $m1)
+            (func (param i32 i32 i32 i32 i32 i32)
+                local.get 0 local.get 1 local.get 2 memory.fill $m0
+                local.get 3 local.get 4 local.get 5 memory.copy $m0 $m0
+                local.get 0 local.get 1 local.get 2 memory.fill $m1
+                local.get 3 local.get 4 local.get 5 memory.copy $m1 $m1))"#;
+
+        for func in 0..4 {
+            let f = predecode_wat(wat, func);
+            for ins in f.code.iter().filter(|ins| {
+                matches!(
+                    super::super::layout::family(ins.op),
+                    super::super::layout::Fam::Load | super::super::layout::Fam::Store
+                ) || matches!(ins.op, Op::MemoryFill | Op::MemoryCopy | Op::MemoryFillCopy)
+            }) {
+                assert_eq!(
+                    ins.flags & FLAG_NO_NATIVE != 0,
+                    !native_guard(ins),
+                    "op={:?} flags={:#x} b={:#x} c={:#x}",
+                    ins.op,
+                    ins.flags,
+                    ins.b,
+                    ins.c
+                );
+            }
+        }
     }
 
     #[test]
