@@ -140,6 +140,293 @@ struct BaselineDecoded {
     imm: BaselineImmediate,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct RawFrameState {
+    pub(super) pc: usize,
+    pub(super) stp: usize,
+    pub(super) top: usize,
+    pub(super) operand_base: usize,
+    pub(super) return_base: usize,
+}
+
+pub(super) enum RawStepExit {
+    Continue,
+    Call { callee: usize, arg_base: usize },
+    Return,
+}
+
+pub(super) enum RawSlots<'a> {
+    Owned(&'a mut Vec<u64>),
+    Fixed {
+        slots: &'a mut [u64],
+        top: &'a mut usize,
+    },
+}
+
+impl RawSlots<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Owned(values) => values.len(),
+            Self::Fixed { top, .. } => **top,
+        }
+    }
+
+    fn get(&self, index: usize) -> Option<u64> {
+        match self {
+            Self::Owned(values) => values.get(index).copied(),
+            Self::Fixed { slots, top } => (index < **top).then(|| slots[index]),
+        }
+    }
+
+    fn set(&mut self, index: usize, value: u64) -> Result<(), BaselineExecError> {
+        match self {
+            Self::Owned(values) => values
+                .get_mut(index)
+                .map(|slot| *slot = value)
+                .ok_or_else(|| WasmError::invalid("baseline raw slot overflow").into()),
+            Self::Fixed { slots, top } => {
+                if index >= **top {
+                    return Err(WasmError::invalid("baseline raw slot overflow").into());
+                }
+                slots[index] = value;
+                Ok(())
+            }
+        }
+    }
+
+    fn push(&mut self, value: u64) -> Result<(), BaselineExecError> {
+        match self {
+            Self::Owned(values) => {
+                if values.len() == values.capacity() {
+                    return Err(WasmError::invalid("baseline raw slot capacity exhausted").into());
+                }
+                values.push(value);
+                Ok(())
+            }
+            Self::Fixed { slots, top } => {
+                let slot = slots
+                    .get_mut(**top)
+                    .ok_or_else(|| WasmError::trap("call stack exhausted"))?;
+                *slot = value;
+                **top += 1;
+                Ok(())
+            }
+        }
+    }
+
+    fn pop(&mut self, operand_base: usize) -> Result<u64, BaselineExecError> {
+        if self.len() == operand_base {
+            return Err(WasmError::invalid("baseline raw operand stack underflow").into());
+        }
+        match self {
+            Self::Owned(values) => values
+                .pop()
+                .ok_or_else(|| WasmError::invalid("baseline raw operand stack underflow").into()),
+            Self::Fixed { slots, top } => {
+                **top -= 1;
+                Ok(slots[**top])
+            }
+        }
+    }
+
+    fn copy_within(&mut self, source: core::ops::Range<usize>, destination: usize) {
+        match self {
+            Self::Owned(values) => values.copy_within(source, destination),
+            Self::Fixed { slots, top } => slots[..**top].copy_within(source, destination),
+        }
+    }
+
+    fn truncate(&mut self, len: usize) {
+        match self {
+            Self::Owned(values) => values.truncate(len),
+            Self::Fixed { top, .. } => **top = (**top).min(len),
+        }
+    }
+}
+
+pub(super) struct RawStepper<'a, 'slots> {
+    pub(super) instance: &'a mut InterpInstance,
+    pub(super) artifact: &'a BaselineArtifact,
+    pub(super) function_index: usize,
+    pub(super) frame_base: usize,
+    pub(super) state: &'a mut RawFrameState,
+    pub(super) slots: RawSlots<'slots>,
+    pub(super) acc: &'a mut u64,
+}
+
+impl RawStepper<'_, '_> {
+    pub(super) fn step(&mut self) -> Result<RawStepExit, BaselineExecError> {
+        let frame_limit = self
+            .artifact
+            .functions
+            .get(self.function_index)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| WasmError::invalid("mixed raw artifact function is missing"))?
+            .max_operand_height as usize
+            + self.state.operand_base;
+        let function = self
+            .instance
+            .module()
+            .functions()
+            .get(self.function_index)
+            .ok_or_else(|| WasmError::invalid("mixed raw function index overflow"))?;
+        let spec = function
+            .spec()
+            .ok_or_else(|| WasmError::invalid("mixed raw activation targets an import"))?;
+        let mut cursor = RawOpCursor::at(spec.code(), self.state.pc);
+        let raw = cursor
+            .next()?
+            .ok_or_else(|| WasmError::invalid("mixed raw reached code end"))?;
+        let decoded = BaselineDecoded {
+            wasm_op: raw.wasm_op,
+            start: raw.start,
+            end: raw.end,
+            imm: copy_immediate(raw.imm),
+        };
+        self.state.pc = decoded.end;
+        let WasmOpcode::OP(opcode) = decoded.wasm_op else {
+            return Err(BaselineExecError::Unsupported {
+                opcode: Some(decoded.wasm_op),
+                pc: decoded.start,
+                feature: "mixed raw prefixed opcode",
+            });
+        };
+        match opcode {
+            Opcode::NOP | Opcode::BLOCK | Opcode::LOOP => {}
+            Opcode::I32_CONST => {
+                let BaselineImmediate::I32(value) = decoded.imm else {
+                    return Err(WasmError::internal("mixed raw i32.const mismatch").into());
+                };
+                self.slots.push(value as u32 as u64)?;
+            }
+            Opcode::I64_CONST => {
+                let BaselineImmediate::I64(value) = decoded.imm else {
+                    return Err(WasmError::internal("mixed raw i64.const mismatch").into());
+                };
+                self.slots.push(value as u64)?;
+            }
+            Opcode::F32_CONST => {
+                let BaselineImmediate::F32(value) = decoded.imm else {
+                    return Err(WasmError::internal("mixed raw f32.const mismatch").into());
+                };
+                self.slots.push(value as u64)?;
+            }
+            Opcode::F64_CONST => {
+                let BaselineImmediate::F64(value) = decoded.imm else {
+                    return Err(WasmError::internal("mixed raw f64.const mismatch").into());
+                };
+                self.slots.push(value)?;
+            }
+            Opcode::LOCAL_GET => {
+                let local = raw_local(decoded.imm)?;
+                let slot = self
+                    .frame_base
+                    .checked_add(local)
+                    .filter(|&slot| slot < self.state.operand_base)
+                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
+                let value = self
+                    .slots
+                    .get(slot)
+                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
+                self.slots.push(value)?;
+            }
+            Opcode::LOCAL_SET => {
+                let local = raw_local(decoded.imm)?;
+                let value = self.slots.pop(self.state.operand_base)?;
+                let slot = self
+                    .frame_base
+                    .checked_add(local)
+                    .filter(|&slot| slot < self.state.operand_base)
+                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
+                self.slots.set(slot, value)?;
+            }
+            Opcode::LOCAL_TEE => {
+                let local = raw_local(decoded.imm)?;
+                let value = self
+                    .slots
+                    .get(self.slots.len().saturating_sub(1))
+                    .ok_or_else(|| WasmError::invalid("mixed raw operand stack underflow"))?;
+                let slot = self
+                    .frame_base
+                    .checked_add(local)
+                    .filter(|&slot| slot < self.state.operand_base)
+                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
+                self.slots.set(slot, value)?;
+            }
+            Opcode::DROP => {
+                self.slots.pop(self.state.operand_base)?;
+            }
+            Opcode::I32_ADD | Opcode::I32_SUB | Opcode::I32_MUL => {
+                let rhs = self.slots.pop(self.state.operand_base)? as u32;
+                let lhs = self.slots.pop(self.state.operand_base)? as u32;
+                let value = match opcode {
+                    Opcode::I32_ADD => lhs.wrapping_add(rhs),
+                    Opcode::I32_SUB => lhs.wrapping_sub(rhs),
+                    Opcode::I32_MUL => lhs.wrapping_mul(rhs),
+                    _ => unreachable!(),
+                };
+                self.slots.push(value as u64)?;
+            }
+            Opcode::CALL => {
+                let callee = raw_function(decoded.imm)?;
+                let parameter_count = self
+                    .instance
+                    .module()
+                    .functions()
+                    .get(callee)
+                    .ok_or_else(|| WasmError::invalid("mixed raw callee overflow"))?
+                    .func_type()
+                    .params()
+                    .len();
+                let argument = self
+                    .slots
+                    .len()
+                    .checked_sub(parameter_count)
+                    .filter(|&base| base >= self.state.operand_base)
+                    .ok_or_else(|| WasmError::invalid("mixed raw call argument underflow"))?;
+                return Ok(RawStepExit::Call {
+                    callee,
+                    arg_base: argument - self.frame_base,
+                });
+            }
+            Opcode::END if decoded.end == spec.code().len() => {
+                let result_count = function.func_type().results().len();
+                let expected_top = self
+                    .state
+                    .operand_base
+                    .checked_add(result_count)
+                    .ok_or_else(|| WasmError::invalid("mixed raw result range overflow"))?;
+                if self.slots.len() != expected_top {
+                    return Err(WasmError::invalid("mixed raw result stack shape mismatch").into());
+                }
+                self.slots.copy_within(
+                    self.state.operand_base..expected_top,
+                    self.state.return_base,
+                );
+                let result_end = self.state.return_base + result_count;
+                self.slots.truncate(result_end);
+                self.state.top = result_end;
+                *self.acc = self.slots.get(self.state.return_base).unwrap_or(0);
+                return Ok(RawStepExit::Return);
+            }
+            Opcode::END => {}
+            Opcode::UNREACHABLE => return Err(WasmError::trap("unreachable").into()),
+            _ => {
+                return Err(BaselineExecError::Unsupported {
+                    opcode: Some(decoded.wasm_op),
+                    pc: decoded.start,
+                    feature: "mixed raw MVP opcode",
+                });
+            }
+        }
+        self.state.top = self.slots.len();
+        if self.state.top > frame_limit {
+            return Err(WasmError::invalid("mixed raw operand capacity exhausted").into());
+        }
+        Ok(RawStepExit::Continue)
+    }
+}
+
 pub(super) struct BaselineFrame<'artifact, 'instance> {
     access: InterpInstanceAccess<'instance>,
     artifact: &'artifact BaselineArtifact,
@@ -1852,6 +2139,99 @@ mod tests {
         };
         let native = native(wasm, export, &[]).expect_err("native must trap");
         assert_eq!(baseline.to_string(), native.to_string());
+    }
+
+    #[test]
+    fn raw_stepper_owned_and_fixed_slots_share_one_semantics() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func (export "add") (param i32) (result i32)
+                    local.get 0
+                    i32.const 2
+                    i32.add))"#,
+        )
+        .expect("wat");
+        let module = Module::new("raw-slots-oracle", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        assert!(matches!(
+            artifact.function_eligibility(&module, 0),
+            Some(
+                crate::vm::interpreter::baseline_artifact::BaselineFunctionEligibility::Baseline(_,)
+            )
+        ));
+        let mut instance = built_interp(module, &[]);
+
+        let mut owned = Vec::with_capacity(8);
+        owned.push(40);
+        let mut owned_state = RawFrameState {
+            pc: 0,
+            stp: 0,
+            top: 1,
+            operand_base: 1,
+            return_base: 0,
+        };
+        let mut owned_acc = 0;
+        loop {
+            let exit = RawStepper {
+                instance: &mut instance,
+                artifact: &artifact,
+                function_index: 0,
+                frame_base: 0,
+                state: &mut owned_state,
+                slots: RawSlots::Owned(&mut owned),
+                acc: &mut owned_acc,
+            }
+            .step()
+            .expect("owned step");
+            match exit {
+                RawStepExit::Continue => {}
+                RawStepExit::Return => break,
+                RawStepExit::Call { callee, arg_base } => {
+                    panic!("unexpected call {callee} at {arg_base}")
+                }
+            }
+        }
+
+        let mut fixed = [0u64; 8];
+        fixed[0] = 40;
+        let mut fixed_top = 1usize;
+        let mut fixed_state = RawFrameState {
+            pc: 0,
+            stp: 0,
+            top: 1,
+            operand_base: 1,
+            return_base: 0,
+        };
+        let mut fixed_acc = 0;
+        loop {
+            let exit = RawStepper {
+                instance: &mut instance,
+                artifact: &artifact,
+                function_index: 0,
+                frame_base: 0,
+                state: &mut fixed_state,
+                slots: RawSlots::Fixed {
+                    slots: &mut fixed,
+                    top: &mut fixed_top,
+                },
+                acc: &mut fixed_acc,
+            }
+            .step()
+            .expect("fixed step");
+            match exit {
+                RawStepExit::Continue => {}
+                RawStepExit::Return => break,
+                RawStepExit::Call { callee, arg_base } => {
+                    panic!("unexpected call {callee} at {arg_base}")
+                }
+            }
+        }
+
+        assert_eq!(owned.as_slice(), &[42]);
+        assert_eq!(&fixed[..fixed_top], &[42]);
+        assert_eq!((owned_acc, fixed_acc), (42, 42));
+        assert_eq!((owned_state.stp, fixed_state.stp), (0, 0));
     }
 
     #[test]
