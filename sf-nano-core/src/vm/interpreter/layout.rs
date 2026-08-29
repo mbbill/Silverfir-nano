@@ -590,7 +590,163 @@ impl Pinned {
 /// over acc hints on the same operand; a `const` flag wins over both.
 ///
 /// Returns `None` when the op has no handler family at all.
+#[inline]
 pub(crate) fn op_slot(ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
+    let props = OP_PROPS[ins.op as usize];
+    let fam = props.fam;
+    if fam == Fam::None {
+        return None;
+    }
+    let fused = flags & FLAG_FUSED != 0;
+    if fused && !fam.has_fused_bank() {
+        return None;
+    }
+
+    // Match the family before classifying operands. The old generic path
+    // computed A, B, and destination classes (and loaded all three domain
+    // facts) for every native cell, even when the handler bank varied over
+    // none or only one of them. These formulas are the same layout encoded
+    // by `Fam::index_of`, but each arm asks only for its live dimensions.
+    let idx = match fam {
+        Fam::None => unreachable!(),
+        Fam::Fixed => 0,
+        Fam::Dst => dst_class(ins, flags, pin, false).index(),
+        Fam::ConstDst => {
+            // `Fam::index_of` admits only the constant-source bank.
+            if flags & FLAG_A_CONST == 0 {
+                return None;
+            }
+            dst_class(ins, flags, pin, false).index()
+        }
+        Fam::SrcA => source_a_class(ins, flags, pin).index(),
+        Fam::SrcADst => {
+            source_a_class(ins, flags, pin).index() + 5 * dst_class(ins, flags, pin, false).index()
+        }
+        Fam::SrcAB => {
+            source_a_class(ins, flags, pin).index() + 5 * source_b_class(ins, flags, pin).index()
+        }
+        Fam::SrcABPairDst => {
+            source_a_class(ins, flags, pin).index()
+                + 5 * source_b_class(ins, flags, pin).index()
+                + 25 * pair_dst_class(ins, pin)?.index()
+        }
+        Fam::SrcABDst => {
+            source_a_class(ins, flags, pin).index()
+                + 5 * source_b_class(ins, flags, pin).index()
+                + 25 * dst_class(ins, flags, pin, ins.op == Op::Select).index()
+        }
+        Fam::Load => {
+            source_a_class(ins, flags, pin).index()
+                + 5 * dst_class(ins, flags, pin, fused).index()
+                + if fused { 20 } else { 0 }
+        }
+        Fam::Store => {
+            source_a_class(ins, flags, pin).index()
+                + 5 * source_b_class(ins, flags, pin).index()
+                + if fused { 25 } else { 0 }
+        }
+    };
+    Some(props.base as usize + idx)
+}
+
+/// Classify source A for families whose handler bank varies over it.
+///
+/// Domain facts are read only when the operand actually aliases a pinned
+/// slot. Most operands therefore avoid that table lookup as well as families
+/// which do not have an A dimension avoiding this function altogether.
+#[inline]
+fn source_a_class(ins: &Instr, flags: u16, pin: &Pinned) -> Cls {
+    if flags & FLAG_A_CONST != 0 {
+        Cls::Const
+    } else if ins.a == pin.l0 && operand_is_float(ins.op, false) == pin.l0_float {
+        Cls::L0
+    } else if ins.a == pin.l1 && operand_is_float(ins.op, false) == pin.l1_float {
+        Cls::L1
+    } else if flags & FLAG_A_ACC != 0 {
+        Cls::Acc
+    } else {
+        Cls::Slot
+    }
+}
+
+/// Classify source B for families whose handler bank varies over it.
+#[inline]
+fn source_b_class(ins: &Instr, flags: u16, pin: &Pinned) -> Cls {
+    if flags & FLAG_B_CONST != 0 {
+        Cls::Const
+    } else if ins.b == pin.l0 && operand_is_float(ins.op, true) == pin.l0_float {
+        Cls::L0
+    } else if ins.b == pin.l1 && operand_is_float(ins.op, true) == pin.l1_float {
+        Cls::L1
+    } else if flags & FLAG_B_ACC != 0 {
+        Cls::Acc
+    } else {
+        Cls::Slot
+    }
+}
+
+/// Classify a plain or low-half-packed destination for families whose
+/// handler bank varies over it.
+#[inline]
+fn dst_class(ins: &Instr, flags: u16, pin: &Pinned, packed: bool) -> DstCls {
+    let dslot = if packed { ins.c & 0xffff_ffff } else { ins.c };
+    // Select is a domain-agnostic bit mover and is pinned only in the integer
+    // register file. For every other destination family, defer the result
+    // domain lookup until a pinned-slot identity actually matches.
+    if dslot == pin.l0 && dst_domain_matches(ins.op, pin.l0_float) {
+        DstCls::L0
+    } else if dslot == pin.l1 && dst_domain_matches(ins.op, pin.l1_float) {
+        DstCls::L1
+    } else if flags & FLAG_DST_ACC != 0 {
+        DstCls::Acc
+    } else {
+        DstCls::Mem
+    }
+}
+
+#[inline]
+fn dst_domain_matches(op: Op, pin_float: bool) -> bool {
+    if op == Op::Select {
+        !pin_float
+    } else {
+        result_is_float(op) == pin_float
+    }
+}
+
+/// Classify `MovPair`'s two ordered destinations. Equal pinned destinations
+/// are a forged layout and deliberately have no native handler.
+#[inline]
+fn pair_dst_class(ins: &Instr, pin: &Pinned) -> Option<PairDstCls> {
+    // MovPair has two ordered destinations. Classify both so the handler
+    // updates every authoritative pinned register before a later source
+    // in the same pair can observe it.
+    let dst1 = ins.c >> 32;
+    let dst2 = ins.c & 0xffff_ffff;
+    Some(
+        match (
+            dst1 == pin.l0,
+            dst1 == pin.l1,
+            dst2 == pin.l0,
+            dst2 == pin.l1,
+        ) {
+            (false, false, false, false) => PairDstCls::None,
+            (true, false, false, false) => PairDstCls::FirstL0,
+            (false, true, false, false) => PairDstCls::FirstL1,
+            (false, false, true, false) => PairDstCls::SecondL0,
+            (false, false, false, true) => PairDstCls::SecondL1,
+            (true, false, false, true) => PairDstCls::L0L1,
+            (false, true, true, false) => PairDstCls::L1L0,
+            // The predecoder does not pair equal destinations. Keep this
+            // defensive fallback slow if a forged function violates it.
+            _ => return None,
+        },
+    )
+}
+
+/// The former generic implementation, retained as an independent test
+/// oracle for the family-specialized production classifier above.
+#[cfg(test)]
+fn op_slot_generic_reference(ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
     let props = OP_PROPS[ins.op as usize];
     let fam = props.fam;
     if fam == Fam::None {
@@ -629,9 +785,6 @@ pub(crate) fn op_slot(ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
     } else {
         Cls::Slot
     };
-    // MovPair has two ordered destinations. Classify both so the handler
-    // updates every authoritative pinned register before a later source
-    // in the same pair can observe it.
     let pair_d = if ins.op == Op::MovPair {
         let dst1 = ins.c >> 32;
         let dst2 = ins.c & 0xffff_ffff;
@@ -648,8 +801,6 @@ pub(crate) fn op_slot(ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
             (false, false, false, true) => PairDstCls::SecondL1,
             (true, false, false, true) => PairDstCls::L0L1,
             (false, true, true, false) => PairDstCls::L1L0,
-            // The predecoder does not pair equal destinations. Keep this
-            // defensive fallback slow if a forged function violates it.
             _ => return None,
         }
     } else {
@@ -683,6 +834,123 @@ pub(crate) fn op_slot(ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise the specialized classifier against the exact generic code it
+    /// replaced. The low six bits cover every class/fusion combination;
+    /// representative overlays cover each slow-only handler bit separately
+    /// and together. Every opcode is crossed with integer, float, mixed, and
+    /// partially populated pin sets, plus all source and destination
+    /// relationships relevant to plain, packed, and paired destinations.
+    #[test]
+    fn specialized_op_slot_matches_generic_reference() {
+        use super::super::instr::{FLAG_ADDR64, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE};
+        use crate::collections::Vec;
+
+        const L0: u64 = 11;
+        const L1: u64 = 22;
+        const OTHER: u64 = 33;
+        const OTHER_2: u64 = 44;
+        let pins = [
+            Pinned::NONE,
+            Pinned {
+                l0: L0,
+                l1: L1,
+                l0_float: false,
+                l1_float: false,
+            },
+            Pinned {
+                l0: L0,
+                l1: L1,
+                l0_float: true,
+                l1_float: true,
+            },
+            Pinned {
+                l0: L0,
+                l1: L1,
+                l0_float: false,
+                l1_float: true,
+            },
+            Pinned {
+                l0: L0,
+                l1: L1,
+                l0_float: true,
+                l1_float: false,
+            },
+            Pinned {
+                l0: L0,
+                l1: u64::MAX,
+                l0_float: false,
+                l1_float: false,
+            },
+            Pinned {
+                l0: u64::MAX,
+                l1: L1,
+                l0_float: false,
+                l1_float: true,
+            },
+        ];
+
+        // Exhaust every classification bit combination. The three slow bits
+        // are checked independently and combined over representative class
+        // states; op_slot deliberately leaves their rejection to handler_for.
+        let mut flag_cases: Vec<u16> = (0..(FLAG_FUSED << 1)).collect();
+        let representative_class_flags = [
+            0,
+            FLAG_A_CONST | FLAG_B_CONST,
+            FLAG_A_ACC | FLAG_B_ACC | FLAG_DST_ACC,
+            FLAG_FUSED,
+            (FLAG_FUSED << 1) - 1,
+        ];
+        for slow in [
+            FLAG_ADDR64,
+            FLAG_SHARED_TABLE,
+            FLAG_SHARED_GLOBAL,
+            FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL,
+        ] {
+            for class_flags in representative_class_flags {
+                flag_cases.push(class_flags | slow);
+            }
+        }
+
+        let source_relations = [OTHER, L0, L1];
+        let destination_relations = [
+            // Plain destinations.
+            OTHER,
+            L0,
+            L1,
+            // Packed/paired destinations: every valid pin relation, plus
+            // both equal-pinned defensive failures and distinct unpinned dsts.
+            (OTHER << 32) | OTHER_2,
+            (L0 << 32) | OTHER,
+            (L1 << 32) | OTHER,
+            (OTHER << 32) | L0,
+            (OTHER << 32) | L1,
+            (L0 << 32) | L1,
+            (L1 << 32) | L0,
+            (L0 << 32) | L0,
+            (L1 << 32) | L1,
+        ];
+
+        for op_index in 0..N_OPS {
+            let op = op_from_index(op_index);
+            for (pin_index, pin) in pins.iter().enumerate() {
+                for &flags in &flag_cases {
+                    for &a in &source_relations {
+                        for &b in &source_relations {
+                            for &c in &destination_relations {
+                                let ins = Instr::new(op, flags, a, b, c);
+                                assert_eq!(
+                                    op_slot(&ins, flags, pin),
+                                    op_slot_generic_reference(&ins, flags, pin),
+                                    "op={op:?} flags={flags:#x} pin={pin_index} a={a} b={b} c={c:#x}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn mov_pair_classifies_every_ordered_pinned_destination_state() {
