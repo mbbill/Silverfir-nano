@@ -3517,6 +3517,7 @@ impl InterpInstance {
     /// Whether a baseline indirect call can treat this table as closed world.
     /// Imported/exported or growable tables can change outside the baseline
     /// executor and remain on its explicit unsupported boundary for now.
+    #[cfg(test)]
     pub(super) fn call_indirect_table_is_closed(&self, table_index: usize) -> bool {
         let Some(table) = self.tables.get(table_index) else {
             return false;
@@ -3533,6 +3534,7 @@ impl InterpInstance {
     /// Resolve the semantic target shared by the folded and raw baseline
     /// representations. The result owns any request that must leave the
     /// instance materialization; local targets carry only their function index.
+    #[inline(always)]
     pub(super) fn resolve_call_indirect(
         &self,
         frame: &[u64],
@@ -3558,35 +3560,7 @@ impl InterpInstance {
         }
         let local = self.localize_ref(callee);
         if local.encoded() >= self.module.functions().len() {
-            let entry = self.link_registry.functions.entry_for_handle(callee);
-            if entry.is_some() {
-                let expected = RefType::non_nullable_concrete(expected_type);
-                if !ref_type_matches(callee, &expected.heap_type, RefTypeOwner::Interp(self))
-                    .unwrap_or(false)
-                {
-                    return Err(WasmError::trap("indirect call type mismatch"));
-                }
-            }
-            let (param_types, result_types) = self
-                .module
-                .types()
-                .get_function_type(expected_type)
-                .map(|ft| {
-                    (
-                        ft.params().iter().copied().collect::<Vec<_>>(),
-                        ft.results().iter().copied().collect::<Vec<_>>(),
-                    )
-                })
-                .ok_or(WasmError::trap("indirect call type mismatch"))?;
-            let call = self.prepare_funcref_call(
-                callee,
-                param_types,
-                result_types,
-                frame,
-                arg_base,
-                entry,
-            );
-            return Ok(ResolvedIndirectCall::External(Box::new(call)));
+            return self.resolve_external_indirect_call(callee, frame, arg_base, expected_type);
         }
         let fi = local.encoded() as u32;
         let actual = self
@@ -3599,6 +3573,43 @@ impl InterpInstance {
             return Err(WasmError::trap("indirect call type mismatch"));
         }
         Ok(ResolvedIndirectCall::Local(fi as usize))
+    }
+
+    /// Foreign identities allocate owned call state and may need cross-context
+    /// type matching. Keep all of that off the self-owned table hot path so the
+    /// compact resolver above can inline back into folded `exec_call_indirect`.
+    #[cold]
+    #[inline(never)]
+    fn resolve_external_indirect_call(
+        &self,
+        callee: RefValue,
+        frame: &[u64],
+        arg_base: usize,
+        expected_type: u32,
+    ) -> Result<ResolvedIndirectCall, WasmError> {
+        let entry = self.link_registry.functions.entry_for_handle(callee);
+        if entry.is_some() {
+            let expected = RefType::non_nullable_concrete(expected_type);
+            if !ref_type_matches(callee, &expected.heap_type, RefTypeOwner::Interp(self))
+                .unwrap_or(false)
+            {
+                return Err(WasmError::trap("indirect call type mismatch"));
+            }
+        }
+        let (param_types, result_types) = self
+            .module
+            .types()
+            .get_function_type(expected_type)
+            .map(|ft| {
+                (
+                    ft.params().iter().copied().collect::<Vec<_>>(),
+                    ft.results().iter().copied().collect::<Vec<_>>(),
+                )
+            })
+            .ok_or(WasmError::trap("indirect call type mismatch"))?;
+        let call =
+            self.prepare_funcref_call(callee, param_types, result_types, frame, arg_base, entry);
+        Ok(ResolvedIndirectCall::External(Box::new(call)))
     }
 
     /// Execute the common semantic slow path for `call_indirect` and
