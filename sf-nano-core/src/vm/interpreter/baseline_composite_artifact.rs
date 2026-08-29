@@ -8,7 +8,7 @@
 //! artifact or increments the artifact build census.
 
 use super::baseline_artifact::{BaselineArtifact, BaselineFunctionBuilder, BaselineFunctionParts};
-use super::baseline_raw_artifact::RawFunctionScanner;
+use super::baseline_raw_artifact::{DecodedLayoutError, RawFunctionScanner};
 use crate::error::WasmError;
 use crate::module::entities::FunctionSpec;
 use crate::module::validator::{FunctionValidator, Validator};
@@ -49,23 +49,31 @@ impl<'a> ValidatingArtifactHandler<'a> {
 
     fn validate_and_plan(&mut self, decoded: &DecodedOp) -> Result<(), WasmError> {
         self.validator.validate_decoded(decoded)?;
-        let builder = self
-            .builder
-            .as_mut()
-            .ok_or_else(|| WasmError::internal("composite artifact builder already finished"))?;
+        let Some(builder) = self.builder.as_ref() else {
+            return Ok(());
+        };
         let event = builder.plan(
             self.module,
             decoded,
             self.layout.height(),
             self.layout.dead(),
         )?;
-        self.layout.apply_decoded(self.module, decoded)?;
-        builder.commit(event, self.layout.height())
+        match self.layout.apply_decoded(self.module, decoded) {
+            Ok(()) => {}
+            Err(DecodedLayoutError::Ineligible) => {
+                self.builder = None;
+                return Ok(());
+            }
+            Err(DecodedLayoutError::Wasm(error)) => return Err(error),
+        }
+        self.builder
+            .as_mut()
+            .expect("eligible builder exists")
+            .commit(event, self.layout.height())
     }
 
-    fn into_parts(self) -> Result<BaselineFunctionParts, WasmError> {
+    fn into_parts(self) -> Option<BaselineFunctionParts> {
         self.parts
-            .ok_or_else(|| WasmError::internal("composite artifact function did not finish"))
     }
 }
 
@@ -86,12 +94,10 @@ impl OpcodeHandler for ValidatingArtifactHandler<'_> {
 
     fn on_decode_end(&mut self) -> Result<(), WasmError> {
         self.validator.finish()?;
-        self.layout.ensure_finished()?;
-        let builder = self
-            .builder
-            .take()
-            .ok_or_else(|| WasmError::internal("composite artifact builder already finished"))?;
-        self.parts = Some(builder.finish()?);
+        if let Some(builder) = self.builder.take() {
+            self.layout.ensure_finished()?;
+            self.parts = Some(builder.finish()?);
+        }
         Ok(())
     }
 }
@@ -113,7 +119,10 @@ pub(super) fn build_baseline_artifact_composite(
             let mut decoder = Decoder::new(function.code());
             decoder.add_handler(&mut handler);
             decoder.decode_function()?;
-            artifact.publish_function(function_index, handler.into_parts()?)
+            if let Some(parts) = handler.into_parts() {
+                artifact.publish_function(function_index, parts)?;
+            }
+            Ok(())
         },
     )?;
     Ok(artifact.into_published())
@@ -123,7 +132,9 @@ pub(super) fn build_baseline_artifact_composite(
 mod tests {
     use super::*;
     use crate::module::validator::Validator;
-    use crate::vm::interpreter::baseline_artifact::{artifact_build_count, artifact_test_guard};
+    use crate::vm::interpreter::baseline_artifact::{
+        artifact_build_count, artifact_test_guard, BaselineFunctionEligibility,
+    };
     use crate::vm::interpreter::baseline_raw_artifact::build_baseline_artifact_raw;
     use std::string::{String, ToString};
 
@@ -200,11 +211,64 @@ mod tests {
     }
 
     #[test]
+    fn valid_unsupported_eh_and_gc_functions_require_full_fold() {
+        let _guard = artifact_test_guard();
+        for wat in [
+            r#"(module
+                (tag $e)
+                (func nop)
+                (func throw $e)
+                (func (param exnref) local.get 0 throw_ref))"#,
+            r#"(module
+                (type $s (struct))
+                (func nop)
+                (func (result (ref $s)) struct.new $s))"#,
+        ] {
+            let module = module(wat);
+            Validator::new(&module).validate().expect("valid module");
+            let artifact = build_baseline_artifact_composite(&module).expect("composite artifact");
+            assert!(matches!(
+                artifact.function_eligibility(&module, 0),
+                Some(BaselineFunctionEligibility::Baseline(_))
+            ));
+            for index in 1..module.functions().len() {
+                assert_eq!(
+                    artifact.function_eligibility(&module, index),
+                    Some(BaselineFunctionEligibility::FullFold)
+                );
+            }
+        }
+    }
+
+    #[cfg(sf_has_simd)]
+    #[test]
+    fn valid_simd_function_requires_full_fold() {
+        let _guard = artifact_test_guard();
+        let module = module(
+            r#"(module
+                (func nop)
+                (func (result v128) v128.const i32x4 0 0 0 0))"#,
+        );
+        Validator::new(&module)
+            .validate()
+            .expect("valid SIMD module");
+        let artifact = build_baseline_artifact_composite(&module).expect("composite artifact");
+        assert!(matches!(
+            artifact.function_eligibility(&module, 0),
+            Some(BaselineFunctionEligibility::Baseline(_))
+        ));
+        assert_eq!(
+            artifact.function_eligibility(&module, 1),
+            Some(BaselineFunctionEligibility::FullFold)
+        );
+    }
+
+    #[test]
     fn invalid_body_and_suffix_never_publish_and_keep_error_order() {
         let _guard = artifact_test_guard();
         for wat in [
             "(module (func local.get 0 drop))",
-            "(module (global i32 (f64.const 0)))",
+            "(module (global i32 (f64.const 0)) (func nop))",
             "(module (global i32 (f64.const 0)) (func local.get 0 drop))",
         ] {
             let module = module(wat);

@@ -31,6 +31,10 @@ pub(super) fn artifact_test_guard() -> std::sync::MutexGuard<'static, ()> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BaselineArtifact {
+    /// `None` is either an import or a validated local body that is not
+    /// eligible for raw-baseline execution. Consumers must consult
+    /// [`BaselineArtifact::function_eligibility`] and FullFold the latter;
+    /// absence is not a validation error.
     pub(crate) functions: Vec<Option<BaselineFunction>>,
     pub(crate) loop_regions: Vec<LoopRegion>,
     pub(crate) control_targets: Vec<ControlTarget>,
@@ -39,6 +43,13 @@ pub(crate) struct BaselineArtifact {
     pub(crate) catches: Vec<CatchMeta>,
     pub(crate) direct_calls: Vec<DirectCallEdge>,
     pub(crate) indirect_calls: Vec<IndirectCallSite>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BaselineFunctionEligibility<'a> {
+    Import,
+    Baseline(&'a BaselineFunction),
+    FullFold,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +209,22 @@ impl BaselineArtifact {
     pub(super) fn into_published(self) -> Self {
         ARTIFACT_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
         self
+    }
+
+    pub(crate) fn function_eligibility(
+        &self,
+        module: &Module,
+        index: usize,
+    ) -> Option<BaselineFunctionEligibility<'_>> {
+        let function = module.functions().get(index)?;
+        let artifact = self.functions.get(index)?;
+        Some(if function.is_import() {
+            BaselineFunctionEligibility::Import
+        } else if let Some(artifact) = artifact {
+            BaselineFunctionEligibility::Baseline(artifact)
+        } else {
+            BaselineFunctionEligibility::FullFold
+        })
     }
 
     pub(super) fn publish_function(

@@ -3115,11 +3115,11 @@ mod tests {
         let call_ref = wat::parse_str(
             r#"(module
                 (type $result (func (result i32)))
-                (func (export "run") (param funcref) (result i32)
+                (func (export "run") (param (ref null $result)) (result i32)
                     local.get 0 call_ref $result))"#,
         )
         .expect("call_ref wat");
-        let args = [Value::Ref(RefValue::null(), RefType::funcref())];
+        let args = [Value::Ref(RefValue::null(), RefType::nullable_concrete(0))];
         let error = baseline(&call_ref, "run", &args).expect_err("call_ref unsupported");
         assert!(matches!(
             error,

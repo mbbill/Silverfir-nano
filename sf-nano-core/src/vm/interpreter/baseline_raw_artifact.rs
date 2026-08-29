@@ -75,6 +75,17 @@ pub(super) struct RawFunctionScanner {
     finished: bool,
 }
 
+pub(super) enum DecodedLayoutError {
+    Ineligible,
+    Wasm(WasmError),
+}
+
+impl From<WasmError> for DecodedLayoutError {
+    fn from(error: WasmError) -> Self {
+        Self::Wasm(error)
+    }
+}
+
 impl RawFunctionScanner {
     pub(super) fn new(result_count: usize) -> Self {
         Self {
@@ -106,18 +117,23 @@ impl RawFunctionScanner {
         &mut self,
         module: &Module,
         decoded: &DecodedOp,
-    ) -> Result<(), WasmError> {
+    ) -> Result<(), DecodedLayoutError> {
+        if matches!(decoded.wasm_op, WasmOpcode::FB(_) | WasmOpcode::FD(_))
+            || matches!(
+                decoded.wasm_op,
+                WasmOpcode::OP(Opcode::THROW | Opcode::THROW_REF)
+            )
+        {
+            return Err(DecodedLayoutError::Ineligible);
+        }
         if self.dead {
-            return self.apply_dead_decoded(module, decoded);
+            self.apply_dead_decoded(module, decoded)?;
+            return Ok(());
         }
         match decoded.wasm_op {
             WasmOpcode::OP(opcode) => self.apply_decoded_op(module, opcode, &decoded.imm),
-            WasmOpcode::FC(opcode) => self.apply_fc(opcode),
-            opcode => Err(WasmError::invalid(match opcode {
-                WasmOpcode::FB(_) => "raw artifact does not support GC opcodes",
-                WasmOpcode::FD(_) => "raw artifact does not support SIMD opcodes",
-                _ => "raw artifact opcode family is unsupported",
-            })),
+            WasmOpcode::FC(opcode) => self.apply_fc(opcode).map_err(Into::into),
+            WasmOpcode::FB(_) | WasmOpcode::FD(_) => unreachable!(),
         }
     }
 
@@ -132,9 +148,9 @@ impl RawFunctionScanner {
         match opcode {
             Opcode::BLOCK | Opcode::LOOP | Opcode::IF => {
                 let Immediate::Block(block) = &decoded.imm else {
-                    return Err(WasmError::internal(
-                        "decoded artifact block immediate mismatch",
-                    ));
+                    return Err(
+                        WasmError::internal("decoded artifact block immediate mismatch").into(),
+                    );
                 };
                 let (params, results) = decoded_block_arity(module, block)?;
                 let base = self.height.saturating_sub(params);
@@ -154,7 +170,8 @@ impl RawFunctionScanner {
                 let Immediate::TryTable { block_type, .. } = &decoded.imm else {
                     return Err(WasmError::internal(
                         "decoded artifact try_table immediate mismatch",
-                    ));
+                    )
+                    .into());
                 };
                 let (params, results) = decoded_block_arity(module, block_type)?;
                 let base = self.height.saturating_sub(params);
@@ -201,15 +218,15 @@ impl RawFunctionScanner {
         module: &Module,
         opcode: Opcode,
         immediate: &Immediate,
-    ) -> Result<(), WasmError> {
+    ) -> Result<(), DecodedLayoutError> {
         match opcode {
             Opcode::NOP => {}
             Opcode::UNREACHABLE => self.dead = true,
             Opcode::BLOCK | Opcode::LOOP | Opcode::IF => {
                 let Immediate::Block(block) = immediate else {
-                    return Err(WasmError::internal(
-                        "decoded artifact block immediate mismatch",
-                    ));
+                    return Err(
+                        WasmError::internal("decoded artifact block immediate mismatch").into(),
+                    );
                 };
                 let (params, results) = decoded_block_arity(module, block)?;
                 if opcode == Opcode::IF {
@@ -236,7 +253,8 @@ impl RawFunctionScanner {
                 else {
                     return Err(WasmError::internal(
                         "decoded artifact try_table immediate mismatch",
-                    ));
+                    )
+                    .into());
                 };
                 for catch in catches {
                     self.mark_branch_target(catch.label_idx);
@@ -261,9 +279,9 @@ impl RawFunctionScanner {
                     .last_mut()
                     .ok_or_else(|| WasmError::invalid("decoded artifact else without frame"))?;
                 if !frame.is_if || self.height != frame.base + frame.results {
-                    return Err(WasmError::invalid(
-                        "decoded artifact else stack shape mismatch",
-                    ));
+                    return Err(
+                        WasmError::invalid("decoded artifact else stack shape mismatch").into(),
+                    );
                 }
                 frame.saw_else = true;
                 frame.then_fell_live = true;
@@ -274,13 +292,15 @@ impl RawFunctionScanner {
                     if self.height != frame.base + frame.results {
                         return Err(WasmError::invalid(
                             "decoded artifact end stack shape mismatch",
-                        ));
+                        )
+                        .into());
                     }
                 } else {
                     if self.height != self.result_count {
                         return Err(WasmError::invalid(
                             "decoded artifact function result height mismatch",
-                        ));
+                        )
+                        .into());
                     }
                     self.finished = true;
                 }
@@ -301,7 +321,8 @@ impl RawFunctionScanner {
                 let Immediate::BrLabels(labels, default) = immediate else {
                     return Err(WasmError::internal(
                         "decoded artifact br_table immediate mismatch",
-                    ));
+                    )
+                    .into());
                 };
                 self.pop(1)?;
                 for &depth in labels {
@@ -327,9 +348,9 @@ impl RawFunctionScanner {
             }
             Opcode::CALL | Opcode::RETURN_CALL => {
                 let Immediate::FunctionIndex(index) = immediate else {
-                    return Err(WasmError::internal(
-                        "decoded artifact call immediate mismatch",
-                    ));
+                    return Err(
+                        WasmError::internal("decoded artifact call immediate mismatch").into(),
+                    );
                 };
                 let function = module
                     .functions()
@@ -346,7 +367,8 @@ impl RawFunctionScanner {
                 let Immediate::CallIndirectArgs { typeidx, .. } = immediate else {
                     return Err(WasmError::internal(
                         "decoded artifact call_indirect immediate mismatch",
-                    ));
+                    )
+                    .into());
                 };
                 let function = module
                     .types()
@@ -363,7 +385,8 @@ impl RawFunctionScanner {
                 let Immediate::TypeIndex(typeidx) = immediate else {
                     return Err(WasmError::internal(
                         "decoded artifact call_ref immediate mismatch",
-                    ));
+                    )
+                    .into());
                 };
                 let function = module
                     .types()
@@ -377,9 +400,7 @@ impl RawFunctionScanner {
                 }
             }
             _ => {
-                let (pops, pushes) = simple_effect(opcode).ok_or_else(|| {
-                    WasmError::invalid("decoded artifact primary opcode effect is unsupported")
-                })?;
+                let (pops, pushes) = simple_effect(opcode).ok_or(DecodedLayoutError::Ineligible)?;
                 self.pop(pops)?;
                 self.push(pushes)?;
             }
