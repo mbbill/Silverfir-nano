@@ -384,6 +384,7 @@ impl<'a> RawOpCursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::module::Module;
     use crate::op_decoder::{DecodedOp, Decoder};
     use crate::opcodes::{Opcode, OpcodeFC};
     use std::vec::Vec;
@@ -497,6 +498,46 @@ mod tests {
         assert!(raw.remaining().is_empty());
     }
 
+    fn assert_one_matches_or_is_explicitly_unsupported(bytes: &[u8], pc: usize) -> bool {
+        let generic = decode_generic_at(bytes, pc);
+        let mut raw = RawOpCursor::at(bytes, pc);
+        match (raw.next(), generic) {
+            (Ok(Some(raw)), Ok(generic)) => {
+                assert_equivalent(raw, &generic);
+                true
+            }
+            (Err(RawDecodeError::Decode(raw_error)), Err(generic)) => {
+                assert_eq!(raw_error, generic, "pc={pc}, bytes={bytes:x?}");
+                assert_eq!(raw.position(), pc);
+                true
+            }
+            (Err(RawDecodeError::Unsupported { opcode, offset }), Ok(generic)) => {
+                assert_eq!(offset, pc);
+                assert_eq!(opcode, generic.wasm_op);
+                assert_eq!(raw.position(), pc);
+                false
+            }
+            // A non-SIMD build rejects a well-formed FD instruction before
+            // exposing it. The raw cursor still classifies the prefix as the
+            // deliberately unsupported SIMD family.
+            (
+                Err(RawDecodeError::Unsupported {
+                    opcode: WasmOpcode::FD(_),
+                    offset,
+                }),
+                Err(generic),
+            ) => {
+                assert_eq!(offset, pc);
+                assert_eq!(generic.class(), "invalid");
+                assert_eq!(raw.position(), pc);
+                false
+            }
+            (raw, generic) => {
+                panic!("raw/generic result mismatch at pc={pc}: raw={raw:?}, generic={generic:?}")
+            }
+        }
+    }
+
     #[test]
     fn raw_cursor_matches_generic_for_mvp_and_bulk_ops() {
         let code = [
@@ -558,5 +599,178 @@ mod tests {
 
         let mut raw = RawOpCursor::at(&[], 1);
         assert_eq!(raw.next(), Err(RawDecodeError::InvalidPc { pc: 1, len: 0 }));
+    }
+
+    #[test]
+    fn every_primary_opcode_byte_matches_or_is_explicitly_unsupported() {
+        let mut supported = 0usize;
+        let mut unsupported = 0usize;
+        for opcode in 0u16..=u8::MAX as u16 {
+            let mut bytes = [0u8; 40];
+            bytes[0] = opcode as u8;
+            bytes[39] = Opcode::END as u8;
+            if assert_one_matches_or_is_explicitly_unsupported(&bytes, 0) {
+                supported += 1;
+            } else {
+                unsupported += 1;
+            }
+        }
+        assert!(supported >= 190, "supported primary bytes={supported}");
+        assert_eq!(unsupported, 6, "EH/typed-select/GC/SIMD families");
+    }
+
+    #[test]
+    fn every_fc_opcode_and_immediate_matches_generic() {
+        use crate::opcodes::OPCODE_FC_CONSTANTS as fc;
+
+        for (ext, immediates) in [
+            (fc::I32_TRUNC_SAT_F32_S, &[][..]),
+            (fc::I32_TRUNC_SAT_F32_U, &[][..]),
+            (fc::I32_TRUNC_SAT_F64_S, &[][..]),
+            (fc::I32_TRUNC_SAT_F64_U, &[][..]),
+            (fc::I64_TRUNC_SAT_F32_S, &[][..]),
+            (fc::I64_TRUNC_SAT_F32_U, &[][..]),
+            (fc::I64_TRUNC_SAT_F64_S, &[][..]),
+            (fc::I64_TRUNC_SAT_F64_U, &[][..]),
+            (fc::MEMORY_INIT, &[0x80, 0x00, 0x01][..]),
+            (fc::DATA_DROP, &[0x80, 0x00][..]),
+            (fc::MEMORY_COPY, &[0x00, 0x01][..]),
+            (fc::MEMORY_FILL, &[0x01][..]),
+            (fc::TABLE_INIT, &[0x80, 0x00, 0x01][..]),
+            (fc::ELEM_DROP, &[0x01][..]),
+            (fc::TABLE_COPY, &[0x00, 0x01][..]),
+            (fc::TABLE_GROW, &[0x01][..]),
+            (fc::TABLE_SIZE, &[0x01][..]),
+            (fc::TABLE_FILL, &[0x01][..]),
+        ] {
+            let mut bytes = Vec::with_capacity(2 + immediates.len());
+            bytes.push(Opcode::PREFIX_FC as u8);
+            bytes.push(ext as u8);
+            bytes.extend_from_slice(immediates);
+            let generic = decode_generic_at(&bytes, 0).expect("generic FC");
+            let raw = RawOpCursor::new(&bytes)
+                .next()
+                .expect("raw FC")
+                .expect("one FC op");
+            assert_equivalent(raw, &generic);
+        }
+    }
+
+    #[test]
+    fn noncanonical_and_malformed_leb_match_generic_errors_and_boundaries() {
+        for bytes in [
+            &[Opcode::LOCAL_GET as u8, 0x80, 0x00][..],
+            &[Opcode::LOCAL_SET as u8, 0xff, 0x00][..],
+            &[Opcode::I32_CONST as u8, 0xff, 0x7f][..],
+            &[Opcode::I64_CONST as u8, 0x80, 0x00][..],
+            &[Opcode::I32_LOAD as u8, 0x80, 0x00, 0x80, 0x00][..],
+            &[Opcode::BR_TABLE as u8, 0x81, 0x00, 0x80, 0x00, 0x00][..],
+        ] {
+            assert!(assert_one_matches_or_is_explicitly_unsupported(bytes, 0));
+        }
+
+        for bytes in [
+            &[Opcode::LOCAL_GET as u8, 0x80][..],
+            &[Opcode::LOCAL_GET as u8, 0x80, 0x80, 0x80, 0x80, 0x80][..],
+            &[Opcode::I32_CONST as u8, 0x80][..],
+            &[Opcode::I64_CONST as u8, 0x80][..],
+            &[Opcode::I32_LOAD as u8, 0x00, 0x80][..],
+            &[Opcode::BR_TABLE as u8, 0x01, 0x80][..],
+            &[Opcode::PREFIX_FC as u8, 0x80][..],
+        ] {
+            assert!(assert_one_matches_or_is_explicitly_unsupported(bytes, 0));
+        }
+    }
+
+    fn compare_module_bodies(name: &str, wasm: &[u8]) -> (usize, usize, usize) {
+        let module = Module::new(name, wasm).expect("parse corpus module");
+        let mut supported = 0usize;
+        let mut unsupported = 0usize;
+        let mut resumed = 0usize;
+        let mut random = 0x4d59_5df4_d0f3_3173u64;
+        for function in module.functions() {
+            let Some(spec) = function.spec() else {
+                continue;
+            };
+            let bytes = spec.code();
+            let mut pc = 0usize;
+            let mut starts = Vec::new();
+            while pc < bytes.len() {
+                let generic = decode_generic_at(bytes, pc).expect("valid corpus body");
+                if assert_one_matches_or_is_explicitly_unsupported(bytes, pc) {
+                    supported += 1;
+                } else {
+                    unsupported += 1;
+                }
+                starts.push(pc);
+                assert!(generic.next_op_offset > pc);
+                pc = generic.next_op_offset;
+            }
+            assert_eq!(pc, bytes.len());
+
+            let samples = starts.len().min(16);
+            for i in 0..samples {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                let chosen = i + (random as usize % (starts.len() - i));
+                starts.swap(i, chosen);
+                assert_one_matches_or_is_explicitly_unsupported(bytes, starts[i]);
+                resumed += 1;
+            }
+        }
+        (supported, unsupported, resumed)
+    }
+
+    #[test]
+    fn wasi_and_synthetic_bodies_match_generic_at_every_op_and_random_resume() {
+        let fib = include_bytes!("../../../benchmarks/wasi/fib/fib_min.wasm");
+        let coremark = include_bytes!("../../../benchmarks/wasi/coremark/coremark.wasm");
+        let (fib_supported, fib_unsupported, fib_resumed) = compare_module_bodies("fib", fib);
+        let (core_supported, core_unsupported, core_resumed) =
+            compare_module_bodies("coremark", coremark);
+        assert!(fib_supported + core_supported > 1_000);
+        assert_eq!(fib_unsupported + core_unsupported, 0);
+        assert!(fib_resumed + core_resumed > 100);
+    }
+
+    #[test]
+    fn eh_gc_typed_select_and_simd_are_explicitly_unsupported() {
+        for (bytes, expected) in [
+            (
+                &[Opcode::THROW as u8, 0x00][..],
+                WasmOpcode::OP(Opcode::THROW),
+            ),
+            (
+                &[Opcode::THROW_REF as u8][..],
+                WasmOpcode::OP(Opcode::THROW_REF),
+            ),
+            (
+                &[Opcode::TRY_TABLE as u8, 0x40, 0x00][..],
+                WasmOpcode::OP(Opcode::TRY_TABLE),
+            ),
+            (
+                &[Opcode::SELECT_T as u8, 0x00][..],
+                WasmOpcode::OP(Opcode::SELECT_T),
+            ),
+            (
+                &[Opcode::PREFIX_FB as u8, 0x00, 0x00][..],
+                WasmOpcode::FB(OpcodeFB::STRUCT_NEW),
+            ),
+            (
+                &[Opcode::PREFIX_FD as u8, 0x00, 0x00, 0x00][..],
+                WasmOpcode::FD(OpcodeFD::V128_LOAD),
+            ),
+        ] {
+            let mut cursor = RawOpCursor::new(bytes);
+            assert_eq!(
+                cursor.next(),
+                Err(RawDecodeError::Unsupported {
+                    opcode: expected,
+                    offset: 0,
+                })
+            );
+            assert_eq!(cursor.position(), 0);
+        }
     }
 }
