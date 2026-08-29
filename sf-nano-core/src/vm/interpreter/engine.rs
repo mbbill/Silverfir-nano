@@ -16,20 +16,30 @@ use tracked_alloc::boxed::Box;
 
 use crate::collections::Vec;
 
+#[cfg(test)]
 use super::instr::{
-    operand_is_f32, operand_is_float, result_is_f32, result_is_float, Instr, Op, FLAG_ADDR64,
-    FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE,
-    FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
+    operand_is_f32, operand_is_float, result_is_f32, result_is_float, FLAG_B_CONST,
 };
+use super::instr::{
+    Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_DST_ACC, FLAG_FUSED,
+    FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
+};
+#[cfg(test)]
+use super::layout::slot_fields;
 use super::layout::{
-    c_is_branch_target, family, op_slot, slot_fields, total_slots, transform_bc, writes_acc, Fam,
-    Pinned,
+    c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
 };
 use super::predecode::PredecodedFunction;
 
 // Build-time facts about the generated engine: which operand classes it
 // was built with, and how many packed handler slots the table holds.
 include!(concat!(env!("OUT_DIR"), "/interp_engine_cfg.rs"));
+
+/// Target capabilities which affect pinned-local selection. The predecoder
+/// records the final choice once, while it already owns every instruction
+/// mutation, and the linker consumes that compact result directly.
+pub(super) const PIN_CAPS: (bool, bool, bool) =
+    (INTERP_HAS_L1, INTERP_HAS_FLOAT_REGS, INTERP_FLOAT_PIN_F32);
 
 core::arch::global_asm!(include_str!(concat!(env!("OUT_DIR"), "/interp_engine.s")));
 
@@ -239,7 +249,6 @@ impl LinkPlan {
 /// only inside one `link` call; nothing here outlives it.
 #[derive(Default)]
 pub(super) struct LinkScratch {
-    slots: Vec<SlotStat>,
     table_byte_off: Vec<u64>,
 }
 
@@ -256,20 +265,15 @@ struct ResolvedCell {
     handler: usize,
 }
 
-/// Clear `v` and refill it with `n` copies of `fill`, keeping its buffer.
-fn reset<T: Clone>(v: &mut Vec<T>, n: usize, fill: T) {
-    v.clear();
-    v.resize(n, fill);
-}
-
-/// What `select_pinned` records about one frame slot.
+/// What [`select_pinned_reference`] records about one frame slot.
 ///
 /// One array rather than four parallel ones: the pass touches every field
 /// of a slot together, and four arrays put each access on its own cache
 /// line.
+#[cfg(test)]
 #[derive(Clone, Copy, Default)]
 struct SlotStat {
-    /// Static reference count, unweighted — see [`select_pinned`].
+    /// Static reference count, unweighted.
     count: u32,
     /// Domain set of this slot's WRITERS: bit 0 integer/agnostic, bit 1
     /// float. Writers decide the pinned register file; a mixed set makes
@@ -284,6 +288,7 @@ struct SlotStat {
     f32dom: bool,
 }
 
+/// Original full-stream linker census, retained as a test-only oracle.
 /// Pick the function's pinned locals — the most- and second-most-
 /// referenced slots, by UNWEIGHTED static count (`u64::MAX` = none).
 ///
@@ -296,14 +301,15 @@ struct SlotStat {
 /// them anyway. A write-biased score (reads + 2*writes) measured
 /// inconclusive on CoreMark, which the traffic model says cannot show the
 /// effect — it stays open.
-fn select_pinned(func: &PredecodedFunction, scratch: &mut LinkScratch) -> Pinned {
-    let n = func.n_locals as u64;
+#[cfg(test)]
+pub(super) fn select_pinned_reference(code: &[Instr], n_locals: u32) -> Pinned {
+    let n = n_locals as u64;
     if n == 0 {
         return Pinned::NONE;
     }
-    let slots = &mut scratch.slots;
-    reset(slots, func.n_locals as usize, SlotStat::default());
-    for ins in func.code.iter() {
+    let mut slots = Vec::new();
+    slots.resize(n_locals as usize, SlotStat::default());
+    for ins in code.iter() {
         let (a_s, b_s, c_d) = slot_fields(ins.op);
         if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
             let slot = &mut slots[ins.a as usize];
@@ -685,7 +691,7 @@ impl NativeEngine {
         scratch: &mut LinkScratch,
         call_indirect_types: &mut Vec<u32>,
     ) -> LinkedFunction {
-        let pin = select_pinned(func, scratch);
+        let pin = func.pinned();
 
         // Flatten the branch tables; BrTable cells carry a byte offset
         // into the flat buffer until the final address fixup below.
@@ -967,8 +973,12 @@ mod tests {
     }
 
     fn assert_reference_equivalence(engine: &NativeEngine, func: &PredecodedFunction) {
-        let mut pin_scratch = LinkScratch::default();
-        let pin = select_pinned(func, &mut pin_scratch);
+        let pin = func.pinned();
+        assert_eq!(
+            pin,
+            select_pinned_reference(&func.code, func.n_locals),
+            "predecoded pinned census differs from the full-stream oracle"
+        );
         let reference = engine.resolve_reference(&func.code, &pin);
         let streaming = engine.resolve_streaming_for_test(&func.code, &pin);
         assert_eq!(streaming, reference, "resolved flags/handlers differ");

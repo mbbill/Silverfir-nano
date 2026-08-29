@@ -583,7 +583,7 @@ const fn compute_bc_shape(op: Op) -> BcShape {
 /// The pinned-local selection a function was linked with. `u64::MAX` means
 /// the class is unused; the `_float` flags say which register file is
 /// authoritative for that slot.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Pinned {
     pub(crate) l0: u64,
     pub(crate) l1: u64,
