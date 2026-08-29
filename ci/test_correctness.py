@@ -415,7 +415,11 @@ class CoveragePlanTests(unittest.TestCase):
         workflows = ROOT / ".github" / "workflows"
         self.assertEqual(
             {path.name for path in workflows.glob("*.yml")},
-            {"correctness.yml", "performance-regression.yml"},
+            {
+                "correctness.yml",
+                "performance-regression.yml",
+                "wasmi-startup-ranking.yml",
+            },
         )
 
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
