@@ -11,7 +11,10 @@
 use crate::collections::Vec;
 use crate::error::WasmError;
 use crate::module::Module;
-use crate::op_decoder::{CatchClauseKind, DecodedOp, Immediate};
+use crate::op_decoder::{
+    raw_cursor::{RawBlockType, RawImmediate, RawOp},
+    CatchClauseKind, DecodedOp, Immediate,
+};
 use crate::opcodes::{Opcode, OpcodeFB, WasmOpcode};
 use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -582,6 +585,214 @@ impl BaselineFunctionBuilder {
         }
     }
 
+    /// Plan the same side-table event directly from the allocation-free raw
+    /// cursor. This is intentionally independent of `DecodedOp` and the
+    /// folded predecoder: the only shared state is this artifact assembler.
+    pub(super) fn plan_raw(
+        &self,
+        module: &Module,
+        decoded: &RawOp<'_>,
+        stack_height: usize,
+        dead: bool,
+    ) -> Result<ArtifactEvent, WasmError> {
+        let source_pc = to_u32(decoded.start, "baseline source pc overflow")?;
+        let next_pc = to_u32(decoded.end, "baseline next pc overflow")?;
+        let loop_depth = self.loop_depth()?;
+        let base_op = match decoded.wasm_op {
+            WasmOpcode::OP(op) => Some(op),
+            _ => None,
+        };
+        if dead
+            && !matches!(
+                base_op,
+                Some(
+                    Opcode::BLOCK
+                        | Opcode::LOOP
+                        | Opcode::IF
+                        | Opcode::TRY_TABLE
+                        | Opcode::ELSE
+                        | Opcode::END
+                )
+            )
+        {
+            return Ok(ArtifactEvent::None);
+        }
+
+        match decoded.wasm_op {
+            WasmOpcode::OP(Opcode::BLOCK | Opcode::LOOP | Opcode::IF) => {
+                let RawImmediate::Block(block) = decoded.imm else {
+                    return Err(WasmError::internal(
+                        "raw baseline collector expected block immediate",
+                    ));
+                };
+                let (params, results) = raw_block_arity(module, block)?;
+                let condition = usize::from(!dead && base_op == Some(Opcode::IF));
+                let required = params as usize + condition;
+                let base = if dead {
+                    stack_height.saturating_sub(required)
+                } else {
+                    stack_height.checked_sub(required).ok_or_else(|| {
+                        WasmError::invalid("raw baseline block stack height underflow")
+                    })?
+                };
+                let kind = match base_op {
+                    Some(Opcode::BLOCK) => ArtifactFrameKind::Block,
+                    Some(Opcode::LOOP) => ArtifactFrameKind::Loop,
+                    Some(Opcode::IF) => ArtifactFrameKind::If,
+                    _ => unreachable!(),
+                };
+                Ok(ArtifactEvent::Push {
+                    kind,
+                    source_pc,
+                    next_pc,
+                    base: to_u32(base, "raw baseline block height overflow")?,
+                    params,
+                    results,
+                    catches: Vec::new(),
+                })
+            }
+            WasmOpcode::OP(Opcode::TRY_TABLE) => {
+                let RawImmediate::TryTable { block, catches } = decoded.imm else {
+                    return Err(WasmError::internal(
+                        "raw baseline collector expected try_table immediate",
+                    ));
+                };
+                let (params, results) = raw_block_arity(module, block)?;
+                let base = if dead {
+                    stack_height.saturating_sub(params as usize)
+                } else {
+                    stack_height.checked_sub(params as usize).ok_or_else(|| {
+                        WasmError::invalid("raw baseline try_table stack height underflow")
+                    })?
+                };
+                let mut pending = Vec::with_capacity(catches.len() as usize);
+                for catch in catches.iter() {
+                    let catch = catch?;
+                    let target = self.target_spec(catch.label_depth)?;
+                    let (payload_arity, forwards_exn) = match catch.kind {
+                        CatchClauseKind::Catch | CatchClauseKind::CatchRef => {
+                            let tag = catch.tag_index.ok_or_else(|| {
+                                WasmError::invalid("raw baseline typed catch has no tag")
+                            })?;
+                            let arity = module
+                                .tags()
+                                .get(tag as usize)
+                                .map(|tag| tag.func_type().params().len())
+                                .ok_or_else(|| {
+                                    WasmError::invalid("raw baseline catch tag overflow")
+                                })?;
+                            (
+                                to_u32(arity, "raw baseline catch payload arity overflow")?,
+                                catch.kind == CatchClauseKind::CatchRef,
+                            )
+                        }
+                        CatchClauseKind::CatchAll => (0, false),
+                        CatchClauseKind::CatchAllRef => (0, true),
+                    };
+                    pending.push(PendingCatch {
+                        kind: catch.kind,
+                        tag_index: catch.tag_index,
+                        payload_arity,
+                        forwards_exn,
+                        target,
+                    });
+                }
+                Ok(ArtifactEvent::Push {
+                    kind: ArtifactFrameKind::TryTable,
+                    source_pc,
+                    next_pc,
+                    base: to_u32(base, "raw baseline try_table height overflow")?,
+                    params,
+                    results,
+                    catches: pending,
+                })
+            }
+            WasmOpcode::OP(Opcode::ELSE) => Ok(ArtifactEvent::Else {
+                source_pc,
+                next_pc,
+                target: self.target_spec(0)?,
+            }),
+            WasmOpcode::OP(Opcode::END) => Ok(ArtifactEvent::End { source_pc, next_pc }),
+            WasmOpcode::OP(
+                Opcode::BR | Opcode::BR_IF | Opcode::BR_ON_NULL | Opcode::BR_ON_NON_NULL,
+            ) => {
+                let RawImmediate::LabelIndex(depth) = decoded.imm else {
+                    return Err(WasmError::internal(
+                        "raw baseline collector expected branch label",
+                    ));
+                };
+                Ok(ArtifactEvent::Branch {
+                    source_pc,
+                    target: self.target_spec(depth)?,
+                })
+            }
+            WasmOpcode::OP(Opcode::BR_TABLE) => {
+                let RawImmediate::BrTable { labels, default } = decoded.imm else {
+                    return Err(WasmError::internal(
+                        "raw baseline collector expected br_table labels",
+                    ));
+                };
+                let mut targets = Vec::with_capacity(labels.len() as usize + 1);
+                for label in labels.iter() {
+                    targets.push(self.target_spec(label?)?);
+                }
+                targets.push(self.target_spec(default)?);
+                Ok(ArtifactEvent::BrTable { source_pc, targets })
+            }
+            WasmOpcode::OP(Opcode::RETURN) => Ok(ArtifactEvent::Branch {
+                source_pc,
+                target: self.function_target()?,
+            }),
+            WasmOpcode::OP(Opcode::CALL | Opcode::RETURN_CALL) => {
+                let RawImmediate::FunctionIndex(callee) = decoded.imm else {
+                    return Err(WasmError::internal(
+                        "raw baseline collector expected direct call target",
+                    ));
+                };
+                Ok(ArtifactEvent::DirectCall(DirectCallEdge {
+                    caller: self.function,
+                    callee,
+                    source_pc,
+                    tail: base_op == Some(Opcode::RETURN_CALL),
+                    loop_depth,
+                }))
+            }
+            WasmOpcode::OP(Opcode::CALL_INDIRECT | Opcode::RETURN_CALL_INDIRECT) => {
+                let RawImmediate::CallIndirect { typeidx, tableidx } = decoded.imm else {
+                    return Err(WasmError::internal(
+                        "raw baseline collector expected indirect call immediate",
+                    ));
+                };
+                Ok(ArtifactEvent::IndirectCall(IndirectCallSite {
+                    function: self.function,
+                    source_pc,
+                    expected_type: typeidx,
+                    kind: IndirectCallKind::Table {
+                        table_index: tableidx,
+                    },
+                    tail: base_op == Some(Opcode::RETURN_CALL_INDIRECT),
+                    loop_depth,
+                }))
+            }
+            WasmOpcode::OP(Opcode::CALL_REF | Opcode::RETURN_CALL_REF) => {
+                let RawImmediate::TypeIndex(expected_type) = decoded.imm else {
+                    return Err(WasmError::internal(
+                        "raw baseline collector expected call_ref type",
+                    ));
+                };
+                Ok(ArtifactEvent::IndirectCall(IndirectCallSite {
+                    function: self.function,
+                    source_pc,
+                    expected_type,
+                    kind: IndirectCallKind::Ref,
+                    tail: base_op == Some(Opcode::RETURN_CALL_REF),
+                    loop_depth,
+                }))
+            }
+            _ => Ok(ArtifactEvent::None),
+        }
+    }
+
     pub(super) fn commit(
         &mut self,
         event: ArtifactEvent,
@@ -915,6 +1126,23 @@ impl BaselineFunctionBuilder {
 
 fn to_u32(value: usize, message: &'static str) -> Result<u32, WasmError> {
     u32::try_from(value).map_err(|_| WasmError::invalid(message))
+}
+
+fn raw_block_arity(module: &Module, block: RawBlockType) -> Result<(u32, u32), WasmError> {
+    match block {
+        RawBlockType::Empty => Ok((0, 0)),
+        RawBlockType::Value(_) => Ok((0, 1)),
+        RawBlockType::TypeIndex(index) => module
+            .types()
+            .get_function_type(index as u32)
+            .map(|function| {
+                (
+                    function.params().len() as u32,
+                    function.results().len() as u32,
+                )
+            })
+            .ok_or_else(|| WasmError::invalid("raw baseline block type index out of range")),
+    }
 }
 
 #[cfg(test)]

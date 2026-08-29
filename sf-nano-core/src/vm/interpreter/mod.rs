@@ -33,6 +33,8 @@
 mod baseline_artifact;
 #[cfg(test)]
 mod baseline_exec;
+#[cfg(test)]
+mod baseline_raw_artifact;
 mod engine;
 mod exec;
 mod fmath;
