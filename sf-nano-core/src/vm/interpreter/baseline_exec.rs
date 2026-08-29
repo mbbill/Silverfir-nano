@@ -1186,7 +1186,7 @@ mod tests {
             error,
             BaselineExecError::Unsupported {
                 opcode: Some(WasmOpcode::OP(Opcode::TRY_TABLE)),
-                feature: "raw decoder opcode",
+                feature: "MVP opcode",
                 ..
             }
         ));
