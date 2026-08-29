@@ -12,7 +12,7 @@
 //! with slot operands pre-scaled to byte offsets and branch targets
 //! resolved to absolute cell addresses.
 
-use tracked_alloc::boxed::Box;
+use tracked_alloc::{boxed::Box, from_raw_parts, into_raw_parts};
 
 use crate::collections::Vec;
 
@@ -125,14 +125,14 @@ const _: () = {
 /// Transfer the module-wide stage-A allocation into its stage-B element
 /// type without allocating or copying any instruction payloads.
 fn into_dispatch_cells(instrs: Vec<Instr>) -> Vec<DCell> {
-    let (ptr, len, capacity) = crate::collections::into_raw_parts(instrs);
+    let (ptr, len, capacity) = into_raw_parts(instrs);
     // SAFETY: the compile-time assertions above prove identical element
     // size/alignment and a field-for-field payload layout. `Instr` is Copy
     // and has no drop glue; its explicit head padding is initialized. The
-    // The tracking-aware raw-parts pair unregisters the old typed owner and
-    // registers the new one around the same allocation. There is one owner
-    // throughout and no live reference crosses the transfer.
-    unsafe { crate::collections::from_raw_parts(ptr.cast(), len, capacity) }
+    // The tracking-aware raw-parts pair retypes the one live allocation record
+    // in place. There is one owner throughout and no live reference crosses
+    // the transfer.
+    unsafe { from_raw_parts(ptr.cast(), len, capacity) }
 }
 
 /// Native handlers which can return `EXIT_SLOW` after their cell payload has
