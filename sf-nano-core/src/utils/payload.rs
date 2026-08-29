@@ -141,6 +141,17 @@ impl<'a> Payload<'a> {
         &self.data[self.position..]
     }
 
+    /// Advance after a caller has already proved that `len` bytes remain.
+    ///
+    /// The interpreter predecoder probes a borrowed suffix before committing
+    /// a common-op fast decode. Keeping the proof on the probe lets the commit
+    /// be one cursor update rather than decoding the immediates a second time.
+    #[inline]
+    pub(crate) fn advance_known_valid(&mut self, len: usize) {
+        debug_assert!(len <= self.data.len() - self.position);
+        self.position += len;
+    }
+
     pub fn advance_and_split_at(&mut self, len: usize) -> Result<&'a [u8], PayloadError> {
         if self.position + len > self.data.len() {
             return Err(PayloadError::UnexpectedEndOfInput("advance_and_split_at"));

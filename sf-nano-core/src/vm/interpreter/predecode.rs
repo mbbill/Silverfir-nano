@@ -24,7 +24,7 @@ use crate::module::Module;
 use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
 use crate::op_decoder::{CatchClause, CatchClauseKind};
 use crate::opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode};
-use crate::utils::limits::Limitable;
+use crate::utils::{leb128, limits::Limitable};
 use crate::value_type::ValueType;
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::{ref_to_machine_raw, RefValue};
@@ -134,6 +134,16 @@ pub(crate) fn predecode_function(
     function_handles: &[RefValue],
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
+    predecode_function_impl(module, tag_identities, function_handles, func_index, false)
+}
+
+fn predecode_function_impl(
+    module: &Module,
+    tag_identities: &[TagIdentity],
+    function_handles: &[RefValue],
+    func_index: usize,
+    _disable_fast: bool,
+) -> Result<PredecodedFunction, WasmError> {
     if tag_identities.len() != module.tags().len() {
         return Err(WasmError::invalid(
             "interp: runtime tag table does not match module",
@@ -196,6 +206,10 @@ pub(crate) fn predecode_function(
             force_canonical_loop_homes: false,
         };
         let mut decoder = Decoder::new(spec.code());
+        #[cfg(test)]
+        if _disable_fast {
+            decoder.disable_predecode_fast_for_test();
+        }
         decoder.add_handler(&mut p);
         decoder.decode_function()?;
         drop(decoder);
@@ -1939,11 +1953,150 @@ impl<'m> Predecoder<'m> {
     fn patch_instr_to_here(&mut self, i: u32) {
         self.code[i as usize].c = self.code.len() as u64;
     }
+
+    /// Lower a decoded load. Kept out of the byte-dispatch loop so the same
+    /// implementation serves both its common-op fast lane and generic decode
+    /// fallback without duplicating this comparatively large fusion logic.
+    #[inline(never)]
+    fn lower_load(&mut self, lop: Op, memidx: u32, raw_offset: u64) -> Result<(), WasmError> {
+        let addr64 = self.memory_is_64(memidx as u64);
+        // A memory64 offset can use all 64 bits, leaving no room for the
+        // index beside it; such a cell carries a side-table index instead.
+        // It is always a slow cell, so nothing native reads the packed form.
+        let offset = if raw_offset >= 1u64 << 48 {
+            if !addr64 {
+                return Err(WasmError::invalid(
+                    "interp: static memory offset does not fit the packed form",
+                ));
+            }
+            let at = self.wide_memargs.len() as u64;
+            self.wide_memargs.push((memidx, raw_offset));
+            WIDE_MEMARG | at
+        } else {
+            ((memidx as u64) << 48) | raw_offset
+        };
+        let at = self.code.len() as u32;
+        let d = self.pop()?;
+        let (a, a_const) = self.operand(d, at);
+        // Address-add fusion: a single-use, just-emitted i32.add producing
+        // this address folds into the load.
+        let mut fused = false;
+        if let Some(def) = self.rewritable_producer(d) {
+            let add = self.code[def as usize];
+            let dst = self.temp_slot_used(self.height());
+            if add.op == Op::I32_Add
+                && !addr64
+                && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
+                && offset >> 48 == 0
+                && add.a < 1 << 16
+                && add.b < 1 << 16
+                && dst < 1 << 16
+            {
+                let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
+                    (add.b, add.a, FLAG_A_ACC)
+                } else {
+                    (add.a, add.b, add.flags & FLAG_A_ACC)
+                };
+                self.code[def as usize] = Instr {
+                    op: lop,
+                    flags: afl | FLAG_FUSED,
+                    a: a1,
+                    b: offset,
+                    c: a2 << 32 | dst,
+                };
+                self.push_result_temp(def);
+                fused = true;
+            }
+        }
+        if !fused {
+            let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
+            if a_const {
+                flags |= FLAG_A_CONST;
+            }
+            if addr64 {
+                flags |= FLAG_ADDR64;
+            }
+            let dst = self.temp_slot_used(self.height());
+            let idx = self.emit(lop, flags, a, offset, dst);
+            self.push_result_temp(idx);
+        }
+        Ok(())
+    }
+
+    /// Lower a decoded store; see [`Predecoder::lower_load`].
+    #[inline(never)]
+    fn lower_store(&mut self, sop: Op, memidx: u32, raw_offset: u64) -> Result<(), WasmError> {
+        let addr64 = self.memory_is_64(memidx as u64);
+        let offset = if raw_offset >= 1u64 << 48 {
+            if !addr64 {
+                return Err(WasmError::invalid(
+                    "interp: static memory offset does not fit the packed form",
+                ));
+            }
+            let at = self.wide_memargs.len() as u64;
+            self.wide_memargs.push((memidx, raw_offset));
+            WIDE_MEMARG | at
+        } else {
+            ((memidx as u64) << 48) | raw_offset
+        };
+        let at = self.code.len() as u32;
+        let v = self.pop()?;
+        let (b, b_const) = self.operand(v, at);
+        let mut flags = self.acc_operand(v, FLAG_B_ACC, operand_is_float(sop, true));
+        if b_const {
+            flags |= FLAG_B_CONST;
+        }
+        let ad = self.pop()?;
+        let (a, a_const) = self.operand(ad, at);
+        let mut fused = false;
+        if let Some(def) = self.rewritable_producer(ad) {
+            let add = self.code[def as usize];
+            if add.op == Op::I32_Add
+                && !addr64
+                && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
+                && offset >> 32 == 0
+                && add.a < 1 << 16
+                && add.b < 1 << 16
+            {
+                let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
+                    (add.b, add.a, FLAG_A_ACC)
+                } else {
+                    (add.a, add.b, add.flags & FLAG_A_ACC)
+                };
+                self.code[def as usize] = Instr {
+                    op: sop,
+                    flags: flags | afl | FLAG_FUSED,
+                    a: a1,
+                    b,
+                    c: a2 << 32 | offset,
+                };
+                fused = true;
+            }
+        }
+        if !fused {
+            flags |= self.acc_operand(ad, FLAG_A_ACC, false);
+            if a_const {
+                flags |= FLAG_A_CONST;
+            }
+            if addr64 {
+                flags |= FLAG_ADDR64;
+            }
+            self.emit(sop, flags, a, b, offset);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
-enum SimpleLowering {
-    Unsupported,
+enum FastLowering {
+    Fallback,
+    LocalGet,
+    LocalSet,
+    LocalTee,
+    I32Const,
+    I64Const,
+    F32Const,
+    F64Const,
     Value1(Op),
     Value2(Op),
     Load(Op),
@@ -1952,16 +2105,22 @@ enum SimpleLowering {
 
 macro_rules! set_simple_lowerings {
     ($table:ident, $kind:ident, $($wasm:ident => $lowered:ident),+ $(,)?) => {
-        $($table[Opcode::$wasm as usize] = SimpleLowering::$kind(Op::$lowered);)+
+        $($table[Opcode::$wasm as usize] = FastLowering::$kind(Op::$lowered);)+
     };
 }
 
-/// Table-driven lowering for the numeric and memory opcodes handled by the
-/// generic tail of `on_stream`. These are the common case in compiled Wasm;
-/// keeping their large mapping out of `on_stream` shrinks its hot instruction
-/// footprint without changing any lowering rule.
-const SIMPLE_LOWERINGS: [SimpleLowering; 256] = {
-    let mut table = [SimpleLowering::Unsupported; 256];
+/// Byte-indexed lowering for the common routing, numeric and memory opcodes.
+/// The predecoder probes this before constructing a generic `DecodedOp`; the
+/// same table remains the generic fallback's authoritative opcode-to-op map.
+const FAST_LOWERINGS: [FastLowering; 256] = {
+    let mut table = [FastLowering::Fallback; 256];
+    table[Opcode::LOCAL_GET as usize] = FastLowering::LocalGet;
+    table[Opcode::LOCAL_SET as usize] = FastLowering::LocalSet;
+    table[Opcode::LOCAL_TEE as usize] = FastLowering::LocalTee;
+    table[Opcode::I32_CONST as usize] = FastLowering::I32Const;
+    table[Opcode::I64_CONST as usize] = FastLowering::I64Const;
+    table[Opcode::F32_CONST as usize] = FastLowering::F32Const;
+    table[Opcode::F64_CONST as usize] = FastLowering::F64Const;
     set_simple_lowerings!(table, Value2,
         I32_ADD => I32_Add, I32_SUB => I32_Sub, I32_MUL => I32_Mul,
         I32_DIV_S => I32_DivS, I32_DIV_U => I32_DivU, I32_REM_S => I32_RemS,
@@ -2036,6 +2195,169 @@ const SIMPLE_LOWERINGS: [SimpleLowering; 256] = {
     table
 };
 
+/// Trivially-copy result of a successful common-op probe. `imm0` is the
+/// scalar immediate (or raw memory offset), and `imm1` is the memory index.
+/// No field owns memory, so overwriting this slot never runs drop glue.
+#[derive(Clone, Copy)]
+struct FastDecoded {
+    lowering: FastLowering,
+    imm0: u64,
+    imm1: u32,
+    consumed: usize,
+}
+
+impl FastDecoded {
+    const EMPTY: Self = Self {
+        lowering: FastLowering::Fallback,
+        imm0: 0,
+        imm1: 0,
+        consumed: 0,
+    };
+}
+
+#[inline]
+fn probe_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
+    let tail = bytes.get(*cursor..)?;
+    let &first = tail.first()?;
+    if first & 0x80 == 0 {
+        *cursor += 1;
+        return Some(first as u32);
+    }
+    let (value, consumed) = leb128::read_leb128_u32(tail).ok()?;
+    *cursor += consumed;
+    Some(value)
+}
+
+#[inline]
+fn probe_u64(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+    let tail = bytes.get(*cursor..)?;
+    let &first = tail.first()?;
+    if first & 0x80 == 0 {
+        *cursor += 1;
+        return Some(first as u64);
+    }
+    let (value, consumed) = leb128::read_leb128_u64(tail).ok()?;
+    *cursor += consumed;
+    Some(value)
+}
+
+#[inline]
+fn probe_i32(bytes: &[u8], cursor: &mut usize) -> Option<i32> {
+    let tail = bytes.get(*cursor..)?;
+    let &first = tail.first()?;
+    if first & 0x80 == 0 {
+        *cursor += 1;
+        let value = if first & 0x40 != 0 {
+            (first as i32) | !0x7f
+        } else {
+            first as i32
+        };
+        return Some(value);
+    }
+    let (value, consumed) = leb128::read_leb128_i32(tail).ok()?;
+    *cursor += consumed;
+    Some(value)
+}
+
+#[inline]
+fn probe_i64(bytes: &[u8], cursor: &mut usize) -> Option<i64> {
+    let tail = bytes.get(*cursor..)?;
+    let &first = tail.first()?;
+    if first & 0x80 == 0 {
+        *cursor += 1;
+        let value = if first & 0x40 != 0 {
+            (first as i64) | !0x7f
+        } else {
+            first as i64
+        };
+        return Some(value);
+    }
+    let (value, consumed) = leb128::read_leb128_i64(tail).ok()?;
+    *cursor += consumed;
+    Some(value)
+}
+
+#[inline]
+fn probe_fixed<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Option<[u8; N]> {
+    let end = cursor.checked_add(N)?;
+    let value = bytes.get(*cursor..end)?.try_into().ok()?;
+    *cursor = end;
+    Some(value)
+}
+
+/// Probe one common opcode without mutating the decoder cursor. A malformed
+/// immediate deliberately reports a miss: the unchanged generic fallback then
+/// produces the same public error it did before this fast lane existed.
+#[inline(never)]
+fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
+    let Some(&opcode) = bytes.first() else {
+        return false;
+    };
+    let lowering = FAST_LOWERINGS[opcode as usize];
+    let mut cursor = 1;
+    let (imm0, imm1) = match lowering {
+        FastLowering::Fallback => return false,
+        FastLowering::LocalGet | FastLowering::LocalSet | FastLowering::LocalTee => {
+            let Some(index) = probe_u32(bytes, &mut cursor) else {
+                return false;
+            };
+            (index as u64, 0)
+        }
+        FastLowering::I32Const => {
+            let Some(value) = probe_i32(bytes, &mut cursor) else {
+                return false;
+            };
+            (value as u32 as u64, 0)
+        }
+        FastLowering::I64Const => {
+            let Some(value) = probe_i64(bytes, &mut cursor) else {
+                return false;
+            };
+            (value as u64, 0)
+        }
+        FastLowering::F32Const => {
+            let Some(value) = probe_fixed::<4>(bytes, &mut cursor) else {
+                return false;
+            };
+            (u32::from_le_bytes(value) as u64, 0)
+        }
+        FastLowering::F64Const => {
+            let Some(value) = probe_fixed::<8>(bytes, &mut cursor) else {
+                return false;
+            };
+            (u64::from_le_bytes(value), 0)
+        }
+        FastLowering::Load(_) | FastLowering::Store(_) => {
+            let Some(align_flag) = probe_u32(bytes, &mut cursor) else {
+                return false;
+            };
+            let (align, memidx) = if align_flag < 64 {
+                (align_flag, 0)
+            } else {
+                let Some(memidx) = probe_u32(bytes, &mut cursor) else {
+                    return false;
+                };
+                (align_flag - 64, memidx)
+            };
+            if align >= 32 {
+                return false;
+            }
+            let Some(offset) = probe_u64(bytes, &mut cursor) else {
+                return false;
+            };
+            (offset, memidx)
+        }
+        FastLowering::Value1(_) | FastLowering::Value2(_) => (0, 0),
+    };
+    *decoded = FastDecoded {
+        lowering,
+        imm0,
+        imm1,
+        consumed: cursor,
+    };
+    true
+}
+
 impl<'m> OpcodeHandler for Predecoder<'m> {
     fn on_decode_begin(&mut self) -> Result<(), WasmError> {
         Ok(())
@@ -2045,13 +2367,56 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
         &mut self,
         stream: &mut OpStream<'x, 'y, 'z>,
     ) -> Result<(), WasmError> {
-        while let Some(op) = stream.next()? {
-            let may_prepare_copy = matches!(
-                op.wasm_op,
-                WasmOpcode::OP(Opcode::LOCAL_GET | Opcode::I32_CONST | Opcode::I64_CONST)
-                    | WasmOpcode::FC(OpcodeFC::MEMORY_COPY)
-            );
-            if self.pending_fill.is_some() && !may_prepare_copy {
+        let mut fast = FastDecoded::EMPTY;
+        loop {
+            if probe_fast(stream.predecode_bytes(), &mut fast) {
+                // Probe first, commit second: every miss leaves the generic
+                // decoder at the exact byte where it started.
+                stream.consume_predecoded(fast.consumed);
+                if self.pending_fill.is_some()
+                    && !matches!(
+                        fast.lowering,
+                        FastLowering::LocalGet | FastLowering::I32Const | FastLowering::I64Const
+                    )
+                {
+                    self.flush_pending_fill();
+                }
+                if self.dead {
+                    continue;
+                }
+                match fast.lowering {
+                    FastLowering::LocalGet => {
+                        self.stack.push(Desc::Local(fast.imm0 as u32));
+                    }
+                    FastLowering::LocalSet => self.local_set(fast.imm0 as u32, false)?,
+                    FastLowering::LocalTee => self.local_set(fast.imm0 as u32, true)?,
+                    FastLowering::I32Const
+                    | FastLowering::I64Const
+                    | FastLowering::F32Const
+                    | FastLowering::F64Const => self.stack.push(Desc::ConstV(fast.imm0)),
+                    FastLowering::Value1(op) => self.value_op(op, 1)?,
+                    FastLowering::Value2(op) => self.value_op(op, 2)?,
+                    FastLowering::Load(op) => {
+                        self.lower_load(op, fast.imm1, fast.imm0)?;
+                    }
+                    FastLowering::Store(op) => {
+                        self.lower_store(op, fast.imm1, fast.imm0)?;
+                    }
+                    FastLowering::Fallback => unreachable!(),
+                }
+                continue;
+            }
+
+            let Some(op) = stream.next()? else {
+                break;
+            };
+            if self.pending_fill.is_some()
+                && !matches!(
+                    op.wasm_op,
+                    WasmOpcode::OP(Opcode::LOCAL_GET | Opcode::I32_CONST | Opcode::I64_CONST)
+                        | WasmOpcode::FC(OpcodeFC::MEMORY_COPY)
+                )
+            {
                 self.flush_pending_fill();
             }
             let o = match op.wasm_op {
@@ -2938,156 +3303,30 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.bump_region();
                     self.dead = true;
                 }
-                o => {
-                    match SIMPLE_LOWERINGS[o as usize] {
-                        SimpleLowering::Value2(vop) => self.value_op(vop, 2)?,
-                        SimpleLowering::Value1(vop) => self.value_op(vop, 1)?,
-                        SimpleLowering::Load(lop) => {
-                            let offset = match imm {
-                                Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
-                                _ => return Err(desync()),
-                            };
-                            let (memidx, raw_offset) = offset;
-                            let addr64 = self.memory_is_64(memidx as u64);
-                            // A memory64 offset can use all 64 bits, leaving no
-                            // room for the index beside it; such a cell carries a
-                            // side-table index instead. It is always a slow cell,
-                            // so nothing native reads the packed form.
-                            let offset = if raw_offset >= 1u64 << 48 {
-                                if !addr64 {
-                                    return Err(WasmError::invalid(
-                                        "interp: static memory offset does not fit the packed form",
-                                    ));
-                                }
-                                let at = self.wide_memargs.len() as u64;
-                                self.wide_memargs.push((memidx, raw_offset));
-                                WIDE_MEMARG | at
-                            } else {
-                                ((memidx as u64) << 48) | raw_offset
-                            };
-                            let at = self.code.len() as u32;
-                            let d = self.pop()?;
-                            let (a, a_const) = self.operand(d, at);
-                            // Address-add fusion: a single-use, just-emitted
-                            // i32.add producing this address folds into the
-                            // load (the corpus-universal base+index pattern).
-                            let mut fused = false;
-                            if let Some(def) = self.rewritable_producer(d) {
-                                let add = self.code[def as usize];
-                                let dst = self.temp_slot_used(self.height());
-                                if add.op == Op::I32_Add
-                                    && !addr64
-                                    && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
-                                    && offset >> 48 == 0
-                                    && add.a < 1 << 16
-                                    && add.b < 1 << 16
-                                    && dst < 1 << 16
-                                {
-                                    let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
-                                        (add.b, add.a, FLAG_A_ACC)
-                                    } else {
-                                        (add.a, add.b, add.flags & FLAG_A_ACC)
-                                    };
-                                    self.code[def as usize] = Instr {
-                                        op: lop,
-                                        flags: afl | FLAG_FUSED,
-                                        a: a1,
-                                        b: offset,
-                                        c: a2 << 32 | dst,
-                                    };
-                                    self.push_result_temp(def);
-                                    fused = true;
-                                }
-                            }
-                            if !fused {
-                                let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
-                                if a_const {
-                                    flags |= FLAG_A_CONST;
-                                }
-                                if addr64 {
-                                    flags |= FLAG_ADDR64;
-                                }
-                                let dst = self.temp_slot_used(self.height());
-                                let idx = self.emit(lop, flags, a, offset, dst);
-                                self.push_result_temp(idx);
-                            }
+                o => match FAST_LOWERINGS[o as usize] {
+                    FastLowering::Value2(vop) => self.value_op(vop, 2)?,
+                    FastLowering::Value1(vop) => self.value_op(vop, 1)?,
+                    FastLowering::Load(lop) => match imm {
+                        Immediate::MemArg { offset, memidx, .. } => {
+                            self.lower_load(lop, *memidx, *offset)?;
                         }
-                        SimpleLowering::Store(sop) => {
-                            let offset = match imm {
-                                Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
-                                _ => return Err(desync()),
-                            };
-                            let (memidx, raw_offset) = offset;
-                            let addr64 = self.memory_is_64(memidx as u64);
-                            // A memory64 offset can use all 64 bits, leaving no
-                            // room for the index beside it; such a cell carries a
-                            // side-table index instead. It is always a slow cell,
-                            // so nothing native reads the packed form.
-                            let offset = if raw_offset >= 1u64 << 48 {
-                                if !addr64 {
-                                    return Err(WasmError::invalid(
-                                        "interp: static memory offset does not fit the packed form",
-                                    ));
-                                }
-                                let at = self.wide_memargs.len() as u64;
-                                self.wide_memargs.push((memidx, raw_offset));
-                                WIDE_MEMARG | at
-                            } else {
-                                ((memidx as u64) << 48) | raw_offset
-                            };
-                            let at = self.code.len() as u32;
-                            let v = self.pop()?;
-                            let (b, b_const) = self.operand(v, at);
-                            let mut flags =
-                                self.acc_operand(v, FLAG_B_ACC, operand_is_float(sop, true));
-                            if b_const {
-                                flags |= FLAG_B_CONST;
-                            }
-                            let ad = self.pop()?;
-                            let (a, a_const) = self.operand(ad, at);
-                            // Address-add fusion (see the load arm). When it
-                            // fires the value was necessarily folded (the add
-                            // is the last instruction), so the value's flags
-                            // carry no adjacency marks.
-                            let mut fused = false;
-                            if let Some(def) = self.rewritable_producer(ad) {
-                                let add = self.code[def as usize];
-                                if add.op == Op::I32_Add
-                                    && !addr64
-                                    && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
-                                    && offset >> 32 == 0
-                                    && add.a < 1 << 16
-                                    && add.b < 1 << 16
-                                {
-                                    let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
-                                        (add.b, add.a, FLAG_A_ACC)
-                                    } else {
-                                        (add.a, add.b, add.flags & FLAG_A_ACC)
-                                    };
-                                    self.code[def as usize] = Instr {
-                                        op: sop,
-                                        flags: flags | afl | FLAG_FUSED,
-                                        a: a1,
-                                        b,
-                                        c: a2 << 32 | offset,
-                                    };
-                                    fused = true;
-                                }
-                            }
-                            if !fused {
-                                flags |= self.acc_operand(ad, FLAG_A_ACC, false);
-                                if a_const {
-                                    flags |= FLAG_A_CONST;
-                                }
-                                if addr64 {
-                                    flags |= FLAG_ADDR64;
-                                }
-                                self.emit(sop, flags, a, b, offset);
-                            }
+                        _ => return Err(desync()),
+                    },
+                    FastLowering::Store(sop) => match imm {
+                        Immediate::MemArg { offset, memidx, .. } => {
+                            self.lower_store(sop, *memidx, *offset)?;
                         }
-                        SimpleLowering::Unsupported => return Err(unsupported()),
-                    }
-                }
+                        _ => return Err(desync()),
+                    },
+                    FastLowering::Fallback
+                    | FastLowering::LocalGet
+                    | FastLowering::LocalSet
+                    | FastLowering::LocalTee
+                    | FastLowering::I32Const
+                    | FastLowering::I64Const
+                    | FastLowering::F32Const
+                    | FastLowering::F64Const => return Err(unsupported()),
+                },
             }
         }
         Ok(())
@@ -3110,7 +3349,7 @@ mod tests {
     use std::format;
     use std::vec::Vec as StdVec;
 
-    fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
+    fn predecode_wat_mode(src: &str, func: usize, disable_fast: bool) -> PredecodedFunction {
         let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
         let module = Module::new("t", &bin).expect("module");
         let tag_identities: StdVec<TagIdentity> = module
@@ -3120,11 +3359,98 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        predecode_function(&module, &tag_identities, &function_handles, func).expect("predecode")
+        predecode_function_impl(
+            &module,
+            &tag_identities,
+            &function_handles,
+            func,
+            disable_fast,
+        )
+        .expect("predecode")
+    }
+
+    fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
+        predecode_wat_mode(src, func, false)
     }
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
         f.code.iter().map(|i| i.op).collect()
+    }
+
+    fn assert_same_predecode(fast: &PredecodedFunction, generic: &PredecodedFunction) {
+        assert_eq!(fast.code.len(), generic.code.len(), "instruction count");
+        for (i, (a, b)) in fast.code.iter().zip(generic.code.iter()).enumerate() {
+            assert_eq!(
+                (a.op, a.flags, a.a, a.b, a.c),
+                (b.op, b.flags, b.a, b.b, b.c),
+                "instruction {i}"
+            );
+        }
+        assert_eq!(fast.br_tables, generic.br_tables, "branch tables");
+        assert_eq!(fast.wide_memargs, generic.wide_memargs, "wide memargs");
+        assert_eq!(fast.frame_slots, generic.frame_slots, "frame slots");
+        assert_eq!(fast.n_locals, generic.n_locals, "local count");
+        assert_eq!(fast.n_params, generic.n_params, "parameter count");
+        assert_eq!(fast.n_results, generic.n_results, "result count");
+        assert_eq!(
+            fast.slow_tail_return, generic.slow_tail_return,
+            "slow tail landing"
+        );
+        assert_eq!(
+            fast.exception_sites, generic.exception_sites,
+            "exception sites"
+        );
+        assert_eq!(
+            fast.exception_handlers, generic.exception_handlers,
+            "exception handlers"
+        );
+    }
+
+    #[test]
+    fn common_byte_fast_lane_matches_generic_decoder() {
+        let wat = r#"(module
+            (memory 1)
+            (func (param i32 i64 f32 f64) (result i32) (local i32)
+                local.get 0
+                i32.const 123456
+                i32.add
+                local.tee 4
+                drop
+                i32.const 0
+                local.get 4
+                i32.store offset=70000
+                i32.const 0
+                i32.load offset=70000
+                drop
+                local.get 1
+                i64.const -987654321
+                i64.xor
+                drop
+                local.get 2
+                f32.const 1.25
+                f32.add
+                drop
+                local.get 3
+                f64.const -2.5
+                f64.mul
+                drop
+                block
+                    local.get 4
+                    i32.eqz
+                    br_if 0
+                end
+                local.get 4))"#;
+        let fast = predecode_wat_mode(wat, 0, false);
+        let generic = predecode_wat_mode(wat, 0, true);
+        assert_same_predecode(&fast, &generic);
+    }
+
+    #[test]
+    fn malformed_fast_immediate_is_a_non_consuming_miss() {
+        let mut decoded = FastDecoded::EMPTY;
+        assert!(!probe_fast(&[Opcode::LOCAL_GET as u8, 0x80], &mut decoded));
+        assert!(!probe_fast(&[Opcode::I64_CONST as u8, 0x80], &mut decoded));
+        assert_eq!(decoded.consumed, 0);
     }
 
     #[test]
