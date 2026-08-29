@@ -7,7 +7,7 @@
 use crate::collections;
 
 use tracked_alloc::rc::Rc;
-use tracked_alloc::string::{String, ToString};
+use tracked_alloc::string::ToString;
 
 use crate::{
     constants,
@@ -124,6 +124,130 @@ const DATA_ACTIVE: u32 = 0x00;
 const DATA_PASSIVE: u32 = 0x01;
 const DATA_ACTIVE_MEMIDX: u32 = 0x02;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ModuleCapacities {
+    functions: usize,
+    tables: usize,
+    memories: usize,
+    globals: usize,
+    tags: usize,
+}
+
+impl ModuleCapacities {
+    fn add(slot: &mut usize, count: usize) -> Result<(), WasmError> {
+        *slot = slot
+            .checked_add(count)
+            .ok_or_else(|| WasmError::malformed("Module entity count overflow"))?;
+        Ok(())
+    }
+}
+
+/// Read a section vector count without trusting it to allocate more storage
+/// than the section can possibly contain. Every encoded entry consumes at
+/// least one byte, so this also keeps malformed tiny modules from turning the
+/// capacity pass into an oversized allocation request.
+fn planned_section_count(payload: &mut Payload) -> Result<usize, WasmError> {
+    let count = payload.read_leb128_u32()? as usize;
+    if count > payload.remaining_slice().len() {
+        return Err(WasmError::malformed("Section count exceeds section length"));
+    }
+    Ok(count)
+}
+
+fn skip_name(payload: &mut Payload) -> Result<(), WasmError> {
+    let len = payload.read_leb128_u32()? as usize;
+    payload.advance_and_split_at(len)?;
+    Ok(())
+}
+
+/// Count each imported entity kind without allocating or retaining anything.
+/// Import is the only heterogeneous section, so its single vector count is
+/// insufficient to reserve the five destination vectors exactly.
+fn plan_import_capacities(
+    payload: &mut Payload,
+    capacities: &mut ModuleCapacities,
+) -> Result<(), WasmError> {
+    let count = planned_section_count(payload)?;
+    for _ in 0..count {
+        skip_name(payload)?;
+        skip_name(payload)?;
+        match ExternalKind::try_from(payload.read_u8()?)? {
+            ExternalKind::Function => {
+                payload.read_leb128_u32()?;
+                ModuleCapacities::add(&mut capacities.functions, 1)?;
+            }
+            ExternalKind::Table => {
+                parse_tabletype(payload)?;
+                ModuleCapacities::add(&mut capacities.tables, 1)?;
+            }
+            ExternalKind::Memory => {
+                parse_memory_limits(payload)?;
+                ModuleCapacities::add(&mut capacities.memories, 1)?;
+            }
+            ExternalKind::Global => {
+                parse_globaltype(payload)?;
+                ModuleCapacities::add(&mut capacities.globals, 1)?;
+            }
+            ExternalKind::Tag => {
+                if payload.read_u8()? != 0x00 {
+                    return Err(WasmError::malformed("Invalid tag attribute"));
+                }
+                payload.read_leb128_u32()?;
+                ModuleCapacities::add(&mut capacities.tags, 1)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walk only section envelopes and counts before the real parse. Code and data
+/// payloads are skipped in O(number of sections); only import descriptors need
+/// a small second decode because their entities are heterogeneous. The result
+/// gives every long-lived top-level entity vector its final capacity before
+/// the first push, eliminating geometric growth and copies during startup.
+fn plan_module_capacities(mut payload: Payload<'_>) -> Result<ModuleCapacities, WasmError> {
+    let mut capacities = ModuleCapacities::default();
+    while !payload.is_empty() {
+        let section = WasmSection::try_from(payload.read_u8()?)?;
+        let section_len = payload.read_leb128_u32()? as usize;
+        let mut section_payload: Payload = payload.advance_and_split_at(section_len)?.into();
+        match section {
+            WasmSection::Import => {
+                plan_import_capacities(&mut section_payload, &mut capacities)?;
+            }
+            WasmSection::Function => {
+                let count = planned_section_count(&mut section_payload)?;
+                ModuleCapacities::add(&mut capacities.functions, count)?;
+            }
+            WasmSection::Table => {
+                let count = planned_section_count(&mut section_payload)?;
+                ModuleCapacities::add(&mut capacities.tables, count)?;
+            }
+            WasmSection::Memory => {
+                let count = planned_section_count(&mut section_payload)?;
+                ModuleCapacities::add(&mut capacities.memories, count)?;
+            }
+            WasmSection::Global => {
+                let count = planned_section_count(&mut section_payload)?;
+                ModuleCapacities::add(&mut capacities.globals, count)?;
+            }
+            WasmSection::Tag => {
+                let count = planned_section_count(&mut section_payload)?;
+                ModuleCapacities::add(&mut capacities.tags, count)?;
+            }
+            WasmSection::Custom
+            | WasmSection::Type
+            | WasmSection::Export
+            | WasmSection::Start
+            | WasmSection::Element
+            | WasmSection::Code
+            | WasmSection::Data
+            | WasmSection::DataCount => {}
+        }
+    }
+    Ok(capacities)
+}
+
 // ============================================================================
 // Main parse entry point
 // ============================================================================
@@ -191,17 +315,19 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         ));
     }
 
+    let capacities = plan_module_capacities(payload.clone())?;
     let mut types: collections::Vec<Rc<DefType>> = collections::Vec::new();
-    let mut functions: collections::Vec<Function> = collections::Vec::new();
-    let mut tables: collections::Vec<Table> = collections::Vec::new();
-    let mut memories: collections::Vec<Memory> = collections::Vec::new();
-    let mut globals: collections::Vec<Global> = collections::Vec::new();
-    let mut tags: collections::Vec<Tag> = collections::Vec::new();
+    let mut functions: collections::Vec<Function> =
+        collections::Vec::with_capacity(capacities.functions);
+    let mut tables: collections::Vec<Table> = collections::Vec::with_capacity(capacities.tables);
+    let mut memories: collections::Vec<Memory> =
+        collections::Vec::with_capacity(capacities.memories);
+    let mut globals: collections::Vec<Global> = collections::Vec::with_capacity(capacities.globals);
+    let mut tags: collections::Vec<Tag> = collections::Vec::with_capacity(capacities.tags);
     let mut elements: collections::Vec<Element> = collections::Vec::new();
     let mut data_segments: collections::Vec<Data> = collections::Vec::new();
     let mut start_func_index: Option<usize> = None;
     let mut data_count: Option<usize> = None;
-    let mut export_names: collections::Vec<String> = collections::Vec::new();
 
     loop {
         if payload.is_empty() {
@@ -255,7 +381,6 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
                     &mut memories,
                     &mut globals,
                     &mut tags,
-                    &mut export_names,
                     &mut section_payload,
                 )?;
             }
@@ -634,6 +759,15 @@ fn parse_type_section(payload: &mut Payload) -> Result<collections::Vec<Rc<DefTy
         if payload.peek_u8()? == 0x4E {
             payload.read_u8()?;
             let group_count = payload.read_leb128_u32()?;
+            if group_count as usize > payload.remaining_slice().len() {
+                return Err(WasmError::malformed(
+                    "Recursive type count exceeds section length",
+                ));
+            }
+            // The section count counts this recursive group as one entry,
+            // while the destination stores every subtype. Reserve the exact
+            // expansion before pushing so a large group cannot grow in steps.
+            types.reserve(group_count as usize);
             let rec_group_id = next_rec_group_id;
             next_rec_group_id += 1;
 
@@ -735,8 +869,9 @@ fn parse_function_section(
     functions: &mut collections::Vec<Function>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
-    let indices = parse_vec(payload, parse_indices)?;
-    for index in indices {
+    let count = payload.read_leb128_u32()?;
+    for _ in 0..count {
+        let index = parse_indices(payload)?;
         let func_type = get_function_type(types, index as u32)?;
         functions.push(Function::new_local(func_type, index as u32));
     }
@@ -773,8 +908,9 @@ fn parse_memory_section(
     memories: &mut collections::Vec<Memory>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
-    let mem_limits = parse_vec(payload, parse_memory_limits)?;
-    for limits in mem_limits {
+    let count = payload.read_leb128_u32()?;
+    for _ in 0..count {
+        let limits = parse_memory_limits(payload)?;
         memories.push(Memory::new_local(limits)?);
     }
     Ok(())
@@ -790,9 +926,9 @@ fn parse_global_section(
     globals: &mut collections::Vec<Global>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
-    let parsed = parse_vec(payload, parse_global)?;
-    for global in parsed {
-        globals.push(global);
+    let count = payload.read_leb128_u32()?;
+    for _ in 0..count {
+        globals.push(parse_global(payload)?);
     }
     Ok(())
 }
@@ -815,27 +951,32 @@ fn parse_tag_section(
     Ok(())
 }
 
-fn parse_export_section(
+fn parse_export_section<'a>(
     functions: &mut [Function],
     tables: &mut [Table],
     memories: &mut [Memory],
     globals: &mut [Global],
     tags: &mut [Tag],
-    export_names: &mut collections::Vec<String>,
-    payload: &mut Payload,
+    payload: &mut Payload<'a>,
 ) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()?;
+    // The borrowed names are only a parser-time uniqueness set. Keeping
+    // slices into the module bytes avoids cloning every export String into a
+    // temporary owner that is dropped at the end of this section.
+    let mut export_names: collections::Vec<&'a str> =
+        collections::Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let name = payload.read_length_prefixed_utf8()?.to_string();
+        let name = payload.read_length_prefixed_utf8()?;
         let kind = ExternalKind::try_from(payload.read_u8()?)
             .map_err(|_| WasmError::malformed("Invalid export kind"))?;
         let index = payload.read_leb128_u32()? as usize;
 
         // Validate unique export name
-        if export_names.iter().any(|n| n == &name) {
+        if export_names.contains(&name) {
             return Err(WasmError::invalid("duplicate export name"));
         }
-        export_names.push(name.clone());
+        export_names.push(name);
+        let name = name.to_string();
 
         match kind {
             ExternalKind::Function => {
@@ -1124,6 +1265,20 @@ mod tests {
             out.extend(encode_uleb_u64(value));
         }
         out
+    }
+
+    #[test]
+    fn recursive_type_group_expands_the_section_entry_capacity() {
+        let bytes = wat::parse_str(
+            r#"(module
+                (rec
+                    (type $a (func (param i32)))
+                    (type $b (func (result i64))))
+                (func (type $a) local.get 0 drop))"#,
+        )
+        .expect("encode recursive type group");
+        let module = Module::new("recursive-type-capacity", &bytes).expect("parse module");
+        assert_eq!(module.types().len(), 2);
     }
 
     #[test]
