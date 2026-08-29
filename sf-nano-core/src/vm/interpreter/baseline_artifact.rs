@@ -15,6 +15,7 @@ use crate::module::Module;
 use crate::op_decoder::raw_cursor::{RawBlockType, RawImmediate, RawOp};
 use crate::op_decoder::{CatchClauseKind, DecodedOp, Immediate};
 use crate::opcodes::{Opcode, OpcodeFB, WasmOpcode};
+use crate::value_type::ValueType;
 use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -36,6 +37,9 @@ pub(crate) struct BaselineArtifact {
     /// [`BaselineArtifact::function_eligibility`] and FullFold the latter;
     /// absence is not a validation error.
     pub(crate) functions: Vec<Option<BaselineFunction>>,
+    /// Module-wide storage for every available loop boundary stack. Regions
+    /// carry ranges into this one arena; no loop owns a separate vector.
+    pub(crate) boundary_types: Vec<ValueType>,
     pub(crate) loop_regions: Vec<LoopRegion>,
     pub(crate) control_targets: Vec<ControlTarget>,
     pub(crate) br_tables: Vec<BrTableRange>,
@@ -67,15 +71,20 @@ pub(crate) struct BaselineFunction {
 }
 
 /// The type contract required to transfer an operand stack across a raw/folded
-/// region boundary. The current artifact records exact heights but not the
-/// validator's boundary value types, so execution must not infer them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// region boundary. Composite validation can publish entry/fallthrough ranges;
+/// legacy/raw-only construction leaves them unavailable.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LoopBoundaryTypes {
     Unavailable,
+    Available {
+        entry_range: Range<usize>,
+        fallthrough_range: Option<Range<usize>>,
+        exit_reachable: bool,
+    },
 }
 
 /// One outermost structurally reachable loop in raw function-expression PCs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LoopRegion {
     /// PC of the `loop` opcode itself.
     pub(crate) entry_pc: u32,
@@ -96,10 +105,22 @@ pub(crate) struct LoopRegion {
     pub(crate) control_depth: u32,
     /// Active `try_table` depth at body entry.
     pub(crate) eh_depth: u32,
-    /// Kept unavailable until validator boundary types (and exit state) can
-    /// be published; this prevents the metadata-only region from being used
-    /// as an execution-tier transfer contract.
+    /// Validator-owned entry/fallthrough types when this artifact came from
+    /// the single-decode composite path; unavailable for legacy/raw-only
+    /// builders.
     pub(crate) boundary_types: LoopBoundaryTypes,
+    /// Escaping branches need the complete target stack, including the prefix
+    /// below the label values. The post-validation callback cannot recover
+    /// that prefix after an unconditional branch marks the frame unreachable,
+    /// so execution switching must remain disabled for these exits.
+    pub(crate) escaping_types_available: bool,
+}
+
+impl LoopRegion {
+    pub(crate) fn execution_switching_available(&self) -> bool {
+        matches!(self.boundary_types, LoopBoundaryTypes::Available { .. })
+            && self.escaping_types_available
+    }
 }
 
 impl BaselineFunction {
@@ -196,6 +217,7 @@ impl BaselineArtifact {
         functions.resize_with(function_count, || None);
         Self {
             functions,
+            boundary_types: Vec::new(),
             loop_regions: Vec::new(),
             control_targets: Vec::new(),
             br_tables: Vec::new(),
@@ -310,7 +332,7 @@ struct ArtifactFrame {
     fixups: Vec<TargetPatch>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct PendingLoopRegion {
     entry_pc: u32,
     body_start_pc: u32,
@@ -318,6 +340,9 @@ pub(super) struct PendingLoopRegion {
     operand_height: u32,
     control_depth: u32,
     eh_depth: u32,
+    entry_types: Option<Range<usize>>,
+    fallthrough_types: Option<Range<usize>>,
+    exit_reachable: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -477,7 +502,61 @@ impl BaselineFunctionBuilder {
                 "baseline loop control depth overflow",
             )?,
             eh_depth: self.eh_depth()?,
+            entry_types: None,
+            fallthrough_types: None,
+            exit_reachable: None,
         }))
+    }
+
+    pub(super) fn event_opens_outer_loop(event: &ArtifactEvent) -> bool {
+        matches!(
+            event,
+            ArtifactEvent::Push {
+                loop_region: Some(_),
+                ..
+            }
+        )
+    }
+
+    pub(super) fn event_closes_outer_loop(&self, event: &ArtifactEvent) -> bool {
+        matches!(event, ArtifactEvent::End { .. })
+            && self
+                .frames
+                .last()
+                .is_some_and(|frame| frame.loop_region.is_some())
+    }
+
+    pub(super) fn set_open_loop_entry_types(
+        &mut self,
+        range: Range<usize>,
+    ) -> Result<(), WasmError> {
+        let region = self
+            .frames
+            .last_mut()
+            .and_then(|frame| frame.loop_region.as_mut())
+            .ok_or_else(|| WasmError::internal("baseline loop entry frame missing"))?;
+        region.entry_types = Some(range);
+        Ok(())
+    }
+
+    pub(super) fn set_closing_loop_fallthrough_types(
+        &mut self,
+        range: Option<Range<usize>>,
+        reachable: bool,
+    ) -> Result<(), WasmError> {
+        let region = self
+            .frames
+            .last_mut()
+            .and_then(|frame| frame.loop_region.as_mut())
+            .ok_or_else(|| WasmError::internal("baseline loop exit frame missing"))?;
+        if reachable != range.is_some() {
+            return Err(WasmError::internal(
+                "baseline loop fallthrough type range mismatch",
+            ));
+        }
+        region.fallthrough_types = range;
+        region.exit_reachable = Some(reachable);
+        Ok(())
     }
 
     pub(super) fn plan(
@@ -1040,6 +1119,14 @@ impl BaselineFunctionBuilder {
                     self.patch(TargetPatch::Control(false_target), target_pc, target_stp)?;
                 }
                 if let Some(region) = frame.loop_region {
+                    let boundary_types = match (region.entry_types, region.exit_reachable) {
+                        (Some(entry_range), Some(exit_reachable)) => LoopBoundaryTypes::Available {
+                            entry_range,
+                            fallthrough_range: region.fallthrough_types,
+                            exit_reachable,
+                        },
+                        _ => LoopBoundaryTypes::Unavailable,
+                    };
                     self.loop_regions.push(LoopRegion {
                         entry_pc: region.entry_pc,
                         body_start_pc: region.body_start_pc,
@@ -1049,7 +1136,8 @@ impl BaselineFunctionBuilder {
                         operand_height: region.operand_height,
                         control_depth: region.control_depth,
                         eh_depth: region.eh_depth,
-                        boundary_types: LoopBoundaryTypes::Unavailable,
+                        boundary_types,
+                        escaping_types_available: false,
                     });
                 }
                 for fixup in frame.fixups {

@@ -506,7 +506,7 @@ mod tests {
         let function = artifact.functions[0].as_ref().expect("function");
         let regions = &artifact.loop_regions[function.loop_regions.clone()];
         assert_eq!(regions.len(), 1, "nested loop must merge into outer region");
-        let region = regions[0];
+        let region = &regions[0];
 
         let mut cursor = RawOpCursor::new(module.functions()[0].spec().unwrap().code());
         let mut raw = StdVec::new();
@@ -553,7 +553,7 @@ mod tests {
                 end))"#;
         let (module, artifact) = fixture(wat);
         let function = artifact.functions[0].as_ref().expect("function");
-        let region = artifact.loop_regions[function.loop_regions.start];
+        let region = &artifact.loop_regions[function.loop_regions.start];
         assert_eq!(region.control_depth, 4);
         assert_eq!(region.eh_depth, 1);
         assert_eq!(
