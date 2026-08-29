@@ -168,7 +168,13 @@ enum RawOpcodeKind {
     LocalSet,
     LocalTee,
     Drop,
-    I32Binary(Opcode),
+    Select,
+    If,
+    Branch,
+    BrIf,
+    BrTable,
+    Numeric(Opcode),
+    Saturating(OpcodeFC),
     Call,
     End,
     Unreachable,
@@ -187,13 +193,31 @@ fn raw_stepper_opcode_kind(opcode: WasmOpcode) -> Option<RawOpcodeKind> {
         WasmOpcode::OP(Opcode::LOCAL_SET) => Some(RawOpcodeKind::LocalSet),
         WasmOpcode::OP(Opcode::LOCAL_TEE) => Some(RawOpcodeKind::LocalTee),
         WasmOpcode::OP(Opcode::DROP) => Some(RawOpcodeKind::Drop),
-        WasmOpcode::OP(opcode @ (Opcode::I32_ADD | Opcode::I32_SUB | Opcode::I32_MUL)) => {
-            Some(RawOpcodeKind::I32Binary(opcode))
+        WasmOpcode::OP(Opcode::SELECT) => Some(RawOpcodeKind::Select),
+        WasmOpcode::OP(Opcode::IF) => Some(RawOpcodeKind::If),
+        WasmOpcode::OP(Opcode::ELSE | Opcode::BR | Opcode::RETURN) => Some(RawOpcodeKind::Branch),
+        WasmOpcode::OP(Opcode::BR_IF) => Some(RawOpcodeKind::BrIf),
+        WasmOpcode::OP(Opcode::BR_TABLE) => Some(RawOpcodeKind::BrTable),
+        WasmOpcode::OP(opcode)
+            if (Opcode::I32_EQZ as u8..=Opcode::I64_EXTEND32_S as u8).contains(&(opcode as u8)) =>
+        {
+            Some(RawOpcodeKind::Numeric(opcode))
         }
         WasmOpcode::OP(Opcode::CALL) => Some(RawOpcodeKind::Call),
         WasmOpcode::OP(Opcode::END) => Some(RawOpcodeKind::End),
         WasmOpcode::OP(Opcode::UNREACHABLE) => Some(RawOpcodeKind::Unreachable),
-        WasmOpcode::OP(_) | WasmOpcode::FC(_) | WasmOpcode::FB(_) | WasmOpcode::FD(_) => None,
+        WasmOpcode::FC(opcode) => match opcode {
+            OpcodeFC::I32_TRUNC_SAT_F32_S
+            | OpcodeFC::I32_TRUNC_SAT_F32_U
+            | OpcodeFC::I32_TRUNC_SAT_F64_S
+            | OpcodeFC::I32_TRUNC_SAT_F64_U
+            | OpcodeFC::I64_TRUNC_SAT_F32_S
+            | OpcodeFC::I64_TRUNC_SAT_F32_U
+            | OpcodeFC::I64_TRUNC_SAT_F64_S
+            | OpcodeFC::I64_TRUNC_SAT_F64_U => Some(RawOpcodeKind::Saturating(opcode)),
+            _ => None,
+        },
+        WasmOpcode::OP(_) | WasmOpcode::FB(_) | WasmOpcode::FD(_) => None,
     }
 }
 
@@ -327,614 +351,9 @@ impl RawSlots<'_> {
     }
 }
 
-pub(super) struct RawStepper<'a, 'slots> {
-    pub(super) instance: &'a mut InterpInstance,
-    pub(super) artifact: &'a BaselineArtifact,
-    pub(super) function_index: usize,
-    pub(super) frame_base: usize,
-    pub(super) state: &'a mut RawFrameState,
-    pub(super) slots: RawSlots<'slots>,
-    pub(super) acc: &'a mut u64,
-}
-
-impl RawStepper<'_, '_> {
-    pub(super) fn step(&mut self) -> Result<RawStepExit, BaselineExecError> {
-        let frame_limit = self
-            .artifact
-            .functions
-            .get(self.function_index)
-            .and_then(Option::as_ref)
-            .ok_or_else(|| WasmError::invalid("mixed raw artifact function is missing"))?
-            .max_operand_height as usize
-            + self.state.operand_base;
-        let function = self
-            .instance
-            .module()
-            .functions()
-            .get(self.function_index)
-            .ok_or_else(|| WasmError::invalid("mixed raw function index overflow"))?;
-        let spec = function
-            .spec()
-            .ok_or_else(|| WasmError::invalid("mixed raw activation targets an import"))?;
-        let mut cursor = RawOpCursor::at(spec.code(), self.state.pc);
-        let raw = cursor
-            .next()?
-            .ok_or_else(|| WasmError::invalid("mixed raw reached code end"))?;
-        let decoded = BaselineDecoded {
-            wasm_op: raw.wasm_op,
-            start: raw.start,
-            end: raw.end,
-            imm: copy_immediate(raw.imm),
-        };
-        self.state.pc = decoded.end;
-        if !raw_stepper_supports_opcode(decoded.wasm_op) {
-            return Err(BaselineExecError::Unsupported {
-                opcode: Some(decoded.wasm_op),
-                pc: decoded.start,
-                feature: "mixed raw MVP opcode",
-            });
-        }
-        let kind = raw_stepper_opcode_kind(decoded.wasm_op)
-            .expect("RawStepper capability and opcode kind must agree");
-        match kind {
-            RawOpcodeKind::Structural => {}
-            RawOpcodeKind::I32Const => {
-                let BaselineImmediate::I32(value) = decoded.imm else {
-                    return Err(WasmError::internal("mixed raw i32.const mismatch").into());
-                };
-                self.slots.push(value as u32 as u64)?;
-            }
-            RawOpcodeKind::I64Const => {
-                let BaselineImmediate::I64(value) = decoded.imm else {
-                    return Err(WasmError::internal("mixed raw i64.const mismatch").into());
-                };
-                self.slots.push(value as u64)?;
-            }
-            RawOpcodeKind::F32Const => {
-                let BaselineImmediate::F32(value) = decoded.imm else {
-                    return Err(WasmError::internal("mixed raw f32.const mismatch").into());
-                };
-                self.slots.push(value as u64)?;
-            }
-            RawOpcodeKind::F64Const => {
-                let BaselineImmediate::F64(value) = decoded.imm else {
-                    return Err(WasmError::internal("mixed raw f64.const mismatch").into());
-                };
-                self.slots.push(value)?;
-            }
-            RawOpcodeKind::LocalGet => {
-                let local = raw_local(decoded.imm)?;
-                let slot = self
-                    .frame_base
-                    .checked_add(local)
-                    .filter(|&slot| slot < self.state.operand_base)
-                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
-                let value = self
-                    .slots
-                    .get(slot)
-                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
-                self.slots.push(value)?;
-            }
-            RawOpcodeKind::LocalSet => {
-                let local = raw_local(decoded.imm)?;
-                let value = self.slots.pop(self.state.operand_base)?;
-                let slot = self
-                    .frame_base
-                    .checked_add(local)
-                    .filter(|&slot| slot < self.state.operand_base)
-                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
-                self.slots.set(slot, value)?;
-            }
-            RawOpcodeKind::LocalTee => {
-                let local = raw_local(decoded.imm)?;
-                let value = self
-                    .slots
-                    .get(self.slots.len().saturating_sub(1))
-                    .ok_or_else(|| WasmError::invalid("mixed raw operand stack underflow"))?;
-                let slot = self
-                    .frame_base
-                    .checked_add(local)
-                    .filter(|&slot| slot < self.state.operand_base)
-                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
-                self.slots.set(slot, value)?;
-            }
-            RawOpcodeKind::Drop => {
-                self.slots.pop(self.state.operand_base)?;
-            }
-            RawOpcodeKind::I32Binary(opcode) => {
-                let rhs = self.slots.pop(self.state.operand_base)? as u32;
-                let lhs = self.slots.pop(self.state.operand_base)? as u32;
-                let value = match opcode {
-                    Opcode::I32_ADD => lhs.wrapping_add(rhs),
-                    Opcode::I32_SUB => lhs.wrapping_sub(rhs),
-                    Opcode::I32_MUL => lhs.wrapping_mul(rhs),
-                    _ => unreachable!(),
-                };
-                self.slots.push(value as u64)?;
-            }
-            RawOpcodeKind::Call => {
-                let callee = raw_function(decoded.imm)?;
-                let parameter_count = self
-                    .instance
-                    .module()
-                    .functions()
-                    .get(callee)
-                    .ok_or_else(|| WasmError::invalid("mixed raw callee overflow"))?
-                    .func_type()
-                    .params()
-                    .len();
-                let argument = self
-                    .slots
-                    .len()
-                    .checked_sub(parameter_count)
-                    .filter(|&base| base >= self.state.operand_base)
-                    .ok_or_else(|| WasmError::invalid("mixed raw call argument underflow"))?;
-                return Ok(RawStepExit::Call {
-                    callee,
-                    arg_base: argument - self.frame_base,
-                });
-            }
-            RawOpcodeKind::End if decoded.end == spec.code().len() => {
-                let result_count = function.func_type().results().len();
-                let expected_top = self
-                    .state
-                    .operand_base
-                    .checked_add(result_count)
-                    .ok_or_else(|| WasmError::invalid("mixed raw result range overflow"))?;
-                if self.slots.len() != expected_top {
-                    return Err(WasmError::invalid("mixed raw result stack shape mismatch").into());
-                }
-                self.slots.copy_within(
-                    self.state.operand_base..expected_top,
-                    self.state.return_base,
-                );
-                let result_end = self.state.return_base + result_count;
-                self.slots.truncate(result_end);
-                self.state.top = result_end;
-                *self.acc = self.slots.get(self.state.return_base).unwrap_or(0);
-                return Ok(RawStepExit::Return);
-            }
-            RawOpcodeKind::End => {}
-            RawOpcodeKind::Unreachable => return Err(WasmError::trap("unreachable").into()),
-        }
-        self.state.top = self.slots.len();
-        if self.state.top > frame_limit {
-            return Err(WasmError::invalid("mixed raw operand capacity exhausted").into());
-        }
-        Ok(RawStepExit::Continue)
-    }
-}
-
-pub(super) struct BaselineFrame<'artifact, 'instance> {
-    access: InterpInstanceAccess<'instance>,
-    artifact: &'artifact BaselineArtifact,
-    root_function: usize,
-    activations: Vec<BaselineActivation>,
-    values: Vec<u64>,
-    max_activations: usize,
-    max_value_slots: usize,
-}
-
-impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
-    pub(super) fn new(
-        access: InterpInstanceAccess<'instance>,
-        artifact: &'artifact BaselineArtifact,
-        function_index: usize,
-        args: &[Value],
-    ) -> Result<Self, BaselineExecError> {
-        let mut frame = Self {
-            access,
-            artifact,
-            root_function: function_index,
-            activations: Vec::with_capacity(1),
-            values: Vec::new(),
-            max_activations: MAX_BASELINE_ACTIVATIONS,
-            max_value_slots: MAX_BASELINE_VALUE_SLOTS,
-        };
-        frame.restart(args)?;
-        Ok(frame)
-    }
-
-    pub(super) fn run(&mut self) -> Result<(), BaselineExecError> {
-        while !self.activations.is_empty() {
-            self.step()?;
-        }
-        Ok(())
-    }
-
-    fn restart(&mut self, args: &[Value]) -> Result<(), BaselineExecError> {
-        self.activations.clear();
-        self.values.clear();
-        self.enter_root(args)
-    }
-
-    fn invoke_again(
-        &mut self,
-        args: &[Value],
-        results: &mut [Value],
-    ) -> Result<(), BaselineExecError> {
-        self.restart(args)?;
-        self.run()?;
-        self.copy_results_into(results)
-    }
-
-    fn results(&self) -> Result<Vec<Value>, BaselineExecError> {
-        if !self.activations.is_empty() {
-            return Err(WasmError::invalid("baseline MVP execution is not finished").into());
-        }
-        let result_count = self.root_result_count()?;
-        if self.values.len() != result_count {
-            return Err(WasmError::invalid("baseline MVP result stack shape mismatch").into());
-        }
-        let mut results = Vec::with_capacity(result_count);
-        for (index, &raw) in self.values.iter().enumerate() {
-            let value_type = self.root_result_type(index)?;
-            results.push(self.frame_raw_to_external_value(raw, value_type)?);
-        }
-        Ok(results)
-    }
-
-    fn copy_results_into(&self, results: &mut [Value]) -> Result<(), BaselineExecError> {
-        if !self.activations.is_empty() {
-            return Err(WasmError::invalid("baseline MVP execution is not finished").into());
-        }
-        let result_count = self.root_result_count()?;
-        if self.values.len() != result_count || results.len() != result_count {
-            return Err(WasmError::invalid("baseline MVP result stack shape mismatch").into());
-        }
-        for (index, (output, &raw)) in results.iter_mut().zip(&self.values).enumerate() {
-            let value_type = self.root_result_type(index)?;
-            *output = self.frame_raw_to_external_value(raw, value_type)?;
-        }
-        Ok(())
-    }
-
-    fn step(&mut self) -> Result<(), BaselineExecError> {
-        let (function_index, pc) = {
-            let activation = self.current_activation()?;
-            (activation.function_index, activation.pc)
-        };
-        let (raw, code_len) = self.access.with_instance(|instance| {
-            let function = instance
-                .module()
-                .functions()
-                .get(function_index)
-                .ok_or_else(|| {
-                    WasmError::invalid("baseline MVP function index is out of bounds")
-                })?;
-            let spec = function
-                .spec()
-                .ok_or_else(|| WasmError::invalid("baseline MVP activation targets an import"))?;
-            let mut cursor = RawOpCursor::at(spec.code(), pc);
-            let raw = cursor
-                .next()?
-                .ok_or_else(|| WasmError::invalid("baseline MVP reached code end without end"))?;
-            Ok::<_, BaselineExecError>((
-                BaselineDecoded {
-                    wasm_op: raw.wasm_op,
-                    start: raw.start,
-                    end: raw.end,
-                    imm: copy_immediate(raw.imm),
-                },
-                spec.code().len(),
-            ))
-        })??;
-        self.current_activation_mut()?.pc = raw.end;
-        if let WasmOpcode::FC(opcode) = raw.wasm_op {
-            if self.exec_saturating_conversion(opcode)? {
-                return Ok(());
-            }
-            return self.unsupported(Some(raw.wasm_op), raw.start, "prefixed opcode");
-        }
-        let WasmOpcode::OP(opcode) = raw.wasm_op else {
-            return self.unsupported(Some(raw.wasm_op), raw.start, "prefixed opcode");
-        };
-        match opcode {
-            Opcode::NOP | Opcode::BLOCK | Opcode::LOOP => {}
-            Opcode::I32_CONST => {
-                let BaselineImmediate::I32(value) = raw.imm else {
-                    return Err(WasmError::internal("baseline MVP i32.const mismatch").into());
-                };
-                self.push(value as u32 as u64)?;
-            }
-            Opcode::I64_CONST => {
-                let BaselineImmediate::I64(value) = raw.imm else {
-                    return Err(WasmError::internal("baseline MVP i64.const mismatch").into());
-                };
-                self.push(value as u64)?;
-            }
-            Opcode::F32_CONST => {
-                let BaselineImmediate::F32(bits) = raw.imm else {
-                    return Err(WasmError::internal("baseline MVP f32.const mismatch").into());
-                };
-                self.push(bits as u64)?;
-            }
-            Opcode::F64_CONST => {
-                let BaselineImmediate::F64(bits) = raw.imm else {
-                    return Err(WasmError::internal("baseline MVP f64.const mismatch").into());
-                };
-                self.push(bits)?;
-            }
-            Opcode::LOCAL_GET => {
-                let local = raw_local(raw.imm)?;
-                let slot = self.local_slot(local)?;
-                let value = *self
-                    .values
-                    .get(slot)
-                    .ok_or_else(|| WasmError::invalid("baseline MVP local index overflow"))?;
-                self.push(value)?;
-            }
-            Opcode::LOCAL_SET => {
-                let local = raw_local(raw.imm)?;
-                let value = self.pop()?;
-                let slot = self.local_slot(local)?;
-                *self
-                    .values
-                    .get_mut(slot)
-                    .ok_or_else(|| WasmError::invalid("baseline MVP local index overflow"))? =
-                    value;
-            }
-            Opcode::LOCAL_TEE => {
-                let local = raw_local(raw.imm)?;
-                let value = self.peek()?;
-                let slot = self.local_slot(local)?;
-                *self
-                    .values
-                    .get_mut(slot)
-                    .ok_or_else(|| WasmError::invalid("baseline MVP local index overflow"))? =
-                    value;
-            }
-            Opcode::GLOBAL_GET => {
-                let global = raw_global(raw.imm)?;
-                self.require_i32_global(global, raw.wasm_op, raw.start)?;
-                let value = self
-                    .access
-                    .with_instance(|instance| instance.global_get_for_frame(global))?;
-                self.push(value)?;
-            }
-            Opcode::GLOBAL_SET => {
-                let global = raw_global(raw.imm)?;
-                self.require_i32_global(global, raw.wasm_op, raw.start)?;
-                let value = self.pop()?;
-                self.access
-                    .with_instance_mut(|instance| instance.global_set_from_frame(global, value))?;
-            }
-            opcode @ (Opcode::I32_LOAD
-            | Opcode::I64_LOAD
-            | Opcode::F32_LOAD
-            | Opcode::F64_LOAD
-            | Opcode::I32_LOAD8_S
-            | Opcode::I32_LOAD8_U
-            | Opcode::I32_LOAD16_S
-            | Opcode::I32_LOAD16_U
-            | Opcode::I64_LOAD8_S
-            | Opcode::I64_LOAD8_U
-            | Opcode::I64_LOAD16_S
-            | Opcode::I64_LOAD16_U
-            | Opcode::I64_LOAD32_S
-            | Opcode::I64_LOAD32_U) => self.exec_memory_load(opcode, raw.imm)?,
-            opcode @ (Opcode::I32_STORE
-            | Opcode::I64_STORE
-            | Opcode::F32_STORE
-            | Opcode::F64_STORE
-            | Opcode::I32_STORE8
-            | Opcode::I32_STORE16
-            | Opcode::I64_STORE8
-            | Opcode::I64_STORE16
-            | Opcode::I64_STORE32) => self.exec_memory_store(opcode, raw.imm)?,
-            Opcode::MEMORY_SIZE => {
-                let memory = raw_memory(raw.imm)?;
-                self.memory_is_64(memory)?;
-                let pages = self
-                    .access
-                    .with_instance(|instance| instance.memory_size(memory))?;
-                self.push(pages)?;
-            }
-            Opcode::MEMORY_GROW => {
-                let memory = raw_memory(raw.imm)?;
-                self.memory_is_64(memory)?;
-                let delta = self.pop()?;
-                let previous = self
-                    .access
-                    .with_instance_mut(|instance| instance.memory_grow(memory, delta))??;
-                self.push(previous)?;
-            }
-            Opcode::DROP => {
-                self.pop()?;
-            }
-            Opcode::SELECT => {
-                let condition = self.pop()?;
-                let otherwise = self.pop()?;
-                let selected = self.pop()?;
-                self.push(if condition != 0 { selected } else { otherwise })?;
-            }
-            Opcode::IF => {
-                let condition = self.pop()?;
-                let target = self.current_target()?;
-                if condition == 0 {
-                    self.apply_target(target)?;
-                } else {
-                    self.advance_stp()?;
-                }
-            }
-            Opcode::ELSE | Opcode::BR | Opcode::RETURN => {
-                let target = self.current_target()?;
-                self.apply_target(target)?;
-            }
-            Opcode::BR_IF => {
-                let condition = self.pop()?;
-                let target = self.current_target()?;
-                if condition != 0 {
-                    self.apply_target(target)?;
-                } else {
-                    self.advance_stp()?;
-                }
-            }
-            Opcode::BR_TABLE => {
-                let selector = self.pop()? as u32 as usize;
-                let table = self.current_br_table(raw.start)?;
-                let target_count = table.targets_len as usize;
-                if target_count == 0 {
-                    return Err(WasmError::invalid("baseline MVP empty br_table metadata").into());
-                }
-                let target_offset = selector.min(target_count - 1);
-                let target_index = table.targets_start as usize + target_offset;
-                let stp = self.current_activation()?.stp;
-                let relative_stp = u32::try_from(stp)
-                    .map_err(|_| WasmError::invalid("baseline MVP side-table pointer overflow"))?;
-                let function = self.current_baseline_function()?;
-                if function.absolute_stp(relative_stp) != Some(table.targets_start as usize) {
-                    return Err(WasmError::invalid("baseline MVP br_table pointer mismatch").into());
-                }
-                let target = self
-                    .artifact
-                    .control_targets
-                    .get(target_index)
-                    .copied()
-                    .ok_or_else(|| WasmError::invalid("baseline MVP br_table target missing"))?;
-                self.apply_target(target)?;
-            }
-            Opcode::CALL => {
-                let callee = raw_function(raw.imm)?;
-                self.exec_direct_call(callee, raw.start)?;
-            }
-            Opcode::RETURN_CALL => {
-                let callee = raw_function(raw.imm)?;
-                self.enter_tail_call(callee, raw.start)?;
-            }
-            Opcode::CALL_INDIRECT => {
-                let (expected_type, table_index) = raw_call_indirect(raw.imm)?;
-                self.exec_indirect_call(expected_type, table_index, raw.start)?;
-            }
-            Opcode::RETURN_CALL_INDIRECT => {
-                return self.unsupported(Some(raw.wasm_op), raw.start, "return_call_indirect");
-            }
-            Opcode::CALL_REF | Opcode::RETURN_CALL_REF => {
-                return self.unsupported(Some(raw.wasm_op), raw.start, "call_ref");
-            }
-            Opcode::END => {
-                if raw.end == code_len {
-                    self.finish_activation()?;
-                }
-            }
-            Opcode::UNREACHABLE => return Err(WasmError::trap("unreachable").into()),
-            _ if self.exec_numeric(opcode)? => {}
-            _ => return self.unsupported(Some(raw.wasm_op), raw.start, "MVP opcode"),
-        }
-        Ok(())
-    }
-
-    fn exec_memory_load(
-        &mut self,
-        opcode: Opcode,
-        immediate: BaselineImmediate,
-    ) -> Result<(), BaselineExecError> {
-        let (memory, offset) = raw_memarg(immediate)?;
-        let address_is_64 = self.memory_is_64(memory)?;
-        let address = self.pop()?;
-        let address = if address_is_64 {
-            address
-        } else {
-            address as u32 as u64
-        };
-        let size = match opcode {
-            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I64_LOAD32_S | Opcode::I64_LOAD32_U => 4,
-            Opcode::I64_LOAD | Opcode::F64_LOAD => 8,
-            Opcode::I32_LOAD8_S
-            | Opcode::I32_LOAD8_U
-            | Opcode::I64_LOAD8_S
-            | Opcode::I64_LOAD8_U => 1,
-            Opcode::I32_LOAD16_S
-            | Opcode::I32_LOAD16_U
-            | Opcode::I64_LOAD16_S
-            | Opcode::I64_LOAD16_U => 2,
-            _ => return Err(WasmError::internal("baseline MVP load opcode mismatch").into()),
-        };
-        let loaded = self
-            .access
-            .with_instance(|instance| instance.mem_load(address, memory, offset, size))??;
-        let value = match opcode {
-            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I32_LOAD8_U | Opcode::I32_LOAD16_U => {
-                loaded
-            }
-            Opcode::I64_LOAD
-            | Opcode::F64_LOAD
-            | Opcode::I64_LOAD8_U
-            | Opcode::I64_LOAD16_U
-            | Opcode::I64_LOAD32_U => loaded,
-            Opcode::I32_LOAD8_S => loaded as i8 as i32 as u32 as u64,
-            Opcode::I32_LOAD16_S => loaded as i16 as i32 as u32 as u64,
-            Opcode::I64_LOAD8_S => loaded as i8 as i64 as u64,
-            Opcode::I64_LOAD16_S => loaded as i16 as i64 as u64,
-            Opcode::I64_LOAD32_S => loaded as i32 as i64 as u64,
-            _ => return Err(WasmError::internal("baseline MVP load opcode mismatch").into()),
-        };
-        self.push(value)
-    }
-
-    fn exec_memory_store(
-        &mut self,
-        opcode: Opcode,
-        immediate: BaselineImmediate,
-    ) -> Result<(), BaselineExecError> {
-        let (memory, offset) = raw_memarg(immediate)?;
-        let address_is_64 = self.memory_is_64(memory)?;
-        let value = self.pop()?;
-        let address = self.pop()?;
-        let address = if address_is_64 {
-            address
-        } else {
-            address as u32 as u64
-        };
-        let size = match opcode {
-            Opcode::I32_STORE | Opcode::F32_STORE | Opcode::I64_STORE32 => 4,
-            Opcode::I64_STORE | Opcode::F64_STORE => 8,
-            Opcode::I32_STORE8 | Opcode::I64_STORE8 => 1,
-            Opcode::I32_STORE16 | Opcode::I64_STORE16 => 2,
-            _ => return Err(WasmError::internal("baseline MVP store opcode mismatch").into()),
-        };
-        self.access.with_instance_mut(|instance| {
-            instance.mem_store(address, memory, offset, size, value)
-        })??;
-        Ok(())
-    }
-
-    fn memory_is_64(&self, memory: usize) -> Result<bool, BaselineExecError> {
-        self.access
-            .with_instance(|instance| {
-                instance
-                    .module()
-                    .memories()
-                    .get(memory)
-                    .map(|memory| memory.limits().is64)
-                    .ok_or_else(|| WasmError::invalid("baseline MVP memory index overflow"))
-            })?
-            .map_err(Into::into)
-    }
-
-    fn require_i32_global(
-        &self,
-        global: usize,
-        opcode: WasmOpcode,
-        pc: usize,
-    ) -> Result<(), BaselineExecError> {
-        let value_type = self.access.with_instance(|instance| {
-            instance
-                .module()
-                .globals()
-                .get(global)
-                .map(|global| global.value_type())
-        })?;
-        match value_type {
-            Some(ValueType::I32) => Ok(()),
-            Some(_) => Err(BaselineExecError::Unsupported {
-                opcode: Some(opcode),
-                pc,
-                feature: "non-i32 global",
-            }),
-            None => Err(WasmError::invalid("baseline MVP global index overflow").into()),
-        }
-    }
+trait ScalarExecutor {
+    fn push(&mut self, value: u64) -> Result<(), BaselineExecError>;
+    fn pop(&mut self) -> Result<u64, BaselineExecError>;
 
     fn exec_numeric(&mut self, opcode: Opcode) -> Result<bool, BaselineExecError> {
         macro_rules! unary {
@@ -1394,59 +813,691 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         }
         Ok(true)
     }
+}
+
+pub(super) struct RawStepper<'a, 'slots> {
+    pub(super) instance: &'a mut InterpInstance,
+    pub(super) artifact: &'a BaselineArtifact,
+    pub(super) function_index: usize,
+    pub(super) frame_base: usize,
+    pub(super) state: &'a mut RawFrameState,
+    pub(super) slots: RawSlots<'slots>,
+    pub(super) acc: &'a mut u64,
+}
+
+impl ScalarExecutor for RawStepper<'_, '_> {
+    fn push(&mut self, value: u64) -> Result<(), BaselineExecError> {
+        let frame_limit = self
+            .state
+            .operand_base
+            .checked_add(self.baseline_function()?.max_operand_height as usize)
+            .ok_or_else(|| WasmError::invalid("baseline raw frame limit overflow"))?;
+        if self.slots.len() >= frame_limit {
+            return Err(WasmError::invalid("baseline raw operand capacity exhausted").into());
+        }
+        self.slots.push(value)
+    }
+
+    fn pop(&mut self) -> Result<u64, BaselineExecError> {
+        self.slots.pop(self.state.operand_base)
+    }
+}
+
+impl RawStepper<'_, '_> {
+    fn baseline_function(&self) -> Result<&BaselineFunction, BaselineExecError> {
+        self.artifact
+            .functions
+            .get(self.function_index)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| WasmError::invalid("baseline raw artifact function is missing").into())
+    }
 
     fn current_target(&self) -> Result<ControlTarget, BaselineExecError> {
-        let activation = self.current_activation()?;
-        let function = self.current_baseline_function()?;
-        let relative = u32::try_from(activation.stp)
-            .map_err(|_| WasmError::invalid("baseline MVP side-table pointer overflow"))?;
+        let function = self.baseline_function()?;
+        let relative = u32::try_from(self.state.stp)
+            .map_err(|_| WasmError::invalid("baseline raw side-table pointer overflow"))?;
         let index = function
             .absolute_stp(relative)
-            .ok_or_else(|| WasmError::invalid("baseline MVP side-table index overflow"))?;
+            .ok_or_else(|| WasmError::invalid("baseline raw side-table index overflow"))?;
         if index >= function.control_targets.end {
-            return Err(WasmError::invalid("baseline MVP side-table pointer overflow").into());
+            return Err(WasmError::invalid("baseline raw side-table pointer overflow").into());
         }
         self.artifact
             .control_targets
             .get(index)
             .copied()
-            .ok_or_else(|| WasmError::invalid("baseline MVP control target missing").into())
+            .ok_or_else(|| WasmError::invalid("baseline raw control target missing").into())
     }
 
     fn apply_target(&mut self, target: ControlTarget) -> Result<(), BaselineExecError> {
-        let (operand_base, function_index) = {
-            let activation = self.current_activation()?;
-            (activation.operand_base, activation.function_index)
-        };
-        let max_operand_height =
-            self.baseline_function(function_index)?.max_operand_height as usize;
+        let max_operand_height = self.baseline_function()?.max_operand_height as usize;
         let keep = target.keep_arity as usize;
-        let base = operand_base
+        let base = self
+            .state
+            .operand_base
             .checked_add(target.target_stack_height as usize)
-            .ok_or_else(|| WasmError::invalid("baseline MVP branch stack overflow"))?;
+            .ok_or_else(|| WasmError::invalid("baseline raw branch stack overflow"))?;
         let source = self
-            .values
+            .slots
             .len()
             .checked_sub(keep)
-            .ok_or_else(|| WasmError::invalid("baseline MVP branch value underflow"))?;
+            .ok_or_else(|| WasmError::invalid("baseline raw branch value underflow"))?;
         let new_len = base
             .checked_add(keep)
-            .ok_or_else(|| WasmError::invalid("baseline MVP branch stack overflow"))?;
-        let frame_limit = operand_base
+            .ok_or_else(|| WasmError::invalid("baseline raw branch stack overflow"))?;
+        let frame_limit = self
+            .state
+            .operand_base
             .checked_add(max_operand_height)
-            .ok_or_else(|| WasmError::invalid("baseline MVP frame limit overflow"))?;
-        if base > source || source < operand_base || new_len > frame_limit {
-            return Err(WasmError::invalid("baseline MVP branch stack shape mismatch").into());
+            .ok_or_else(|| WasmError::invalid("baseline raw frame limit overflow"))?;
+        if base > source || source < self.state.operand_base || new_len > frame_limit {
+            return Err(WasmError::invalid("baseline raw branch stack shape mismatch").into());
         }
-        self.values.copy_within(source..source + keep, base);
-        self.values.truncate(new_len);
-        self.baseline_function(function_index)?
+        self.slots.copy_within(source..source + keep, base);
+        self.slots.truncate(new_len);
+        self.baseline_function()?
             .absolute_stp(target.target_stp)
-            .ok_or_else(|| WasmError::invalid("baseline MVP target side-table overflow"))?;
-        let activation = self.current_activation_mut()?;
-        activation.pc = target.target_pc as usize;
-        activation.stp = target.target_stp as usize;
+            .ok_or_else(|| WasmError::invalid("baseline raw target side-table overflow"))?;
+        self.state.pc = target.target_pc as usize;
+        self.state.stp = target.target_stp as usize;
+        self.state.top = new_len;
         Ok(())
+    }
+
+    fn current_br_table(&self, source_pc: usize) -> Result<BrTableRange, BaselineExecError> {
+        let function = self.baseline_function()?;
+        self.artifact.br_tables[function.br_tables.clone()]
+            .iter()
+            .find(|table| table.source_pc as usize == source_pc)
+            .copied()
+            .ok_or_else(|| WasmError::invalid("baseline raw br_table metadata missing").into())
+    }
+
+    fn advance_stp(&mut self) -> Result<(), BaselineExecError> {
+        self.state.stp = self
+            .state
+            .stp
+            .checked_add(1)
+            .ok_or_else(|| WasmError::invalid("baseline raw side-table pointer overflow"))?;
+        Ok(())
+    }
+
+    fn peek(&self) -> Result<u64, BaselineExecError> {
+        if self.slots.len() == self.state.operand_base {
+            return Err(WasmError::invalid("baseline raw operand stack underflow").into());
+        }
+        self.slots
+            .get(self.slots.len() - 1)
+            .ok_or_else(|| WasmError::invalid("baseline raw operand stack underflow").into())
+    }
+
+    pub(super) fn step(&mut self) -> Result<RawStepExit, BaselineExecError> {
+        let (decoded, code_len, result_count) = {
+            let function = self
+                .instance
+                .module()
+                .functions()
+                .get(self.function_index)
+                .ok_or_else(|| WasmError::invalid("mixed raw function index overflow"))?;
+            let spec = function
+                .spec()
+                .ok_or_else(|| WasmError::invalid("mixed raw activation targets an import"))?;
+            let mut cursor = RawOpCursor::at(spec.code(), self.state.pc);
+            let raw = cursor
+                .next()?
+                .ok_or_else(|| WasmError::invalid("mixed raw reached code end"))?;
+            (
+                BaselineDecoded {
+                    wasm_op: raw.wasm_op,
+                    start: raw.start,
+                    end: raw.end,
+                    imm: copy_immediate(raw.imm),
+                },
+                spec.code().len(),
+                function.func_type().results().len(),
+            )
+        };
+        self.step_decoded(decoded, code_len, result_count)
+    }
+
+    fn step_decoded(
+        &mut self,
+        decoded: BaselineDecoded,
+        code_len: usize,
+        result_count: usize,
+    ) -> Result<RawStepExit, BaselineExecError> {
+        self.state.pc = decoded.end;
+        if !raw_stepper_supports_opcode(decoded.wasm_op) {
+            return Err(BaselineExecError::Unsupported {
+                opcode: Some(decoded.wasm_op),
+                pc: decoded.start,
+                feature: "mixed raw MVP opcode",
+            });
+        }
+        let kind = raw_stepper_opcode_kind(decoded.wasm_op)
+            .expect("RawStepper capability and opcode kind must agree");
+        match kind {
+            RawOpcodeKind::Structural => {}
+            RawOpcodeKind::I32Const => {
+                let BaselineImmediate::I32(value) = decoded.imm else {
+                    return Err(WasmError::internal("mixed raw i32.const mismatch").into());
+                };
+                self.slots.push(value as u32 as u64)?;
+            }
+            RawOpcodeKind::I64Const => {
+                let BaselineImmediate::I64(value) = decoded.imm else {
+                    return Err(WasmError::internal("mixed raw i64.const mismatch").into());
+                };
+                self.slots.push(value as u64)?;
+            }
+            RawOpcodeKind::F32Const => {
+                let BaselineImmediate::F32(value) = decoded.imm else {
+                    return Err(WasmError::internal("mixed raw f32.const mismatch").into());
+                };
+                self.slots.push(value as u64)?;
+            }
+            RawOpcodeKind::F64Const => {
+                let BaselineImmediate::F64(value) = decoded.imm else {
+                    return Err(WasmError::internal("mixed raw f64.const mismatch").into());
+                };
+                self.slots.push(value)?;
+            }
+            RawOpcodeKind::LocalGet => {
+                let local = raw_local(decoded.imm)?;
+                let slot = self
+                    .frame_base
+                    .checked_add(local)
+                    .filter(|&slot| slot < self.state.operand_base)
+                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
+                let value = self
+                    .slots
+                    .get(slot)
+                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
+                self.slots.push(value)?;
+            }
+            RawOpcodeKind::LocalSet => {
+                let local = raw_local(decoded.imm)?;
+                let value = self.slots.pop(self.state.operand_base)?;
+                let slot = self
+                    .frame_base
+                    .checked_add(local)
+                    .filter(|&slot| slot < self.state.operand_base)
+                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
+                self.slots.set(slot, value)?;
+            }
+            RawOpcodeKind::LocalTee => {
+                let local = raw_local(decoded.imm)?;
+                let value = self.peek()?;
+                let slot = self
+                    .frame_base
+                    .checked_add(local)
+                    .filter(|&slot| slot < self.state.operand_base)
+                    .ok_or_else(|| WasmError::invalid("mixed raw local index overflow"))?;
+                self.slots.set(slot, value)?;
+            }
+            RawOpcodeKind::Drop => {
+                self.slots.pop(self.state.operand_base)?;
+            }
+            RawOpcodeKind::Select => {
+                let condition = self.pop()?;
+                let otherwise = self.pop()?;
+                let selected = self.pop()?;
+                self.push(if condition != 0 { selected } else { otherwise })?;
+            }
+            RawOpcodeKind::If => {
+                let condition = self.pop()?;
+                let target = self.current_target()?;
+                if condition == 0 {
+                    self.apply_target(target)?;
+                } else {
+                    self.advance_stp()?;
+                }
+            }
+            RawOpcodeKind::Branch => {
+                let target = self.current_target()?;
+                self.apply_target(target)?;
+            }
+            RawOpcodeKind::BrIf => {
+                let condition = self.pop()?;
+                let target = self.current_target()?;
+                if condition != 0 {
+                    self.apply_target(target)?;
+                } else {
+                    self.advance_stp()?;
+                }
+            }
+            RawOpcodeKind::BrTable => {
+                let selector = self.pop()? as u32 as usize;
+                let table = self.current_br_table(decoded.start)?;
+                let target_count = table.targets_len as usize;
+                if target_count == 0 {
+                    return Err(WasmError::invalid("baseline raw empty br_table metadata").into());
+                }
+                let target_offset = selector.min(target_count - 1);
+                let target_index = table.targets_start as usize + target_offset;
+                let relative_stp = u32::try_from(self.state.stp)
+                    .map_err(|_| WasmError::invalid("baseline raw side-table overflow"))?;
+                let function = self.baseline_function()?;
+                if function.absolute_stp(relative_stp) != Some(table.targets_start as usize) {
+                    return Err(WasmError::invalid("baseline raw br_table pointer mismatch").into());
+                }
+                let target = self
+                    .artifact
+                    .control_targets
+                    .get(target_index)
+                    .copied()
+                    .ok_or_else(|| WasmError::invalid("baseline raw br_table target missing"))?;
+                self.apply_target(target)?;
+            }
+            RawOpcodeKind::Numeric(opcode) => {
+                if !self.exec_numeric(opcode)? {
+                    return Err(
+                        WasmError::internal("RawStepper numeric capability mismatch").into(),
+                    );
+                }
+            }
+            RawOpcodeKind::Saturating(opcode) => {
+                if !self.exec_saturating_conversion(opcode)? {
+                    return Err(
+                        WasmError::internal("RawStepper saturating capability mismatch").into(),
+                    );
+                }
+            }
+            RawOpcodeKind::Call => {
+                let callee = raw_function(decoded.imm)?;
+                let parameter_count = self
+                    .instance
+                    .module()
+                    .functions()
+                    .get(callee)
+                    .ok_or_else(|| WasmError::invalid("mixed raw callee overflow"))?
+                    .func_type()
+                    .params()
+                    .len();
+                let argument = self
+                    .slots
+                    .len()
+                    .checked_sub(parameter_count)
+                    .filter(|&base| base >= self.state.operand_base)
+                    .ok_or_else(|| WasmError::invalid("mixed raw call argument underflow"))?;
+                return Ok(RawStepExit::Call {
+                    callee,
+                    arg_base: argument - self.frame_base,
+                });
+            }
+            RawOpcodeKind::End if decoded.end == code_len => {
+                let expected_top = self
+                    .state
+                    .operand_base
+                    .checked_add(result_count)
+                    .ok_or_else(|| WasmError::invalid("mixed raw result range overflow"))?;
+                if self.slots.len() != expected_top {
+                    return Err(WasmError::invalid("mixed raw result stack shape mismatch").into());
+                }
+                self.slots.copy_within(
+                    self.state.operand_base..expected_top,
+                    self.state.return_base,
+                );
+                let result_end = self.state.return_base + result_count;
+                self.slots.truncate(result_end);
+                self.state.top = result_end;
+                *self.acc = self.slots.get(self.state.return_base).unwrap_or(0);
+                return Ok(RawStepExit::Return);
+            }
+            RawOpcodeKind::End => {}
+            RawOpcodeKind::Unreachable => return Err(WasmError::trap("unreachable").into()),
+        }
+        self.state.top = self.slots.len();
+        Ok(RawStepExit::Continue)
+    }
+}
+
+pub(super) struct BaselineFrame<'artifact, 'instance> {
+    access: InterpInstanceAccess<'instance>,
+    artifact: &'artifact BaselineArtifact,
+    root_function: usize,
+    activations: Vec<BaselineActivation>,
+    values: Vec<u64>,
+    max_activations: usize,
+    max_value_slots: usize,
+}
+
+impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
+    pub(super) fn new(
+        access: InterpInstanceAccess<'instance>,
+        artifact: &'artifact BaselineArtifact,
+        function_index: usize,
+        args: &[Value],
+    ) -> Result<Self, BaselineExecError> {
+        let mut frame = Self {
+            access,
+            artifact,
+            root_function: function_index,
+            activations: Vec::with_capacity(1),
+            values: Vec::new(),
+            max_activations: MAX_BASELINE_ACTIVATIONS,
+            max_value_slots: MAX_BASELINE_VALUE_SLOTS,
+        };
+        frame.restart(args)?;
+        Ok(frame)
+    }
+
+    pub(super) fn run(&mut self) -> Result<(), BaselineExecError> {
+        while !self.activations.is_empty() {
+            self.step()?;
+        }
+        Ok(())
+    }
+
+    fn restart(&mut self, args: &[Value]) -> Result<(), BaselineExecError> {
+        self.activations.clear();
+        self.values.clear();
+        self.enter_root(args)
+    }
+
+    fn invoke_again(
+        &mut self,
+        args: &[Value],
+        results: &mut [Value],
+    ) -> Result<(), BaselineExecError> {
+        self.restart(args)?;
+        self.run()?;
+        self.copy_results_into(results)
+    }
+
+    fn results(&self) -> Result<Vec<Value>, BaselineExecError> {
+        if !self.activations.is_empty() {
+            return Err(WasmError::invalid("baseline MVP execution is not finished").into());
+        }
+        let result_count = self.root_result_count()?;
+        if self.values.len() != result_count {
+            return Err(WasmError::invalid("baseline MVP result stack shape mismatch").into());
+        }
+        let mut results = Vec::with_capacity(result_count);
+        for (index, &raw) in self.values.iter().enumerate() {
+            let value_type = self.root_result_type(index)?;
+            results.push(self.frame_raw_to_external_value(raw, value_type)?);
+        }
+        Ok(results)
+    }
+
+    fn copy_results_into(&self, results: &mut [Value]) -> Result<(), BaselineExecError> {
+        if !self.activations.is_empty() {
+            return Err(WasmError::invalid("baseline MVP execution is not finished").into());
+        }
+        let result_count = self.root_result_count()?;
+        if self.values.len() != result_count || results.len() != result_count {
+            return Err(WasmError::invalid("baseline MVP result stack shape mismatch").into());
+        }
+        for (index, (output, &raw)) in results.iter_mut().zip(&self.values).enumerate() {
+            let value_type = self.root_result_type(index)?;
+            *output = self.frame_raw_to_external_value(raw, value_type)?;
+        }
+        Ok(())
+    }
+
+    fn step(&mut self) -> Result<(), BaselineExecError> {
+        let (function_index, pc) = {
+            let activation = self.current_activation()?;
+            (activation.function_index, activation.pc)
+        };
+        let (raw, code_len, result_count) = self.access.with_instance(|instance| {
+            let function = instance
+                .module()
+                .functions()
+                .get(function_index)
+                .ok_or_else(|| {
+                    WasmError::invalid("baseline MVP function index is out of bounds")
+                })?;
+            let spec = function
+                .spec()
+                .ok_or_else(|| WasmError::invalid("baseline MVP activation targets an import"))?;
+            let mut cursor = RawOpCursor::at(spec.code(), pc);
+            let raw = cursor
+                .next()?
+                .ok_or_else(|| WasmError::invalid("baseline MVP reached code end without end"))?;
+            Ok::<_, BaselineExecError>((
+                BaselineDecoded {
+                    wasm_op: raw.wasm_op,
+                    start: raw.start,
+                    end: raw.end,
+                    imm: copy_immediate(raw.imm),
+                },
+                spec.code().len(),
+                function.func_type().results().len(),
+            ))
+        })??;
+        if raw_stepper_supports_opcode(raw.wasm_op) {
+            let activation = *self.current_activation()?;
+            let mut state = RawFrameState {
+                pc: activation.pc,
+                stp: activation.stp,
+                top: self.values.len(),
+                operand_base: activation.operand_base,
+                return_base: activation.return_base,
+            };
+            let mut acc = 0u64;
+            let artifact = self.artifact;
+            let function_index = activation.function_index;
+            let frame_base = activation.locals_base;
+            let values = &mut self.values;
+            let exit = self.access.with_instance_mut(|instance| {
+                RawStepper {
+                    instance,
+                    artifact,
+                    function_index,
+                    frame_base,
+                    state: &mut state,
+                    slots: RawSlots::Owned(values),
+                    acc: &mut acc,
+                }
+                .step_decoded(raw, code_len, result_count)
+            })??;
+            if let Some(current) = self.activations.last_mut() {
+                current.pc = state.pc;
+                current.stp = state.stp;
+            }
+            return match exit {
+                RawStepExit::Continue => Ok(()),
+                RawStepExit::Call { callee, .. } => self.exec_direct_call(callee, raw.start),
+                RawStepExit::Return => {
+                    self.activations.pop();
+                    Ok(())
+                }
+            };
+        }
+        self.current_activation_mut()?.pc = raw.end;
+        if matches!(raw.wasm_op, WasmOpcode::FC(_)) {
+            return self.unsupported(Some(raw.wasm_op), raw.start, "prefixed opcode");
+        }
+        let WasmOpcode::OP(opcode) = raw.wasm_op else {
+            return self.unsupported(Some(raw.wasm_op), raw.start, "prefixed opcode");
+        };
+        match opcode {
+            Opcode::GLOBAL_GET => {
+                let global = raw_global(raw.imm)?;
+                self.require_i32_global(global, raw.wasm_op, raw.start)?;
+                let value = self
+                    .access
+                    .with_instance(|instance| instance.global_get_for_frame(global))?;
+                self.push(value)?;
+            }
+            Opcode::GLOBAL_SET => {
+                let global = raw_global(raw.imm)?;
+                self.require_i32_global(global, raw.wasm_op, raw.start)?;
+                let value = self.pop()?;
+                self.access
+                    .with_instance_mut(|instance| instance.global_set_from_frame(global, value))?;
+            }
+            opcode @ (Opcode::I32_LOAD
+            | Opcode::I64_LOAD
+            | Opcode::F32_LOAD
+            | Opcode::F64_LOAD
+            | Opcode::I32_LOAD8_S
+            | Opcode::I32_LOAD8_U
+            | Opcode::I32_LOAD16_S
+            | Opcode::I32_LOAD16_U
+            | Opcode::I64_LOAD8_S
+            | Opcode::I64_LOAD8_U
+            | Opcode::I64_LOAD16_S
+            | Opcode::I64_LOAD16_U
+            | Opcode::I64_LOAD32_S
+            | Opcode::I64_LOAD32_U) => self.exec_memory_load(opcode, raw.imm)?,
+            opcode @ (Opcode::I32_STORE
+            | Opcode::I64_STORE
+            | Opcode::F32_STORE
+            | Opcode::F64_STORE
+            | Opcode::I32_STORE8
+            | Opcode::I32_STORE16
+            | Opcode::I64_STORE8
+            | Opcode::I64_STORE16
+            | Opcode::I64_STORE32) => self.exec_memory_store(opcode, raw.imm)?,
+            Opcode::MEMORY_SIZE => {
+                let memory = raw_memory(raw.imm)?;
+                self.memory_is_64(memory)?;
+                let pages = self
+                    .access
+                    .with_instance(|instance| instance.memory_size(memory))?;
+                self.push(pages)?;
+            }
+            Opcode::MEMORY_GROW => {
+                let memory = raw_memory(raw.imm)?;
+                self.memory_is_64(memory)?;
+                let delta = self.pop()?;
+                let previous = self
+                    .access
+                    .with_instance_mut(|instance| instance.memory_grow(memory, delta))??;
+                self.push(previous)?;
+            }
+            Opcode::RETURN_CALL => {
+                let callee = raw_function(raw.imm)?;
+                self.enter_tail_call(callee, raw.start)?;
+            }
+            Opcode::CALL_INDIRECT => {
+                let (expected_type, table_index) = raw_call_indirect(raw.imm)?;
+                self.exec_indirect_call(expected_type, table_index, raw.start)?;
+            }
+            Opcode::RETURN_CALL_INDIRECT => {
+                return self.unsupported(Some(raw.wasm_op), raw.start, "return_call_indirect");
+            }
+            Opcode::CALL_REF | Opcode::RETURN_CALL_REF => {
+                return self.unsupported(Some(raw.wasm_op), raw.start, "call_ref");
+            }
+            _ => return self.unsupported(Some(raw.wasm_op), raw.start, "MVP opcode"),
+        }
+        Ok(())
+    }
+
+    fn exec_memory_load(
+        &mut self,
+        opcode: Opcode,
+        immediate: BaselineImmediate,
+    ) -> Result<(), BaselineExecError> {
+        let (memory, offset) = raw_memarg(immediate)?;
+        let address_is_64 = self.memory_is_64(memory)?;
+        let address = self.pop()?;
+        let address = if address_is_64 {
+            address
+        } else {
+            address as u32 as u64
+        };
+        let size = match opcode {
+            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I64_LOAD32_S | Opcode::I64_LOAD32_U => 4,
+            Opcode::I64_LOAD | Opcode::F64_LOAD => 8,
+            Opcode::I32_LOAD8_S
+            | Opcode::I32_LOAD8_U
+            | Opcode::I64_LOAD8_S
+            | Opcode::I64_LOAD8_U => 1,
+            Opcode::I32_LOAD16_S
+            | Opcode::I32_LOAD16_U
+            | Opcode::I64_LOAD16_S
+            | Opcode::I64_LOAD16_U => 2,
+            _ => return Err(WasmError::internal("baseline MVP load opcode mismatch").into()),
+        };
+        let loaded = self
+            .access
+            .with_instance(|instance| instance.mem_load(address, memory, offset, size))??;
+        let value = match opcode {
+            Opcode::I32_LOAD | Opcode::F32_LOAD | Opcode::I32_LOAD8_U | Opcode::I32_LOAD16_U => {
+                loaded
+            }
+            Opcode::I64_LOAD
+            | Opcode::F64_LOAD
+            | Opcode::I64_LOAD8_U
+            | Opcode::I64_LOAD16_U
+            | Opcode::I64_LOAD32_U => loaded,
+            Opcode::I32_LOAD8_S => loaded as i8 as i32 as u32 as u64,
+            Opcode::I32_LOAD16_S => loaded as i16 as i32 as u32 as u64,
+            Opcode::I64_LOAD8_S => loaded as i8 as i64 as u64,
+            Opcode::I64_LOAD16_S => loaded as i16 as i64 as u64,
+            Opcode::I64_LOAD32_S => loaded as i32 as i64 as u64,
+            _ => return Err(WasmError::internal("baseline MVP load opcode mismatch").into()),
+        };
+        self.push(value)
+    }
+
+    fn exec_memory_store(
+        &mut self,
+        opcode: Opcode,
+        immediate: BaselineImmediate,
+    ) -> Result<(), BaselineExecError> {
+        let (memory, offset) = raw_memarg(immediate)?;
+        let address_is_64 = self.memory_is_64(memory)?;
+        let value = self.pop()?;
+        let address = self.pop()?;
+        let address = if address_is_64 {
+            address
+        } else {
+            address as u32 as u64
+        };
+        let size = match opcode {
+            Opcode::I32_STORE | Opcode::F32_STORE | Opcode::I64_STORE32 => 4,
+            Opcode::I64_STORE | Opcode::F64_STORE => 8,
+            Opcode::I32_STORE8 | Opcode::I64_STORE8 => 1,
+            Opcode::I32_STORE16 | Opcode::I64_STORE16 => 2,
+            _ => return Err(WasmError::internal("baseline MVP store opcode mismatch").into()),
+        };
+        self.access.with_instance_mut(|instance| {
+            instance.mem_store(address, memory, offset, size, value)
+        })??;
+        Ok(())
+    }
+
+    fn memory_is_64(&self, memory: usize) -> Result<bool, BaselineExecError> {
+        self.access
+            .with_instance(|instance| {
+                instance
+                    .module()
+                    .memories()
+                    .get(memory)
+                    .map(|memory| memory.limits().is64)
+                    .ok_or_else(|| WasmError::invalid("baseline MVP memory index overflow"))
+            })?
+            .map_err(Into::into)
+    }
+
+    fn require_i32_global(
+        &self,
+        global: usize,
+        opcode: WasmOpcode,
+        pc: usize,
+    ) -> Result<(), BaselineExecError> {
+        let value_type = self.access.with_instance(|instance| {
+            instance
+                .module()
+                .globals()
+                .get(global)
+                .map(|global| global.value_type())
+        })?;
+        match value_type {
+            Some(ValueType::I32) => Ok(()),
+            Some(_) => Err(BaselineExecError::Unsupported {
+                opcode: Some(opcode),
+                pc,
+                feature: "non-i32 global",
+            }),
+            None => Err(WasmError::invalid("baseline MVP global index overflow").into()),
+        }
     }
 
     fn push(&mut self, value: u64) -> Result<(), BaselineExecError> {
@@ -1473,17 +1524,6 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         self.values
             .pop()
             .ok_or_else(|| WasmError::internal("baseline MVP value stack disappeared").into())
-    }
-
-    fn peek(&self) -> Result<u64, BaselineExecError> {
-        let operand_base = self.current_activation()?.operand_base;
-        if self.values.len() == operand_base {
-            return Err(WasmError::invalid("baseline MVP operand stack underflow").into());
-        }
-        self.values
-            .last()
-            .copied()
-            .ok_or_else(|| WasmError::invalid("baseline MVP operand stack underflow").into())
     }
 
     fn enter_root(&mut self, args: &[Value]) -> Result<(), BaselineExecError> {
@@ -1788,36 +1828,6 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         Ok(())
     }
 
-    fn finish_activation(&mut self) -> Result<(), BaselineExecError> {
-        let activation = *self.current_activation()?;
-        let result_count = self.access.with_instance(|instance| {
-            instance
-                .module()
-                .functions()
-                .get(activation.function_index)
-                .map(|function| function.func_type().results().len())
-                .ok_or_else(|| WasmError::invalid("baseline MVP return function is missing"))
-        })??;
-        let expected_len = activation
-            .operand_base
-            .checked_add(result_count)
-            .ok_or_else(|| WasmError::invalid("baseline MVP result stack overflow"))?;
-        if self.values.len() != expected_len {
-            return Err(WasmError::invalid("baseline MVP result stack shape mismatch").into());
-        }
-        let result_end = activation
-            .return_base
-            .checked_add(result_count)
-            .ok_or_else(|| WasmError::invalid("baseline MVP result destination overflow"))?;
-        self.values.copy_within(
-            activation.operand_base..expected_len,
-            activation.return_base,
-        );
-        self.values.truncate(result_end);
-        self.activations.pop();
-        Ok(())
-    }
-
     fn reserve_activation(&mut self) -> Result<(), BaselineExecError> {
         if self.activations.len() >= self.max_activations {
             return Err(WasmError::trap("call stack exhausted").into());
@@ -1860,10 +1870,6 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
             .get(index)
             .and_then(Option::as_ref)
             .ok_or_else(|| WasmError::invalid("baseline MVP artifact function is missing").into())
-    }
-
-    fn current_baseline_function(&self) -> Result<&BaselineFunction, BaselineExecError> {
-        self.baseline_function(self.current_activation()?.function_index)
     }
 
     fn root_result_count(&self) -> Result<usize, BaselineExecError> {
@@ -1925,35 +1931,6 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         self.access
             .with_instance(|instance| instance.absolutize_value_for_type(value, value_type))
             .map_err(Into::into)
-    }
-
-    fn current_br_table(&self, source_pc: usize) -> Result<BrTableRange, BaselineExecError> {
-        let function = self.current_baseline_function()?;
-        self.artifact.br_tables[function.br_tables.clone()]
-            .iter()
-            .find(|table| table.source_pc as usize == source_pc)
-            .copied()
-            .ok_or_else(|| WasmError::invalid("baseline MVP br_table metadata missing").into())
-    }
-
-    fn local_slot(&self, local: usize) -> Result<usize, BaselineExecError> {
-        let activation = self.current_activation()?;
-        let slot = activation
-            .locals_base
-            .checked_add(local)
-            .ok_or_else(|| WasmError::invalid("baseline MVP local index overflow"))?;
-        (slot < activation.operand_base)
-            .then_some(slot)
-            .ok_or_else(|| WasmError::invalid("baseline MVP local index overflow").into())
-    }
-
-    fn advance_stp(&mut self) -> Result<(), BaselineExecError> {
-        let activation = self.current_activation_mut()?;
-        activation.stp = activation
-            .stp
-            .checked_add(1)
-            .ok_or_else(|| WasmError::invalid("baseline MVP side-table pointer overflow"))?;
-        Ok(())
     }
 
     fn unsupported<T>(
@@ -2398,6 +2375,7 @@ mod tests {
     fn whole_plan_preflights_selector_and_forced_raw_masks() {
         let wasm = wat::parse_str(
             r#"(module
+                (memory 1)
                 (func $pure (export "pure") (param i32) (result i32)
                     local.get 0 i32.const 2 i32.add)
                 (func (export "with_if") (param i32) (result i32)
@@ -2416,27 +2394,30 @@ mod tests {
                         i32.const 1
                     else
                         i32.const 2
-                    end))"#,
+                    end)
+                (func (export "memory") (result i32)
+                    i32.const 0 i32.load))"#,
         )
         .expect("wat");
         let module = Module::new("whole-plan-selector", &wasm).expect("module");
         let _guard = artifact_test_guard();
         let artifact = build_baseline_artifact(&module).expect("artifact");
         let selected = select_function_plans(&module, &artifact).expect("selector plan");
-        assert_eq!(selected, [FunctionPlanKind::Raw; 4]);
+        assert_eq!(selected, [FunctionPlanKind::Raw; 5]);
 
         let mut selected_instance = built_interp(module, &[]);
         selected_instance
             .set_whole_function_plan_for_test(artifact, selected)
             .expect("install selector plan");
         assert_eq!(
-            (0..4)
+            (0..5)
                 .map(|index| selected_instance.whole_function_mode(index))
                 .collect::<StdVec<_>>(),
             [
                 FunctionPlanKind::Raw,
-                FunctionPlanKind::FullFold,
-                FunctionPlanKind::FullFold,
+                FunctionPlanKind::Raw,
+                FunctionPlanKind::Raw,
+                FunctionPlanKind::Raw,
                 FunctionPlanKind::FullFold,
             ]
         );
@@ -2448,6 +2429,7 @@ mod tests {
             ("with_if", &[Value::I32(0)][..], Value::I32(7)),
             ("explicit", &[][..], Value::I32(9)),
             ("cross", &[Value::I32(5)][..], Value::I32(2)),
+            ("memory", &[][..], Value::I32(0)),
         ] {
             let function = selected_instance.find_export(export).expect("export");
             let raw_args = args.iter().map(Value::to_raw).collect::<StdVec<_>>();
@@ -2462,15 +2444,12 @@ mod tests {
         let forced_artifact = build_baseline_artifact(&forced_module).expect("artifact");
         let mut forced = built_interp(forced_module, &[]);
         forced
-            .set_whole_function_plan_for_test(forced_artifact, vec![FunctionPlanKind::Raw; 4])
+            .set_whole_function_plan_for_test(forced_artifact, vec![FunctionPlanKind::Raw; 5])
             .expect("forced plan must be safely promoted");
-        assert_eq!(forced.whole_function_mode(0), FunctionPlanKind::Raw);
-        for index in 1..4 {
-            assert_eq!(
-                forced.whole_function_mode(index),
-                FunctionPlanKind::FullFold
-            );
+        for index in 0..4 {
+            assert_eq!(forced.whole_function_mode(index), FunctionPlanKind::Raw);
         }
+        assert_eq!(forced.whole_function_mode(4), FunctionPlanKind::FullFold);
     }
 
     #[test]
