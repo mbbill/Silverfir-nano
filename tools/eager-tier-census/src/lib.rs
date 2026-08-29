@@ -14,7 +14,9 @@ use std::fmt::Write as _;
 pub struct DirectCallSite {
     pub caller: usize,
     pub callee: usize,
+    pub loop_depth: usize,
     pub in_loop: bool,
+    pub reachable: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -22,7 +24,9 @@ pub struct IndirectCallSite {
     pub caller: usize,
     pub type_index: u32,
     pub table_index: u32,
+    pub loop_depth: usize,
     pub in_loop: bool,
+    pub reachable: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -32,6 +36,16 @@ pub struct FunctionCensus {
     pub code_bytes: usize,
     pub opcode_count: usize,
     pub contains_loop: bool,
+    pub loop_structure_opcode_count: usize,
+    pub loop_structure_code_bytes: usize,
+    pub in_loop_opcode_count: usize,
+    pub in_loop_code_bytes: usize,
+    pub reachable_in_loop_opcode_count: usize,
+    pub reachable_in_loop_code_bytes: usize,
+    pub loop_body_opcode_count: usize,
+    pub loop_body_code_bytes: usize,
+    pub reachable_loop_body_opcode_count: usize,
+    pub reachable_loop_body_code_bytes: usize,
     pub direct_call_sites: usize,
     pub loop_direct_call_sites: usize,
     pub indirect_call_sites: usize,
@@ -62,6 +76,33 @@ pub struct RecursiveScc {
     pub members: Vec<usize>,
     pub opcode_count: usize,
     pub code_bytes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BlockTierCensus {
+    pub loop_structure_opcode_count: usize,
+    pub loop_structure_code_bytes: usize,
+    pub syntactic_in_loop_opcode_count: usize,
+    pub syntactic_in_loop_code_bytes: usize,
+    pub reachable_in_loop_opcode_count: usize,
+    pub reachable_in_loop_code_bytes: usize,
+    pub syntactic_loop_body_opcode_count: usize,
+    pub syntactic_loop_body_code_bytes: usize,
+    pub reachable_loop_body_opcode_count: usize,
+    pub reachable_loop_body_code_bytes: usize,
+    pub full_callee_closure: Coverage,
+    pub native_opcode_count: usize,
+    pub native_code_bytes: usize,
+    pub native_opcode_percent: f64,
+    pub native_code_byte_percent: f64,
+    pub baseline_opcode_count: usize,
+    pub baseline_code_bytes: usize,
+    pub baseline_opcode_percent: f64,
+    pub baseline_code_byte_percent: f64,
+    pub body_only_native_opcode_lower_bound: usize,
+    pub body_only_native_opcode_upper_bound: usize,
+    pub body_only_baseline_opcode_percent_lower_bound: f64,
+    pub body_only_baseline_opcode_percent_upper_bound: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -99,10 +140,21 @@ pub struct ModuleCensus {
     pub conservative_indirect_targets: Coverage,
     pub conservative_indirect_closure: Coverage,
     pub static_hot_closure: Coverage,
+    pub block_tier: BlockTierCensus,
     pub loop_policy_skippable_opcodes: usize,
     pub loop_policy_skippable_opcode_percent: f64,
     pub heavy_predecode_skippable_opcodes: usize,
     pub heavy_predecode_skippable_opcode_percent: f64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ControlFrame {
+    is_loop: bool,
+    is_if: bool,
+    entry_reachable: bool,
+    then_reachable: bool,
+    saw_else: bool,
+    end_targeted: bool,
 }
 
 #[derive(Default)]
@@ -111,7 +163,18 @@ struct FunctionScanner {
     opcode_count: usize,
     contains_loop: bool,
     loop_depth: usize,
-    control_stack: Vec<bool>,
+    control_stack: Vec<ControlFrame>,
+    reachable: bool,
+    loop_structure_opcode_count: usize,
+    loop_structure_code_bytes: usize,
+    in_loop_opcode_count: usize,
+    in_loop_code_bytes: usize,
+    reachable_in_loop_opcode_count: usize,
+    reachable_in_loop_code_bytes: usize,
+    loop_body_opcode_count: usize,
+    loop_body_code_bytes: usize,
+    reachable_loop_body_opcode_count: usize,
+    reachable_loop_body_code_bytes: usize,
     direct_calls: Vec<DirectCallSite>,
     indirect_calls: Vec<IndirectCallSite>,
     ref_funcs: Vec<usize>,
@@ -122,7 +185,18 @@ impl FunctionScanner {
     fn new(caller: usize) -> Self {
         Self {
             caller,
+            reachable: true,
             ..Self::default()
+        }
+    }
+
+    fn mark_branch_target(&mut self, depth: u32) {
+        let Some(frame_index) = self.control_stack.len().checked_sub(depth as usize + 1) else {
+            return;
+        };
+        let frame = &mut self.control_stack[frame_index];
+        if !frame.is_loop {
+            frame.end_targeted = true;
         }
     }
 }
@@ -138,50 +212,181 @@ impl OpcodeHandler for FunctionScanner {
     ) -> Result<(), WasmError> {
         while let Some(decoded) = stream.next()? {
             self.opcode_count += 1;
-            let WasmOpcode::OP(opcode) = decoded.wasm_op else {
+            let in_loop = self.loop_depth != 0;
+            let reachable = self.reachable;
+            let encoded_bytes = decoded.next_op_offset - decoded.op_offset;
+            let opcode = match decoded.wasm_op {
+                WasmOpcode::OP(opcode) => Some(opcode),
+                _ => None,
+            };
+            let loop_open = opcode == Some(Opcode::LOOP);
+            let loop_close = opcode == Some(Opcode::END)
+                && self.control_stack.last().is_some_and(|frame| frame.is_loop);
+            let loop_structure = loop_open || loop_close;
+            if loop_structure {
+                self.loop_structure_opcode_count += 1;
+                self.loop_structure_code_bytes += encoded_bytes;
+            }
+            if in_loop {
+                self.in_loop_opcode_count += 1;
+                self.in_loop_code_bytes += encoded_bytes;
+                if reachable {
+                    self.reachable_in_loop_opcode_count += 1;
+                    self.reachable_in_loop_code_bytes += encoded_bytes;
+                }
+                if !loop_structure {
+                    self.loop_body_opcode_count += 1;
+                    self.loop_body_code_bytes += encoded_bytes;
+                    if reachable {
+                        self.reachable_loop_body_opcode_count += 1;
+                        self.reachable_loop_body_code_bytes += encoded_bytes;
+                    }
+                }
+            }
+
+            let Some(opcode) = opcode else {
+                if reachable {
+                    if let Immediate::BrOnCast { label_idx, .. } = &decoded.imm {
+                        self.mark_branch_target(*label_idx);
+                    }
+                }
                 continue;
             };
-            let in_loop = self.loop_depth != 0;
             match opcode {
                 Opcode::CALL | Opcode::RETURN_CALL => {
-                    let Immediate::FunctionIndex(callee) = decoded.imm else {
+                    let Immediate::FunctionIndex(callee) = &decoded.imm else {
                         return Err(WasmError::internal("direct call immediate mismatch"));
                     };
                     self.direct_calls.push(DirectCallSite {
                         caller: self.caller,
-                        callee: callee as usize,
+                        callee: *callee as usize,
+                        loop_depth: self.loop_depth,
                         in_loop,
+                        reachable,
                     });
+                    if opcode == Opcode::RETURN_CALL && reachable {
+                        self.reachable = false;
+                    }
                 }
                 Opcode::CALL_INDIRECT | Opcode::RETURN_CALL_INDIRECT => {
-                    let Immediate::CallIndirectArgs { typeidx, tableidx } = decoded.imm else {
+                    let Immediate::CallIndirectArgs { typeidx, tableidx } = &decoded.imm else {
                         return Err(WasmError::internal("indirect call immediate mismatch"));
                     };
                     self.indirect_calls.push(IndirectCallSite {
                         caller: self.caller,
-                        type_index: typeidx,
-                        table_index: tableidx,
+                        type_index: *typeidx,
+                        table_index: *tableidx,
+                        loop_depth: self.loop_depth,
                         in_loop,
+                        reachable,
                     });
+                    if opcode == Opcode::RETURN_CALL_INDIRECT && reachable {
+                        self.reachable = false;
+                    }
                 }
-                Opcode::CALL_REF | Opcode::RETURN_CALL_REF => self.call_ref_sites += 1,
+                Opcode::CALL_REF | Opcode::RETURN_CALL_REF => {
+                    self.call_ref_sites += 1;
+                    if opcode == Opcode::RETURN_CALL_REF && reachable {
+                        self.reachable = false;
+                    }
+                }
                 Opcode::REF_FUNC => {
-                    let Immediate::FunctionIndex(index) = decoded.imm else {
+                    let Immediate::FunctionIndex(index) = &decoded.imm else {
                         return Err(WasmError::internal("ref.func immediate mismatch"));
                     };
-                    self.ref_funcs.push(index as usize);
+                    self.ref_funcs.push(*index as usize);
                 }
                 Opcode::LOOP => {
                     self.contains_loop = true;
-                    self.control_stack.push(true);
+                    self.control_stack.push(ControlFrame {
+                        is_loop: true,
+                        entry_reachable: reachable,
+                        ..ControlFrame::default()
+                    });
                     self.loop_depth += 1;
                 }
-                Opcode::BLOCK | Opcode::IF | Opcode::TRY_TABLE => {
-                    self.control_stack.push(false);
+                Opcode::BLOCK => self.control_stack.push(ControlFrame {
+                    entry_reachable: reachable,
+                    ..ControlFrame::default()
+                }),
+                Opcode::IF => self.control_stack.push(ControlFrame {
+                    is_if: true,
+                    entry_reachable: reachable,
+                    ..ControlFrame::default()
+                }),
+                Opcode::TRY_TABLE => {
+                    if reachable {
+                        if let Immediate::TryTable { catches, .. } = &decoded.imm {
+                            for catch in catches {
+                                self.mark_branch_target(catch.label_idx);
+                            }
+                        }
+                    }
+                    self.control_stack.push(ControlFrame {
+                        entry_reachable: reachable,
+                        ..ControlFrame::default()
+                    });
+                }
+                Opcode::ELSE => {
+                    if let Some(frame) = self.control_stack.last_mut() {
+                        frame.then_reachable = self.reachable;
+                        frame.saw_else = true;
+                        self.reachable = frame.entry_reachable;
+                    }
                 }
                 Opcode::END => {
-                    if self.control_stack.pop().unwrap_or(false) {
-                        self.loop_depth -= 1;
+                    if let Some(frame) = self.control_stack.pop() {
+                        if frame.is_loop {
+                            self.loop_depth -= 1;
+                        }
+                        self.reachable = if frame.is_if {
+                            let false_path = if frame.saw_else {
+                                frame.then_reachable
+                            } else {
+                                frame.entry_reachable
+                            };
+                            self.reachable || false_path || frame.end_targeted
+                        } else {
+                            self.reachable || frame.end_targeted
+                        };
+                    }
+                }
+                Opcode::BR => {
+                    if reachable {
+                        if let Immediate::LabelIndex(depth) = &decoded.imm {
+                            self.mark_branch_target(*depth);
+                        }
+                        self.reachable = false;
+                    }
+                }
+                Opcode::BR_IF => {
+                    if reachable {
+                        if let Immediate::LabelIndex(depth) = &decoded.imm {
+                            self.mark_branch_target(*depth);
+                        }
+                    }
+                }
+                Opcode::BR_TABLE => {
+                    if reachable {
+                        if let Immediate::BrLabels(labels, default) = &decoded.imm {
+                            for &depth in labels {
+                                self.mark_branch_target(depth);
+                            }
+                            self.mark_branch_target(*default);
+                        }
+                        self.reachable = false;
+                    }
+                }
+                Opcode::BR_ON_NULL | Opcode::BR_ON_NON_NULL => {
+                    if reachable {
+                        if let Immediate::LabelIndex(depth) = &decoded.imm {
+                            self.mark_branch_target(*depth);
+                        }
+                    }
+                }
+                Opcode::UNREACHABLE | Opcode::RETURN | Opcode::THROW | Opcode::THROW_REF => {
+                    if reachable {
+                        self.reachable = false;
                     }
                 }
                 _ => {}
@@ -256,6 +461,53 @@ fn adjacency(function_count: usize, calls: &[DirectCallSite], local: &[bool]) ->
         edges.dedup();
     }
     graph
+}
+
+fn reachable_adjacency(
+    function_count: usize,
+    calls: &[DirectCallSite],
+    local: &[bool],
+) -> Vec<Vec<usize>> {
+    let mut graph = vec![Vec::new(); function_count];
+    for call in calls.iter().filter(|call| call.reachable) {
+        if call.caller < function_count && call.callee < function_count && local[call.callee] {
+            graph[call.caller].push(call.callee);
+        }
+    }
+    for edges in &mut graph {
+        edges.sort_unstable();
+        edges.dedup();
+    }
+    graph
+}
+
+fn conservative_indirect_targets<'a>(
+    module: &Module,
+    sites: impl IntoIterator<Item = &'a IndirectCallSite>,
+    declared_refs: &[usize],
+    local: &[bool],
+) -> Vec<usize> {
+    let function_count = module.functions().len();
+    let mut targets = Vec::new();
+    for site in sites {
+        let open_world = module
+            .tables()
+            .get(site.table_index as usize)
+            .is_none_or(|table| table.is_import() || !table.export_names().is_empty());
+        for (index, function) in module.functions().iter().enumerate() {
+            if !local[index]
+                || (!open_world && declared_refs.binary_search(&index).is_err())
+                || !module
+                    .types()
+                    .types_equivalent(site.type_index, function.type_index())
+            {
+                continue;
+            }
+            targets.push(index);
+        }
+    }
+    normalize(&mut targets, function_count);
+    targets
 }
 
 fn transitive_closure(seeds: &[usize], graph: &[Vec<usize>], local: &[bool]) -> Vec<usize> {
@@ -408,6 +660,16 @@ pub fn analyze_module(module: &Module) -> Result<ModuleCensus, WasmError> {
                 code_bytes: 0,
                 opcode_count: 0,
                 contains_loop: false,
+                loop_structure_opcode_count: 0,
+                loop_structure_code_bytes: 0,
+                in_loop_opcode_count: 0,
+                in_loop_code_bytes: 0,
+                reachable_in_loop_opcode_count: 0,
+                reachable_in_loop_code_bytes: 0,
+                loop_body_opcode_count: 0,
+                loop_body_code_bytes: 0,
+                reachable_loop_body_opcode_count: 0,
+                reachable_loop_body_code_bytes: 0,
                 direct_call_sites: 0,
                 loop_direct_call_sites: 0,
                 indirect_call_sites: 0,
@@ -443,6 +705,16 @@ pub fn analyze_module(module: &Module) -> Result<ModuleCensus, WasmError> {
             code_bytes: spec.code().len(),
             opcode_count: scanner.opcode_count,
             contains_loop: scanner.contains_loop,
+            loop_structure_opcode_count: scanner.loop_structure_opcode_count,
+            loop_structure_code_bytes: scanner.loop_structure_code_bytes,
+            in_loop_opcode_count: scanner.in_loop_opcode_count,
+            in_loop_code_bytes: scanner.in_loop_code_bytes,
+            reachable_in_loop_opcode_count: scanner.reachable_in_loop_opcode_count,
+            reachable_in_loop_code_bytes: scanner.reachable_in_loop_code_bytes,
+            loop_body_opcode_count: scanner.loop_body_opcode_count,
+            loop_body_code_bytes: scanner.loop_body_code_bytes,
+            reachable_loop_body_opcode_count: scanner.reachable_loop_body_opcode_count,
+            reachable_loop_body_code_bytes: scanner.reachable_loop_body_code_bytes,
             direct_call_sites: direct_count,
             loop_direct_call_sites: loop_direct_count,
             indirect_call_sites: indirect_count,
@@ -456,6 +728,7 @@ pub fn analyze_module(module: &Module) -> Result<ModuleCensus, WasmError> {
         .map(|function| !function.imported)
         .collect();
     let graph = adjacency(function_count, &direct_calls, &local);
+    let reachable_graph = reachable_adjacency(function_count, &direct_calls, &local);
 
     let mut export_roots: Vec<usize> = module
         .functions()
@@ -506,25 +779,16 @@ pub fn analyze_module(module: &Module) -> Result<ModuleCensus, WasmError> {
         .iter()
         .filter(|table| table.is_import() || !table.export_names().is_empty())
         .count();
-    let mut indirect_targets = Vec::new();
-    for site in &indirect_calls {
-        let open_world = module
-            .tables()
-            .get(site.table_index as usize)
-            .is_none_or(|table| table.is_import() || !table.export_names().is_empty());
-        for (index, function) in module.functions().iter().enumerate() {
-            if !local[index]
-                || (!open_world && declared_refs.binary_search(&index).is_err())
-                || !module
-                    .types()
-                    .types_equivalent(site.type_index, function.type_index())
-            {
-                continue;
-            }
-            indirect_targets.push(index);
-        }
-    }
-    normalize(&mut indirect_targets, function_count);
+    let indirect_targets =
+        conservative_indirect_targets(module, &indirect_calls, &declared_refs, &local);
+    let loop_indirect_targets = conservative_indirect_targets(
+        module,
+        indirect_calls
+            .iter()
+            .filter(|site| site.in_loop && site.reachable),
+        &declared_refs,
+        &local,
+    );
 
     let loop_functions: Vec<usize> = functions
         .iter()
@@ -535,6 +799,11 @@ pub fn analyze_module(module: &Module) -> Result<ModuleCensus, WasmError> {
         .filter_map(|call| call.in_loop.then_some(call.callee))
         .collect();
     normalize(&mut loop_call_targets, function_count);
+    let mut reachable_loop_call_targets: Vec<usize> = direct_calls
+        .iter()
+        .filter_map(|call| (call.in_loop && call.reachable).then_some(call.callee))
+        .collect();
+    normalize(&mut reachable_loop_call_targets, function_count);
 
     let components = strongly_connected_components(&graph, &local);
     let mut recursive_members = Vec::new();
@@ -570,6 +839,12 @@ pub fn analyze_module(module: &Module) -> Result<ModuleCensus, WasmError> {
     let recursive_closure_indices = transitive_closure(&recursive_members, &graph, &local);
     let indirect_closure_indices = transitive_closure(&indirect_targets, &graph, &local);
 
+    let mut block_full_callee_seeds = reachable_loop_call_targets;
+    block_full_callee_seeds.extend(loop_indirect_targets);
+    normalize(&mut block_full_callee_seeds, function_count);
+    let block_full_callee_indices =
+        transitive_closure(&block_full_callee_seeds, &reachable_graph, &local);
+
     let mut hot_seeds = root_union;
     hot_seeds.extend(loop_functions.iter().copied());
     hot_seeds.extend(loop_call_targets.iter().copied());
@@ -583,6 +858,96 @@ pub fn analyze_module(module: &Module) -> Result<ModuleCensus, WasmError> {
 
     let total_opcode_count: usize = functions.iter().map(|function| function.opcode_count).sum();
     let total_code_bytes: usize = functions.iter().map(|function| function.code_bytes).sum();
+    let loop_structure_opcode_count = functions
+        .iter()
+        .map(|function| function.loop_structure_opcode_count)
+        .sum();
+    let loop_structure_code_bytes = functions
+        .iter()
+        .map(|function| function.loop_structure_code_bytes)
+        .sum();
+    let syntactic_in_loop_opcode_count = functions
+        .iter()
+        .map(|function| function.in_loop_opcode_count)
+        .sum();
+    let syntactic_in_loop_code_bytes = functions
+        .iter()
+        .map(|function| function.in_loop_code_bytes)
+        .sum();
+    let reachable_in_loop_opcode_count = functions
+        .iter()
+        .map(|function| function.reachable_in_loop_opcode_count)
+        .sum();
+    let reachable_in_loop_code_bytes = functions
+        .iter()
+        .map(|function| function.reachable_in_loop_code_bytes)
+        .sum();
+    let syntactic_loop_body_opcode_count = functions
+        .iter()
+        .map(|function| function.loop_body_opcode_count)
+        .sum();
+    let syntactic_loop_body_code_bytes = functions
+        .iter()
+        .map(|function| function.loop_body_code_bytes)
+        .sum();
+    let reachable_loop_body_opcode_count = functions
+        .iter()
+        .map(|function| function.reachable_loop_body_opcode_count)
+        .sum();
+    let reachable_loop_body_code_bytes = functions
+        .iter()
+        .map(|function| function.reachable_loop_body_code_bytes)
+        .sum();
+
+    let block_full_callee_coverage = coverage(block_full_callee_indices, &functions);
+    let mut block_full_function = vec![false; function_count];
+    for &index in &block_full_callee_coverage.members {
+        block_full_function[index] = true;
+    }
+    let mut block_native_opcode_count = 0usize;
+    let mut block_native_code_bytes = 0usize;
+    for function in functions.iter().filter(|function| !function.imported) {
+        if block_full_function[function.index] {
+            block_native_opcode_count += function.opcode_count;
+            block_native_code_bytes += function.code_bytes;
+        } else {
+            block_native_opcode_count += function.reachable_in_loop_opcode_count;
+            block_native_code_bytes += function.reachable_in_loop_code_bytes;
+        }
+    }
+    let block_baseline_opcode_count = total_opcode_count.saturating_sub(block_native_opcode_count);
+    let block_baseline_code_bytes = total_code_bytes.saturating_sub(block_native_code_bytes);
+    let block_tier = BlockTierCensus {
+        loop_structure_opcode_count,
+        loop_structure_code_bytes,
+        syntactic_in_loop_opcode_count,
+        syntactic_in_loop_code_bytes,
+        reachable_in_loop_opcode_count,
+        reachable_in_loop_code_bytes,
+        syntactic_loop_body_opcode_count,
+        syntactic_loop_body_code_bytes,
+        reachable_loop_body_opcode_count,
+        reachable_loop_body_code_bytes,
+        full_callee_closure: block_full_callee_coverage,
+        native_opcode_count: block_native_opcode_count,
+        native_code_bytes: block_native_code_bytes,
+        native_opcode_percent: percent(block_native_opcode_count, total_opcode_count),
+        native_code_byte_percent: percent(block_native_code_bytes, total_code_bytes),
+        baseline_opcode_count: block_baseline_opcode_count,
+        baseline_code_bytes: block_baseline_code_bytes,
+        baseline_opcode_percent: percent(block_baseline_opcode_count, total_opcode_count),
+        baseline_code_byte_percent: percent(block_baseline_code_bytes, total_code_bytes),
+        body_only_native_opcode_lower_bound: reachable_loop_body_opcode_count,
+        body_only_native_opcode_upper_bound: syntactic_loop_body_opcode_count,
+        body_only_baseline_opcode_percent_lower_bound: percent(
+            total_opcode_count.saturating_sub(syntactic_loop_body_opcode_count),
+            total_opcode_count,
+        ),
+        body_only_baseline_opcode_percent_upper_bound: percent(
+            total_opcode_count.saturating_sub(reachable_loop_body_opcode_count),
+            total_opcode_count,
+        ),
+    };
     let hot_coverage = coverage(hot_indices, &functions);
     let skippable = total_opcode_count.saturating_sub(hot_coverage.opcode_count);
     let skippable_percent = if total_opcode_count == 0 {
@@ -648,6 +1013,7 @@ pub fn analyze_module(module: &Module) -> Result<ModuleCensus, WasmError> {
         conservative_indirect_targets: indirect_target_coverage,
         conservative_indirect_closure: indirect_closure,
         static_hot_closure: hot_coverage,
+        block_tier,
         loop_policy_skippable_opcodes: loop_skippable,
         loop_policy_skippable_opcode_percent: loop_skippable_percent,
         heavy_predecode_skippable_opcodes: skippable,
@@ -669,7 +1035,9 @@ fn percent(part: usize, total: usize) -> f64 {
 pub fn render_markdown(reports: &[ModuleCensus]) -> String {
     let mut out = String::from(
         "# Eager-tier structural census\n\n\
-         No wall-clock measurements are collected. `skippable` is `(all local Wasm opcodes - static-hot closure opcodes) / all local Wasm opcodes`. Static-hot seeds are exports/start/elements, loop functions, recursive SCCs, conservative type-compatible indirect targets, and declared ref targets when `call_ref` exists.\n\n\
+         No wall-clock measurements are collected. Function-level `skippable` is `(all local Wasm opcodes - static-hot closure opcodes) / all local Wasm opcodes`. Static-hot seeds are exports/start/elements, loop functions, recursive SCCs, conservative type-compatible indirect targets, and declared ref targets when `call_ref` exists.\n\n\
+         Block-level native coverage is the de-duplicated union of reachable opcodes decoded at `loop_depth > 0`, complete reachable direct-call closures rooted at loop call sites, and conservative type-compatible targets of reachable `call_indirect` sites in loops. An outer `loop` opener has depth zero; loop-structure counts list every `loop` opener and its matching `end` separately. Loop-body counts exclude both structural opcodes. The body-only baseline range is bounded by syntactically present loop-body opcodes on the low side and reachability-filtered loop-body opcodes on the high side.\n\n\
+         ## Function-level policies\n\n\
          | Module | Local funcs | Wasm ops | Code bytes | Loop funcs | Loop closure ops | Root closure ops | Indirect closure ops | Static-hot ops | Loop-only skip | Conservative skip |\n\
          |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
@@ -701,6 +1069,56 @@ pub fn render_markdown(reports: &[ModuleCensus]) -> String {
         .expect("write markdown");
     }
 
+    out.push_str(
+        "\n## Block-level structural coverage\n\n\
+         | Module | Loop structure ops | In-loop ops (syntax / reachable) | Loop-body ops (syntax / reachable) | Full callee closure ops | Block native ops | Block native bytes | Baseline ops | Baseline bytes | Body-only baseline ops | Body-only baseline bytes |\n\
+         |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+    );
+    for report in reports {
+        let block = &report.block_tier;
+        let body_byte_baseline_lower = percent(
+            report
+                .total_code_bytes
+                .saturating_sub(block.syntactic_loop_body_code_bytes),
+            report.total_code_bytes,
+        );
+        let body_byte_baseline_upper = percent(
+            report
+                .total_code_bytes
+                .saturating_sub(block.reachable_loop_body_code_bytes),
+            report.total_code_bytes,
+        );
+        writeln!(
+            out,
+            "| `{}` | {} ({:.2}%) | {} / {} | {} / {} | {} ({:.2}%) | {} ({:.2}%) | {} ({:.2}%) | {} ({:.2}%) | {} ({:.2}%) | {:.2}%–{:.2}% | {:.2}%–{:.2}% |",
+            report.name,
+            block.loop_structure_opcode_count,
+            percent(block.loop_structure_opcode_count, report.total_opcode_count),
+            block.syntactic_in_loop_opcode_count,
+            block.reachable_in_loop_opcode_count,
+            block.syntactic_loop_body_opcode_count,
+            block.reachable_loop_body_opcode_count,
+            block.full_callee_closure.opcode_count,
+            percent(
+                block.full_callee_closure.opcode_count,
+                report.total_opcode_count
+            ),
+            block.native_opcode_count,
+            block.native_opcode_percent,
+            block.native_code_bytes,
+            block.native_code_byte_percent,
+            block.baseline_opcode_count,
+            block.baseline_opcode_percent,
+            block.baseline_code_bytes,
+            block.baseline_code_byte_percent,
+            block.body_only_baseline_opcode_percent_lower_bound,
+            block.body_only_baseline_opcode_percent_upper_bound,
+            body_byte_baseline_lower,
+            body_byte_baseline_upper,
+        )
+        .expect("write markdown");
+    }
+
     for report in reports {
         writeln!(out, "\n## {}\n", report.name).expect("write markdown");
         writeln!(
@@ -723,6 +1141,34 @@ pub fn render_markdown(reports: &[ModuleCensus]) -> String {
             report.recursive_sccs.len(),
             report.declared_ref_targets.local_function_count,
             report.conservative_indirect_targets.local_function_count
+        )
+        .expect("write markdown");
+        writeln!(
+            out,
+            "- Loop-depth spans: syntactic {}/{} opcodes/bytes; reachable {}/{}; loop structure {}/{}; loop body syntactic {}/{} and reachable {}/{}",
+            report.block_tier.syntactic_in_loop_opcode_count,
+            report.block_tier.syntactic_in_loop_code_bytes,
+            report.block_tier.reachable_in_loop_opcode_count,
+            report.block_tier.reachable_in_loop_code_bytes,
+            report.block_tier.loop_structure_opcode_count,
+            report.block_tier.loop_structure_code_bytes,
+            report.block_tier.syntactic_loop_body_opcode_count,
+            report.block_tier.syntactic_loop_body_code_bytes,
+            report.block_tier.reachable_loop_body_opcode_count,
+            report.block_tier.reachable_loop_body_code_bytes,
+        )
+        .expect("write markdown");
+        writeln!(
+            out,
+            "- Block tier: {} full callees; native {}/{} opcodes ({:.2}%) and {}/{} bytes ({:.2}%); baseline {:.2}% of opcodes",
+            report.block_tier.full_callee_closure.local_function_count,
+            report.block_tier.native_opcode_count,
+            report.total_opcode_count,
+            report.block_tier.native_opcode_percent,
+            report.block_tier.native_code_bytes,
+            report.total_code_bytes,
+            report.block_tier.native_code_byte_percent,
+            report.block_tier.baseline_opcode_percent,
         )
         .expect("write markdown");
         out.push_str(
@@ -766,8 +1212,98 @@ mod tests {
         assert_eq!(report.loop_direct_call_site_count, 2);
         assert_eq!(report.loop_function_closure.members, vec![0, 1, 2]);
         assert_eq!(report.loop_call_target_closure.members, vec![0, 1]);
+        assert_eq!(
+            report
+                .direct_calls
+                .iter()
+                .filter(|call| call.caller == 2)
+                .map(|call| (call.callee, call.loop_depth, call.reachable))
+                .collect::<Vec<_>>(),
+            vec![(1, 1, true), (0, 2, true)]
+        );
+        let loop_function = &report.functions[2];
+        assert_eq!(loop_function.loop_structure_opcode_count, 4);
+        assert_eq!(loop_function.in_loop_opcode_count, 7);
+        assert_eq!(loop_function.reachable_in_loop_opcode_count, 7);
+        assert_eq!(loop_function.loop_body_opcode_count, 4);
+        assert_eq!(loop_function.reachable_loop_body_opcode_count, 4);
+        assert!(loop_function.in_loop_code_bytes > loop_function.loop_body_code_bytes);
+        assert_eq!(report.block_tier.full_callee_closure.members, vec![0, 1]);
+        assert_eq!(report.block_tier.native_opcode_count, 10);
+        assert_eq!(
+            report.block_tier.native_code_bytes,
+            report.functions[0].code_bytes
+                + report.functions[1].code_bytes
+                + loop_function.reachable_in_loop_code_bytes
+        );
         assert_eq!(report.export_roots.members, vec![2]);
         assert_eq!(report.roots_closure.members, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn unreachable_loop_calls_do_not_seed_block_hot_closure() {
+        let report = census(
+            r#"(module
+                (func $dead_target call $leaf)
+                (func $leaf)
+                (func $live_target)
+                (func $caller
+                    (loop
+                        (block
+                            br 0
+                            call $dead_target)
+                        call $live_target
+                        unreachable
+                        call $dead_target
+                        nop)))"#,
+        );
+        assert_eq!(
+            report
+                .direct_calls
+                .iter()
+                .filter(|call| call.caller == 3)
+                .map(|call| (call.callee, call.loop_depth, call.reachable))
+                .collect::<Vec<_>>(),
+            vec![(0, 1, false), (2, 1, true), (0, 1, false)]
+        );
+        let caller = &report.functions[3];
+        assert_eq!(caller.loop_structure_opcode_count, 2);
+        assert_eq!(caller.in_loop_opcode_count, 9);
+        assert_eq!(caller.reachable_in_loop_opcode_count, 4);
+        assert_eq!(caller.loop_body_opcode_count, 8);
+        assert_eq!(caller.reachable_loop_body_opcode_count, 4);
+        assert_eq!(report.block_tier.full_callee_closure.members, vec![2]);
+        assert_eq!(report.block_tier.native_opcode_count, 5);
+        assert_eq!(report.block_tier.body_only_native_opcode_lower_bound, 4);
+        assert_eq!(report.block_tier.body_only_native_opcode_upper_bound, 8);
+        assert_eq!(
+            report.block_tier.baseline_opcode_count,
+            report.total_opcode_count - report.block_tier.native_opcode_count
+        );
+    }
+
+    #[test]
+    fn loop_indirect_targets_add_complete_reachable_callee_closure() {
+        let report = census(
+            r#"(module
+                (type $t (func))
+                (table 1 funcref)
+                (func $leaf)
+                (func $target (type $t) call $leaf)
+                (func $undeclared (type $t))
+                (elem (i32.const 0) $target)
+                (func $caller
+                    (loop
+                        i32.const 0
+                        call_indirect (type $t))))"#,
+        );
+        assert_eq!(report.indirect_calls.len(), 1);
+        assert_eq!(report.indirect_calls[0].caller, 3);
+        assert_eq!(report.indirect_calls[0].loop_depth, 1);
+        assert!(report.indirect_calls[0].reachable);
+        assert_eq!(report.conservative_indirect_targets.members, vec![1]);
+        assert_eq!(report.block_tier.full_callee_closure.members, vec![0, 1]);
+        assert!(!report.block_tier.full_callee_closure.members.contains(&2));
     }
 
     #[test]
@@ -863,10 +1399,13 @@ mod tests {
         let json = serde_json::to_string_pretty(&report).expect("json");
         assert!(json.contains("\"heavy_predecode_skippable_opcodes\""));
         assert!(json.contains("\"loop_function_closure\""));
+        assert!(json.contains("\"block_tier\""));
         let markdown = render_markdown(&[report]);
         assert!(markdown.contains("# Eager-tier structural census"));
         assert!(markdown.contains("| `fixture` |"));
         assert!(markdown.contains("Loop-only skip"));
         assert!(markdown.contains("Conservative skip"));
+        assert!(markdown.contains("Block-level structural coverage"));
+        assert!(markdown.contains("Body-only baseline ops"));
     }
 }
