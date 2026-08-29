@@ -401,9 +401,16 @@ def collect_measurements(raw_dir: Path) -> dict[str, dict[str, float]]:
     return measurements
 
 
+SEMANTICALLY_LAZY_RUNTIMES = frozenset({
+    # Stitch validates eagerly but compiles each function on its first call.
+    # Its public ID omits the word "lazy", so token-only filtering is wrong.
+    "stitch",
+})
+
+
 def is_lazy_runtime(engine: str) -> bool:
     tokens = re.split(r"[^a-z0-9]+", engine.lower())
-    return "lazy" in tokens
+    return "lazy" in tokens or engine.lower() in SEMANTICALLY_LAZY_RUNTIMES
 
 
 def build_document(
@@ -516,7 +523,7 @@ def render_summary(document: dict[str, Any]) -> str:
         f"- wasmi-benchmarks: `{document['wasmi_benchmarks_revision']}`",
         f"- field: `{len(rows)}` interpreter configurations on one runner",
         f"- workloads: `{len(STARTUP_GROUPS)}` startup cases",
-        "- gate: every runtime whose ID contains a `lazy` token is excluded",
+        "- gate: lazy-token configurations and audited first-call compilers are excluded",
         "",
         "| Rank | Non-lazy interpreter | Coverage | 7-case geomean | Does Nano win? |",
         "|---:|---|---:|---:|---|",
