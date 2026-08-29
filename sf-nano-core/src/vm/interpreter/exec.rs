@@ -614,13 +614,18 @@ pub struct InterpInstance {
     /// identity while crossing an imported-function boundary.
     instance_backref: InstanceBackref,
     link_registry: LinkArenas,
-    /// The operand stack and native return stack, allocated once at
-    /// instantiation and reused by every call. They used to be allocated
-    /// and zeroed inside each invocation, which put a 2 MiB allocation in
-    /// front of every call to a Wasm function.
+    /// The operand stack and native return stack, allocated on the first
+    /// guest call and then reused by every call. `Some(empty)` is the
+    /// never-entered instance state; `None` means an outer call currently
+    /// owns the buffer and a re-entry must use a temporary pair.
+    ///
+    /// Keeping the owner slot present but empty lets instantiation avoid
+    /// allocating and zeroing 2 MiB of runtime-only storage. Predecode and
+    /// native linking remain eager; only memory that cannot be observed
+    /// before a call is deferred.
     config: Config,
-    stack: Vec<u64>,
-    ret_stack: Vec<u64>,
+    stack: Option<Vec<u64>>,
+    ret_stack: Option<Vec<u64>>,
     host: Option<HostDispatch>,
     funcref_host: Option<SharedFuncRefHost>,
     /// Stable import names for calls that leave an instance materialization.
@@ -1131,8 +1136,6 @@ impl InterpInstance {
                 MemoryDef::Local(_) => None,
             });
         }
-        let stack_slots = configured_stack_slots(&config);
-
         // Resolve tag identities before predecode. Catch folding must compare
         // the entities selected by linking, not their module-local indices:
         // two imports can alias one tag, and equal signatures do not make two
@@ -1562,11 +1565,12 @@ impl InterpInstance {
             tags,
             instance_backref,
             link_registry,
-            // Zeroed in full: native dispatch roams the whole region
-            // through raw pointers, so every slot must be initialized.
             config,
-            stack: vec![0u64; stack_slots],
-            ret_stack: vec![0u64; configured_ret_records(stack_slots) * (RET_RECORD / 8)],
+            // `drive` materializes the pair immediately before native code
+            // can observe it. `Some(empty)` is distinct from the `None`
+            // left while an outer call owns the reusable buffers.
+            stack: Some(Vec::new()),
+            ret_stack: Some(Vec::new()),
             host,
             funcref_host: funcref_host.map(|host| Rc::new(RefCell::new(host))),
             import_names,
@@ -2488,12 +2492,19 @@ impl InterpInstance {
             }
 
             // Take the instance's buffers before the first guest step. A
-            // re-entry sees them absent and allocates its own pair.
-            let mut stack = core::mem::take(&mut instance.stack);
-            let mut ret_stack = core::mem::take(&mut instance.ret_stack);
-            let reentrant = stack.is_empty();
-            if reentrant {
+            // re-entry sees `None` and allocates its own pair. The owner of
+            // a never-entered instance sees `Some(empty)`, materializes the
+            // reusable pair once, and hands it back after the call.
+            let stack = instance.stack.take();
+            let ret_stack = instance.ret_stack.take();
+            let reentrant = stack.is_none();
+            debug_assert_eq!(reentrant, ret_stack.is_none());
+            let mut stack = stack.unwrap_or_default();
+            let mut ret_stack = ret_stack.unwrap_or_default();
+            if stack.is_empty() {
                 let slots = configured_stack_slots(&instance.config);
+                // Zeroed in full: native dispatch roams the whole region
+                // through raw pointers, so every slot must be initialized.
                 stack = vec![0u64; slots];
                 ret_stack = vec![0u64; configured_ret_records(slots) * (RET_RECORD / 8)];
             }
@@ -2505,8 +2516,8 @@ impl InterpInstance {
         // Only the owner hands them back; a nested call drops its own.
         if !reentrant {
             access.with_instance_mut(|instance| {
-                instance.stack = stack;
-                instance.ret_stack = ret_stack;
+                instance.stack = Some(stack);
+                instance.ret_stack = Some(ret_stack);
             })?;
         }
         outcome
@@ -4607,6 +4618,93 @@ mod tests {
         let mut results = [0u64; 2];
         inst.invoke(idx, args, &mut results)?;
         Ok(results)
+    }
+
+    #[test]
+    fn call_stacks_materialize_on_first_guest_call_and_are_reused() {
+        let (bin, _) = instantiate(
+            r#"(module
+                (func (export "run") (param $write i32) (result i32)
+                    (local $value i32)
+                    local.get $write
+                    if
+                        i32.const 41
+                        local.set $value
+                    end
+                    local.get $value))"#,
+        );
+        let module = Module::new("lazy-call-stacks", &bin).expect("module");
+        let engine = Engine::new(Config::new().wasm_stack_bytes(4096)).expect("engine");
+        let mut inst = InterpInstance::new(&engine, module, None, &[]).expect("instantiate");
+
+        assert_eq!(inst.stack.as_ref().expect("owner stack").len(), 0);
+        assert_eq!(
+            inst.ret_stack.as_ref().expect("owner return stack").len(),
+            0
+        );
+
+        let run = inst.find_export("run").expect("run");
+        let mut result = [u64::MAX];
+        inst.invoke(run, &[1], &mut result).expect("first invoke");
+        assert_eq!(result, [41]);
+        let stack = inst.stack.as_ref().expect("returned owner stack");
+        let ret_stack = inst
+            .ret_stack
+            .as_ref()
+            .expect("returned owner return stack");
+        assert_eq!(stack.len(), configured_stack_slots(engine.config()));
+        assert_eq!(
+            ret_stack.len(),
+            configured_ret_records(stack.len()) * (RET_RECORD / 8)
+        );
+        let stack_ptr = stack.as_ptr();
+        let ret_stack_ptr = ret_stack.as_ptr();
+
+        // The second call must see a freshly zeroed local without replacing
+        // either reusable allocation.
+        inst.invoke(run, &[0], &mut result).expect("second invoke");
+        assert_eq!(result, [0]);
+        assert_eq!(
+            inst.stack.as_ref().expect("owner stack").as_ptr(),
+            stack_ptr
+        );
+        assert_eq!(
+            inst.ret_stack
+                .as_ref()
+                .expect("owner return stack")
+                .as_ptr(),
+            ret_stack_ptr
+        );
+    }
+
+    #[test]
+    fn start_function_materializes_and_returns_the_owner_stacks() {
+        let (bin, _) = instantiate(
+            r#"(module
+                (global $value (mut i32) (i32.const 0))
+                (func $start
+                    i32.const 73
+                    global.set $value)
+                (start $start)
+                (func (export "get") (result i32)
+                    global.get $value))"#,
+        );
+        let module = Module::new("start-call-stacks", &bin).expect("module");
+        let engine = Engine::new(Config::new().wasm_stack_bytes(4096)).expect("engine");
+        let mut inst = InterpInstance::new(&engine, module, None, &[]).expect("instantiate");
+
+        assert_eq!(
+            inst.stack.as_ref().expect("owner stack").len(),
+            configured_stack_slots(engine.config())
+        );
+        assert!(inst
+            .ret_stack
+            .as_ref()
+            .is_some_and(|return_stack| !return_stack.is_empty()));
+        let get = inst.find_export("get").expect("get");
+        let mut result = [u64::MAX];
+        inst.invoke(get, &[], &mut result).expect("invoke get");
+        assert_eq!(result, [73]);
     }
 
     const ITERATIVE_FIB_WAT: &str = r#"(module
