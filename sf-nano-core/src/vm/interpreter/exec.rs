@@ -345,6 +345,95 @@ struct MemoryState {
     is64: bool,
 }
 
+impl MemInst {
+    /// Copy bytes out while the shared backing remains borrowed.
+    ///
+    /// Guard-page memories have no `Vec` storage, so their committed mapping is
+    /// viewed only inside this borrow scope. No slice derived from the raw base
+    /// pointer can escape to alias a peer instance or survive a later grow.
+    pub(crate) fn read_bytes(&self, offset: usize, destination: &mut [u8]) -> bool {
+        let Some(end) = offset.checked_add(destination.len()) else {
+            return false;
+        };
+        let backing = self.backing.borrow();
+        #[cfg(sf_has_guard_pages)]
+        if let Some(guard) = backing.guard.as_ref() {
+            if end > guard.len() {
+                return false;
+            }
+            // SAFETY: the guard allocation remains alive and immovable while
+            // `backing` is borrowed, and the checked range is committed.
+            unsafe {
+                core::ptr::copy(
+                    guard.base().add(offset),
+                    destination.as_mut_ptr(),
+                    destination.len(),
+                );
+            }
+            return true;
+        }
+        let Some(source) = backing.data.get(offset..end) else {
+            return false;
+        };
+        destination.copy_from_slice(source);
+        true
+    }
+
+    /// Copy bytes into this memory while exclusively borrowing its backing.
+    pub(crate) fn write_bytes(&self, offset: usize, source: &[u8]) -> bool {
+        let Some(end) = offset.checked_add(source.len()) else {
+            return false;
+        };
+        let mut backing = self.backing_mut();
+        #[cfg(sf_has_guard_pages)]
+        if let Some(guard) = backing.guard.as_mut() {
+            if end > guard.len() {
+                return false;
+            }
+            // SAFETY: the exclusive backing borrow prevents another guarded
+            // access or grow, and the checked destination range is committed.
+            unsafe {
+                core::ptr::copy(source.as_ptr(), guard.base().add(offset), source.len());
+            }
+            return true;
+        }
+        let Some(destination) = backing.data.get_mut(offset..end) else {
+            return false;
+        };
+        destination.copy_from_slice(source);
+        true
+    }
+
+    /// Grow the concrete backing to `new_len` bytes without exposing it.
+    ///
+    /// Heap memories preserve allocation failure as `false`. Guarded memories
+    /// commit the corresponding suffix of their stable reservation and map any
+    /// OS refusal to the same result, which callers translate to Wasm's -1.
+    pub(crate) fn try_grow_to(&self, new_len: usize) -> bool {
+        let mut backing = self.backing_mut();
+        #[cfg(sf_has_guard_pages)]
+        if let Some(guard) = backing.guard.as_mut() {
+            let Some(additional) = new_len.checked_sub(guard.len()) else {
+                return false;
+            };
+            if additional % crate::constants::WASM_PAGE_SIZE != 0 {
+                return false;
+            }
+            return guard
+                .grow(additional / crate::constants::WASM_PAGE_SIZE)
+                .is_ok();
+        }
+        let Some(additional) = new_len.checked_sub(backing.data.len()) else {
+            return false;
+        };
+        if backing.data.try_reserve(additional).is_err() {
+            return false;
+        }
+        backing.data.resize(new_len, 0);
+        true
+    }
+}
+
 impl MemoryState {
     /// The linear memory as a slice.
     ///
