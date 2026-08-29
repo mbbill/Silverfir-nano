@@ -117,6 +117,7 @@ pub(crate) struct LoopRegion {
 }
 
 impl LoopRegion {
+    #[cfg(sf_module_validator)]
     pub(crate) fn execution_switching_available(&self) -> bool {
         matches!(self.boundary_types, LoopBoundaryTypes::Available { .. })
             && self.escaping_types_available
@@ -508,6 +509,7 @@ impl BaselineFunctionBuilder {
         }))
     }
 
+    #[cfg(sf_module_validator)]
     pub(super) fn event_opens_outer_loop(event: &ArtifactEvent) -> bool {
         matches!(
             event,
@@ -518,6 +520,7 @@ impl BaselineFunctionBuilder {
         )
     }
 
+    #[cfg(sf_module_validator)]
     pub(super) fn event_closes_outer_loop(&self, event: &ArtifactEvent) -> bool {
         matches!(event, ArtifactEvent::End { .. })
             && self
@@ -526,6 +529,7 @@ impl BaselineFunctionBuilder {
                 .is_some_and(|frame| frame.loop_region.is_some())
     }
 
+    #[cfg(sf_module_validator)]
     pub(super) fn set_open_loop_entry_types(
         &mut self,
         range: Range<usize>,
@@ -539,6 +543,7 @@ impl BaselineFunctionBuilder {
         Ok(())
     }
 
+    #[cfg(sf_module_validator)]
     pub(super) fn set_closing_loop_fallthrough_types(
         &mut self,
         range: Option<Range<usize>>,
