@@ -1281,6 +1281,29 @@ mod tests {
         assert_eq!(module.types().len(), 2);
     }
 
+    #[cfg(not(feature = "memprof"))]
+    #[test]
+    fn coremark_parser_capacity_plan_eliminates_allocator_growth() {
+        let bytes = include_bytes!("../../../benchmarks/wasi/coremark/coremark.wasm");
+        let (module, census) = crate::test_alloc::measure(|| Module::new("coremark", bytes));
+        module.expect("parse coremark");
+        assert_eq!(
+            census.reallocations, 0,
+            "the unplanned parser made 5 real realloc calls on CoreMark: {census:?}"
+        );
+        assert_eq!(census.reallocated_bytes, 0);
+        if cfg!(not(sf_jit)) {
+            assert!(
+                census.allocations <= 321,
+                "the interpreter-only unplanned parser made 326 real alloc calls: {census:?}"
+            );
+            assert!(
+                census.allocated_bytes <= 70_273,
+                "the interpreter-only unplanned parser moved 88,109 allocator bytes: {census:?}"
+            );
+        }
+    }
+
     #[test]
     fn function_bodies_are_ranges_in_one_code_section_arena() {
         let wasm = wat::parse_str(

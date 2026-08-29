@@ -1712,7 +1712,13 @@ impl InterpInstance {
             .unlinked_funcs
             .take()
             .ok_or_else(|| WasmError::internal("interpreter functions already linked"))?;
-        #[cfg(test)]
+        #[cfg(all(test, not(feature = "memprof")))]
+        let test_code = {
+            let _allocation_class =
+                crate::test_alloc::classify(crate::test_alloc::AllocationClass::TestOracle);
+            Some(unlinked.clone_code_for_oracle())
+        };
+        #[cfg(all(test, feature = "memprof"))]
         let test_code = Some(unlinked.clone_code_for_oracle());
         #[cfg(not(test))]
         let test_code = None;
@@ -4752,6 +4758,104 @@ mod tests {
             .cell_index(cell as *const DCell as u64)
             .expect("cell belongs to plan");
         (cell, function.code[pc], cell_index)
+    }
+
+    #[cfg(all(not(feature = "memprof"), sf_interp, not(sf_jit)))]
+    #[test]
+    fn exact_instance_capacities_eliminate_allocator_growth() {
+        use core::alloc::Layout;
+        use std::fmt::Write as _;
+
+        const FUNCTION_COUNT: usize = 256;
+        #[cfg(target_os = "linux")]
+        const BASE_ALLOCATION_LIMIT: usize = 555;
+        #[cfg(not(target_os = "linux"))]
+        const BASE_ALLOCATION_LIMIT: usize = 553;
+        #[cfg(target_os = "linux")]
+        const BASE_BYTE_LIMIT: usize = 166_172;
+        #[cfg(not(target_os = "linux"))]
+        const BASE_BYTE_LIMIT: usize = 155_972;
+
+        fn rc_allocation_size<T>() -> usize {
+            let counters = Layout::new::<[usize; 2]>();
+            counters
+                .extend(Layout::new::<T>())
+                .expect("Rc layout")
+                .0
+                .pad_to_align()
+                .size()
+        }
+
+        let mut wat = std::string::String::from("(module\n");
+        for _ in 0..FUNCTION_COUNT {
+            writeln!(wat, "  (func)").unwrap();
+        }
+        for _ in 0..128 {
+            writeln!(wat, "  (global i32 (i32.const 0))").unwrap();
+        }
+        for _ in 0..32 {
+            writeln!(wat, "  (table 0 funcref)").unwrap();
+        }
+        for _ in 0..8 {
+            writeln!(wat, "  (memory 0)").unwrap();
+        }
+        wat.push_str(")");
+        let bin = wat::parse_str(wat).expect("wat");
+        let module = Module::new("large-allocation-census", &bin).expect("module");
+        let engine = crate::vm::engine::Engine::with_defaults();
+
+        let (instance, census) =
+            crate::test_alloc::measure(|| InterpInstance::new(&engine, module, None, &[]));
+        instance.expect("instantiate");
+
+        assert_eq!(
+            census.reallocations, 0,
+            "the unplanned instance made 22 real realloc calls: {census:?}"
+        );
+        assert_eq!(census.reallocated_bytes, 0);
+
+        // Each published body deliberately owns one Rc. Activations clone
+        // that handle across host re-entry without looking the function up
+        // again. Count this production architecture explicitly instead of
+        // hiding it in the general startup allowance.
+        assert_eq!(
+            census.function_metadata,
+            crate::test_alloc::LayerCensus {
+                allocations: FUNCTION_COUNT,
+                reallocations: 0,
+                allocated_bytes: FUNCTION_COUNT * rc_allocation_size::<PredecodedFunction>(),
+                reallocated_bytes: 0,
+            },
+            "each local function must publish exactly one metadata Rc: {census:?}"
+        );
+
+        // cfg(test) retains a copy of the stage-A code for linker oracles.
+        // The production build transfers that Vec in place and pays neither
+        // of these two allocations. Keep the test-only cost out of the
+        // production/base allowance, but pin its exact shape here.
+        assert_eq!(
+            census.test_oracle,
+            crate::test_alloc::LayerCensus {
+                allocations: 2,
+                reallocations: 0,
+                allocated_bytes: FUNCTION_COUNT * 2 * core::mem::size_of::<Instr>()
+                    + rc_allocation_size::<Vec<Instr>>(),
+                reallocated_bytes: 0,
+            },
+            "the test-only stage-A oracle changed allocation shape: {census:?}"
+        );
+
+        let base = census.base();
+        assert_eq!(base.reallocations, 0);
+        assert_eq!(base.reallocated_bytes, 0);
+        assert!(
+            base.allocations <= BASE_ALLOCATION_LIMIT,
+            "the interpreter-only base instance exceeded its allocation budget: {base:?}; total: {census:?}"
+        );
+        assert!(
+            base.allocated_bytes <= BASE_BYTE_LIMIT,
+            "the interpreter-only base instance exceeded its byte budget: {base:?}; total: {census:?}"
+        );
     }
 
     fn run1(src: &str, export: &str, args: &[u64]) -> Result<u64, WasmError> {

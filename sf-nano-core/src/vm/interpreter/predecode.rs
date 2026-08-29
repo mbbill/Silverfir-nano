@@ -507,10 +507,25 @@ impl UnlinkedPredecodedFunctions {
         self,
         test_code: Option<Vec<Instr>>,
     ) -> Vec<Option<Rc<PredecodedFunction>>> {
+        #[cfg(all(test, not(feature = "memprof")))]
+        let test_code = {
+            let _allocation_class =
+                crate::test_alloc::classify(crate::test_alloc::AllocationClass::TestOracle);
+            test_code.map(Rc::new)
+        };
+        #[cfg(any(not(test), feature = "memprof"))]
         let test_code = test_code.map(Rc::new);
         self.parts
             .into_iter()
-            .map(|parts| parts.map(|parts| Rc::new(parts.finish(test_code.as_ref()))))
+            .map(|parts| {
+                parts.map(|parts| {
+                    #[cfg(all(test, not(feature = "memprof")))]
+                    let _allocation_class = crate::test_alloc::classify(
+                        crate::test_alloc::AllocationClass::FunctionMetadata,
+                    );
+                    Rc::new(parts.finish(test_code.as_ref()))
+                })
+            })
             .collect()
     }
 
