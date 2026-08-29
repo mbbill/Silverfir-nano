@@ -16,13 +16,11 @@ use tracked_alloc::{boxed::Box, retype_vec};
 
 use crate::collections::Vec;
 
-#[cfg(test)]
 use super::instr::{operand_is_f32, operand_is_float, result_is_f32, result_is_float};
 use super::instr::{
     Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC,
     FLAG_FUSED, FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
-#[cfg(test)]
 use super::layout::slot_fields;
 use super::layout::{
     c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
@@ -35,9 +33,9 @@ use super::predecode::PredecodedFunction;
 // was built with, and how many packed handler slots the table holds.
 include!(concat!(env!("OUT_DIR"), "/interp_engine_cfg.rs"));
 
-/// Target capabilities which affect pinned-local selection. The predecoder
-/// records the final choice once, while it already owns every instruction
-/// mutation, and the linker consumes that compact result directly.
+/// Target capabilities used by the independent incremental test oracle.
+/// Production reads the generated constants directly in [`PinCensus`].
+#[cfg(test)]
 pub(super) const PIN_CAPS: (bool, bool, bool) =
     (INTERP_HAS_L1, INTERP_HAS_FLOAT_REGS, INTERP_FLOAT_PIN_F32);
 
@@ -496,12 +494,11 @@ impl LinkCode for BorrowedCode<'_> {
     }
 }
 
-/// What [`select_pinned_reference`] records about one frame slot.
+/// What [`PinCensus::select`] records about one frame slot.
 ///
 /// One array rather than four parallel ones: the pass touches every field
 /// of a slot together, and four arrays put each access on its own cache
 /// line.
-#[cfg(test)]
 #[derive(Clone, Copy, Default)]
 struct SlotStat {
     /// Static reference count, unweighted.
@@ -519,133 +516,152 @@ struct SlotStat {
     f32dom: bool,
 }
 
-/// Original full-stream linker census, retained as a test-only oracle.
-/// Pick the function's pinned locals — the most- and second-most-
-/// referenced slots, by UNWEIGHTED static count (`u64::MAX` = none).
+/// Reusable storage for the one exact pinned-local pass over a finished
+/// instruction stream.
 ///
-/// Loop-depth weighting (10^depth over back edges) was tried and measured
-/// 11% WORSE on CoreMark: it systematically displaced frequently-WRITTEN
-/// locals (loop-carried state, e.g. 33r/17w) with read-mostly ones (base
-/// pointers, 39r/3w). Pinning pays if and only if it breaks a binding
-/// loop-carried store->load chain, which needs the WRITTEN local;
-/// read-mostly slot loads are independent and the out-of-order core hides
-/// them anyway. A write-biased score (reads + 2*writes) measured
-/// inconclusive on CoreMark, which the traffic model says cannot show the
-/// effect — it stays open.
-#[cfg(test)]
-pub(super) fn select_pinned_reference(code: &[Instr], n_locals: u32) -> Pinned {
-    let n = n_locals as u64;
-    if n == 0 {
-        return Pinned::NONE;
+/// Translation mutates, fuses, and removes instructions heavily. Waiting
+/// until the stream is final makes each surviving cell contribute exactly
+/// once and keeps this storage module-scoped rather than allocating it for
+/// every function.
+#[derive(Default)]
+pub(super) struct PinCensus {
+    slots: Vec<SlotStat>,
+}
+
+impl PinCensus {
+    #[cfg(test)]
+    pub(super) fn capacity(&self) -> usize {
+        self.slots.capacity()
     }
-    let mut slots = Vec::new();
-    slots.resize(n_locals as usize, SlotStat::default());
-    for ins in code.iter() {
-        let (a_s, b_s, c_d) = slot_fields(ins.op);
-        if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
-            let slot = &mut slots[ins.a as usize];
-            slot.count += 1;
-            if operand_is_float(ins.op, false) {
-                slot.rdom |= 2;
-                slot.f32dom |= operand_is_f32(ins.op, false);
-            } else {
-                slot.rdom |= 1;
+
+    /// Pick the function's pinned locals — the most- and second-most-
+    /// referenced slots, by UNWEIGHTED static count (`u64::MAX` = none).
+    ///
+    /// Loop-depth weighting (10^depth over back edges) was tried and measured
+    /// 11% WORSE on CoreMark: it systematically displaced frequently-WRITTEN
+    /// locals (loop-carried state, e.g. 33r/17w) with read-mostly ones (base
+    /// pointers, 39r/3w). Pinning pays if and only if it breaks a binding
+    /// loop-carried store->load chain, which needs the WRITTEN local;
+    /// read-mostly slot loads are independent and the out-of-order core hides
+    /// them anyway. A write-biased score (reads + 2*writes) measured
+    /// inconclusive on CoreMark, which the traffic model says cannot show the
+    /// effect — it stays open.
+    pub(super) fn select(&mut self, code: &[Instr], n_locals: u32) -> Pinned {
+        let n = n_locals as u64;
+        self.slots.clear();
+        if n == 0 {
+            return Pinned::NONE;
+        }
+        self.slots.resize(n_locals as usize, SlotStat::default());
+        for ins in code.iter() {
+            let (a_s, b_s, c_d) = slot_fields(ins.op);
+            if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
+                let slot = &mut self.slots[ins.a as usize];
+                slot.count += 1;
+                if operand_is_float(ins.op, false) {
+                    slot.rdom |= 2;
+                    slot.f32dom |= operand_is_f32(ins.op, false);
+                } else {
+                    slot.rdom |= 1;
+                }
             }
-        }
-        if b_s && ins.flags & FLAG_B_CONST == 0 && ins.b < n {
-            let slot = &mut slots[ins.b as usize];
-            slot.count += 1;
-            if operand_is_float(ins.op, true) {
-                slot.rdom |= 2;
-                slot.f32dom |= operand_is_f32(ins.op, true);
-            } else {
-                slot.rdom |= 1;
+            if b_s && ins.flags & FLAG_B_CONST == 0 && ins.b < n {
+                let slot = &mut self.slots[ins.b as usize];
+                slot.count += 1;
+                if operand_is_float(ins.op, true) {
+                    slot.rdom |= 2;
+                    slot.f32dom |= operand_is_f32(ins.op, true);
+                } else {
+                    slot.rdom |= 1;
+                }
             }
-        }
-        if c_d && ins.c < n {
-            let slot = &mut slots[ins.c as usize];
-            slot.count += 1;
-            if result_is_float(ins.op) {
-                slot.wdom |= 2;
-                slot.f32dom |= result_is_f32(ins.op);
-            } else {
-                slot.wdom |= 1;
-            }
-        }
-        if matches!(ins.op, Op::I32_SubBrIf | Op::I64_SubBrIf) && ins.a < n {
-            // This control-shaped cell is also an in-place integer write to
-            // `a`. Count both halves of the read/modify/write so pin
-            // selection and register-domain authority match the unfused
-            // subtraction it replaces.
-            let slot = &mut slots[ins.a as usize];
-            slot.count += 1;
-            slot.wdom |= 1;
-        }
-        if ins.op == Op::Select {
-            let dslot = ins.c & 0xffff_ffff;
-            if dslot < n {
-                slots[dslot as usize].wdom |= 1;
-            }
-        }
-        if ins.op == Op::MovPair {
-            // `slot_fields` cannot describe two packed destinations, so
-            // account for both here. The linker uses the resulting pin
-            // choice to select an ordered pair handler that writes through
-            // both frame slots and both authoritative registers.
-            for dslot in [ins.c >> 32, ins.c & 0xffff_ffff] {
-                if dslot < n {
-                    let slot = &mut slots[dslot as usize];
-                    slot.count += 1;
+            if c_d && ins.c < n {
+                let slot = &mut self.slots[ins.c as usize];
+                slot.count += 1;
+                if result_is_float(ins.op) {
+                    slot.wdom |= 2;
+                    slot.f32dom |= result_is_f32(ins.op);
+                } else {
                     slot.wdom |= 1;
                 }
             }
+            if matches!(ins.op, Op::I32_SubBrIf | Op::I64_SubBrIf) && ins.a < n {
+                // This control-shaped cell is also an in-place integer write
+                // to `a`. Count both halves of the read/modify/write so pin
+                // selection matches the unfused subtraction it replaces.
+                let slot = &mut self.slots[ins.a as usize];
+                slot.count += 1;
+                slot.wdom |= 1;
+            }
+            if ins.op == Op::Select {
+                let dslot = ins.c & 0xffff_ffff;
+                if dslot < n {
+                    self.slots[dslot as usize].wdom |= 1;
+                }
+            }
+            if ins.op == Op::MovPair {
+                // `slot_fields` cannot describe two packed destinations, so
+                // account for both here.
+                for dslot in [ins.c >> 32, ins.c & 0xffff_ffff] {
+                    if dslot < n {
+                        let slot = &mut self.slots[dslot as usize];
+                        slot.count += 1;
+                        slot.wdom |= 1;
+                    }
+                }
+            }
+        }
+        // Whether slot `i` could live in the float register file at all.
+        let float_ok =
+            |i: usize| INTERP_HAS_FLOAT_REGS && (INTERP_FLOAT_PIN_F32 || !self.slots[i].f32dom);
+        let mut best = (usize::MAX, 0u32);
+        let mut second = (usize::MAX, 0u32);
+        for (i, stat) in self.slots.iter().enumerate() {
+            let (c, wdom) = (stat.count, stat.wdom);
+            // A slot is pinnable only when one register file can stay
+            // authoritative for it.
+            if wdom == 3 || (wdom & 2 != 0 && !float_ok(i)) {
+                continue;
+            }
+            if c > best.1 {
+                second = best;
+                best = (i, c);
+            } else if c > second.1 {
+                second = (i, c);
+            }
+        }
+        // Byte offsets must fit the 16-bit packing in call cells / records.
+        let ok = |(i, c): (usize, u32)| c > 0 && i * 8 < 1 << 16;
+        // A slot's authoritative register file: float only when it has a
+        // float writer, or with no writer at all, only float readers.
+        let mode = |i: usize| {
+            float_ok(i)
+                && (self.slots[i].wdom == 2 || (self.slots[i].wdom == 0 && self.slots[i].rdom == 2))
+        };
+        let (l0, l0f) = if ok(best) {
+            (best.0 as u64, mode(best.0))
+        } else {
+            (u64::MAX, false)
+        };
+        let (l1, l1f) = if INTERP_HAS_L1 && l0 != u64::MAX && ok(second) {
+            (second.0 as u64, mode(second.0))
+        } else {
+            (u64::MAX, false)
+        };
+        Pinned {
+            l0,
+            l1,
+            l0_float: l0f,
+            l1_float: l1f,
         }
     }
-    // Whether slot `i` could live in the float register file at all.
-    let float_ok = |i: usize| INTERP_HAS_FLOAT_REGS && (INTERP_FLOAT_PIN_F32 || !slots[i].f32dom);
-    let mut best = (usize::MAX, 0u32);
-    let mut second = (usize::MAX, 0u32);
-    for (i, stat) in slots.iter().enumerate() {
-        let (c, wdom) = (stat.count, stat.wdom);
-        // A slot is pinnable only when ONE register file can stay
-        // authoritative for it. Mixed-domain writers rule that out, and so
-        // does a float writer on a backend (or a width) that cannot pin a
-        // float: the write would land in the slot alone and leave the
-        // integer pinned register stale for the next integer-domain read.
-        if wdom == 3 || (wdom & 2 != 0 && !float_ok(i)) {
-            continue;
-        }
-        if c > best.1 {
-            second = best;
-            best = (i, c);
-        } else if c > second.1 {
-            second = (i, c);
-        }
-    }
-    // Byte offsets must fit the 16-bit packing in call cells / records.
-    let ok = |(i, c): (usize, u32)| c > 0 && i * 8 < 1 << 16;
-    // A slot's authoritative register file: float only when it has a
-    // float writer (or, with no writer at all, only float readers) AND
-    // this backend has float twins for the pinned registers.
-    let mode = |i: usize| {
-        float_ok(i) && (slots[i].wdom == 2 || (slots[i].wdom == 0 && slots[i].rdom == 2))
-    };
-    let (l0, l0f) = if ok(best) {
-        (best.0 as u64, mode(best.0))
-    } else {
-        (u64::MAX, false)
-    };
-    let (l1, l1f) = if INTERP_HAS_L1 && l0 != u64::MAX && ok(second) {
-        (second.0 as u64, mode(second.0))
-    } else {
-        (u64::MAX, false)
-    };
-    Pinned {
-        l0,
-        l1,
-        l0_float: l0f,
-        l1_float: l1f,
-    }
+}
+
+/// Fresh-storage wrapper retained for differential tests. Production calls
+/// [`PinCensus::select`] on module-scoped reusable storage.
+#[cfg(test)]
+pub(super) fn select_pinned_reference(code: &[Instr], n_locals: u32) -> Pinned {
+    PinCensus::default().select(code, n_locals)
 }
 
 /// Whether a memory op's static offset fits one 32-bit machine word.
