@@ -15,7 +15,7 @@ use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
 use crate::Value;
 
-use super::InterpInstanceAccess;
+use super::{InterpInstance, InterpInstanceAccess};
 
 const MAX_BASELINE_CALL_DEPTH: usize = 4096;
 const MAX_BASELINE_ACTIVATIONS: usize = MAX_BASELINE_CALL_DEPTH + 1;
@@ -202,7 +202,7 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         let mut results = Vec::with_capacity(result_count);
         for (index, &raw) in self.values.iter().enumerate() {
             let value_type = self.root_result_type(index)?;
-            results.push(Value::from_raw(raw, value_type));
+            results.push(self.frame_raw_to_external_value(raw, value_type)?);
         }
         Ok(results)
     }
@@ -217,7 +217,7 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
         }
         for (index, (output, &raw)) in results.iter_mut().zip(&self.values).enumerate() {
             let value_type = self.root_result_type(index)?;
-            *output = Value::from_raw(raw, value_type);
+            *output = self.frame_raw_to_external_value(raw, value_type)?;
         }
         Ok(())
     }
@@ -429,7 +429,7 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
             }
             Opcode::CALL => {
                 let callee = raw_function(raw.imm)?;
-                self.enter_call(callee, raw.start)?;
+                self.exec_direct_call(callee, raw.start)?;
             }
             Opcode::END => {
                 if raw.end == code_len {
@@ -1123,7 +1123,7 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
             if args.len() != function_type.params().len() {
                 return Err(WasmError::invalid("baseline MVP argument count mismatch").into());
             }
-            validate_scalar_function(
+            validate_baseline_function(
                 function_type.params(),
                 function_type.results(),
                 spec.locals(),
@@ -1147,7 +1147,8 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
                     .func_type()
                     .params()[index]
             })?;
-            self.values.push(scalar_to_raw(*value, expected)?);
+            let raw = self.external_value_to_frame_raw(*value, expected)?;
+            self.values.push(raw);
         }
         self.values.resize(operand_base, 0);
         self.activations.push(BaselineActivation {
@@ -1158,6 +1159,75 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
             operand_base,
             return_base: 0,
         });
+        Ok(())
+    }
+
+    fn exec_direct_call(
+        &mut self,
+        callee: usize,
+        source_pc: usize,
+    ) -> Result<(), BaselineExecError> {
+        let (is_import, parameter_count, result_count) =
+            self.access.with_instance(|instance| {
+                let function = instance.module().functions().get(callee).ok_or_else(|| {
+                    WasmError::invalid("baseline MVP callee index is out of bounds")
+                })?;
+                let function_type = function.func_type();
+                if function_type
+                    .params()
+                    .iter()
+                    .chain(function_type.results())
+                    .any(|&value_type| !is_baseline_slot_type(value_type))
+                {
+                    return Err(BaselineExecError::Unsupported {
+                        opcode: Some(WasmOpcode::OP(Opcode::CALL)),
+                        pc: source_pc,
+                        feature: "unsupported imported call type",
+                    });
+                }
+                Ok::<_, BaselineExecError>((
+                    function.spec().is_none(),
+                    function_type.params().len(),
+                    function_type.results().len(),
+                ))
+            })??;
+        if !is_import {
+            return self.enter_call(callee, source_pc);
+        }
+
+        let caller_operand_base = self.current_activation()?.operand_base;
+        let argument_base = self
+            .values
+            .len()
+            .checked_sub(parameter_count)
+            .filter(|&base| base >= caller_operand_base)
+            .ok_or_else(|| WasmError::invalid("baseline MVP call argument underflow"))?;
+        let call = self.access.with_instance(|instance| {
+            instance.prepare_import_call(callee, &self.values, argument_base)
+        })??;
+
+        // `call` owns arguments, result types, names, and shared entity
+        // handles. No materialized instance reference survives this point, so
+        // host callbacks and linked foreign instances may safely re-enter the
+        // runtime world before results are localized in a fresh short scope.
+        let returned = match InterpInstance::run_external_call(&self.access, &call) {
+            Ok(returned) => returned,
+            Err(WasmError::HostThrow { .. } | WasmError::Exception { .. }) => {
+                return Err(BaselineExecError::Unsupported {
+                    opcode: Some(WasmOpcode::OP(Opcode::CALL)),
+                    pc: source_pc,
+                    feature: "imported call exceptions",
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if returned.len() != result_count {
+            return Err(WasmError::invalid("baseline MVP imported result count mismatch").into());
+        }
+        self.values.truncate(argument_base);
+        for value in returned {
+            self.push(value)?;
+        }
         Ok(())
     }
 
@@ -1173,7 +1243,7 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
                 feature: "imported call",
             })?;
             let function_type = function.func_type();
-            validate_scalar_function(
+            validate_baseline_function(
                 function_type.params(),
                 function_type.results(),
                 spec.locals(),
@@ -1318,6 +1388,40 @@ impl<'artifact, 'instance> BaselineFrame<'artifact, 'instance> {
             .map_err(Into::into)
     }
 
+    fn external_value_to_frame_raw(
+        &self,
+        value: Value,
+        expected: ValueType,
+    ) -> Result<u64, BaselineExecError> {
+        let type_matches = match (value, expected) {
+            (Value::I32(_), ValueType::I32)
+            | (Value::I64(_), ValueType::I64)
+            | (Value::F32(_), ValueType::F32)
+            | (Value::F64(_), ValueType::F64)
+            | (Value::Ref(_, _), ValueType::Ref(_)) => true,
+            _ => false,
+        };
+        if !type_matches || !is_baseline_slot_type(expected) {
+            return Err(WasmError::invalid("baseline MVP argument type mismatch").into());
+        }
+        let raw = self.access.with_instance(|instance| {
+            let value = instance.localize_value_for_type(value, expected);
+            super::value_to_raw_for_interp(&value)
+        })??;
+        Ok(raw)
+    }
+
+    fn frame_raw_to_external_value(
+        &self,
+        raw: u64,
+        value_type: ValueType,
+    ) -> Result<Value, BaselineExecError> {
+        let value = super::raw_to_value_for_interp(raw, value_type)?;
+        self.access
+            .with_instance(|instance| instance.absolutize_value_for_type(value, value_type))
+            .map_err(Into::into)
+    }
+
     fn current_br_table(&self, source_pc: usize) -> Result<BrTableRange, BaselineExecError> {
         let function = self.current_baseline_function()?;
         self.artifact.br_tables[function.br_tables.clone()]
@@ -1412,7 +1516,7 @@ fn raw_memarg(immediate: BaselineImmediate) -> Result<(usize, u64), BaselineExec
     Ok((memidx as usize, offset))
 }
 
-fn validate_scalar_function(
+fn validate_baseline_function(
     params: &[ValueType],
     results: &[ValueType],
     locals: &[ValueType],
@@ -1420,16 +1524,26 @@ fn validate_scalar_function(
     if params
         .iter()
         .chain(results)
-        .chain(locals)
-        .any(|&value_type| !is_mvp_scalar(value_type))
+        .any(|&value_type| !is_baseline_slot_type(value_type))
     {
         return Err(BaselineExecError::Unsupported {
             opcode: None,
             pc: 0,
-            feature: "non-scalar function frame",
+            feature: "unsupported function boundary type",
+        });
+    }
+    if locals.iter().any(|&value_type| !is_mvp_scalar(value_type)) {
+        return Err(BaselineExecError::Unsupported {
+            opcode: None,
+            pc: 0,
+            feature: "reference locals",
         });
     }
     Ok(())
+}
+
+fn is_baseline_slot_type(value_type: ValueType) -> bool {
+    is_mvp_scalar(value_type) || matches!(value_type, ValueType::Ref(_))
 }
 
 fn is_mvp_scalar(value_type: ValueType) -> bool {
@@ -1439,23 +1553,18 @@ fn is_mvp_scalar(value_type: ValueType) -> bool {
     )
 }
 
-fn scalar_to_raw(value: Value, expected: ValueType) -> Result<u64, BaselineExecError> {
-    if value.value_type() != expected || !is_mvp_scalar(expected) {
-        return Err(WasmError::invalid("baseline MVP argument type mismatch").into());
-    }
-    Ok(value.to_raw())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::value_type::RefType;
     use crate::vm::engine::{Engine, Tier};
     use crate::vm::interpreter::baseline_artifact::artifact_test_guard;
     use crate::vm::interpreter::predecode::build_baseline_artifact;
-    use crate::vm::interpreter::InterpInstance;
     use crate::vm::link::LinkRegistry;
     use crate::Instance;
+    use core::cell::Cell;
+    use std::rc::Rc;
     use std::string::ToString;
     use std::vec;
     use std::vec::Vec as StdVec;
@@ -1478,13 +1587,8 @@ mod tests {
         let module = Module::new("baseline-exec", wasm).expect("module");
         let artifact = build_baseline_artifact(&module).expect("artifact");
         let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
-        let mut instance = Instance::from_module(&engine, module, imports).expect("instance");
-        instance
-            .with_interp_mut(|instance| {
-                BaselineDriver::new(InterpInstanceAccess::borrowed(instance), &artifact)
-                    .invoke_export(export, args)
-            })
-            .expect("interpreter instance")
+        let instance = Instance::from_module(&engine, module, imports).expect("instance");
+        baseline_on_instance(&instance, &artifact, export, args)
     }
 
     fn native(wasm: &[u8], export: &str, args: &[Value]) -> Result<StdVec<Value>, WasmError> {
@@ -1531,6 +1635,17 @@ mod tests {
         args: &[Value],
     ) -> Result<Vec<Value>, BaselineExecError> {
         BaselineDriver::new(InterpInstanceAccess::borrowed(instance), artifact)
+            .invoke_export(export, args)
+    }
+
+    fn baseline_on_instance(
+        instance: &Instance,
+        artifact: &BaselineArtifact,
+        export: &str,
+        args: &[Value],
+    ) -> Result<Vec<Value>, BaselineExecError> {
+        let token = instance.checkout_interp_for_test()?;
+        BaselineDriver::new(InterpInstanceAccess::checked_out(token), artifact)
             .invoke_export(export, args)
     }
 
@@ -2047,7 +2162,7 @@ mod tests {
     }
 
     #[test]
-    fn stateful_ops_work_and_imported_call_ops_remain_explicit() {
+    fn stateful_local_and_imported_calls_work_while_eh_remains_explicit() {
         let wasm = wat::parse_str(
             r#"(module
                 (memory 1)
@@ -2079,16 +2194,7 @@ mod tests {
                 .expect("local call after import"),
             [Value::I32(37)]
         );
-        let error = baseline_with_imports(&imported, "run", &[], &[host()])
-            .expect_err("imported call unsupported");
-        assert!(matches!(
-            error,
-            BaselineExecError::Unsupported {
-                opcode: Some(WasmOpcode::OP(Opcode::CALL)),
-                feature: "imported call",
-                ..
-            }
-        ));
+        baseline_with_imports(&imported, "run", &[], &[host()]).expect("direct imported call");
 
         let exceptions = wat::parse_str(
             r#"(module
@@ -2111,6 +2217,303 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn inert_typed_import_and_local_index_after_import_do_not_dispatch_host() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (import "host" "typed" (func $typed (type $unary)))
+                (func $local (type $unary) (param i32) (result i32)
+                    local.get 0 i32.const 1 i32.add)
+                (func (export "idle") (result i32) i32.const 7)
+                (func (export "local") (param i32) (result i32)
+                    local.get 0 call $local))"#,
+        )
+        .expect("wat");
+        let calls = Rc::new(Cell::new(0usize));
+        let callback_calls = Rc::clone(&calls);
+        let import = crate::Import::func_typed(
+            "host",
+            "typed",
+            move |_caller, args, results| {
+                callback_calls.set(callback_calls.get() + 1);
+                results[0] = args[0];
+                Ok(())
+            },
+            crate::FunctionType::new(
+                crate::collections::vec![ValueType::I32],
+                crate::collections::vec![ValueType::I32],
+            ),
+        );
+        assert_eq!(
+            baseline_with_imports(&wasm, "idle", &[], &[import]).expect("idle baseline"),
+            [Value::I32(7)]
+        );
+        assert_eq!(calls.get(), 0);
+
+        let calls = Rc::new(Cell::new(0usize));
+        let callback_calls = Rc::clone(&calls);
+        let import = crate::Import::func_typed(
+            "host",
+            "typed",
+            move |_caller, args, results| {
+                callback_calls.set(callback_calls.get() + 1);
+                results[0] = args[0];
+                Ok(())
+            },
+            crate::FunctionType::new(
+                crate::collections::vec![ValueType::I32],
+                crate::collections::vec![ValueType::I32],
+            ),
+        );
+        assert_eq!(
+            baseline_with_imports(&wasm, "local", &[Value::I32(41)], &[import])
+                .expect("local after import"),
+            [Value::I32(42)]
+        );
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn imported_host_multivalue_results_match_folded() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $host (func (param i32 i64) (result i64 i32)))
+                (import "host" "multi" (func $multi (type $host)))
+                (func (export "run") (param i32 i64) (result i64 i32)
+                    local.get 0 local.get 1 call $multi))"#,
+        )
+        .expect("wat");
+        let function_type = crate::FunctionType::new(
+            crate::collections::vec![ValueType::I32, ValueType::I64],
+            crate::collections::vec![ValueType::I64, ValueType::I32],
+        );
+        let host = || {
+            crate::Import::func_typed(
+                "host",
+                "multi",
+                |_caller, args, results| {
+                    let [Value::I32(lhs), Value::I64(rhs)] = args else {
+                        return Err(WasmError::internal("host multivalue arguments"));
+                    };
+                    results[0] = Value::I64(rhs.wrapping_add(*lhs as i64));
+                    results[1] = Value::I32(lhs.wrapping_sub(*rhs as i32));
+                    Ok(())
+                },
+                function_type.clone(),
+            )
+        };
+        let args = [Value::I32(17), Value::I64(1_000_000_003)];
+        let baseline = baseline_with_imports(&wasm, "run", &args, &[host()])
+            .expect("baseline imported multivalue");
+        let folded = native_with_imports(&wasm, "run", &args, &[host()])
+            .expect("folded imported multivalue");
+        assert_values_equal(&baseline, &folded);
+    }
+
+    #[test]
+    fn imported_host_trap_matches_folded() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "host" "trap" (func $trap))
+                (func (export "run") call $trap))"#,
+        )
+        .expect("wat");
+        let host = || {
+            crate::Import::func("host", "trap", |_caller, _args, _results| {
+                Err(WasmError::trap("host trap sentinel"))
+            })
+        };
+        let baseline =
+            baseline_with_imports(&wasm, "run", &[], &[host()]).expect_err("baseline host trap");
+        let BaselineExecError::Wasm(baseline) = baseline else {
+            panic!("baseline host trap became unsupported");
+        };
+        let folded =
+            native_with_imports(&wasm, "run", &[], &[host()]).expect_err("folded host trap");
+        assert_eq!(baseline, folded);
+    }
+
+    #[test]
+    fn imported_host_caller_memory_access_matches_folded() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $touch (func (param i32) (result i32)))
+                (import "host" "touch" (func $touch (type $touch)))
+                (memory 1)
+                (data (i32.const 0) "\07")
+                (func (export "run") (param i32) (result i32)
+                    local.get 0 call $touch
+                    i32.const 0 i32.load8_u
+                    i32.add))"#,
+        )
+        .expect("wat");
+        let function_type = crate::FunctionType::new(
+            crate::collections::vec![ValueType::I32],
+            crate::collections::vec![ValueType::I32],
+        );
+        let host = || {
+            crate::Import::func_typed(
+                "host",
+                "touch",
+                |caller, args, results| {
+                    let Value::I32(replacement) = args[0] else {
+                        return Err(WasmError::internal("host memory argument"));
+                    };
+                    let memory = caller
+                        .memory_mut()
+                        .ok_or_else(|| WasmError::trap("host memory missing"))?;
+                    let previous = memory[0];
+                    memory[0] = replacement as u8;
+                    results[0] = Value::I32(previous as i32);
+                    Ok(())
+                },
+                function_type.clone(),
+            )
+        };
+        let args = [Value::I32(12)];
+        let baseline =
+            baseline_with_imports(&wasm, "run", &args, &[host()]).expect("baseline caller memory");
+        let folded =
+            native_with_imports(&wasm, "run", &args, &[host()]).expect("folded caller memory");
+        assert_values_equal(&baseline, &folded);
+        assert_eq!(baseline, [Value::I32(19)]);
+    }
+
+    #[test]
+    fn imported_host_funcref_argument_and_result_cross_absolute_boundary() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $echo (func (param funcref) (result funcref)))
+                (import "host" "echo" (func $echo (type $echo)))
+                (func $target (export "target"))
+                (func (export "run") (param funcref) (result funcref)
+                    local.get 0 call $echo))"#,
+        )
+        .expect("wat");
+        let expected = Rc::new(Cell::new(None));
+        let callback_expected = Rc::clone(&expected);
+        let import = crate::Import::func_typed(
+            "host",
+            "echo",
+            move |_caller, args, results| {
+                let Value::Ref(handle, _) = args[0] else {
+                    return Err(WasmError::internal("host funcref argument"));
+                };
+                if Some(handle) != callback_expected.get() {
+                    return Err(WasmError::trap("host funcref was not absolute"));
+                }
+                results[0] = args[0];
+                Ok(())
+            },
+            crate::FunctionType::new(
+                crate::collections::vec![ValueType::Ref(RefType::funcref())],
+                crate::collections::vec![ValueType::Ref(RefType::funcref())],
+            ),
+        );
+        let module = Module::new("baseline-funcref-import", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        let mut instance = Instance::from_module(&engine, module, &[import]).expect("instance");
+        let handle = instance.function_handle_at(1).expect("target identity");
+        expected.set(Some(handle));
+        let args = [Value::Ref(handle, RefType::funcref())];
+        let baseline = baseline_on_instance(&instance, &artifact, "run", &args)
+            .expect("baseline funcref import");
+        let folded = instance
+            .invoke("run", &args)
+            .expect("folded funcref import");
+        assert_values_equal(&baseline, &folded);
+        assert_eq!(baseline, args);
+    }
+
+    #[test]
+    fn linked_foreign_interpreter_function_matches_folded() {
+        let provider_wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (func (export "plus") (type $unary) (param i32) (result i32)
+                    local.get 0 i32.const 40 i32.add))"#,
+        )
+        .expect("provider wat");
+        let importer_wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (import "provider" "plus" (func $plus (type $unary)))
+                (func (export "run") (param i32) (result i32)
+                    local.get 0 call $plus
+                    i32.const 2 i32.add))"#,
+        )
+        .expect("importer wat");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        let mut world = crate::RuntimeWorld::new();
+        let provider_module = Module::new("linked-provider", &provider_wasm).expect("module");
+        let provider = world
+            .instantiate(&engine, provider_module, &[])
+            .expect("provider instance");
+        let provider_instance = world.instance(provider).expect("provider facade");
+        let handle = provider_instance
+            .function_handle_at(0)
+            .expect("provider function identity");
+        let function_type = provider_instance
+            .function_type_at(0)
+            .expect("provider function type");
+        let import = crate::Import::linked_func_typed("provider", "plus", handle, function_type);
+
+        let importer_module = Module::new("linked-importer", &importer_wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&importer_module).expect("artifact");
+        let importer = world
+            .instantiate(&engine, importer_module, &[import])
+            .expect("importer instance");
+        let args = [Value::I32(0)];
+        let baseline = baseline_on_instance(
+            world.instance(importer).expect("importer facade"),
+            &artifact,
+            "run",
+            &args,
+        )
+        .expect("baseline linked call");
+        let folded = world
+            .invoke(importer, "run", &args)
+            .expect("folded linked call");
+        assert_values_equal(&baseline, &folded);
+        assert_eq!(baseline, [Value::I32(42)]);
+    }
+
+    #[test]
+    fn active_try_with_imported_call_is_explicitly_unsupported() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "host" "call" (func $call))
+                (func (export "run")
+                    block $done
+                        try_table (catch_all $done)
+                            call $call
+                        end
+                    end))"#,
+        )
+        .expect("wat");
+        let calls = Rc::new(Cell::new(0usize));
+        let callback_calls = Rc::clone(&calls);
+        let import = crate::Import::func("host", "call", move |_caller, _args, _results| {
+            callback_calls.set(callback_calls.get() + 1);
+            Ok(())
+        });
+        let error = baseline_with_imports(&wasm, "run", &[], &[import])
+            .expect_err("active EH is unsupported");
+        assert!(matches!(
+            error,
+            BaselineExecError::Unsupported {
+                opcode: Some(WasmOpcode::OP(Opcode::TRY_TABLE)),
+                feature: "MVP opcode",
+                ..
+            }
+        ));
+        assert_eq!(calls.get(), 0);
     }
 
     #[cfg(not(feature = "memprof"))]
@@ -2238,6 +2641,57 @@ mod tests {
         .expect("frame");
         frame.run().expect("baseline run");
         assert_eq!(frame.results().expect("results"), [Value::I32(42)]);
+    }
+
+    #[test]
+    fn imported_call_releases_instance_materialization_before_host_memory_borrow() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $host (func (param i32) (result i32)))
+                (import "host" "touch" (func $touch (type $host)))
+                (memory 1)
+                (func (export "run") (param i32) (result i32)
+                    local.get 0 call $touch
+                    i32.const 0 i32.load8_u
+                    i32.add))"#,
+        )
+        .expect("wat");
+        let module = Module::new("baseline-import-borrows", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        let registry = LinkRegistry::new();
+        let (_, instance_backref) = registry.reserve_instance();
+        let host = InterpInstance::boxed_caller_host(|_module, _name, caller, args, results| {
+            let memory = caller
+                .memory_mut()
+                .ok_or_else(|| WasmError::trap("host memory missing"))?;
+            memory[0] = args[0] as u8;
+            results[0] = (args[0] as u32).wrapping_add(1) as u64;
+            Ok(())
+        });
+        // Stop before native linking so both Miri aliasing models can execute
+        // the alternate driver and its owned external-call barrier.
+        let mut instance = InterpInstance::build(
+            &engine,
+            module,
+            Some(host),
+            &[],
+            None,
+            registry.arenas(),
+            instance_backref,
+        )
+        .expect("build interpreter instance");
+        let args = [Value::I32(10)];
+        let mut frame = BaselineFrame::new(
+            InterpInstanceAccess::borrowed(&mut instance),
+            &artifact,
+            1,
+            &args,
+        )
+        .expect("frame");
+        frame.run().expect("baseline imported call");
+        assert_eq!(frame.results().expect("results"), [Value::I32(21)]);
     }
 
     #[cfg(not(feature = "memprof"))]

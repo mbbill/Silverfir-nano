@@ -697,6 +697,19 @@ impl Instance {
             Inner::Jit(_) => None,
         }
     }
+
+    /// Test-only checked-out interpreter access for exercising an alternate
+    /// driver through the same re-entrant instance-table boundary as `invoke`.
+    #[cfg(all(test, sf_interp))]
+    pub(crate) fn checkout_interp_for_test(
+        &self,
+    ) -> Result<crate::vm::link::InstanceToken, WasmError> {
+        match &self.inner {
+            Inner::Interp(instance) => instance.checkout_for_invocation(),
+            #[cfg(sf_jit)]
+            Inner::Jit(_) => Err(WasmError::invalid("instance is not an interpreter")),
+        }
+    }
 }
 
 impl RuntimeWorld {

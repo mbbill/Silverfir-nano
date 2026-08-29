@@ -2838,7 +2838,7 @@ impl InterpInstance {
         }
     }
 
-    fn run_external_call(
+    pub(super) fn run_external_call(
         access: &InterpInstanceAccess<'_>,
         call: &PreparedCall,
     ) -> Result<Vec<u64>, WasmError> {
@@ -3079,7 +3079,7 @@ impl InterpInstance {
     /// `frame` is the caller's frame slice. The returned request owns every
     /// value it needs, so the materialization can end before guest or host
     /// code runs.
-    fn prepare_import_call(
+    pub(super) fn prepare_import_call(
         &self,
         callee: usize,
         frame: &[u64],
