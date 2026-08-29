@@ -4557,7 +4557,7 @@ impl InterpInstance {
 /// lower bound of the truncated value (0.0 for the unsigned cases — a
 /// truncated -0.0 compares equal to 0.0 and is valid), `hi_excl` the
 /// exclusive upper bound. Both bounds are exactly representable in f64.
-fn trunc_checked(x: f64, lo: f64, hi_excl: f64) -> Result<f64, WasmError> {
+pub(super) fn trunc_checked(x: f64, lo: f64, hi_excl: f64) -> Result<f64, WasmError> {
     if x.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer"));
     }
@@ -4568,7 +4568,7 @@ fn trunc_checked(x: f64, lo: f64, hi_excl: f64) -> Result<f64, WasmError> {
     Ok(t)
 }
 
-fn wasm_min_f32(a: f32, b: f32) -> f32 {
+pub(super) fn wasm_min_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
     } else if a < b {
@@ -4582,7 +4582,7 @@ fn wasm_min_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-fn wasm_max_f32(a: f32, b: f32) -> f32 {
+pub(super) fn wasm_max_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
     } else if a > b {
@@ -4596,7 +4596,7 @@ fn wasm_max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-fn wasm_min_f64(a: f64, b: f64) -> f64 {
+pub(super) fn wasm_min_f64(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
     } else if a < b {
@@ -4610,7 +4610,7 @@ fn wasm_min_f64(a: f64, b: f64) -> f64 {
     }
 }
 
-fn wasm_max_f64(a: f64, b: f64) -> f64 {
+pub(super) fn wasm_max_f64(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
     } else if a > b {
