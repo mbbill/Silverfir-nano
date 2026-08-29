@@ -44,6 +44,16 @@ pub(crate) struct BaselineFunction {
     pub(crate) indirect_calls: Range<usize>,
 }
 
+impl BaselineFunction {
+    /// Translate a function-relative side-table cursor into the module-wide
+    /// flat arena. The cursor may equal the range end when control transfers
+    /// past this function's final side entry.
+    pub(crate) fn absolute_stp(&self, relative: u32) -> Option<usize> {
+        let absolute = self.control_targets.start.checked_add(relative as usize)?;
+        (absolute <= self.control_targets.end).then_some(absolute)
+    }
+}
+
 /// One sequential side-table entry for a raw control transfer.
 ///
 /// `target_stp` is relative to the function's first target. `source_pc` and
@@ -379,7 +389,14 @@ impl BaselineFunctionBuilder {
                     ));
                 };
                 let (params, results) = super::predecode::block_arity(module.types(), block_type)?;
-                let condition = usize::from(base_op == Some(Opcode::IF));
+                // The production predecoder's dead structural path does not
+                // pop an if condition: it only preserves nesting until a
+                // merge can revive control. In particular, residual symbolic
+                // values below `unreachable` stay in its stack. Mirror that
+                // accepted representation exactly; a future full-validator
+                // artifact may deliberately choose the validator's
+                // polymorphic-stack height instead.
+                let condition = usize::from(!dead && base_op == Some(Opcode::IF));
                 let required = params as usize + condition;
                 let base = if dead {
                     stack_height.saturating_sub(required)
@@ -907,7 +924,6 @@ mod tests {
     use crate::vm::value::RefValue;
     use crate::{Instance, Value};
     use std::sync::Mutex;
-    use std::vec;
     use std::vec::Vec as StdVec;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -972,8 +988,8 @@ mod tests {
         assert_eq!(function.direct_calls, 0..0);
         assert_eq!(function.indirect_calls, 0..0);
         assert_eq!(
-            artifact.control_targets,
-            vec![
+            artifact.control_targets.as_slice(),
+            &[
                 ControlTarget {
                     source_pc: 2,
                     target_pc: 7,
@@ -1006,6 +1022,34 @@ mod tests {
         );
         assert_eq!(native.code[0].c, 3);
         assert_eq!(native.code[2].c, 4);
+    }
+
+    #[test]
+    fn dead_if_keeps_the_predecoder_residual_stack_height() {
+        let _guard = test_guard();
+        let (wasm, module, artifact) = parse_artifact(
+            r#"(module
+                (func (export "run")
+                    i32.const 99
+                    unreachable
+                    if
+                        nop
+                    else
+                        nop
+                    end))"#,
+        );
+        let function = artifact.functions[0].as_ref().expect("function");
+        assert_eq!(function.max_operand_height, 1);
+        assert_eq!(function.max_control_height, 2);
+        let targets = &artifact.control_targets[function.control_targets.clone()];
+        assert_eq!(targets.len(), 2);
+        assert!(targets.iter().all(|target| {
+            target.target_stack_height == 1 && target.keep_arity == 0 && target.target_stp == 2
+        }));
+
+        let native = predecoded(&module, 0);
+        assert!(native.code.iter().any(|ins| ins.op == Op::Unreachable));
+        assert!(matches!(invoke(&wasm, "run", &[]), Err(WasmError::Trap(_))));
     }
 
     #[test]
@@ -1127,11 +1171,13 @@ mod tests {
                     local.get 0
                     return_call $id)
                 (func (export "direct") (type $u) (param i32) (result i32)
-                    (block $done (result i32)
+                    (block $done
                         (loop $hot
                             local.get 0
                             call $tail
-                            br $done)))
+                            drop
+                            br $done))
+                    local.get 0)
                 (func (export "indirect") (type $u) (param i32) (result i32)
                     local.get 0
                     i32.const 0
@@ -1147,8 +1193,8 @@ mod tests {
         );
         assert_eq!(artifact.direct_calls.len(), 2);
         assert_eq!(
-            artifact.direct_calls,
-            [
+            artifact.direct_calls.as_slice(),
+            &[
                 DirectCallEdge {
                     caller: 1,
                     callee: 0,
