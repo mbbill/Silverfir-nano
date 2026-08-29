@@ -21,7 +21,7 @@ use crate::error::WasmError;
 use crate::module::entities::GlobalDef;
 use crate::module::type_context::TypeContext;
 use crate::module::Module;
-use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
+use crate::op_decoder::{BlockType, DecodedOp, Decoder, Immediate, OpStream, OpcodeHandler};
 use crate::op_decoder::{CatchClause, CatchClauseKind};
 use crate::opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode};
 use crate::utils::{leb128, limits::Limitable};
@@ -3187,6 +3187,66 @@ impl FastDecoded {
     };
 }
 
+/// The compact second-stage parser handles the structural opcodes left by
+/// [`probe_fast`]. Keeping this table and its parser separate prevents the
+/// common numeric/load/store probe from growing another large match while
+/// still bypassing the owning generic decoder for control-heavy modules.
+#[derive(Clone, Copy)]
+enum StructuralLowering {
+    Fallback,
+    None(Opcode),
+    Block(Opcode),
+    Label(Opcode),
+    Function(Opcode),
+    Global(Opcode),
+    Table(Opcode),
+    Memory(Opcode),
+    CallIndirect(Opcode),
+    Type(Opcode),
+}
+
+const STRUCTURAL_LOWERINGS: [StructuralLowering; 256] = {
+    let mut table = [StructuralLowering::Fallback; 256];
+    table[Opcode::NOP as usize] = StructuralLowering::None(Opcode::NOP);
+    table[Opcode::UNREACHABLE as usize] = StructuralLowering::None(Opcode::UNREACHABLE);
+    table[Opcode::ELSE as usize] = StructuralLowering::None(Opcode::ELSE);
+    table[Opcode::END as usize] = StructuralLowering::None(Opcode::END);
+    table[Opcode::RETURN as usize] = StructuralLowering::None(Opcode::RETURN);
+    table[Opcode::DROP as usize] = StructuralLowering::None(Opcode::DROP);
+    table[Opcode::SELECT as usize] = StructuralLowering::None(Opcode::SELECT);
+    table[Opcode::REF_IS_NULL as usize] = StructuralLowering::None(Opcode::REF_IS_NULL);
+    table[Opcode::REF_AS_NON_NULL as usize] = StructuralLowering::None(Opcode::REF_AS_NON_NULL);
+    table[Opcode::REF_EQ as usize] = StructuralLowering::None(Opcode::REF_EQ);
+    table[Opcode::BLOCK as usize] = StructuralLowering::Block(Opcode::BLOCK);
+    table[Opcode::LOOP as usize] = StructuralLowering::Block(Opcode::LOOP);
+    table[Opcode::IF as usize] = StructuralLowering::Block(Opcode::IF);
+    table[Opcode::BR as usize] = StructuralLowering::Label(Opcode::BR);
+    table[Opcode::BR_IF as usize] = StructuralLowering::Label(Opcode::BR_IF);
+    table[Opcode::BR_ON_NULL as usize] = StructuralLowering::Label(Opcode::BR_ON_NULL);
+    table[Opcode::BR_ON_NON_NULL as usize] = StructuralLowering::Label(Opcode::BR_ON_NON_NULL);
+    table[Opcode::CALL as usize] = StructuralLowering::Function(Opcode::CALL);
+    table[Opcode::RETURN_CALL as usize] = StructuralLowering::Function(Opcode::RETURN_CALL);
+    table[Opcode::REF_FUNC as usize] = StructuralLowering::Function(Opcode::REF_FUNC);
+    table[Opcode::GLOBAL_GET as usize] = StructuralLowering::Global(Opcode::GLOBAL_GET);
+    table[Opcode::GLOBAL_SET as usize] = StructuralLowering::Global(Opcode::GLOBAL_SET);
+    table[Opcode::TABLE_GET as usize] = StructuralLowering::Table(Opcode::TABLE_GET);
+    table[Opcode::TABLE_SET as usize] = StructuralLowering::Table(Opcode::TABLE_SET);
+    table[Opcode::MEMORY_SIZE as usize] = StructuralLowering::Memory(Opcode::MEMORY_SIZE);
+    table[Opcode::MEMORY_GROW as usize] = StructuralLowering::Memory(Opcode::MEMORY_GROW);
+    table[Opcode::CALL_INDIRECT as usize] = StructuralLowering::CallIndirect(Opcode::CALL_INDIRECT);
+    table[Opcode::RETURN_CALL_INDIRECT as usize] =
+        StructuralLowering::CallIndirect(Opcode::RETURN_CALL_INDIRECT);
+    table[Opcode::CALL_REF as usize] = StructuralLowering::Type(Opcode::CALL_REF);
+    table[Opcode::RETURN_CALL_REF as usize] = StructuralLowering::Type(Opcode::RETURN_CALL_REF);
+    table
+};
+
+struct StructuralDecoded {
+    wasm_op: WasmOpcode,
+    imm: Immediate,
+    consumed: usize,
+}
+
 #[inline]
 fn probe_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
     let tail = bytes.get(*cursor..)?;
@@ -3247,6 +3307,96 @@ fn probe_i64(bytes: &[u8], cursor: &mut usize) -> Option<i64> {
     let (value, consumed) = leb128::read_leb128_i64(tail).ok()?;
     *cursor += consumed;
     Some(value)
+}
+
+#[inline]
+fn probe_structural_block_type(bytes: &[u8], cursor: &mut usize) -> Option<BlockType> {
+    let first = *bytes.get(*cursor)?;
+    let block_type = match first {
+        0x40 => BlockType::Empty,
+        0x7f => BlockType::ValueType(ValueType::I32),
+        0x7e => BlockType::ValueType(ValueType::I64),
+        0x7d => BlockType::ValueType(ValueType::F32),
+        0x7c => BlockType::ValueType(ValueType::F64),
+        _ => {
+            let value = probe_i32(bytes, cursor)?;
+            return (value >= 0).then_some(BlockType::TypeIndex(value as usize));
+        }
+    };
+    *cursor += 1;
+    Some(block_type)
+}
+
+/// Decode a structural opcode without touching the generic decoder state.
+///
+/// This is deliberately a second, out-of-line stage. The stage-one probe and
+/// its caller stay small for the 80-89% numeric/routing fast path. A malformed
+/// or uncommon immediate returns `None` without consuming input, leaving the
+/// authoritative generic decoder to produce the original validation error.
+#[inline]
+fn probe_structural(bytes: &[u8]) -> Option<StructuralDecoded> {
+    let &opcode_byte = bytes.first()?;
+    let lowering = STRUCTURAL_LOWERINGS[opcode_byte as usize];
+    let mut cursor = 1;
+    let (opcode, imm) = match lowering {
+        StructuralLowering::Fallback => return None,
+        StructuralLowering::None(opcode) => (opcode, Immediate::None),
+        StructuralLowering::Block(opcode) => {
+            let block_type = probe_structural_block_type(bytes, &mut cursor)?;
+            (opcode, Immediate::Block(block_type))
+        }
+        StructuralLowering::Label(opcode) => {
+            let index = probe_u32(bytes, &mut cursor)?;
+            (opcode, Immediate::LabelIndex(index))
+        }
+        StructuralLowering::Function(opcode) => {
+            let index = probe_u32(bytes, &mut cursor)?;
+            (opcode, Immediate::FunctionIndex(index))
+        }
+        StructuralLowering::Global(opcode) => {
+            let index = probe_u32(bytes, &mut cursor)?;
+            (opcode, Immediate::GlobalIndex(index))
+        }
+        StructuralLowering::Table(opcode) => {
+            let index = probe_u32(bytes, &mut cursor)?;
+            (opcode, Immediate::TableIndex(index))
+        }
+        StructuralLowering::Memory(opcode) => {
+            let index = probe_u32(bytes, &mut cursor)?;
+            (opcode, Immediate::MemoryIndex(index))
+        }
+        StructuralLowering::CallIndirect(opcode) => {
+            let typeidx = probe_u32(bytes, &mut cursor)?;
+            let tableidx = probe_u32(bytes, &mut cursor)?;
+            (opcode, Immediate::CallIndirectArgs { typeidx, tableidx })
+        }
+        StructuralLowering::Type(opcode) => {
+            let index = probe_u32(bytes, &mut cursor)?;
+            (opcode, Immediate::TypeIndex(index))
+        }
+    };
+    Some(StructuralDecoded {
+        wasm_op: WasmOpcode::OP(opcode),
+        imm,
+        consumed: cursor,
+    })
+}
+
+/// Resolve a stage-one miss outside the already-large semantic lowering
+/// loop. Structural hits are published through the decoder's existing
+/// one-op slot; the few remaining opcodes use the authoritative decoder.
+#[inline(never)]
+fn next_after_fast_miss<'s, 'd, 'a, 'b>(
+    stream: &'s mut OpStream<'d, 'a, 'b>,
+) -> Result<Option<&'s DecodedOp>, WasmError> {
+    if let Some(decoded) = probe_structural(stream.predecode_bytes()) {
+        return Ok(Some(stream.commit_predecoded(
+            decoded.wasm_op,
+            decoded.imm,
+            decoded.consumed,
+        )));
+    }
+    stream.next()
 }
 
 #[inline]
@@ -3379,7 +3529,7 @@ impl OpcodeHandler for Predecoder<'_, '_, '_> {
                 continue;
             }
 
-            let Some(op) = stream.next()? else {
+            let Some(op) = next_after_fast_miss(stream)? else {
                 break;
             };
             if self.pending_fill.is_some()
@@ -4696,11 +4846,110 @@ mod tests {
     }
 
     #[test]
+    fn structural_byte_fast_lane_matches_generic_decoder() {
+        let wat = r#"(module
+            (type $unary (func (param i32) (result i32)))
+            (table 2 funcref)
+            (memory 1)
+            (global $g (mut i32) (i32.const 0))
+            (func $callee (type $unary)
+                local.get 0)
+            (elem (i32.const 0) func $callee)
+            (func (export "phase2") (param $x i32) (result i32) (local $tmp i32)
+                nop
+                global.get $g
+                local.set $tmp
+                local.get $x
+                global.set $g
+
+                i32.const 0
+                ref.func $callee
+                table.set 0
+                i32.const 0
+                table.get 0
+                ref.as_non_null
+                ref.is_null
+                drop
+                ref.func $callee
+                ref.func $callee
+                ref.eq
+                drop
+
+                memory.size 0
+                drop
+                i32.const 0
+                memory.grow 0
+                drop
+
+                local.get $x
+                call $callee
+                drop
+                local.get $x
+                i32.const 0
+                call_indirect 0 (type $unary)
+                drop
+                local.get $x
+                ref.func $callee
+                call_ref $unary
+                drop
+
+                block $exit
+                    local.get $x
+                    br_if $exit
+                    br $exit
+                    unreachable
+                end
+                block $done
+                    loop $again
+                        br $done
+                    end
+                end
+                local.get $x
+                block (type $unary)
+                end
+                drop
+
+                i32.const 10
+                i32.const 20
+                local.get $x
+                select
+                drop
+                local.get $x
+                if (result i32)
+                    i32.const 7
+                else
+                    i32.const 9
+                end
+                return)
+            (func (type $unary)
+                local.get 0
+                return_call $callee)
+            (func (type $unary)
+                local.get 0
+                i32.const 0
+                return_call_indirect 0 (type $unary))
+            (func (type $unary)
+                local.get 0
+                ref.func $callee
+                return_call_ref $unary))"#;
+
+        for func in 0..5 {
+            let fast = predecode_wat_mode(wat, func, false);
+            let generic = predecode_wat_mode(wat, func, true);
+            assert_same_predecode(&fast, &generic);
+        }
+    }
+
+    #[test]
     fn malformed_fast_immediate_is_a_non_consuming_miss() {
         let mut decoded = FastDecoded::EMPTY;
         assert!(!probe_fast(&[Opcode::LOCAL_GET as u8, 0x80], &mut decoded));
         assert!(!probe_fast(&[Opcode::I64_CONST as u8, 0x80], &mut decoded));
         assert_eq!(decoded.consumed, 0);
+
+        assert!(probe_structural(&[Opcode::CALL as u8, 0x80]).is_none());
+        assert!(probe_structural(&[Opcode::CALL_INDIRECT as u8, 0x00, 0x80]).is_none());
+        assert!(probe_structural(&[Opcode::BLOCK as u8, 0x80]).is_none());
     }
 
     #[test]
