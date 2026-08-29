@@ -40,6 +40,12 @@ use core::cell::RefCell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
+#[cfg(all(test, sf_module_validator))]
+use super::baseline_artifact::BaselineArtifact;
+#[cfg(all(test, sf_module_validator))]
+use super::baseline_exec::{RawFrameState, RawSlots, RawStepExit, RawStepper};
+#[cfg(all(test, sf_module_validator))]
+use super::baseline_function_plan::FunctionPlanKind;
 use super::engine::{
     CallFixup, DCell, EnterState, LinkPlan, LinkScratch, LinkedFunction, NativeEngine, EXIT_RETURN,
     EXIT_SLOW, EXIT_TRAP_BASE, RET_RECORD, TRAP_KINDS,
@@ -378,6 +384,8 @@ struct Activation {
     /// caller record a native call pushed) is already on the native return
     /// stack — set after the first native entry, so resumes never re-plant.
     route_established: bool,
+    #[cfg(all(test, sf_module_validator))]
+    raw: Option<RawFrameState>,
 }
 
 /// A caller suspended at a Rust-owned call boundary.
@@ -393,6 +401,8 @@ struct Activation {
 struct SavedActivation {
     activation: Activation,
     ret_cursor: usize,
+    #[cfg(all(test, sf_module_validator))]
+    raw_return_top: Option<usize>,
 }
 
 #[cold]
@@ -671,6 +681,12 @@ pub struct InterpInstance {
     /// satisfies it.
     self_abs_base: usize,
     self_local_by_abs: Vec<u32>,
+    #[cfg(all(test, sf_module_validator))]
+    whole_function_plan: Option<Vec<FunctionPlanKind>>,
+    #[cfg(all(test, sf_module_validator))]
+    whole_function_artifact: Option<Rc<BaselineArtifact>>,
+    #[cfg(all(test, sf_module_validator))]
+    whole_function_saved: Option<Vec<SavedActivation>>,
     native: Option<NativeState>,
 }
 
@@ -1585,6 +1601,12 @@ impl InterpInstance {
             function_handles,
             self_abs_base,
             self_local_by_abs,
+            #[cfg(all(test, sf_module_validator))]
+            whole_function_plan: None,
+            #[cfg(all(test, sf_module_validator))]
+            whole_function_artifact: None,
+            #[cfg(all(test, sf_module_validator))]
+            whole_function_saved: Some(Vec::new()),
             function_identities,
             native: None,
         };
@@ -1714,6 +1736,75 @@ impl InterpInstance {
             .expect("interpreter functions must be published after link")
     }
 
+    #[cfg(all(test, sf_module_validator))]
+    pub(super) fn set_whole_function_plan_for_test(
+        &mut self,
+        artifact: BaselineArtifact,
+        mut plan: Vec<FunctionPlanKind>,
+    ) -> Result<(), WasmError> {
+        if plan.len() != self.module.functions().len()
+            || artifact.functions.len() != self.module.functions().len()
+        {
+            return Err(WasmError::invalid("mixed function plan length mismatch"));
+        }
+        for (index, (mode, function)) in plan.iter_mut().zip(self.module.functions()).enumerate() {
+            *mode = if function.spec().is_none() {
+                FunctionPlanKind::Import
+            } else {
+                match *mode {
+                    FunctionPlanKind::Raw => {
+                        if artifact.functions[index].is_none() {
+                            return Err(WasmError::invalid(
+                                "artifact-ineligible function planned Raw",
+                            ));
+                        }
+                        FunctionPlanKind::Raw
+                    }
+                    FunctionPlanKind::FullFold | FunctionPlanKind::Hybrid => {
+                        FunctionPlanKind::FullFold
+                    }
+                    FunctionPlanKind::Import => {
+                        return Err(WasmError::invalid("local function planned as import"));
+                    }
+                }
+            };
+        }
+        self.whole_function_plan = Some(plan);
+        self.whole_function_artifact = Some(Rc::new(artifact));
+        Ok(())
+    }
+
+    #[cfg(all(test, sf_module_validator))]
+    #[inline]
+    fn whole_function_mode(&self, function: usize) -> FunctionPlanKind {
+        self.whole_function_plan
+            .as_ref()
+            .and_then(|plan| plan.get(function))
+            .copied()
+            .unwrap_or(FunctionPlanKind::FullFold)
+    }
+
+    #[cfg(all(test, sf_module_validator))]
+    pub(super) fn whole_direct_call_is_slow_for_test(&self, caller: usize, callee: usize) -> bool {
+        let Some(function) = self.functions().get(caller).and_then(Option::as_ref) else {
+            return false;
+        };
+        let Some(pc) = function
+            .code
+            .iter()
+            .position(|instruction| instruction.op == Op::Call && instruction.a as usize == callee)
+        else {
+            return false;
+        };
+        let Some(native) = self.native.as_ref() else {
+            return false;
+        };
+        let Some(linked) = native.linked.get(caller).and_then(Option::as_ref) else {
+            return false;
+        };
+        native.plan.cells(linked)[pc].h != native.engine.call_handler_addr()
+    }
+
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         let engine = NativeEngine::new();
         let mut scratch = LinkScratch::default();
@@ -1756,22 +1847,28 @@ impl InterpInstance {
             .functions()
             .iter()
             .enumerate()
-            .map(|(i, _)| match (unlinked.function(i), &linked[i]) {
-                (Some(f), Some(lf)) => {
-                    let fs = f.frame_slots() as u64;
-                    if fs >= 1 << 16 {
-                        return None;
-                    }
-                    let packed = fs << 32 | (f.n_locals() as u64) << 16 | f.n_params() as u64;
-                    Some((
-                        lf.cell_base(),
-                        packed,
-                        lf.l0_off as u64,
-                        lf.l1_off as u64,
-                        lf.fp_pinned,
-                    ))
+            .map(|(i, _)| {
+                #[cfg(all(test, sf_module_validator))]
+                if self.whole_function_mode(i) == FunctionPlanKind::Raw {
+                    return None;
                 }
-                _ => None,
+                match (unlinked.function(i), &linked[i]) {
+                    (Some(f), Some(lf)) => {
+                        let fs = f.frame_slots() as u64;
+                        if fs >= 1 << 16 {
+                            return None;
+                        }
+                        let packed = fs << 32 | (f.n_locals() as u64) << 16 | f.n_params() as u64;
+                        Some((
+                            lf.cell_base(),
+                            packed,
+                            lf.l0_off as u64,
+                            lf.l1_off as u64,
+                            lf.fp_pinned,
+                        ))
+                    }
+                    _ => None,
+                }
             })
             .collect();
         // Canonical type ids for the native call_indirect type check:
@@ -2542,12 +2639,26 @@ impl InterpInstance {
         if args.len() != func.n_params as usize || results.len() != func.n_results as usize {
             return Err(WasmError::invalid("interp: argument/result arity mismatch"));
         }
+        #[cfg(all(test, sf_module_validator))]
+        let raw = access.with_instance(|instance| {
+            (instance.whole_function_mode(func_index) == FunctionPlanKind::Raw).then_some(
+                RawFrameState {
+                    pc: 0,
+                    stp: 0,
+                    top: func.n_locals as usize,
+                    operand_base: func.n_locals as usize,
+                    return_base: 0,
+                },
+            )
+        })?;
         let root = Activation {
             func,
             func_index,
             base: 0,
             pc: 0,
             route_established: false,
+            #[cfg(all(test, sf_module_validator))]
+            raw,
         };
         Self::drive(access, root, args, results)
     }
@@ -2636,51 +2747,72 @@ impl InterpInstance {
         ctx.stack[args.len()..root.func.n_locals as usize].fill(0);
 
         let mut act = root;
-        let mut saved: Vec<SavedActivation> = Vec::new();
-        loop {
-            // Local dispatch cannot re-enter the instance table. Keep one
-            // materialization through native sessions, slow instructions,
-            // local calls, returns, and exception handling. The helper can
-            // leave this scope only with an owned external-call request.
-            let exit = access.with_instance_mut(|instance| {
-                instance.run_materialized(&mut act, &mut saved, &mut ctx, max_depth, results)
-            })??;
-            let MaterializedRunExit::ExternalCall {
-                call,
-                result_base,
-                error_site,
-                resume_tail_return,
-            } = exit
-            else {
-                return Ok(());
+        #[cfg(all(test, sf_module_validator))]
+        let (mut saved, reuse_saved) = access.with_instance_mut(|instance| {
+            let reuse = instance.whole_function_plan.is_some();
+            let saved = if reuse {
+                instance.whole_function_saved.take().unwrap_or_default()
+            } else {
+                Vec::new()
             };
+            (saved, reuse)
+        })?;
+        #[cfg(not(all(test, sf_module_validator)))]
+        let mut saved: Vec<SavedActivation> = Vec::new();
+        let outcome = (|| -> Result<(), WasmError> {
+            loop {
+                // Local dispatch cannot re-enter the instance table. Keep one
+                // materialization through native sessions, slow instructions,
+                // local calls, returns, and exception handling. The helper can
+                // leave this scope only with an owned external-call request.
+                let exit = access.with_instance_mut(|instance| {
+                    instance.run_materialized(&mut act, &mut saved, &mut ctx, max_depth, results)
+                })??;
+                let MaterializedRunExit::ExternalCall {
+                    call,
+                    result_base,
+                    error_site,
+                    resume_tail_return,
+                } = exit
+                else {
+                    return Ok(());
+                };
 
-            // This is the re-entry barrier. Host callbacks, installed
-            // funcref hooks, and foreign instances may all check out this
-            // same slot, so no token-derived instance reference is live.
-            match Self::run_external_call(access, &call) {
-                Ok(returned) => {
-                    ctx.stack[result_base..result_base + returned.len()].copy_from_slice(&returned);
-                    ctx.acc = returned.first().copied().unwrap_or(0);
-                    if resume_tail_return {
-                        // Preserve the imported-tail ordering: the host call
-                        // and its result writes happen before this internal
-                        // landing invariant is validated.
-                        act.pc = act.func.slow_tail_return.ok_or(WasmError::invalid(
-                            "interp: tail call has no return landing",
-                        ))? as usize;
+                // This is the re-entry barrier. Host callbacks, installed
+                // funcref hooks, and foreign instances may all check out this
+                // same slot, so no token-derived instance reference is live.
+                match Self::run_external_call(access, &call) {
+                    Ok(returned) => {
+                        ctx.stack[result_base..result_base + returned.len()]
+                            .copy_from_slice(&returned);
+                        ctx.acc = returned.first().copied().unwrap_or(0);
+                        if resume_tail_return {
+                            // Preserve the imported-tail ordering: the host call
+                            // and its result writes happen before this internal
+                            // landing invariant is validated.
+                            act.pc = act.func.slow_tail_return.ok_or(WasmError::invalid(
+                                "interp: tail call has no return landing",
+                            ))? as usize;
+                        }
+                    }
+                    Err(error) => {
+                        let pending = access
+                            .with_instance_mut(|instance| instance.pending_from_error(error))??;
+                        access.with_instance(|instance| {
+                            instance.unwind_exception(
+                                pending, &mut act, &mut saved, &mut ctx, error_site,
+                            )
+                        })??;
                     }
                 }
-                Err(error) => {
-                    let pending = access
-                        .with_instance_mut(|instance| instance.pending_from_error(error))??;
-                    access.with_instance(|instance| {
-                        instance
-                            .unwind_exception(pending, &mut act, &mut saved, &mut ctx, error_site)
-                    })??;
-                }
             }
+        })();
+        #[cfg(all(test, sf_module_validator))]
+        if reuse_saved {
+            saved.clear();
+            access.with_instance_mut(|instance| instance.whole_function_saved = Some(saved))?;
         }
+        outcome
     }
 
     /// Run only work that cannot execute guest or host code outside this
@@ -2699,6 +2831,44 @@ impl InterpInstance {
         results: &mut [u64],
     ) -> Result<MaterializedRunExit, WasmError> {
         loop {
+            #[cfg(all(test, sf_module_validator))]
+            let step = if act.raw.is_some() {
+                let artifact = Rc::clone(
+                    self.whole_function_artifact
+                        .as_ref()
+                        .ok_or_else(|| WasmError::internal("mixed Raw artifact is missing"))?,
+                );
+                let raw = act.raw.as_mut().expect("checked mixed Raw activation");
+                let mut top = raw.top;
+                let exit = RawStepper {
+                    instance: self,
+                    artifact: &artifact,
+                    function_index: act.func_index,
+                    frame_base: act.base,
+                    state: raw,
+                    slots: RawSlots::Fixed {
+                        slots: ctx.stack,
+                        top: &mut top,
+                    },
+                    acc: &mut ctx.acc,
+                }
+                .step()
+                .map_err(|error| match error {
+                    super::baseline_exec::BaselineExecError::Wasm(error) => error,
+                    super::baseline_exec::BaselineExecError::Unsupported { .. } => {
+                        WasmError::invalid("mixed Raw plan reached an unsupported opcode")
+                    }
+                })?;
+                raw.top = top;
+                match exit {
+                    RawStepExit::Continue => continue,
+                    RawStepExit::Call { callee, arg_base } => StepExit::Call { callee, arg_base },
+                    RawStepExit::Return => StepExit::Return,
+                }
+            } else {
+                self.native_step(act, ctx)?
+            };
+            #[cfg(not(all(test, sf_module_validator)))]
             let step = self.native_step(act, ctx)?;
             match step {
                 StepExit::Call { callee, arg_base } => {
@@ -2732,12 +2902,43 @@ impl InterpInstance {
                     // before read by predecode construction.
                     let (np, nl) = (f.n_params as usize, f.n_locals as usize);
                     ctx.stack[new_base + np..new_base + nl].fill(0);
+                    #[cfg(all(test, sf_module_validator))]
+                    let raw = if self.whole_function_mode(callee) == FunctionPlanKind::Raw {
+                        let artifact = self
+                            .whole_function_artifact
+                            .as_ref()
+                            .and_then(|artifact| artifact.functions.get(callee))
+                            .and_then(Option::as_ref)
+                            .ok_or_else(|| {
+                                WasmError::invalid("mixed Raw callee artifact is missing")
+                            })?;
+                        let operand_base = new_base + nl;
+                        let required = operand_base
+                            .checked_add(artifact.max_operand_height as usize)
+                            .ok_or_else(|| WasmError::trap("call stack exhausted"))?;
+                        if required > ctx.stack.len() {
+                            return Err(WasmError::trap("call stack exhausted"));
+                        }
+                        Some(RawFrameState {
+                            pc: 0,
+                            stp: 0,
+                            top: operand_base,
+                            operand_base,
+                            return_base: new_base,
+                        })
+                    } else {
+                        None
+                    };
+                    #[cfg(all(test, sf_module_validator))]
+                    let raw_return_top = act.raw.as_ref().map(|_| new_base + f.n_results as usize);
                     let callee_act = Activation {
                         func: f,
                         func_index: callee,
                         base: new_base,
                         pc: 0,
                         route_established: false,
+                        #[cfg(all(test, sf_module_validator))]
+                        raw,
                     };
                     // Dominate `push`'s capacity check so the hot path can
                     // copy the caller straight into the spare Vec slot.
@@ -2747,6 +2948,8 @@ impl InterpInstance {
                     saved.push(SavedActivation {
                         activation: core::mem::replace(act, callee_act),
                         ret_cursor: ctx.ret_cursor,
+                        #[cfg(all(test, sf_module_validator))]
+                        raw_return_top,
                     });
                 }
                 StepExit::TailCall { callee, arg_base } => {
@@ -2835,7 +3038,17 @@ impl InterpInstance {
                             // covers targets whose backend reports Return
                             // without exposing its cursor mechanics.
                             ctx.ret_cursor = parent.ret_cursor;
-                            *act = parent.activation;
+                            #[cfg(all(test, sf_module_validator))]
+                            let mut activation = parent.activation;
+                            #[cfg(not(all(test, sf_module_validator)))]
+                            let activation = parent.activation;
+                            #[cfg(all(test, sf_module_validator))]
+                            if let (Some(raw), Some(top)) =
+                                (activation.raw.as_mut(), parent.raw_return_top)
+                            {
+                                raw.top = top;
+                            }
+                            *act = activation;
                         }
                     }
                 }

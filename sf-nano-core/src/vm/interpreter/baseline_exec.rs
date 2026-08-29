@@ -15,6 +15,8 @@ use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
 use crate::Value;
 
+#[cfg(sf_module_validator)]
+use super::baseline_function_plan::FunctionPlanKind;
 use super::exec::{PreparedCall, ResolvedIndirectCall};
 use super::{InterpInstance, InterpInstanceAccess};
 
@@ -2232,6 +2234,87 @@ mod tests {
         assert_eq!(&fixed[..fixed_top], &[42]);
         assert_eq!((owned_acc, fixed_acc), (42, 42));
         assert_eq!((owned_state.stp, fixed_state.stp), (0, 0));
+    }
+
+    #[cfg(sf_module_validator)]
+    #[test]
+    fn whole_function_mixed_direct_calls_cross_both_modes() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (func $raw_add (param i32) (result i32)
+                    local.get 0 i32.const 2 i32.add)
+                (func $fold_mul (param i32) (result i32)
+                    local.get 0 i32.const 3 i32.mul)
+                (func (export "fold_to_raw") (param i32) (result i32)
+                    local.get 0 call $raw_add i32.const 5 i32.add)
+                (func (export "raw_to_fold") (param i32) (result i32)
+                    local.get 0 call $fold_mul i32.const 7 i32.add)
+                (func $raw_pair (param i32) (result i32 i32)
+                    local.get 0
+                    local.get 0 i32.const 1 i32.add)
+                (func $fold_pair (param i32) (result i32 i32)
+                    local.get 0
+                    local.get 0 i32.const 4 i32.add)
+                (func (export "fold_to_raw_pair") (param i32) (result i32)
+                    local.get 0 call $raw_pair i32.add)
+                (func (export "raw_to_fold_pair") (param i32) (result i32)
+                    local.get 0 call $fold_pair i32.add))"#,
+        )
+        .expect("wat");
+        let module = Module::new("whole-mixed-direct", &wasm).expect("module");
+        let _guard = artifact_test_guard();
+        let artifact = build_baseline_artifact(&module).expect("artifact");
+        let mut mixed = built_interp(module, &[]);
+        mixed
+            .set_whole_function_plan_for_test(
+                artifact,
+                vec![
+                    FunctionPlanKind::Raw,
+                    FunctionPlanKind::FullFold,
+                    FunctionPlanKind::FullFold,
+                    FunctionPlanKind::Raw,
+                    FunctionPlanKind::Raw,
+                    FunctionPlanKind::FullFold,
+                    FunctionPlanKind::FullFold,
+                    FunctionPlanKind::Raw,
+                ],
+            )
+            .expect("mixed plan");
+        let mut mixed = InterpInstance::initialize(mixed)
+            .map_err(|(_, error)| error)
+            .expect("mixed initialize");
+        assert!(mixed.whole_direct_call_is_slow_for_test(2, 0));
+
+        for (export, input) in [
+            ("fold_to_raw", 11u64),
+            ("raw_to_fold", 13u64),
+            ("fold_to_raw_pair", 17u64),
+            ("raw_to_fold_pair", 19u64),
+        ] {
+            let function = mixed.find_export(export).expect("mixed export");
+            let mut result = [0u64; 1];
+            mixed
+                .invoke(function, &[input], &mut result)
+                .expect("mixed invoke");
+            let folded =
+                native(&wasm, export, &[Value::I32(input as i32)]).expect("folded differential");
+            assert_eq!(result[0], folded[0].to_raw());
+        }
+
+        #[cfg(not(feature = "memprof"))]
+        {
+            let fold_to_raw = mixed.find_export("fold_to_raw").expect("mixed export");
+            let raw_to_fold = mixed.find_export("raw_to_fold").expect("mixed export");
+            let mut left = [0u64; 1];
+            let mut right = [0u64; 1];
+            let (outcome, census) = crate::test_alloc::measure(|| {
+                mixed.invoke(fold_to_raw, &[23], &mut left)?;
+                mixed.invoke(raw_to_fold, &[29], &mut right)
+            });
+            outcome.expect("warm mixed invoke");
+            assert_eq!(census, crate::test_alloc::Census::default());
+            assert_eq!((left[0], right[0]), (30, 94));
+        }
     }
 
     #[test]
