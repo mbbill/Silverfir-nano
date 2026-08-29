@@ -2150,6 +2150,13 @@ mod tests {
         imports: &[crate::Import],
     ) -> Result<StdVec<Value>, WasmError> {
         let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("engine");
+        #[cfg(sf_module_validator)]
+        let mut instance = Instance::from_module_full_fold_for_test(
+            &engine,
+            Module::new("folded-oracle", wasm)?,
+            imports,
+        )?;
+        #[cfg(not(sf_module_validator))]
         let mut instance = Instance::new(&engine, wasm, imports).expect("instance");
         instance.invoke(export, args).map(StdVec::from)
     }

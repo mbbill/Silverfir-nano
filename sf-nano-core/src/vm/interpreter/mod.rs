@@ -113,6 +113,18 @@ impl ValidatedBaselinePlan {
     }
 
     #[cfg(test)]
+    pub(crate) fn force_all_full_fold_for_test(mut self, module: &crate::module::Module) -> Self {
+        for (plan, function) in self.function_plan.iter_mut().zip(module.functions()) {
+            *plan = if function.is_import() {
+                baseline_function_plan::FunctionPlanKind::Import
+            } else {
+                baseline_function_plan::FunctionPlanKind::FullFold
+            };
+        }
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn plan_label_for_test(&self, function: usize) -> Option<&'static str> {
         self.function_plan.get(function).map(|kind| match kind {
             baseline_function_plan::FunctionPlanKind::Raw => "raw",

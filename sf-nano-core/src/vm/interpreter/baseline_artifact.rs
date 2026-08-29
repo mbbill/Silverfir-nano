@@ -1859,7 +1859,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_neither_rebuilds_nor_mutates_the_finished_artifact() {
+    fn runtime_does_not_mutate_an_independent_finished_artifact() {
         let _guard = test_guard();
         let (_wasm, _module, imports) = parse_artifact(
             r#"(module
@@ -1874,6 +1874,13 @@ mod tests {
         let snapshot = artifact.clone();
         let builds = artifact_build_count();
         assert_eq!(invoke(&wasm, "run", &[]).expect("run"), [Value::I32(42)]);
+        #[cfg(sf_module_validator)]
+        assert_eq!(
+            artifact_build_count(),
+            builds + 1,
+            "validator-enabled instance construction publishes its own retained artifact once"
+        );
+        #[cfg(not(sf_module_validator))]
         assert_eq!(artifact_build_count(), builds);
         assert_eq!(artifact, snapshot);
     }

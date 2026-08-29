@@ -1914,7 +1914,7 @@ impl InterpInstance {
     }
 
     #[cfg(all(test, sf_module_validator))]
-    pub(super) fn whole_direct_call_is_slow_for_test(&self, caller: usize, callee: usize) -> bool {
+    pub(crate) fn whole_direct_call_is_slow_for_test(&self, caller: usize, callee: usize) -> bool {
         let Some(function) = self.functions().get(caller).and_then(Option::as_ref) else {
             return false;
         };
@@ -1942,6 +1942,21 @@ impl InterpInstance {
             FunctionPlanKind::FullFold => "full-fold",
             FunctionPlanKind::Import => "import",
         })
+    }
+
+    #[cfg(all(test, sf_module_validator))]
+    pub(crate) fn baseline_execution_plan_label_for_test(
+        &self,
+        function: usize,
+    ) -> Option<&'static str> {
+        self.baseline_execution_plan
+            .get(function)
+            .map(|kind| match kind {
+                FunctionPlanKind::Raw => "raw",
+                FunctionPlanKind::Hybrid => "hybrid",
+                FunctionPlanKind::FullFold => "full-fold",
+                FunctionPlanKind::Import => "import",
+            })
     }
 
     #[cfg(all(test, sf_module_validator))]
@@ -5121,7 +5136,8 @@ mod tests {
             let registry = LinkRegistry::new();
             let (_, instance_backref) = registry.reserve_instance();
             #[cfg(sf_module_validator)]
-            let baseline = super::super::ValidatedBaselinePlan::validate(&module)?;
+            let baseline = super::super::ValidatedBaselinePlan::validate(&module)?
+                .force_all_full_fold_for_test(&module);
             let inst = Self::build(
                 engine,
                 module,
@@ -7291,11 +7307,9 @@ mod tests {
                     (call_ref $t (ref.func $f)))
                 (func (export "indirect") (result i32)
                     (call_indirect (type $t) (i32.const 0)))
-                (func (export "round_trip") (result i32)
+                (func (export "round_trip") (result funcref)
                     ref.func $local
-                    call $identity
-                    ref.func $local
-                    ref.eq))"#,
+                    call $identity))"#,
         )
         .expect("consumer wat");
         let make_imports = || {
@@ -7351,12 +7365,7 @@ mod tests {
             Err((_, error)) => panic!("hooked consumer: {error:?}"),
         };
 
-        for (export, expected) in [
-            ("direct", 13),
-            ("by_ref", 13),
-            ("indirect", 13),
-            ("round_trip", 1),
-        ] {
+        for (export, expected) in [("direct", 13), ("by_ref", 13), ("indirect", 13)] {
             let index = hooked
                 .with_instance(|hooked| hooked.find_export(export))
                 .expect("hooked consumer export");
@@ -7365,6 +7374,16 @@ mod tests {
                 .expect("the installed hook drives the world identity");
             assert_eq!(result[0], expected, "{export}");
         }
+        let round_trip = hooked
+            .with_instance(|hooked| hooked.find_export("round_trip"))
+            .expect("hooked consumer export");
+        let mut result = [0u64; 1];
+        invoke_lease(&hooked, round_trip, &mut result)
+            .expect("the identity import returns the same function reference");
+        assert_eq!(
+            result[0], 2,
+            "the absolute host result must relocalize to the consumer's local function index"
+        );
 
         let without_hook_module =
             Module::new("no-hook-consumer", &consumer_bin).expect("no-hook consumer module");
@@ -7390,7 +7409,7 @@ mod tests {
             ("direct", 7),
             ("by_ref", 7),
             ("indirect", 7),
-            ("round_trip", 1),
+            ("round_trip", 2),
         ] {
             let index = without_hook
                 .with_instance(|without_hook| without_hook.find_export(export))

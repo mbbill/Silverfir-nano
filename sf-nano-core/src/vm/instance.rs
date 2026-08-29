@@ -213,6 +213,38 @@ impl Instance {
         Self::from_module(engine, Module::new("main", wasm_bytes)?, imports)
     }
 
+    #[cfg(all(test, sf_interp, sf_module_validator))]
+    pub(crate) fn from_module_full_fold_for_test(
+        engine: &Engine,
+        module: Module,
+        imports: &[Import],
+    ) -> Result<Self, WasmError> {
+        if engine.tier() != Tier::Interp {
+            return Err(WasmError::invalid(
+                "full-fold oracle requires interpreter tier",
+            ));
+        }
+        let registry = LinkRegistry::new();
+        let baseline =
+            ValidatedBaselinePlan::validate(&module)?.force_all_full_fold_for_test(&module);
+        let dispatch = interp_imports::bind(&module, imports)?;
+        match InterpInstance::new_partial_with_registry(
+            engine,
+            module,
+            baseline,
+            Some(InterpInstance::boxed_caller_host(dispatch)),
+            imports,
+            None,
+            &registry,
+        ) {
+            Ok(inst) => Ok(Self {
+                inner: Inner::Interp(inst),
+                registry,
+            }),
+            Err((_, error)) => Err(error),
+        }
+    }
+
     /// Instantiate against a shared link registry, so instances can
     /// resolve each other's exports.
     ///
@@ -994,6 +1026,14 @@ mod tests {
             assert_eq!(interp.baseline_plan_label_for_test(0), Some("hybrid"));
             assert_eq!(interp.baseline_plan_label_for_test(1), Some("raw"));
             assert_eq!(
+                interp.baseline_execution_plan_label_for_test(0),
+                Some("full-fold")
+            );
+            assert_eq!(
+                interp.baseline_execution_plan_label_for_test(1),
+                Some("raw")
+            );
+            assert_eq!(
                 interp.baseline_artifact_has_function_for_test(0),
                 Some(true)
             );
@@ -1009,8 +1049,238 @@ mod tests {
         assert_eq!(
             instance
                 .invoke("countdown", &[Value::I32(4)])
-                .expect("folded execution remains active"),
+                .expect("effective mixed execution remains active"),
             collections::vec![Value::I32(0)]
+        );
+    }
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn production_selector_drives_whole_function_mixed_execution() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (memory 1)
+                (data (i32.const 0) "\07\00\00\00")
+                (global $state (mut i32) (i32.const 0))
+                (func $raw_add (export "raw_root") (param i32) (result i32)
+                    local.get 0 i32.const 2 i32.add)
+                (func $fold_add (param i32) (result i32)
+                    ref.null func drop
+                    local.get 0 i32.const 3 i32.add)
+                (func (export "fold_to_raw") (param i32) (result i32)
+                    ref.null func drop
+                    local.get 0 call $raw_add i32.const 5 i32.add)
+                (func (export "raw_to_fold") (param i32) (result i32)
+                    local.get 0 call $fold_add i32.const 7 i32.add)
+                (func (export "memory") (result i32)
+                    i32.const 0 i32.load)
+                (func (export "global") (param i32) (result i32)
+                    local.get 0 global.set $state
+                    global.get $state)
+                (func (export "multi") (param i32) (result i32 i32)
+                    local.get 0
+                    local.get 0 i32.const 1 i32.add))"#,
+        )
+        .expect("encode production mixed module");
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+        let mut instance = Instance::from_module(
+            &engine,
+            Module::new("production-whole-mixed", &wasm).expect("parse module"),
+            &[],
+        )
+        .expect("instantiate production mixed module");
+
+        let interp = match &instance.inner {
+            Inner::Interp(interp) => interp,
+            #[cfg(sf_jit)]
+            Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+        };
+        interp.with_instance(|interp| {
+            assert_eq!(
+                (0..7)
+                    .map(|index| interp.baseline_execution_plan_label_for_test(index))
+                    .collect::<collections::Vec<_>>(),
+                [
+                    Some("raw"),
+                    Some("full-fold"),
+                    Some("full-fold"),
+                    Some("raw"),
+                    Some("raw"),
+                    Some("raw"),
+                    Some("raw"),
+                ]
+            );
+            assert!(
+                interp.whole_direct_call_is_slow_for_test(2, 0),
+                "a folded caller must enter a Raw callee through the slow checkpoint"
+            );
+            assert!(
+                interp.predecode_is_complete_for_test(),
+                "mixed routing must not be mistaken for selective startup"
+            );
+        });
+
+        for (export, args, expected) in [
+            ("raw_root", &[Value::I32(40)][..], &[Value::I32(42)][..]),
+            ("fold_to_raw", &[Value::I32(11)][..], &[Value::I32(18)][..]),
+            ("raw_to_fold", &[Value::I32(13)][..], &[Value::I32(23)][..]),
+            ("memory", &[][..], &[Value::I32(7)][..]),
+            ("global", &[Value::I32(17)][..], &[Value::I32(17)][..]),
+            (
+                "multi",
+                &[Value::I32(19)][..],
+                &[Value::I32(19), Value::I32(20)][..],
+            ),
+        ] {
+            assert_eq!(
+                instance.invoke(export, args).expect("mixed invocation"),
+                expected,
+                "{export}"
+            );
+        }
+
+        #[cfg(not(feature = "memprof"))]
+        {
+            let lease = match &instance.inner {
+                Inner::Interp(lease) => lease,
+                #[cfg(sf_jit)]
+                Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+            };
+            let raw_to_fold = lease
+                .with_instance(|interp| interp.find_export("raw_to_fold"))
+                .expect("mixed export");
+            let invoke = |input, result: &mut [u64; 1]| {
+                let mut access = crate::vm::interpreter::InterpInstanceAccess::checked_out(
+                    lease.checkout_for_invocation()?,
+                );
+                InterpInstance::invoke_access(&mut access, raw_to_fold, &[input], result)
+            };
+            let mut result = [0];
+            invoke(23, &mut result).expect("warm mixed path");
+            let (outcome, census) = crate::test_alloc::measure(|| invoke(29, &mut result));
+            outcome.expect("warm mixed invocation");
+            assert_eq!(census, crate::test_alloc::Census::default());
+            assert_eq!(result, [39]);
+
+            // The public typed adapter currently materializes one raw argument
+            // and one raw result Vec for both folded and mixed calls. Keep that
+            // pre-existing boundary cost out of the driver's zero-allocation
+            // assertion, while proving that mixed routing adds nothing to it.
+            let mixed_func = instance.get_func("raw_to_fold").expect("mixed export");
+            let mut mixed_result = [Value::I32(0)];
+            instance
+                .call(&mixed_func, &[Value::I32(23)], &mut mixed_result)
+                .expect("warm public mixed path");
+            let (mixed_outcome, mixed_census) = crate::test_alloc::measure(|| {
+                instance.call(&mixed_func, &[Value::I32(29)], &mut mixed_result)
+            });
+            mixed_outcome.expect("public mixed invocation");
+
+            let mut folded = Instance::from_module_full_fold_for_test(
+                &engine,
+                Module::new("production-whole-mixed-folded", &wasm).expect("parse oracle"),
+                &[],
+            )
+            .expect("instantiate folded oracle");
+            let folded_func = folded.get_func("raw_to_fold").expect("folded export");
+            let mut folded_result = [Value::I32(0)];
+            folded
+                .call(&folded_func, &[Value::I32(23)], &mut folded_result)
+                .expect("warm public folded path");
+            let (folded_outcome, folded_census) = crate::test_alloc::measure(|| {
+                folded.call(&folded_func, &[Value::I32(29)], &mut folded_result)
+            });
+            folded_outcome.expect("public folded invocation");
+            assert_eq!(mixed_result, folded_result);
+            assert!(mixed_census.allocations <= folded_census.allocations);
+            assert!(mixed_census.reallocations <= folded_census.reallocations);
+            assert!(mixed_census.allocated_bytes <= folded_census.allocated_bytes);
+            assert!(mixed_census.reallocated_bytes <= folded_census.reallocated_bytes);
+        }
+    }
+
+    #[cfg(all(sf_interp, sf_module_validator))]
+    #[test]
+    fn production_mixed_plan_keeps_unsupported_call_boundaries_folded() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (import "host" "noop" (func $host))
+                (table 1 funcref)
+                (func $recursive (export "recursive") (param i32) (result i32)
+                    local.get 0
+                    i32.eqz
+                    if (result i32)
+                        i32.const 0
+                    else
+                        local.get 0 i32.const 1 i32.sub call $recursive
+                    end)
+                (func $tail_target (type $unary)
+                    local.get 0 i32.const 1 i32.add)
+                (func (export "tail") (type $unary)
+                    local.get 0 return_call $tail_target)
+                (func $indirect_target (type $unary)
+                    local.get 0 i32.const 2 i32.add)
+                (elem (i32.const 0) func $indirect_target)
+                (func (export "indirect") (type $unary)
+                    local.get 0 i32.const 0 call_indirect (type $unary))
+                (func (export "import_call") (result i32)
+                    call $host i32.const 9)
+                (func (export "raw") (type $unary)
+                    local.get 0 i32.const 3 i32.add))"#,
+        )
+        .expect("encode mixed boundary module");
+        let import = Import::func("host", "noop", |_caller, _args, _results| Ok(()));
+        let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interp engine");
+        let mut instance = Instance::from_module(
+            &engine,
+            Module::new("production-mixed-boundaries", &wasm).expect("parse module"),
+            &[import],
+        )
+        .expect("instantiate mixed boundary module");
+
+        let interp = match &instance.inner {
+            Inner::Interp(interp) => interp,
+            #[cfg(sf_jit)]
+            Inner::Jit(_) => panic!("explicit interpreter engine selected another tier"),
+        };
+        interp.with_instance(|interp| {
+            assert_eq!(
+                (0..8)
+                    .map(|index| interp.baseline_execution_plan_label_for_test(index))
+                    .collect::<collections::Vec<_>>(),
+                [
+                    Some("import"),
+                    Some("full-fold"),
+                    Some("full-fold"),
+                    Some("full-fold"),
+                    Some("raw"),
+                    Some("full-fold"),
+                    Some("full-fold"),
+                    Some("raw"),
+                ]
+            );
+        });
+
+        for (export, input, expected) in [
+            ("recursive", 4, 0),
+            ("tail", 11, 12),
+            ("indirect", 13, 15),
+            ("raw", 17, 20),
+        ] {
+            assert_eq!(
+                instance
+                    .invoke(export, &[Value::I32(input)])
+                    .expect("folded boundary invocation"),
+                collections::vec![Value::I32(expected)],
+                "{export}"
+            );
+        }
+        assert_eq!(
+            instance
+                .invoke("import_call", &[])
+                .expect("folded import invocation"),
+            collections::vec![Value::I32(9)]
         );
     }
 
