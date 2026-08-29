@@ -49,7 +49,7 @@ use super::instr::{op_from_index, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{
     predecode_functions, PredecodedFunction, PredecodedFunctionHandle, PredecodedFunctions,
-    WIDE_MEMARG,
+    UnlinkedPredecodedFunctions, WIDE_MEMARG,
 };
 use super::SLOT_GP_UNIT_BYTES;
 
@@ -565,7 +565,7 @@ struct NativeState {
     /// tables. `linked` stores stable ranges into it rather than one vector
     /// allocation per function. Function entry addresses are cached after
     /// linking, so this field is ownership-only once initialization ends.
-    _plan: LinkPlan,
+    plan: LinkPlan,
     linked: Vec<Option<LinkedFunction>>,
     /// Per-function-index callee info for the native `CallIndirect`
     /// handler: [callee cells (0 = slow), l1off<<48|l0off<<32|canon type,
@@ -588,7 +588,11 @@ pub struct InterpInstance {
     /// One immutable arena owns every function's metadata. Activations clone
     /// allocation-free handles into this arena so a host re-entry can release
     /// the instance borrow without invalidating the suspended function.
-    funcs: PredecodedFunctions,
+    funcs: Option<PredecodedFunctions>,
+    /// Owned stage-A arena. It exists only between `build` and the first
+    /// step of `initialize`, where link consumes it in place and publishes
+    /// immutable function metadata.
+    unlinked_funcs: Option<UnlinkedPredecodedFunctions>,
     /// Runtime state only the executor touches. Instance construction still
     /// builds it on every target -- doing so is what rejects
     /// imported/64-bit/non-funcref memories and tables and traps out-of-range
@@ -1038,7 +1042,7 @@ impl InterpInstance {
         }
     }
 
-    fn initialize(mut inst: Self) -> Result<Self, (Option<Self>, WasmError)> {
+    pub(in crate::vm) fn initialize(mut inst: Self) -> Result<Self, (Option<Self>, WasmError)> {
         // Link the dispatch chain BEFORE the data segments: a partial
         // instance handed back after a trap still has to be callable, and
         // linking is not observable, so its position is free.
@@ -1546,7 +1550,8 @@ impl InterpInstance {
 
         let inst = InterpInstance {
             module,
-            funcs,
+            funcs: None,
+            unlinked_funcs: Some(funcs),
             memories,
             dropped_data,
             dropped_elems,
@@ -1693,22 +1698,37 @@ impl InterpInstance {
     /// Link every predecoded function against the handler set that was
     /// generated into this binary at build time. Nothing is emitted or
     /// mapped here — the engine is already in `.text`.
+    fn functions(&self) -> &PredecodedFunctions {
+        self.funcs
+            .as_ref()
+            .expect("interpreter functions must be published after link")
+    }
+
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         let engine = NativeEngine::new();
         let mut scratch = LinkScratch::default();
-        let mut plan = LinkPlan::for_functions(self.funcs.iter().filter_map(Option::as_ref));
+        let mut unlinked = self
+            .unlinked_funcs
+            .take()
+            .ok_or_else(|| WasmError::internal("interpreter functions already linked"))?;
+        #[cfg(test)]
+        let test_code = Some(unlinked.clone_code_for_oracle());
+        #[cfg(not(test))]
+        let test_code = None;
+        let function_count = unlinked.defined_count();
+        let br_entry_count = unlinked.br_entry_count();
+        let instrs = unlinked.take_code();
+        let mut plan = LinkPlan::from_instr_arena(instrs, function_count, br_entry_count);
         // Seeded with every defined function's own type, then extended by
         // the link pass with each `call_indirect`'s type as it goes.
-        let mut used_types: Vec<u32> = (0..self.funcs.len())
+        let mut used_types: Vec<u32> = (0..unlinked.len())
             .filter_map(|i| self.module.functions().get(i).map(|f| f.type_index()))
             .collect();
-        let linked: Vec<Option<LinkedFunction>> = self
-            .funcs
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                f.as_ref()
-                    .map(|f| engine.link(f, i, &mut plan, &mut scratch, &mut used_types))
+        let linked: Vec<Option<LinkedFunction>> = (0..unlinked.len())
+            .map(|i| {
+                unlinked.function(i).map(|function| {
+                    engine.link_in_place(&function, i, &mut plan, &mut scratch, &mut used_types)
+                })
             })
             .collect();
         plan.finish_layout();
@@ -1722,16 +1742,17 @@ impl InterpInstance {
         // own l0/l1 offsets ride in c bits 48-63 and a bits 48-63 so the
         // call handler can stamp them into the return record.
         let callee_info: Vec<Option<(u64, u64, u64, u64, bool)>> = self
-            .funcs
+            .module
+            .functions()
             .iter()
             .enumerate()
-            .map(|(i, f)| match (f, &linked[i]) {
+            .map(|(i, _)| match (unlinked.function(i), &linked[i]) {
                 (Some(f), Some(lf)) => {
-                    let fs = f.frame_slots as u64;
+                    let fs = f.frame_slots() as u64;
                     if fs >= 1 << 16 {
                         return None;
                     }
-                    let packed = fs << 32 | (f.n_locals as u64) << 16 | f.n_params as u64;
+                    let packed = fs << 32 | (f.n_locals() as u64) << 16 | f.n_params() as u64;
                     Some((
                         lf.cell_base(),
                         packed,
@@ -1765,7 +1786,7 @@ impl InterpInstance {
             canon_of[ti as usize] = Some(id as u64);
         }
 
-        let indirect_info: Vec<[u64; 3]> = (0..self.funcs.len())
+        let indirect_info: Vec<[u64; 3]> = (0..unlinked.len())
             .map(|i| {
                 let (Some(Some((cells, packed, l0, l1, fp))), Some(func)) =
                     (callee_info.get(i), self.module.functions().get(i))
@@ -1828,6 +1849,7 @@ impl InterpInstance {
                     let canon = canon_of.get(expected_type as usize);
                     if let Some(Some(canon)) = canon {
                         if *canon <= 0xFFFF {
+                            plan.record_indirect_type(cell, expected_type);
                             *plan.cell_mut(cell) = DCell {
                                 h: ci_h,
                                 a: caller_l1 << 48 | table_slot * 8,
@@ -1851,9 +1873,11 @@ impl InterpInstance {
             }
         }
 
+        self.funcs = Some(unlinked.publish(test_code));
+
         self.native = Some(NativeState {
             engine,
-            _plan: plan,
+            plan,
             linked,
             indirect_info,
             ranges,
@@ -1887,12 +1911,15 @@ impl InterpInstance {
     /// dispatches with one. Descending by count.
     pub fn bigram_stats(&self) -> Vec<((Op, Op), u64)> {
         let mut map: tracked_alloc::BTreeMap<(u16, u16), u64> = tracked_alloc::BTreeMap::new();
-        for f in self.funcs.iter().flatten() {
-            for w in f.code.windows(2) {
-                if w[0].op as u16 >= Op::Br as u16 {
+        let native = self.native.as_ref().expect("native state");
+        for function in native.linked.iter().flatten() {
+            for w in native.plan.instruction_heads(function).windows(2) {
+                let first = (w[0] & 0xffff) as u16;
+                let second = (w[1] & 0xffff) as u16;
+                if first >= Op::Br as u16 {
                     continue; // control transfer: never a fusible pair
                 }
-                *map.entry((w[0].op as u16, w[1].op as u16)).or_insert(0) += 1;
+                *map.entry((first, second)).or_insert(0) += 1;
             }
         }
         let mut out: Vec<((Op, Op), u64)> = map
@@ -2439,7 +2466,7 @@ impl InterpInstance {
         args: &[u64],
         results: &mut [u64],
     ) -> Result<(), WasmError> {
-        let entry = access.with_instance(|instance| instance.funcs.handle(func_index))?;
+        let entry = access.with_instance(|instance| instance.functions().handle(func_index))?;
         let Some(entry) = entry else {
             return Err(WasmError::invalid("interp: bad function index"));
         };
@@ -2628,7 +2655,7 @@ impl InterpInstance {
                     if saved.len() as u32 >= max_depth {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
-                    let f = match self.funcs.handle(callee) {
+                    let f = match self.functions().handle(callee) {
                         Some(Some(f)) => f,
                         Some(None) => {
                             // Imported function: dispatch to the host. Its
@@ -2678,7 +2705,7 @@ impl InterpInstance {
                     // our results are expected), and the activation is
                     // replaced rather than pushed. Recursion through a tail
                     // call therefore runs at constant depth.
-                    let f = match self.funcs.handle(callee) {
+                    let f = match self.functions().handle(callee) {
                         Some(Some(f)) => f,
                         Some(None) => {
                             // An imported tail callee: run the host, leave
@@ -3230,7 +3257,11 @@ impl InterpInstance {
             match state.reason {
                 EXIT_SLOW => {
                     let (fi, cstart) = self.native_pc_lookup(state.pc)?;
-                    let f = self.funcs.handle(fi).flatten().expect("range map import");
+                    let f = self
+                        .functions()
+                        .handle(fi)
+                        .flatten()
+                        .expect("range map import");
                     let idx = ((state.pc - cstart) / 32) as usize;
                     let base = ((state.frame - stack_ptr) / 8) as usize;
                     act.func = f.clone();
@@ -3242,10 +3273,19 @@ impl InterpInstance {
                         cur_l0_slot = (lf.l0_off / 8) as usize;
                         cur_l1_slot = (lf.l1_off / 8) as usize;
                     }
-                    let ins = *f
-                        .code
-                        .get(idx)
-                        .ok_or(WasmError::invalid("interp: native pc out of range"))?;
+                    let ins = {
+                        let native = self.native.as_ref().expect("native state");
+                        let cell = native
+                            .plan
+                            .cell_index(state.pc)
+                            .ok_or(WasmError::invalid("interp: native pc out of range"))?;
+                        native
+                            .plan
+                            .restore_slow_instr(cell, native.engine.slow_stub_addr())
+                            .ok_or(WasmError::internal(
+                                "interpreter native slow payload is not recoverable",
+                            ))?
+                    };
                     if let Some(native) = self.native.as_mut() {
                         native.slow_exits[ins.op as usize] += 1;
                     }
@@ -5008,7 +5048,7 @@ mod tests {
 
         {
             let native = inst.native.as_ref().expect("native state");
-            assert!(native._plan.call_fixups_are_drained());
+            assert!(native.plan.call_fixups_are_drained());
 
             let mut next_cell_base = None;
             let mut range_index = 0usize;
@@ -5019,13 +5059,13 @@ mod tests {
                 if let Some(expected) = next_cell_base {
                     assert_eq!(base, expected, "function cell slices must be contiguous");
                 }
-                let cells = native._plan.cells(linked);
+                let cells = native.plan.cells(linked);
                 assert_eq!(
                     base,
                     cells.as_ptr() as u64,
                     "cached function base must address its arena slice"
                 );
-                let predecoded = inst.funcs[func_index].as_ref().expect("defined body");
+                let predecoded = inst.functions()[func_index].as_ref().expect("defined body");
                 assert_eq!(cells.len(), predecoded.code.len() + 1);
                 next_cell_base = Some(base + (cells.len() * core::mem::size_of::<DCell>()) as u64);
 
@@ -5049,7 +5089,7 @@ mod tests {
             }
             assert_eq!(range_index, native.ranges.len());
 
-            let branch_bytes = native._plan.branch_bytes();
+            let branch_bytes = native.plan.branch_bytes();
             let br_table_cell = br_table_cell.expect("br_table cell");
             assert!(branch_bytes.contains(&br_table_cell.b));
             assert!(br_table_cell.b + 4 <= branch_bytes.end);
@@ -5261,7 +5301,7 @@ mod tests {
         )
         .expect("instantiate");
         let run = inst.find_export("run").expect("run");
-        let pair = inst.funcs[run]
+        let pair = inst.functions()[run]
             .as_ref()
             .expect("predecoded body")
             .code
@@ -5311,7 +5351,10 @@ mod tests {
         )
         .expect("instantiate");
         let run = inst.find_export("run").expect("run");
-        let code = &inst.funcs[run].as_ref().expect("predecoded body").code;
+        let code = &inst.functions()[run]
+            .as_ref()
+            .expect("predecoded body")
+            .code;
         let pair = code
             .iter()
             .find(|ins| ins.op == Op::MovPair && ins.c == 1u64 << 32)

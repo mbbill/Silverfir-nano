@@ -127,11 +127,13 @@ struct PredecodedArena {
 /// Function-relative instruction indices remain unchanged: the predecoder,
 /// linker, and slow path all see this as an ordinary `[Instr]`. Sharing the
 /// backing vector removes one long-lived allocation per defined function.
+#[cfg(test)]
 pub(crate) struct FunctionCode {
     arena: Rc<PredecodedArena>,
     range: Range<usize>,
 }
 
+#[cfg(test)]
 impl Deref for FunctionCode {
     type Target = [Instr];
 
@@ -188,9 +190,12 @@ impl PackedPinned {
 }
 
 pub(crate) struct PredecodedFunction {
+    arena: Rc<PredecodedArena>,
+    #[cfg(test)]
     pub code: FunctionCode,
     /// Final pinned-local choice, maintained alongside instruction emission
     /// and mutation so link does not rescan the instruction stream.
+    #[cfg(test)]
     pinned: PackedPinned,
     side_ranges: FunctionSideRanges,
     /// Total frame slots: params + locals + max temp height.
@@ -463,14 +468,16 @@ impl FunctionSideTablesBuilder<'_> {
 }
 
 impl PredecodedFunction {
+    #[cfg(test)]
     pub(super) fn pinned(&self) -> Pinned {
         self.pinned.expand()
     }
 
     /// Resolved branch-table targets for this function. The last entry in
     /// each returned slice is the default target.
+    #[cfg(test)]
     pub(crate) fn br_tables(&self) -> impl ExactSizeIterator<Item = &[u32]> + '_ {
-        let sides = &self.code.arena.side_tables;
+        let sides = &self.arena.side_tables;
         sides.br_tables[self.side_ranges.br_tables.as_usize()]
             .iter()
             .map(move |table| {
@@ -481,7 +488,7 @@ impl PredecodedFunction {
 
     #[inline]
     pub(crate) fn br_table(&self, index: usize) -> Option<&[u32]> {
-        let sides = &self.code.arena.side_tables;
+        let sides = &self.arena.side_tables;
         let table_index = self.side_ranges.br_tables.start as usize + index;
         if index >= self.side_ranges.br_tables.len as usize {
             return None;
@@ -498,8 +505,7 @@ impl PredecodedFunction {
         if index >= self.side_ranges.wide_memargs.len as usize {
             return None;
         }
-        self.code
-            .arena
+        self.arena
             .side_tables
             .wide_memargs
             .get(self.side_ranges.wide_memargs.start as usize + index)
@@ -508,18 +514,17 @@ impl PredecodedFunction {
     #[cfg(test)]
     #[inline]
     fn wide_memargs(&self) -> &[(u32, u64)] {
-        &self.code.arena.side_tables.wide_memargs[self.side_ranges.wide_memargs.as_usize()]
+        &self.arena.side_tables.wide_memargs[self.side_ranges.wide_memargs.as_usize()]
     }
 
     #[inline]
     fn exception_sites(&self) -> &[ExceptionSite] {
-        &self.code.arena.side_tables.exception_sites[self.side_ranges.exception_sites.as_usize()]
+        &self.arena.side_tables.exception_sites[self.side_ranges.exception_sites.as_usize()]
     }
 
     #[inline]
     fn exception_handlers(&self) -> &[ExceptionHandler] {
-        &self.code.arena.side_tables.exception_handlers
-            [self.side_ranges.exception_handlers.as_usize()]
+        &self.arena.side_tables.exception_handlers[self.side_ranges.exception_handlers.as_usize()]
     }
 
     /// The active handler chain at `pc`, innermost try first and in source
@@ -538,6 +543,7 @@ impl PredecodedFunction {
 
     /// Whether `pc` must remain a slow-path boundary so an escaping exception
     /// can be matched in this activation.
+    #[cfg(test)]
     pub(crate) fn has_exception_handlers_at(&self, pc: u32) -> bool {
         self.exception_sites()
             .binary_search_by_key(&pc, |site| site.pc)
@@ -573,10 +579,12 @@ pub(super) fn linker_test_function(
         }
         builder.ranges()
     };
+    let arena = Rc::new(PredecodedArena { code, side_tables });
     PredecodedFunction {
         frame_slots: n_locals,
+        arena: arena.clone(),
         code: FunctionCode {
-            arena: Rc::new(PredecodedArena { code, side_tables }),
+            arena,
             range: 0..code_len,
         },
         pinned,
@@ -619,12 +627,15 @@ pub(crate) fn predecode_functions(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
-) -> Result<PredecodedFunctions, WasmError> {
+) -> Result<UnlinkedPredecodedFunctions, WasmError> {
     let local_count = module.functions().iter().filter(|f| !f.is_import()).count();
     if local_count == 0 {
         let mut funcs = Vec::with_capacity(module.functions().len());
         funcs.resize_with(module.functions().len(), || None);
-        return Ok(PredecodedFunctions::new(funcs));
+        return Ok(UnlinkedPredecodedFunctions {
+            arena: PredecodedArena::default(),
+            parts: funcs,
+        });
     }
     let body_bytes = module
         .functions()
@@ -632,7 +643,11 @@ pub(crate) fn predecode_functions(
         .filter_map(|f| f.spec())
         .fold(0usize, |sum, spec| sum.saturating_add(spec.code().len()));
     let mut arena = PredecodedArena {
-        code: Vec::with_capacity((body_bytes / 4).max(local_count)),
+        code: Vec::with_capacity(
+            (body_bytes / 4)
+                .max(local_count)
+                .saturating_add(local_count),
+        ),
         side_tables: SideTableArena::default(),
     };
     let mut parts = Vec::with_capacity(module.functions().len());
@@ -640,26 +655,23 @@ pub(crate) fn predecode_functions(
         if func.is_import() {
             parts.push(None);
         } else {
-            parts.push(Some(predecode_function_into(
+            let decoded = predecode_function_into(
                 module,
                 tag_identities,
                 function_handles,
                 func_index,
                 false,
                 &mut arena,
-            )?));
+            )?;
+            parts.push(Some(decoded));
+            // The linked chain may prefetch one handler word past the final
+            // instruction. Reserve that cell in stage A so stage B can reuse
+            // this exact allocation without inserting/moving any cells.
+            arena.code.push(Instr::new(Op::Unreachable, 0, 0, 0, 0));
         }
     }
 
-    // The completed instruction and side-table vectors move behind one `Rc`.
-    // Their existing buffers are not copied during publication.
-    let arena = Rc::new(arena);
-    Ok(PredecodedFunctions::new(
-        parts
-            .into_iter()
-            .map(|parts| parts.map(|parts| parts.finish(arena.clone())))
-            .collect(),
-    ))
+    Ok(UnlinkedPredecodedFunctions { arena, parts })
 }
 
 struct PredecodedFunctionParts {
@@ -673,13 +685,174 @@ struct PredecodedFunctionParts {
     slow_tail_return: Option<u32>,
 }
 
+pub(crate) trait LinkFunction {
+    fn code_start(&self) -> usize;
+    fn code_len(&self) -> usize;
+    fn pinned(&self) -> Pinned;
+    fn br_table_count(&self) -> usize;
+    fn br_table(&self, index: usize) -> Option<&[u32]>;
+    fn has_exception_handlers_at(&self, pc: u32) -> bool;
+}
+
+pub(crate) struct UnlinkedFunction<'a> {
+    arena: &'a PredecodedArena,
+    parts: &'a PredecodedFunctionParts,
+}
+
+impl LinkFunction for UnlinkedFunction<'_> {
+    fn code_start(&self) -> usize {
+        self.parts.code_range.start
+    }
+
+    fn code_len(&self) -> usize {
+        self.parts.code_range.len()
+    }
+
+    fn pinned(&self) -> Pinned {
+        self.parts.pinned.expand()
+    }
+
+    fn br_table_count(&self) -> usize {
+        self.parts.side_ranges.br_tables.len as usize
+    }
+
+    fn br_table(&self, index: usize) -> Option<&[u32]> {
+        if index >= self.br_table_count() {
+            return None;
+        }
+        let sides = &self.arena.side_tables;
+        let table = sides.br_tables[self.parts.side_ranges.br_tables.start as usize + index];
+        let start = table.entries_start as usize;
+        Some(&sides.br_entries[start..start + table.entries_len as usize])
+    }
+
+    fn has_exception_handlers_at(&self, pc: u32) -> bool {
+        let sites = &self.arena.side_tables.exception_sites
+            [self.parts.side_ranges.exception_sites.as_usize()];
+        sites.binary_search_by_key(&pc, |site| site.pc).is_ok()
+    }
+}
+
+impl UnlinkedFunction<'_> {
+    pub(crate) fn frame_slots(&self) -> u32 {
+        self.parts.frame_slots
+    }
+
+    pub(crate) fn n_locals(&self) -> u32 {
+        self.parts.n_locals
+    }
+
+    pub(crate) fn n_params(&self) -> u32 {
+        self.parts.n_params
+    }
+}
+
+pub(crate) struct UnlinkedPredecodedFunctions {
+    arena: PredecodedArena,
+    parts: Vec<Option<PredecodedFunctionParts>>,
+}
+
+impl UnlinkedPredecodedFunctions {
+    pub(crate) fn len(&self) -> usize {
+        self.parts.len()
+    }
+
+    pub(crate) fn defined_count(&self) -> usize {
+        self.parts.iter().filter(|part| part.is_some()).count()
+    }
+
+    pub(crate) fn br_entry_count(&self) -> usize {
+        self.arena.side_tables.br_entries.len()
+    }
+
+    pub(crate) fn function(&self, index: usize) -> Option<UnlinkedFunction<'_>> {
+        Some(UnlinkedFunction {
+            arena: &self.arena,
+            parts: self.parts.get(index)?.as_ref()?,
+        })
+    }
+
+    pub(crate) fn take_code(&mut self) -> Vec<Instr> {
+        core::mem::take(&mut self.arena.code)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clone_code_for_oracle(&self) -> Vec<Instr> {
+        self.arena.code.clone()
+    }
+
+    pub(crate) fn publish(self, test_code: Option<Vec<Instr>>) -> PredecodedFunctions {
+        publish_linked_functions(self.arena.side_tables, self.parts, test_code)
+    }
+
+    #[cfg(test)]
+    fn publish_for_test(self) -> PredecodedFunctions {
+        let arena = Rc::new(self.arena);
+        PredecodedFunctions::new(
+            self.parts
+                .into_iter()
+                .map(|parts| parts.map(|parts| parts.finish(arena.clone())))
+                .collect(),
+        )
+    }
+}
+
+fn publish_linked_functions(
+    side_tables: SideTableArena,
+    parts: Vec<Option<PredecodedFunctionParts>>,
+    test_code: Option<Vec<Instr>>,
+) -> PredecodedFunctions {
+    let arena = Rc::new(PredecodedArena {
+        code: test_code.unwrap_or_default(),
+        side_tables,
+    });
+    PredecodedFunctions::new(
+        parts
+            .into_iter()
+            .map(|parts| parts.map(|parts| parts.finish(arena.clone())))
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+impl LinkFunction for PredecodedFunction {
+    fn code_start(&self) -> usize {
+        0
+    }
+
+    fn code_len(&self) -> usize {
+        self.code.len()
+    }
+
+    fn pinned(&self) -> Pinned {
+        self.pinned.expand()
+    }
+
+    fn br_table_count(&self) -> usize {
+        self.br_tables().len()
+    }
+
+    fn br_table(&self, index: usize) -> Option<&[u32]> {
+        PredecodedFunction::br_table(self, index)
+    }
+
+    fn has_exception_handlers_at(&self, pc: u32) -> bool {
+        PredecodedFunction::has_exception_handlers_at(self, pc)
+    }
+}
+
 impl PredecodedFunctionParts {
     fn finish(self, arena: Rc<PredecodedArena>) -> PredecodedFunction {
+        #[cfg(test)]
+        let code_arena = arena.clone();
         PredecodedFunction {
+            arena,
+            #[cfg(test)]
             code: FunctionCode {
-                arena,
+                arena: code_arena,
                 range: self.code_range,
             },
+            #[cfg(test)]
             pinned: self.pinned,
             side_ranges: self.side_ranges,
             frame_slots: self.frame_slots,
@@ -4314,7 +4487,9 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        predecode_functions(&module, &tag_identities, &function_handles).expect("predecode module")
+        predecode_functions(&module, &tag_identities, &function_handles)
+            .expect("predecode module")
+            .publish_for_test()
     }
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
@@ -4372,13 +4547,21 @@ mod tests {
                 arena,
                 "every defined function must share one Vec<Instr> owner"
             );
-            assert_eq!(func.code.range.start, cursor, "code ranges stay packed");
+            assert_eq!(
+                func.code.range.start, cursor,
+                "code ranges follow their pads"
+            );
             assert_eq!(
                 func.code.as_ptr(),
                 unsafe { arena_base.add(func.code.range.start) },
                 "the published slice points into the original arena buffer"
             );
-            cursor = func.code.range.end;
+            assert_eq!(
+                func.code.arena.code[func.code.range.end].op,
+                Op::Unreachable,
+                "every body owns one prefetch pad"
+            );
+            cursor = func.code.range.end + 1;
         }
         assert_eq!(cursor, first.code.arena.code.len());
     }
