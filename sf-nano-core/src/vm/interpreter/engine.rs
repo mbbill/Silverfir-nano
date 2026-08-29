@@ -164,13 +164,9 @@ const fn native_may_exit_slow(op: Op) -> bool {
 }
 
 /// Recreate a native cell's stage-A payload on an `EXIT_SLOW` edge.
-/// `call_indirect` is the sole non-invertible fixup: its canonical type id
-/// replaces the module type index, supplied by the sparse side table.
-fn restore_native_slow_instr(
-    head: u32,
-    cell: &DCell,
-    indirect_type_index: Option<u32>,
-) -> Option<Instr> {
+/// `CallIndirect` keeps its original module type index in the otherwise-unused
+/// `c` word while its native handler uses `a` and `b`.
+fn restore_native_slow_instr(head: u32, cell: &DCell) -> Option<Instr> {
     let op = super::instr::op_from_index((head & 0xffff) as usize);
     let flags = (head >> 16) as u16;
     if !native_may_exit_slow(op) {
@@ -181,14 +177,11 @@ fn restore_native_slow_instr(
         value / 8
     };
     let (a, b, c) = match op {
-        Op::CallIndirect => {
-            let type_index = indirect_type_index?;
-            (
-                unscale(cell.a & ((1u64 << 48) - 1)),
-                unscale(cell.b & 0xffff_ffff),
-                type_index as u64,
-            )
-        }
+        Op::CallIndirect => (
+            unscale(cell.a & ((1u64 << 48) - 1)),
+            unscale(cell.b & 0xffff_ffff),
+            cell.c,
+        ),
         Op::MemoryFill | Op::MemoryCopy => (unscale(cell.a), unscale(cell.b), unscale(cell.c)),
         Op::MemoryFillCopy => (unscale(cell.a), unscale(cell.b), cell.c),
         _ => {
@@ -260,9 +253,21 @@ pub(super) enum CallFixup {
 }
 
 #[derive(Clone, Copy)]
-struct IndirectTypeSite {
+struct SlowHeadCandidate {
     cell: usize,
-    type_index: u32,
+    head: u32,
+}
+
+/// One direct-index directory entry for 32 dispatch cells.
+///
+/// `mask` says which cells need their original `op | flags` word on a Rust
+/// slow exit. `head_base` points at this block's compact run in `slow_heads`;
+/// one popcount gives the exact slot in O(1), without a binary search on hot
+/// `CallIndirect` failures.
+#[derive(Clone, Copy, Default)]
+struct SlowHeadBlock {
+    mask: u32,
+    head_base: u32,
 }
 
 /// Module-wide storage planned before linking begins.
@@ -274,10 +279,13 @@ struct IndirectTypeSite {
 /// list of native call sites for the deferred cross-function fixup.
 pub(super) struct LinkPlan {
     cells: Vec<DCell>,
+    #[cfg(any(test, feature = "interp-count"))]
     heads: Vec<u32>,
+    slow_heads: Vec<u32>,
+    slow_head_blocks: Vec<SlowHeadBlock>,
+    slow_head_candidates: Vec<SlowHeadCandidate>,
     br_flat: Vec<u32>,
     call_fixups: Vec<CallFixup>,
-    indirect_types: Vec<IndirectTypeSite>,
     planned_cells: usize,
     planned_br_entries: usize,
     linked_cells: usize,
@@ -305,13 +313,16 @@ impl LinkPlan {
         }
         Self {
             cells: Vec::with_capacity(planned_cells),
+            #[cfg(any(test, feature = "interp-count"))]
             heads: Vec::new(),
+            slow_heads: Vec::new(),
+            slow_head_blocks: Vec::new(),
+            slow_head_candidates: Vec::with_capacity(function_count),
             br_flat: Vec::with_capacity(planned_br_entries),
             // Most real functions have no call. One slot per function avoids
             // early growth without reserving in proportion to instruction
             // count or adding a separate call-counting sweep.
             call_fixups: Vec::with_capacity(function_count),
-            indirect_types: Vec::new(),
             planned_cells,
             planned_br_entries,
             linked_cells: 0,
@@ -324,14 +335,18 @@ impl LinkPlan {
         function_count: usize,
         planned_br_entries: usize,
     ) -> Self {
+        #[cfg(any(test, feature = "interp-count"))]
         let heads = instrs.iter().copied().map(Instr::packed_head).collect();
         let planned_cells = instrs.len();
         Self {
             cells: into_dispatch_cells(instrs),
+            #[cfg(any(test, feature = "interp-count"))]
             heads,
+            slow_heads: Vec::new(),
+            slow_head_blocks: Vec::new(),
+            slow_head_candidates: Vec::with_capacity(function_count),
             br_flat: Vec::with_capacity(planned_br_entries),
             call_fixups: Vec::with_capacity(function_count),
-            indirect_types: Vec::new(),
             planned_cells,
             planned_br_entries,
             linked_cells: 0,
@@ -363,7 +378,21 @@ impl LinkPlan {
     #[inline]
     fn raw_instr(&self, index: usize) -> Instr {
         let cell = &self.cells[index];
-        Instr::from_packed_head(self.heads[index], cell.a, cell.b, cell.c)
+        // An untouched stage-A cell has `op: u16`, `flags: u16`, then a
+        // zeroed u32 in the bytes now named `h`. Decode the two fields
+        // separately so this works on both endian orders.
+        #[cfg(target_endian = "little")]
+        let head = cell.h as u32;
+        #[cfg(target_endian = "big")]
+        let head = {
+            let bytes = cell.h.to_ne_bytes();
+            let op = u16::from_ne_bytes([bytes[0], bytes[1]]) as u32;
+            let flags = u16::from_ne_bytes([bytes[2], bytes[3]]) as u32;
+            op | flags << 16
+        };
+        #[cfg(any(test, feature = "interp-count"))]
+        debug_assert_eq!(head, self.heads[index]);
+        Instr::from_packed_head(head, cell.a, cell.b, cell.c)
     }
 
     /// Verify that the precomputed storage plan and the completed link agree.
@@ -371,6 +400,7 @@ impl LinkPlan {
         debug_assert_eq!(self.cells.len(), self.planned_cells);
         debug_assert_eq!(self.br_flat.len(), self.planned_br_entries);
         debug_assert_eq!(self.linked_cells, self.planned_cells);
+        #[cfg(any(test, feature = "interp-count"))]
         debug_assert_eq!(
             self.heads.len(),
             if self.in_place { self.planned_cells } else { 0 }
@@ -399,6 +429,7 @@ impl LinkPlan {
         func.cell_len - 1
     }
 
+    #[cfg(any(test, feature = "interp-count"))]
     pub(super) fn instruction_heads(&self, func: &LinkedFunction) -> &[u32] {
         let arena_base = self.cells.as_ptr() as u64;
         let start =
@@ -415,20 +446,61 @@ impl LinkPlan {
         core::mem::take(&mut self.call_fixups)
     }
 
-    pub(super) fn record_indirect_type(&mut self, cell: usize, type_index: u32) {
+    #[inline]
+    fn record_slow_head_candidate(&mut self, cell: usize, head: u32) {
         debug_assert!(self
-            .indirect_types
+            .slow_head_candidates
             .last()
             .is_none_or(|site| site.cell < cell));
-        self.indirect_types
-            .push(IndirectTypeSite { cell, type_index });
+        self.slow_head_candidates
+            .push(SlowHeadCandidate { cell, head });
     }
 
-    fn indirect_type(&self, cell: usize) -> Option<u32> {
-        self.indirect_types
-            .binary_search_by_key(&cell, |site| site.cell)
-            .ok()
-            .map(|index| self.indirect_types[index].type_index)
+    /// Freeze the compact slow-exit directory after cross-function call
+    /// fixups have changed their last cells from static-slow to native.
+    pub(super) fn finish_slow_heads(&mut self, slow_stub: u64) {
+        debug_assert!(self.slow_heads.is_empty());
+        debug_assert!(self.slow_head_blocks.is_empty());
+        let mut candidates = core::mem::take(&mut self.slow_head_candidates);
+        candidates.retain(|candidate| {
+            let cell = &self.cells[candidate.cell];
+            let op = super::instr::op_from_index((candidate.head & 0xffff) as usize);
+            cell.h == slow_stub || native_may_exit_slow(op)
+        });
+        self.slow_heads.reserve_exact(candidates.len());
+        let block_count = self.cells.len() / 32 + usize::from(self.cells.len() % 32 != 0);
+        self.slow_head_blocks.reserve_exact(block_count);
+
+        let mut candidates = candidates.into_iter().peekable();
+        for block_index in 0..block_count {
+            let head_base =
+                u32::try_from(self.slow_heads.len()).expect("interpreter slow-head count overflow");
+            let mut mask = 0u32;
+            while let Some(candidate) = candidates.peek().copied() {
+                if candidate.cell / 32 != block_index {
+                    break;
+                }
+                let _ = candidates.next();
+                mask |= 1u32 << (candidate.cell % 32);
+                self.slow_heads.push(candidate.head);
+            }
+            self.slow_head_blocks
+                .push(SlowHeadBlock { mask, head_base });
+        }
+        debug_assert!(candidates.next().is_none());
+    }
+
+    #[inline]
+    fn slow_head(&self, cell: usize) -> Option<u32> {
+        let block = self.slow_head_blocks.get(cell / 32)?;
+        let bit = 1u32 << (cell % 32);
+        if block.mask & bit == 0 {
+            return None;
+        }
+        let rank = (block.mask & bit.wrapping_sub(1)).count_ones() as usize;
+        self.slow_heads
+            .get(block.head_base as usize + rank)
+            .copied()
     }
 
     pub(super) fn cell_index(&self, address: u64) -> Option<usize> {
@@ -443,11 +515,42 @@ impl LinkPlan {
 
     pub(super) fn restore_slow_instr(&self, index: usize, slow_stub: u64) -> Option<Instr> {
         let cell = self.cells.get(index)?;
+        let head = self.slow_head(index)?;
+        if cell.h == slow_stub {
+            return Some(Instr::from_packed_head(head, cell.a, cell.b, cell.c));
+        }
+        restore_native_slow_instr(head, cell)
+    }
+
+    #[cfg(test)]
+    fn restore_slow_instr_dense_reference(&self, index: usize, slow_stub: u64) -> Option<Instr> {
+        let cell = self.cells.get(index)?;
         let head = *self.heads.get(index)?;
         if cell.h == slow_stub {
             return Some(Instr::from_packed_head(head, cell.a, cell.b, cell.c));
         }
-        restore_native_slow_instr(head, cell, self.indirect_type(index))
+        restore_native_slow_instr(head, cell)
+    }
+
+    #[cfg(test)]
+    pub(super) fn assert_sparse_slow_heads(
+        &self,
+        functions: &[Option<LinkedFunction>],
+        slow_stub: u64,
+    ) {
+        let fields = |ins: Instr| (ins.op, ins.flags, ins.a, ins.b, ins.c);
+        for function in functions.iter().flatten() {
+            let start = self
+                .cell_index(function.cell_base())
+                .expect("linked function belongs to its link plan");
+            for index in start..start + self.instruction_len(function) {
+                let sparse = self.restore_slow_instr(index, slow_stub).map(fields);
+                let dense = self
+                    .restore_slow_instr_dense_reference(index, slow_stub)
+                    .map(fields);
+                assert_eq!(sparse, dense, "sparse slow head at cell {index}");
+            }
+        }
     }
 }
 
@@ -1201,7 +1304,11 @@ impl NativeEngine {
                 c: ins.c,
             },
         };
+        let needs_slow_head = cell.h == self.slow_stub as u64 || native_may_exit_slow(ins.op);
         plan.write_cell(cell_index, cell);
+        if needs_slow_head {
+            plan.record_slow_head_candidate(cell_index, ins.packed_head());
+        }
     }
 
     /// The entry trampoline as a callable function pointer.
@@ -1305,6 +1412,7 @@ mod tests {
             &mut call_indirect_types,
         );
         plan.finish_layout();
+        plan.finish_slow_heads(engine.slow_stub as u64);
 
         let expected_flat: Vec<u32> = func
             .br_tables
@@ -1370,6 +1478,7 @@ mod tests {
             &mut in_place_types,
         );
         in_place.finish_layout();
+        in_place.finish_slow_heads(engine.slow_stub as u64);
 
         let normalize = |mut cell: DCell, op: Op, cells_base: u64, br_base: u64| -> DCell {
             if op == Op::BrTable && cell.h != engine.slow_stub as u64 {
@@ -1401,6 +1510,24 @@ mod tests {
         assert_eq!(in_place.call_fixups, plan.call_fixups);
         assert_eq!(in_place_types, call_indirect_types);
         assert_eq!(in_place.heads, expected_heads);
+        let fields = |ins: Instr| (ins.op, ins.flags, ins.a, ins.b, ins.c);
+        for index in 0..func.code.len() {
+            let sparse = in_place
+                .restore_slow_instr(index, engine.slow_stub as u64)
+                .map(fields);
+            let dense = in_place
+                .restore_slow_instr_dense_reference(index, engine.slow_stub as u64)
+                .map(fields);
+            assert_eq!(sparse, dense, "sparse slow head {index}");
+            let should_restore = in_place_cells[index].h == engine.slow_stub as u64
+                || native_may_exit_slow(func.code[index].op);
+            assert_eq!(
+                sparse.is_some(),
+                should_restore,
+                "slow-head membership {index} ({:?})",
+                func.code[index].op,
+            );
+        }
         assert_eq!(in_place_linked.l0_off, linked.l0_off);
         assert_eq!(in_place_linked.l1_off, linked.l1_off);
         assert_eq!(in_place_linked.fp_pinned, linked.fp_pinned);
@@ -1452,8 +1579,8 @@ mod tests {
                 };
                 let (b, c) = transform_bc(&ins, flags);
                 let cell = DCell { h: 1, a, b, c };
-                let restored = restore_native_slow_instr(ins.packed_head(), &cell, None)
-                    .expect("dynamic slow op");
+                let restored =
+                    restore_native_slow_instr(ins.packed_head(), &cell).expect("dynamic slow op");
                 assert_eq!(
                     (
                         restored.op,
@@ -1482,7 +1609,7 @@ mod tests {
                 c,
             };
             let restored =
-                restore_native_slow_instr(ins.packed_head(), &cell, None).expect("bulk slow op");
+                restore_native_slow_instr(ins.packed_head(), &cell).expect("bulk slow op");
             assert_eq!(
                 (restored.op, restored.a, restored.b, restored.c),
                 (ins.op, ins.a, ins.b, ins.c)
@@ -1494,12 +1621,10 @@ mod tests {
             h: 1,
             a: 17u64 << 48 | indirect.a * 8,
             b: 13u64 << 48 | 19u64 << 32 | indirect.b * 8,
-            c: 0,
+            c: indirect.c,
         };
-        assert!(restore_native_slow_instr(indirect.packed_head(), &linked, None).is_none());
-        let restored =
-            restore_native_slow_instr(indirect.packed_head(), &linked, Some(indirect.c as u32))
-                .expect("call_indirect type sidecar");
+        let restored = restore_native_slow_instr(indirect.packed_head(), &linked)
+            .expect("call_indirect type payload");
         assert_eq!(
             (restored.op, restored.a, restored.b, restored.c),
             (indirect.op, indirect.a, indirect.b, indirect.c)
