@@ -9,11 +9,12 @@
 //! 3. Control flow validity (block/loop/if/else/end nesting, branch targets)
 //! 4. Export name uniqueness, data/element segment validity
 
-use self::{expressions::ValidationContext, functions::FunctionValidator};
+use self::expressions::ValidationContext;
+pub(crate) use self::functions::FunctionValidator;
 use crate::{
     error::WasmError,
     module::{
-        entities::ElementInit,
+        entities::{ElementInit, FunctionSpec},
         type_defs::{CompositeType, FieldType, StorageType},
         Module,
     },
@@ -39,6 +40,23 @@ impl<'a> Validator<'a> {
     }
 
     pub fn validate(&mut self) -> Result<(), WasmError> {
+        self.validate_with_function_driver(|module, _func_idx, spec, declared_functions| {
+            let mut validator = FunctionValidator::new(module, spec, declared_functions)?;
+            let mut decoder = op_decoder::Decoder::new(spec.code());
+            decoder.add_handler(&mut validator);
+            decoder.decode_function()
+        })
+    }
+
+    pub(crate) fn validate_with_function_driver(
+        &mut self,
+        mut validate_function: impl FnMut(
+            &Module,
+            usize,
+            &FunctionSpec,
+            &[bool],
+        ) -> Result<(), WasmError>,
+    ) -> Result<(), WasmError> {
         self.module.ensure_simd_supported()?;
 
         if self.module.version() != 1 {
@@ -77,16 +95,11 @@ impl<'a> Validator<'a> {
             .iter()
             .enumerate()
             .filter(|(_, f)| !f.is_import())
-            .try_for_each(|(_func_idx, f)| {
+            .try_for_each(|(func_idx, f)| {
                 let spec = f.spec().ok_or_else(|| {
                     WasmError::invalid("Function validation failed: not a local function")
                 })?;
-                let code = spec.code();
-                let mut validator = FunctionValidator::new(self.module, spec, &declared_functions)?;
-                let mut decoder = op_decoder::Decoder::new(code);
-                decoder.add_handler(&mut validator);
-                decoder.decode_function()?;
-                Ok::<_, WasmError>(())
+                validate_function(self.module, func_idx, spec, &declared_functions)
             })?;
 
         // Phase 3: Export name uniqueness

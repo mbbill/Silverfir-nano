@@ -499,7 +499,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     .collect::<Result<collections::Vec<u32>, _>>()?;
                 let default_idx = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
-                let imm = Immediate::BrLabels(v_idx.clone(), default_idx);
+                let imm = Immediate::BrLabels(v_idx, default_idx);
                 let next_off = payload.position();
                 *current = DecodedOp {
                     wasm_op,
@@ -736,7 +736,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     vec.push(valtype);
                 }
                 let wasm_op = OP(op);
-                let imm = Immediate::SelectTypes(vec.clone());
+                let imm = Immediate::SelectTypes(vec);
                 let next_off = payload.position();
                 *current = DecodedOp {
                     wasm_op,

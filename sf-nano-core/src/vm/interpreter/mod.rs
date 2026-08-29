@@ -31,6 +31,8 @@
 
 #[cfg(test)]
 mod baseline_artifact;
+#[cfg(all(test, sf_module_validator))]
+mod baseline_composite_artifact;
 #[cfg(test)]
 mod baseline_exec;
 #[cfg(all(test, sf_module_validator))]

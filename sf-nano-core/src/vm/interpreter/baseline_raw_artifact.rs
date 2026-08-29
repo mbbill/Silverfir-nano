@@ -13,6 +13,7 @@ use crate::module::Module;
 use crate::op_decoder::raw_cursor::{
     RawBlockType, RawDecodeError, RawImmediate, RawOp, RawOpCursor,
 };
+use crate::op_decoder::{BlockType, DecodedOp, Immediate};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 
 #[derive(Debug)]
@@ -66,7 +67,7 @@ struct ScanFrame {
     then_fell_live: bool,
 }
 
-struct RawFunctionScanner {
+pub(super) struct RawFunctionScanner {
     height: usize,
     result_count: usize,
     frames: crate::collections::Vec<ScanFrame>,
@@ -75,7 +76,7 @@ struct RawFunctionScanner {
 }
 
 impl RawFunctionScanner {
-    fn new(result_count: usize) -> Self {
+    pub(super) fn new(result_count: usize) -> Self {
         Self {
             height: 0,
             result_count,
@@ -83,6 +84,307 @@ impl RawFunctionScanner {
             dead: false,
             finished: false,
         }
+    }
+
+    pub(super) fn height(&self) -> usize {
+        self.height
+    }
+
+    pub(super) fn dead(&self) -> bool {
+        self.dead
+    }
+
+    pub(super) fn ensure_finished(&self) -> Result<(), WasmError> {
+        if self.finished && self.frames.is_empty() {
+            Ok(())
+        } else {
+            Err(WasmError::invalid("raw artifact function did not close"))
+        }
+    }
+
+    pub(super) fn apply_decoded(
+        &mut self,
+        module: &Module,
+        decoded: &DecodedOp,
+    ) -> Result<(), WasmError> {
+        if self.dead {
+            return self.apply_dead_decoded(module, decoded);
+        }
+        match decoded.wasm_op {
+            WasmOpcode::OP(opcode) => self.apply_decoded_op(module, opcode, &decoded.imm),
+            WasmOpcode::FC(opcode) => self.apply_fc(opcode),
+            opcode => Err(WasmError::invalid(match opcode {
+                WasmOpcode::FB(_) => "raw artifact does not support GC opcodes",
+                WasmOpcode::FD(_) => "raw artifact does not support SIMD opcodes",
+                _ => "raw artifact opcode family is unsupported",
+            })),
+        }
+    }
+
+    fn apply_dead_decoded(
+        &mut self,
+        module: &Module,
+        decoded: &DecodedOp,
+    ) -> Result<(), WasmError> {
+        let WasmOpcode::OP(opcode) = decoded.wasm_op else {
+            return Ok(());
+        };
+        match opcode {
+            Opcode::BLOCK | Opcode::LOOP | Opcode::IF => {
+                let Immediate::Block(block) = &decoded.imm else {
+                    return Err(WasmError::internal(
+                        "decoded artifact block immediate mismatch",
+                    ));
+                };
+                let (params, results) = decoded_block_arity(module, block)?;
+                let base = self.height.saturating_sub(params);
+                self.frames.push(ScanFrame {
+                    base,
+                    params,
+                    results,
+                    is_loop: opcode == Opcode::LOOP,
+                    is_if: opcode == Opcode::IF,
+                    dead_entry: true,
+                    end_targeted: false,
+                    saw_else: false,
+                    then_fell_live: false,
+                });
+            }
+            Opcode::TRY_TABLE => {
+                let Immediate::TryTable { block_type, .. } = &decoded.imm else {
+                    return Err(WasmError::internal(
+                        "decoded artifact try_table immediate mismatch",
+                    ));
+                };
+                let (params, results) = decoded_block_arity(module, block_type)?;
+                let base = self.height.saturating_sub(params);
+                self.frames.push(ScanFrame {
+                    base,
+                    params,
+                    results,
+                    is_loop: false,
+                    is_if: false,
+                    dead_entry: true,
+                    end_targeted: false,
+                    saw_else: false,
+                    then_fell_live: false,
+                });
+            }
+            Opcode::ELSE => {
+                let frame = self
+                    .frames
+                    .last_mut()
+                    .ok_or_else(|| WasmError::invalid("decoded artifact else without frame"))?;
+                frame.saw_else = true;
+                self.height = frame.base + frame.params;
+                self.dead = frame.dead_entry;
+            }
+            Opcode::END => {
+                if let Some(frame) = self.frames.pop() {
+                    let live_after = !frame.dead_entry
+                        && (frame.end_targeted
+                            || frame.then_fell_live
+                            || (frame.is_if && !frame.saw_else));
+                    self.height = frame.base + frame.results;
+                    self.dead = !live_after;
+                } else {
+                    self.finished = true;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn apply_decoded_op(
+        &mut self,
+        module: &Module,
+        opcode: Opcode,
+        immediate: &Immediate,
+    ) -> Result<(), WasmError> {
+        match opcode {
+            Opcode::NOP => {}
+            Opcode::UNREACHABLE => self.dead = true,
+            Opcode::BLOCK | Opcode::LOOP | Opcode::IF => {
+                let Immediate::Block(block) = immediate else {
+                    return Err(WasmError::internal(
+                        "decoded artifact block immediate mismatch",
+                    ));
+                };
+                let (params, results) = decoded_block_arity(module, block)?;
+                if opcode == Opcode::IF {
+                    self.pop(1)?;
+                }
+                self.require(params)?;
+                self.frames.push(ScanFrame {
+                    base: self.height - params,
+                    params,
+                    results,
+                    is_loop: opcode == Opcode::LOOP,
+                    is_if: opcode == Opcode::IF,
+                    dead_entry: false,
+                    end_targeted: false,
+                    saw_else: false,
+                    then_fell_live: false,
+                });
+            }
+            Opcode::TRY_TABLE => {
+                let Immediate::TryTable {
+                    block_type,
+                    catches,
+                } = immediate
+                else {
+                    return Err(WasmError::internal(
+                        "decoded artifact try_table immediate mismatch",
+                    ));
+                };
+                for catch in catches {
+                    self.mark_branch_target(catch.label_idx);
+                }
+                let (params, results) = decoded_block_arity(module, block_type)?;
+                self.require(params)?;
+                self.frames.push(ScanFrame {
+                    base: self.height - params,
+                    params,
+                    results,
+                    is_loop: false,
+                    is_if: false,
+                    dead_entry: false,
+                    end_targeted: false,
+                    saw_else: false,
+                    then_fell_live: false,
+                });
+            }
+            Opcode::ELSE => {
+                let frame = self
+                    .frames
+                    .last_mut()
+                    .ok_or_else(|| WasmError::invalid("decoded artifact else without frame"))?;
+                if !frame.is_if || self.height != frame.base + frame.results {
+                    return Err(WasmError::invalid(
+                        "decoded artifact else stack shape mismatch",
+                    ));
+                }
+                frame.saw_else = true;
+                frame.then_fell_live = true;
+                self.height = frame.base + frame.params;
+            }
+            Opcode::END => {
+                if let Some(frame) = self.frames.pop() {
+                    if self.height != frame.base + frame.results {
+                        return Err(WasmError::invalid(
+                            "decoded artifact end stack shape mismatch",
+                        ));
+                    }
+                } else {
+                    if self.height != self.result_count {
+                        return Err(WasmError::invalid(
+                            "decoded artifact function result height mismatch",
+                        ));
+                    }
+                    self.finished = true;
+                }
+            }
+            Opcode::BR => {
+                let depth = decoded_label(immediate)?;
+                self.mark_branch_target(depth);
+                self.require(self.branch_arity(depth))?;
+                self.dead = true;
+            }
+            Opcode::BR_IF => {
+                let depth = decoded_label(immediate)?;
+                self.mark_branch_target(depth);
+                self.pop(1)?;
+                self.require(self.branch_arity(depth))?;
+            }
+            Opcode::BR_TABLE => {
+                let Immediate::BrLabels(labels, default) = immediate else {
+                    return Err(WasmError::internal(
+                        "decoded artifact br_table immediate mismatch",
+                    ));
+                };
+                self.pop(1)?;
+                for &depth in labels {
+                    self.mark_branch_target(depth);
+                    self.require(self.branch_arity(depth))?;
+                }
+                self.mark_branch_target(*default);
+                self.require(self.branch_arity(*default))?;
+                self.dead = true;
+            }
+            Opcode::RETURN => {
+                self.require(self.result_count)?;
+                self.dead = true;
+            }
+            Opcode::BR_ON_NULL | Opcode::BR_ON_NON_NULL => {
+                let depth = decoded_label(immediate)?;
+                self.mark_branch_target(depth);
+                self.require(1)?;
+                self.require(self.branch_arity(depth))?;
+                if opcode == Opcode::BR_ON_NON_NULL {
+                    self.pop(1)?;
+                }
+            }
+            Opcode::CALL | Opcode::RETURN_CALL => {
+                let Immediate::FunctionIndex(index) = immediate else {
+                    return Err(WasmError::internal(
+                        "decoded artifact call immediate mismatch",
+                    ));
+                };
+                let function = module
+                    .functions()
+                    .get(*index as usize)
+                    .ok_or_else(|| WasmError::invalid("decoded artifact call target overflow"))?;
+                self.pop(function.func_type().params().len())?;
+                if opcode == Opcode::RETURN_CALL {
+                    self.dead = true;
+                } else {
+                    self.push(function.func_type().results().len())?;
+                }
+            }
+            Opcode::CALL_INDIRECT | Opcode::RETURN_CALL_INDIRECT => {
+                let Immediate::CallIndirectArgs { typeidx, .. } = immediate else {
+                    return Err(WasmError::internal(
+                        "decoded artifact call_indirect immediate mismatch",
+                    ));
+                };
+                let function = module
+                    .types()
+                    .get_function_type(*typeidx)
+                    .ok_or_else(|| WasmError::invalid("decoded artifact call type overflow"))?;
+                self.pop(function.params().len() + 1)?;
+                if opcode == Opcode::RETURN_CALL_INDIRECT {
+                    self.dead = true;
+                } else {
+                    self.push(function.results().len())?;
+                }
+            }
+            Opcode::CALL_REF | Opcode::RETURN_CALL_REF => {
+                let Immediate::TypeIndex(typeidx) = immediate else {
+                    return Err(WasmError::internal(
+                        "decoded artifact call_ref immediate mismatch",
+                    ));
+                };
+                let function = module
+                    .types()
+                    .get_function_type(*typeidx)
+                    .ok_or_else(|| WasmError::invalid("decoded artifact call type overflow"))?;
+                self.pop(function.params().len() + 1)?;
+                if opcode == Opcode::RETURN_CALL_REF {
+                    self.dead = true;
+                } else {
+                    self.push(function.results().len())?;
+                }
+            }
+            _ => {
+                let (pops, pushes) = simple_effect(opcode).ok_or_else(|| {
+                    WasmError::invalid("decoded artifact primary opcode effect is unsupported")
+                })?;
+                self.pop(pops)?;
+                self.push(pushes)?;
+            }
+        }
+        Ok(())
     }
 
     fn apply(&mut self, module: &Module, raw: &RawOp<'_>) -> Result<(), WasmError> {
@@ -462,6 +764,15 @@ fn label(immediate: RawImmediate<'_>) -> Result<u32, WasmError> {
     Ok(depth)
 }
 
+fn decoded_label(immediate: &Immediate) -> Result<u32, WasmError> {
+    let Immediate::LabelIndex(depth) = immediate else {
+        return Err(WasmError::internal(
+            "decoded artifact branch immediate mismatch",
+        ));
+    };
+    Ok(*depth)
+}
+
 fn block_arity(module: &Module, block: RawBlockType) -> Result<(usize, usize), WasmError> {
     match block {
         RawBlockType::Empty => Ok((0, 0)),
@@ -471,6 +782,18 @@ fn block_arity(module: &Module, block: RawBlockType) -> Result<(usize, usize), W
             .get_function_type(index as u32)
             .map(|function| (function.params().len(), function.results().len()))
             .ok_or_else(|| WasmError::invalid("raw artifact block type overflow")),
+    }
+}
+
+fn decoded_block_arity(module: &Module, block: &BlockType) -> Result<(usize, usize), WasmError> {
+    match *block {
+        BlockType::Empty => Ok((0, 0)),
+        BlockType::ValueType(_) => Ok((0, 1)),
+        BlockType::TypeIndex(index) => module
+            .types()
+            .get_function_type(index as u32)
+            .map(|function| (function.params().len(), function.results().len()))
+            .ok_or_else(|| WasmError::invalid("decoded artifact block type overflow")),
     }
 }
 

@@ -177,7 +177,10 @@ pub(crate) struct IndirectCallSite {
 
 impl BaselineArtifact {
     pub(super) fn new(function_count: usize) -> Self {
-        ARTIFACT_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+        Self::new_unpublished(function_count).into_published()
+    }
+
+    pub(super) fn new_unpublished(function_count: usize) -> Self {
         let mut functions = Vec::with_capacity(function_count);
         functions.resize_with(function_count, || None);
         Self {
@@ -190,6 +193,11 @@ impl BaselineArtifact {
             direct_calls: Vec::new(),
             indirect_calls: Vec::new(),
         }
+    }
+
+    pub(super) fn into_published(self) -> Self {
+        ARTIFACT_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+        self
     }
 
     pub(super) fn publish_function(

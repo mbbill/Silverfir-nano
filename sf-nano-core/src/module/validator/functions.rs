@@ -26,9 +26,9 @@ fn validator_immediate_mismatch(message: &'static str) -> WasmError {
 }
 
 #[inline]
-fn expect_block_immediate(imm: &Immediate) -> Result<BlockType, WasmError> {
+fn expect_block_immediate(imm: &Immediate) -> Result<&BlockType, WasmError> {
     match imm {
-        Immediate::Block(block_type) => Ok(block_type.clone()),
+        Immediate::Block(block_type) => Ok(block_type),
         _ => Err(validator_immediate_mismatch(
             "validator expected block immediate",
         )),
@@ -46,9 +46,9 @@ fn expect_label_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
 }
 
 #[inline]
-fn expect_br_labels_immediate(imm: Immediate) -> Result<(collections::Vec<u32>, u32), WasmError> {
+fn expect_br_labels_immediate(imm: &Immediate) -> Result<(&[u32], u32), WasmError> {
     match imm {
-        Immediate::BrLabels(labels, default) => Ok((labels, default)),
+        Immediate::BrLabels(labels, default) => Ok((labels, *default)),
         _ => Err(validator_immediate_mismatch(
             "validator expected br_table immediate",
         )),
@@ -91,9 +91,7 @@ fn expect_tag_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
 }
 
 #[inline]
-fn expect_try_table_immediate(
-    imm: Immediate,
-) -> Result<(BlockType, collections::Vec<CatchClause>), WasmError> {
+fn expect_try_table_immediate(imm: &Immediate) -> Result<(&BlockType, &[CatchClause]), WasmError> {
     match imm {
         Immediate::TryTable {
             block_type,
@@ -166,7 +164,7 @@ fn expect_ref_type_immediate(imm: &Immediate) -> Result<ValueType, WasmError> {
 }
 
 #[inline]
-fn expect_select_types_immediate(imm: Immediate) -> Result<collections::Vec<ValueType>, WasmError> {
+fn expect_select_types_immediate(imm: &Immediate) -> Result<&[ValueType], WasmError> {
     match imm {
         Immediate::SelectTypes(select_types) => Ok(select_types),
         _ => Err(validator_immediate_mismatch(
@@ -176,9 +174,9 @@ fn expect_select_types_immediate(imm: Immediate) -> Result<collections::Vec<Valu
 }
 
 #[inline]
-fn expect_call_indirect_immediate(imm: Immediate) -> Result<(u32, u32), WasmError> {
+fn expect_call_indirect_immediate(imm: &Immediate) -> Result<(u32, u32), WasmError> {
     match imm {
-        Immediate::CallIndirectArgs { typeidx, tableidx } => Ok((typeidx, tableidx)),
+        Immediate::CallIndirectArgs { typeidx, tableidx } => Ok((*typeidx, *tableidx)),
         _ => Err(validator_immediate_mismatch(
             "validator expected call_indirect immediate",
         )),
@@ -186,14 +184,14 @@ fn expect_call_indirect_immediate(imm: Immediate) -> Result<(u32, u32), WasmErro
 }
 
 #[inline]
-fn expect_br_on_cast_immediate(imm: Immediate) -> Result<(u32, ValueType, ValueType), WasmError> {
+fn expect_br_on_cast_immediate(imm: &Immediate) -> Result<(u32, ValueType, ValueType), WasmError> {
     match imm {
         Immediate::BrOnCast {
             label_idx,
             rt1,
             rt2,
             ..
-        } => Ok((label_idx, rt1, rt2)),
+        } => Ok((*label_idx, *rt1, *rt2)),
         _ => Err(validator_immediate_mismatch(
             "validator expected br_on_cast immediate",
         )),
@@ -202,9 +200,9 @@ fn expect_br_on_cast_immediate(imm: Immediate) -> Result<(u32, ValueType, ValueT
 
 #[cfg(sf_has_simd)]
 #[inline]
-fn expect_simd_lane_immediate(imm: Immediate) -> Result<u8, WasmError> {
+fn expect_simd_lane_immediate(imm: &Immediate) -> Result<u8, WasmError> {
     match imm {
-        Immediate::LaneIndex(lane) => Ok(lane),
+        Immediate::LaneIndex(lane) => Ok(*lane),
         _ => Err(validator_immediate_mismatch(
             "validator expected SIMD lane immediate",
         )),
@@ -213,16 +211,16 @@ fn expect_simd_lane_immediate(imm: Immediate) -> Result<u8, WasmError> {
 
 #[cfg(sf_has_simd)]
 #[inline]
-fn expect_simd_shuffle_immediate(imm: Immediate) -> Result<[u8; 16], WasmError> {
+fn expect_simd_shuffle_immediate(imm: &Immediate) -> Result<[u8; 16], WasmError> {
     match imm {
-        Immediate::ShuffleMask(lanes) => Ok(lanes),
+        Immediate::ShuffleMask(lanes) => Ok(*lanes),
         _ => Err(validator_immediate_mismatch(
             "validator expected SIMD shuffle immediate",
         )),
     }
 }
 
-pub(super) struct FunctionValidator<'a> {
+pub(crate) struct FunctionValidator<'a> {
     module: &'a Module,
     function: &'a FunctionSpec,
     declared_functions: &'a [bool],
@@ -235,30 +233,7 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
         stream: &mut OpStream<'x, 'y, 'z>,
     ) -> Result<(), WasmError> {
         while let Some(decoded) = stream.next()? {
-            match decoded.wasm_op {
-                WasmOpcode::OP(op) => self.on_op(
-                    op,
-                    decoded.op_offset,
-                    decoded.next_op_offset,
-                    decoded.imm.clone(),
-                )?,
-                WasmOpcode::FC(op) => self.on_op_fc(
-                    op,
-                    decoded.op_offset,
-                    decoded.next_op_offset,
-                    decoded.imm.clone(),
-                )?,
-                WasmOpcode::FB(op) => self.on_op_fb(
-                    op,
-                    decoded.op_offset,
-                    decoded.next_op_offset,
-                    decoded.imm.clone(),
-                )?,
-                #[cfg(sf_has_simd)]
-                WasmOpcode::FD(op) => self.on_op_fd(op, decoded.imm.clone())?,
-                #[cfg(not(sf_has_simd))]
-                WasmOpcode::FD(_) => self.on_op_fd()?,
-            }
+            self.validate_decoded(decoded)?;
         }
         Ok(())
     }
@@ -268,6 +243,33 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
     }
 
     fn on_decode_end(&mut self) -> Result<(), WasmError> {
+        self.finish()
+    }
+}
+
+impl<'a> FunctionValidator<'a> {
+    pub(crate) fn validate_decoded(
+        &mut self,
+        decoded: &crate::op_decoder::DecodedOp,
+    ) -> Result<(), WasmError> {
+        match decoded.wasm_op {
+            WasmOpcode::OP(op) => {
+                self.on_op(op, decoded.op_offset, decoded.next_op_offset, &decoded.imm)
+            }
+            WasmOpcode::FC(op) => {
+                self.on_op_fc(op, decoded.op_offset, decoded.next_op_offset, &decoded.imm)
+            }
+            WasmOpcode::FB(op) => {
+                self.on_op_fb(op, decoded.op_offset, decoded.next_op_offset, &decoded.imm)
+            }
+            #[cfg(sf_has_simd)]
+            WasmOpcode::FD(op) => self.on_op_fd(op, &decoded.imm),
+            #[cfg(not(sf_has_simd))]
+            WasmOpcode::FD(_) => self.on_op_fd(),
+        }
+    }
+
+    pub(crate) fn finish(&self) -> Result<(), WasmError> {
         if !self.context.control_frames.is_empty() {
             return Err(WasmError::invalid(
                 "function parsing ended with unclosed control frames",
@@ -292,10 +294,8 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
 
         Ok(())
     }
-}
 
-impl<'a> FunctionValidator<'a> {
-    pub(super) fn new(
+    pub(crate) fn new(
         module: &'a Module,
         function: &'a FunctionSpec,
         declared_functions: &'a [bool],
@@ -316,8 +316,8 @@ impl<'a> FunctionValidator<'a> {
         })
     }
 
-    fn get_block_type(&self, block_type: BlockType) -> Result<Rc<FunctionType>, WasmError> {
-        match block_type {
+    fn get_block_type(&self, block_type: &BlockType) -> Result<Rc<FunctionType>, WasmError> {
+        match *block_type {
             BlockType::Empty => Ok(Rc::new(FunctionType::new(
                 collections::Vec::new(),
                 collections::Vec::new(),
@@ -430,12 +430,12 @@ impl<'a> FunctionValidator<'a> {
 
     fn handle_load<T: Sized>(
         &mut self,
-        imm: Immediate,
+        imm: &Immediate,
         val_type: ValueType,
     ) -> Result<(), WasmError> {
         use ValueType::*;
         let (align, memidx, offset) = match imm {
-            Immediate::MemArg {
+            &Immediate::MemArg {
                 align,
                 memidx,
                 offset,
@@ -463,12 +463,12 @@ impl<'a> FunctionValidator<'a> {
 
     fn handle_store<T: Sized>(
         &mut self,
-        imm: Immediate,
+        imm: &Immediate,
         val_type: ValueType,
     ) -> Result<(), WasmError> {
         use ValueType::*;
         let (align, memidx, offset) = match imm {
-            Immediate::MemArg {
+            &Immediate::MemArg {
                 align,
                 memidx,
                 offset,
@@ -506,14 +506,14 @@ impl<'a> FunctionValidator<'a> {
     #[cfg(sf_has_simd)]
     fn handle_simd_mem_lane(
         &mut self,
-        imm: Immediate,
+        imm: &Immediate,
         elem_bytes: usize,
         lane_limit: u8,
         is_store: bool,
     ) -> Result<(), WasmError> {
         use ValueType::*;
         let (align, memidx, offset, lane) = match imm {
-            Immediate::MemArgLane {
+            &Immediate::MemArgLane {
                 align,
                 memidx,
                 offset,
@@ -554,7 +554,7 @@ impl<'a> FunctionValidator<'a> {
         op: Opcode,
         _op_offset: usize,
         _next_op_offset: usize,
-        imm: Immediate,
+        imm: &Immediate,
     ) -> Result<(), WasmError> {
         use Opcode::*;
         use ValueType::*;
@@ -562,21 +562,21 @@ impl<'a> FunctionValidator<'a> {
             NOP | PREFIX_FB | PREFIX_FC | PREFIX_FD => Ok(()),
             UNREACHABLE => self.context.mark_unreachable(),
             BLOCK => {
-                let block_type = expect_block_immediate(&imm)?;
+                let block_type = expect_block_immediate(imm)?;
                 let function_type = self.get_block_type(block_type)?;
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_ctrl(FrameType::Block, function_type)?;
                 Ok(())
             }
             LOOP => {
-                let block_type = expect_block_immediate(&imm)?;
+                let block_type = expect_block_immediate(imm)?;
                 let function_type = self.get_block_type(block_type)?;
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_ctrl(FrameType::Loop, function_type)?;
                 Ok(())
             }
             IF => {
-                let block_type = expect_block_immediate(&imm)?;
+                let block_type = expect_block_immediate(imm)?;
                 let function_type = self.get_block_type(block_type)?;
                 self.context.pop_val(Some(I32))?;
                 self.context.pop_vals(function_type.params())?;
@@ -589,7 +589,7 @@ impl<'a> FunctionValidator<'a> {
 
                 // Clause label indices refer to the *outer* control stack, so
                 // validate catches before pushing the try_table frame.
-                for catch in &catches {
+                for catch in catches {
                     let label_types = self.context.frame_at(catch.label_idx)?.label_types();
                     match catch.kind {
                         CatchClauseKind::Catch | CatchClauseKind::CatchRef => {
@@ -652,7 +652,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             THROW => {
-                let tag_idx = expect_tag_index_immediate(&imm)?;
+                let tag_idx = expect_tag_index_immediate(imm)?;
                 let tag = self
                     .module
                     .tags()
@@ -689,7 +689,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             BR | BR_IF => {
-                let label_index = expect_label_index_immediate(&imm)?;
+                let label_index = expect_label_index_immediate(imm)?;
                 if op == BR_IF {
                     self.context.pop_val(Some(I32))?;
                 }
@@ -702,20 +702,23 @@ impl<'a> FunctionValidator<'a> {
                 }
             }
             BR_TABLE => {
-                let (mut labels, default) = expect_br_labels_immediate(imm)?;
+                let (labels, default) = expect_br_labels_immediate(imm)?;
                 self.context.pop_val(Some(I32))?;
                 let default_label_types = self.context.frame_at(default)?.label_types();
                 let default_arity = default_label_types.len();
-                labels.push(default);
-                labels.iter().try_for_each(|&label| {
-                    let label_types = self.context.frame_at(label)?.label_types();
-                    let arity = label_types.len();
-                    if arity != default_arity {
-                        return Err(WasmError::invalid("invalid br_table arity"));
-                    }
-                    let popped = self.context.pop_vals(&label_types)?;
-                    self.context.push_vals(&popped)
-                })?;
+                labels
+                    .iter()
+                    .copied()
+                    .chain(core::iter::once(default))
+                    .try_for_each(|label| {
+                        let label_types = self.context.frame_at(label)?.label_types();
+                        let arity = label_types.len();
+                        if arity != default_arity {
+                            return Err(WasmError::invalid("invalid br_table arity"));
+                        }
+                        let popped = self.context.pop_vals(&label_types)?;
+                        self.context.push_vals(&popped)
+                    })?;
                 self.context.pop_vals(&default_label_types)?;
                 self.context.mark_unreachable()?;
                 Ok(())
@@ -727,7 +730,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             CALL => {
-                let function_index = expect_function_index_immediate(&imm)?;
+                let function_index = expect_function_index_immediate(imm)?;
                 let function = self
                     .module
                     .functions()
@@ -763,7 +766,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_vals(function_type.results())
             }
             CALL_REF => {
-                let type_idx = expect_type_index_immediate(&imm)?;
+                let type_idx = expect_type_index_immediate(imm)?;
                 let function_type = self
                     .module
                     .types()
@@ -776,7 +779,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_vals(function_type.results())
             }
             RETURN_CALL => {
-                let function_index = expect_function_index_immediate(&imm)?;
+                let function_index = expect_function_index_immediate(imm)?;
                 let function = self
                     .module
                     .functions()
@@ -826,7 +829,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             RETURN_CALL_REF => {
-                let type_idx = expect_type_index_immediate(&imm)?;
+                let type_idx = expect_type_index_immediate(imm)?;
                 let function_type = self
                     .module
                     .types()
@@ -880,8 +883,8 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(select_type)
             }
             LOCAL_GET => {
-                let local_index = expect_local_index_immediate(&imm)?;
-                let local_type = self.get_local_type(&imm)?;
+                let local_index = expect_local_index_immediate(imm)?;
+                let local_type = self.get_local_type(imm)?;
                 if local_index as usize >= self.context.locals_init.len() {
                     return Err(WasmError::invalid("local index out of range"));
                 }
@@ -891,25 +894,25 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(local_type)
             }
             LOCAL_SET => {
-                let local_index = expect_local_index_immediate(&imm)?;
-                let local_type = self.get_local_type(&imm)?;
+                let local_index = expect_local_index_immediate(imm)?;
+                let local_type = self.get_local_type(imm)?;
                 self.context.pop_val(Some(local_type))?;
                 self.context.set_local_initialized(local_index as usize);
                 Ok(())
             }
             LOCAL_TEE => {
-                let local_index = expect_local_index_immediate(&imm)?;
-                let local_type = self.get_local_type(&imm)?;
+                let local_index = expect_local_index_immediate(imm)?;
+                let local_type = self.get_local_type(imm)?;
                 self.context.pop_val(Some(local_type))?;
                 self.context.set_local_initialized(local_index as usize);
                 self.context.push_val(local_type)
             }
             GLOBAL_GET => {
-                let global_type = self.get_global_type(&imm)?;
+                let global_type = self.get_global_type(imm)?;
                 self.context.push_val(global_type)
             }
             GLOBAL_SET => {
-                let global_index = expect_global_index_immediate(&imm)? as usize;
+                let global_index = expect_global_index_immediate(imm)? as usize;
                 let global = self
                     .module
                     .globals()
@@ -918,19 +921,19 @@ impl<'a> FunctionValidator<'a> {
                 if !global.mutable() {
                     return Err(WasmError::invalid("Global is immutable"));
                 }
-                let global_type = self.get_global_type(&imm)?;
+                let global_type = self.get_global_type(imm)?;
                 self.context.pop_val(Some(global_type))?;
                 Ok(())
             }
             TABLE_GET => {
-                let table_type = self.get_table_type(&imm)?;
-                let index_type = self.get_table_index_type(&imm)?;
+                let table_type = self.get_table_type(imm)?;
+                let index_type = self.get_table_index_type(imm)?;
                 self.context.pop_val(Some(index_type))?;
                 self.context.push_val(table_type)
             }
             TABLE_SET => {
-                let table_type = self.get_table_type(&imm)?;
-                let index_type = self.get_table_index_type(&imm)?;
+                let table_type = self.get_table_type(imm)?;
+                let index_type = self.get_table_index_type(imm)?;
                 self.context.pop_val(Some(table_type))?;
                 self.context.pop_val(Some(index_type))?;
                 Ok(())
@@ -954,7 +957,7 @@ impl<'a> FunctionValidator<'a> {
             F32_STORE => self.handle_store::<f32>(imm, F32),
             F64_STORE => self.handle_store::<f64>(imm, F64),
             MEMORY_SIZE => {
-                let memidx = expect_memory_index_immediate(&imm)? as usize;
+                let memidx = expect_memory_index_immediate(imm)? as usize;
                 if memidx >= self.module.memories().len() {
                     return Err(WasmError::invalid("unknown memory"));
                 }
@@ -964,7 +967,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(size_type)
             }
             MEMORY_GROW => {
-                let memidx = expect_memory_index_immediate(&imm)? as usize;
+                let memidx = expect_memory_index_immediate(imm)? as usize;
                 if memidx >= self.module.memories().len() {
                     return Err(WasmError::invalid("unknown memory"));
                 }
@@ -975,7 +978,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(size_type)
             }
             REF_NULL => {
-                let ref_type = expect_ref_type_immediate(&imm)?;
+                let ref_type = expect_ref_type_immediate(imm)?;
                 if !ref_type.is_ref() {
                     return Err(WasmError::invalid("invalid ref type"));
                 }
@@ -1002,7 +1005,7 @@ impl<'a> FunctionValidator<'a> {
             }
             BR_ON_NULL => {
                 let ref_type = self.context.pop_ref_type()?;
-                let label_index = expect_label_index_immediate(&imm)?;
+                let label_index = expect_label_index_immediate(imm)?;
                 let label_types = self.context.frame_at(label_index)?.label_types();
                 self.context.pop_vals(&label_types)?;
                 self.context.push_vals(&label_types)?;
@@ -1011,7 +1014,7 @@ impl<'a> FunctionValidator<'a> {
             }
             BR_ON_NON_NULL => {
                 let ref_type = self.context.pop_ref_type()?;
-                let label_index = expect_label_index_immediate(&imm)?;
+                let label_index = expect_label_index_immediate(imm)?;
                 let label_types = self.context.frame_at(label_index)?.label_types();
                 let (branch_ref, prefix) = label_types
                     .split_last()
@@ -1030,7 +1033,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             REF_FUNC => {
-                let function_index = expect_function_index_immediate(&imm)?;
+                let function_index = expect_function_index_immediate(imm)?;
                 if function_index as usize >= self.module.functions().len() {
                     return Err(WasmError::invalid("function index out of range"));
                 }
@@ -1198,7 +1201,7 @@ impl<'a> FunctionValidator<'a> {
         op: OpcodeFC,
         _op_offset: usize,
         _next_op_offset: usize,
-        imm: Immediate,
+        imm: &Immediate,
     ) -> Result<(), WasmError> {
         use OpcodeFC::*;
         use ValueType::*;
@@ -1221,7 +1224,7 @@ impl<'a> FunctionValidator<'a> {
             }
             MEMORY_INIT => {
                 let (dataidx, memidx) = match imm {
-                    Immediate::MemoryInitArgs { dataidx, memidx } => (dataidx, memidx),
+                    &Immediate::MemoryInitArgs { dataidx, memidx } => (dataidx, memidx),
                     _ => return Err(WasmError::invalid("invalid memory init arguments")),
                 };
                 if dataidx as usize >= self.module.data().len() {
@@ -1247,7 +1250,7 @@ impl<'a> FunctionValidator<'a> {
             }
             MEMORY_COPY => {
                 let (dstidx, srcidx) = match imm {
-                    Immediate::MemoryCopyArgs { dstidx, srcidx } => (dstidx, srcidx),
+                    &Immediate::MemoryCopyArgs { dstidx, srcidx } => (dstidx, srcidx),
                     _ => return Err(WasmError::invalid("invalid memory copy arguments")),
                 };
                 if dstidx as usize >= self.module.memories().len() {
@@ -1272,7 +1275,7 @@ impl<'a> FunctionValidator<'a> {
             }
             MEMORY_FILL => {
                 let memidx = match imm {
-                    Immediate::MemoryIndex(memidx) => memidx,
+                    &Immediate::MemoryIndex(memidx) => memidx,
                     _ => return Err(WasmError::invalid("invalid memory fill arguments")),
                 };
                 if memidx as usize >= self.module.memories().len() {
@@ -1298,7 +1301,7 @@ impl<'a> FunctionValidator<'a> {
                     ));
                 }
                 let dataidx = match imm {
-                    Immediate::DataIndex(dataidx) => dataidx,
+                    &Immediate::DataIndex(dataidx) => dataidx,
                     _ => return Err(WasmError::invalid("invalid data index")),
                 };
                 if dataidx as usize >= self.module.data().len() {
@@ -1308,7 +1311,7 @@ impl<'a> FunctionValidator<'a> {
             }
             TABLE_INIT => {
                 let (elemidx, tableidx) = match imm {
-                    Immediate::TableInitArgs { elemidx, tableidx } => (elemidx, tableidx),
+                    &Immediate::TableInitArgs { elemidx, tableidx } => (elemidx, tableidx),
                     _ => return Err(WasmError::invalid("invalid table init arguments")),
                 };
                 if elemidx as usize >= self.module.elements().len() {
@@ -1337,7 +1340,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ELEM_DROP => {
                 let elemidx = match imm {
-                    Immediate::ElementIndex(elemidx) => elemidx,
+                    &Immediate::ElementIndex(elemidx) => elemidx,
                     _ => return Err(WasmError::invalid("invalid element index")),
                 };
                 if elemidx as usize >= self.module.elements().len() {
@@ -1347,7 +1350,7 @@ impl<'a> FunctionValidator<'a> {
             }
             TABLE_COPY => {
                 let (dstidx, srcidx) = match imm {
-                    Immediate::TableCopyArgs { dstidx, srcidx } => (dstidx, srcidx),
+                    &Immediate::TableCopyArgs { dstidx, srcidx } => (dstidx, srcidx),
                     _ => return Err(WasmError::invalid("invalid table copy arguments")),
                 };
                 if dstidx as usize >= self.module.tables().len() {
@@ -1376,7 +1379,7 @@ impl<'a> FunctionValidator<'a> {
             }
             TABLE_GROW => {
                 let tableidx = match imm {
-                    Immediate::TableIndex(tableidx) => tableidx,
+                    &Immediate::TableIndex(tableidx) => tableidx,
                     _ => return Err(WasmError::invalid("invalid table index")),
                 };
                 if tableidx as usize >= self.module.tables().len() {
@@ -1392,7 +1395,7 @@ impl<'a> FunctionValidator<'a> {
             }
             TABLE_SIZE => {
                 let tableidx = match imm {
-                    Immediate::TableIndex(tableidx) => tableidx,
+                    &Immediate::TableIndex(tableidx) => tableidx,
                     _ => return Err(WasmError::invalid("invalid table index")),
                 };
                 if tableidx as usize >= self.module.tables().len() {
@@ -1405,7 +1408,7 @@ impl<'a> FunctionValidator<'a> {
             }
             TABLE_FILL => {
                 let tableidx = match imm {
-                    Immediate::TableIndex(tableidx) => tableidx,
+                    &Immediate::TableIndex(tableidx) => tableidx,
                     _ => return Err(WasmError::invalid("invalid table index")),
                 };
                 if tableidx as usize >= self.module.tables().len() {
@@ -1433,7 +1436,7 @@ impl<'a> FunctionValidator<'a> {
         op: OpcodeFB,
         _op_offset: usize,
         _next_op_offset: usize,
-        imm: Immediate,
+        imm: &Immediate,
     ) -> Result<(), WasmError> {
         use crate::{
             module::type_defs::CompositeType,
@@ -1444,7 +1447,7 @@ impl<'a> FunctionValidator<'a> {
 
         match op {
             STRUCT_NEW => {
-                let typeidx = expect_type_index_immediate(&imm)? as usize;
+                let typeidx = expect_type_index_immediate(imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1464,7 +1467,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             STRUCT_NEW_DEFAULT => {
-                let typeidx = expect_type_index_immediate(&imm)? as usize;
+                let typeidx = expect_type_index_immediate(imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1481,7 +1484,7 @@ impl<'a> FunctionValidator<'a> {
             }
             STRUCT_GET | STRUCT_GET_S | STRUCT_GET_U => {
                 let (typeidx, fieldidx) = match imm {
-                    Immediate::StructFieldArgs { typeidx, fieldidx } => (typeidx, fieldidx),
+                    &Immediate::StructFieldArgs { typeidx, fieldidx } => (typeidx, fieldidx),
                     _ => return Err(WasmError::invalid("Invalid immediate for struct.get")),
                 };
                 let def_type = self
@@ -1510,7 +1513,7 @@ impl<'a> FunctionValidator<'a> {
             }
             STRUCT_SET => {
                 let (typeidx, fieldidx) = match imm {
-                    Immediate::StructFieldArgs { typeidx, fieldidx } => (typeidx, fieldidx),
+                    &Immediate::StructFieldArgs { typeidx, fieldidx } => (typeidx, fieldidx),
                     _ => return Err(WasmError::invalid("Invalid immediate for struct.set")),
                 };
                 let def_type = self
@@ -1544,7 +1547,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_NEW => {
-                let typeidx = expect_type_index_immediate(&imm)? as usize;
+                let typeidx = expect_type_index_immediate(imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1563,7 +1566,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_NEW_DEFAULT => {
-                let typeidx = expect_type_index_immediate(&imm)? as usize;
+                let typeidx = expect_type_index_immediate(imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1581,7 +1584,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ARRAY_NEW_FIXED => {
                 let (typeidx, n) = match imm {
-                    Immediate::ArrayNewFixed { typeidx, n } => (typeidx, n),
+                    &Immediate::ArrayNewFixed { typeidx, n } => (typeidx, n),
                     _ => return Err(WasmError::invalid("Invalid immediate for array.new_fixed")),
                 };
                 let def_type = self
@@ -1602,7 +1605,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_GET => {
-                let typeidx = expect_type_index_immediate(&imm)? as usize;
+                let typeidx = expect_type_index_immediate(imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1628,7 +1631,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_GET_S | ARRAY_GET_U => {
-                let typeidx = expect_type_index_immediate(&imm)? as usize;
+                let typeidx = expect_type_index_immediate(imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1654,7 +1657,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_SET => {
-                let typeidx = expect_type_index_immediate(&imm)? as usize;
+                let typeidx = expect_type_index_immediate(imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1710,7 +1713,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_FILL => {
-                let typeidx = expect_type_index_immediate(&imm)?;
+                let typeidx = expect_type_index_immediate(imm)?;
                 let array_type = self.get_array_type(typeidx)?;
                 if !array_type.element.mutable {
                     return Err(WasmError::invalid("Cannot fill immutable array"));
@@ -1725,7 +1728,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ARRAY_COPY => {
                 let (dst_typeidx, src_typeidx) = match imm {
-                    Immediate::TwoTypeIndices { type1, type2 } => (type1, type2),
+                    &Immediate::TwoTypeIndices { type1, type2 } => (type1, type2),
                     _ => return Err(WasmError::invalid("Invalid immediate for array.copy")),
                 };
                 let dst_array = self.get_array_type(dst_typeidx)?;
@@ -1750,7 +1753,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ARRAY_INIT_DATA => {
                 let (typeidx, dataidx) = match imm {
-                    Immediate::TwoU32s { value1, value2 } => (value1, value2),
+                    &Immediate::TwoU32s { value1, value2 } => (value1, value2),
                     _ => return Err(WasmError::invalid("Invalid immediate for array.init_data")),
                 };
                 let array_type = self.get_array_type(typeidx)?;
@@ -1774,7 +1777,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ARRAY_INIT_ELEM => {
                 let (typeidx, elemidx) = match imm {
-                    Immediate::TwoU32s { value1, value2 } => (value1, value2),
+                    &Immediate::TwoU32s { value1, value2 } => (value1, value2),
                     _ => return Err(WasmError::invalid("Invalid immediate for array.init_elem")),
                 };
                 let array_type = self.get_array_type(typeidx)?;
@@ -1802,7 +1805,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ARRAY_NEW_DATA => {
                 let (typeidx, dataidx) = match imm {
-                    Immediate::TwoU32s { value1, value2 } => (value1, value2),
+                    &Immediate::TwoU32s { value1, value2 } => (value1, value2),
                     _ => return Err(WasmError::invalid("Invalid immediate for array.new_data")),
                 };
                 let array_type = self.get_array_type(typeidx)?;
@@ -1822,7 +1825,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ARRAY_NEW_ELEM => {
                 let (typeidx, elemidx) = match imm {
-                    Immediate::TwoU32s { value1, value2 } => (value1, value2),
+                    &Immediate::TwoU32s { value1, value2 } => (value1, value2),
                     _ => return Err(WasmError::invalid("Invalid immediate for array.new_elem")),
                 };
                 let array_type = self.get_array_type(typeidx)?;
@@ -1845,13 +1848,13 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             REF_TEST | REF_TEST_NULL => {
-                let _ref_type = expect_ref_type_immediate(&imm)?;
+                let _ref_type = expect_ref_type_immediate(imm)?;
                 let _popped = self.context.pop_ref_type()?;
                 self.context.push_val(I32)?;
                 Ok(())
             }
             REF_CAST | REF_CAST_NULL => {
-                let ref_type = expect_ref_type_immediate(&imm)?;
+                let ref_type = expect_ref_type_immediate(imm)?;
                 let _popped = self.context.pop_ref_type()?;
                 self.context.push_val(ref_type)?;
                 Ok(())
@@ -1937,7 +1940,7 @@ impl<'a> FunctionValidator<'a> {
     }
 
     #[cfg(sf_has_simd)]
-    fn on_op_fd(&mut self, op: OpcodeFD, imm: Immediate) -> Result<(), WasmError> {
+    fn on_op_fd(&mut self, op: OpcodeFD, imm: &Immediate) -> Result<(), WasmError> {
         use OpcodeFD::*;
         use ValueType::*;
 
