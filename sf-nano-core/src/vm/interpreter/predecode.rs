@@ -127,6 +127,31 @@ impl PredecodedFunction {
     }
 }
 
+/// Minimal constructor for linker unit tests.
+///
+/// Production functions are always built by `predecode_function`; keeping
+/// this here lets the sibling linker module exercise deliberately malformed
+/// ACC hint streams without opening the representation in non-test builds.
+#[cfg(test)]
+pub(super) fn linker_test_function(
+    code: Vec<Instr>,
+    br_tables: Vec<Vec<u32>>,
+    n_locals: u32,
+) -> PredecodedFunction {
+    PredecodedFunction {
+        frame_slots: n_locals,
+        code,
+        br_tables,
+        wide_memargs: Vec::new(),
+        n_locals,
+        n_params: 0,
+        n_results: 0,
+        slow_tail_return: None,
+        exception_sites: Vec::new(),
+        exception_handlers: Vec::new(),
+    }
+}
+
 /// Predecode one local (non-import) function of a parsed module.
 pub(crate) fn predecode_function(
     module: &Module,

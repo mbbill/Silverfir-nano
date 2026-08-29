@@ -146,6 +146,7 @@ impl<'a> Payload<'a> {
     /// The interpreter predecoder probes a borrowed suffix before committing
     /// a common-op fast decode. Keeping the proof on the probe lets the commit
     /// be one cursor update rather than decoding the immediates a second time.
+    #[cfg(sf_interp)]
     #[inline]
     pub(crate) fn advance_known_valid(&mut self, len: usize) {
         debug_assert!(len <= self.data.len() - self.position);
