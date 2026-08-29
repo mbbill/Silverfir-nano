@@ -191,6 +191,11 @@ impl Fam {
     }
 }
 
+// `build.rs` includes this file and consumes the generic indexing helper.
+// Naming the function item here keeps the runtime crate's dead-code audit
+// aware of that second consumer without emitting a call or suppressing lint.
+const _: fn(Fam, Cls, Cls, DstCls, PairDstCls, bool) -> Option<usize> = Fam::index_of;
+
 // ---------------------------------------------------------------------------
 // The per-op fact table
 //
@@ -390,6 +395,9 @@ const fn compute_family(op: Op) -> Fam {
 pub(crate) fn op_base(op: Op) -> u32 {
     OP_PROPS[op as usize].base
 }
+
+// The build-time handler generator consumes this helper from the same source.
+const _: fn(Op) -> u32 = op_base;
 
 /// Total packed handler slots across every op.
 pub(crate) const fn total_slots() -> usize {
