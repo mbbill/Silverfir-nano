@@ -39,12 +39,17 @@ use tracked_alloc::rc::Rc;
 /// index occupies bits 48..63.
 pub(super) const WIDE_MEMARG: u64 = 1 << 63;
 
+use super::engine::PinCensus;
+#[cfg(test)]
+use super::instr::{operand_is_f32, result_is_f32};
 use super::instr::{
-    operand_is_f32, operand_is_float, result_is_f32, result_is_float, Instr, Op, FLAG_ADDR64,
-    FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE,
-    FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
+    operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
+    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL,
+    FLAG_SHARED_TABLE,
 };
-use super::layout::{slot_fields, Pinned};
+#[cfg(test)]
+use super::layout::slot_fields;
+use super::layout::Pinned;
 use super::SLOT_GP_UNIT_BYTES;
 
 /// Producer index meaning "no patchable producer" (call results, block
@@ -735,13 +740,15 @@ fn predecode_function_into(
     let code_range = p.code.range();
     let pinned = PackedPinned::new(startup_profile_measure!(
         crate::startup_profile::Stage::PinnedCensus,
-        select_pinned(&p.locals)
+        scratch
+            .pin_census
+            .select(&p.code.arena[code_range.clone()], n_locals)
     ));
     #[cfg(test)]
     assert_eq!(
         pinned.expand(),
-        super::engine::select_pinned_reference(&p.code.arena[code_range.clone()], n_locals,),
-        "incremental pinned-local census disagrees with the original full-stream scan"
+        select_pinned_incremental(&p.locals),
+        "final-stream pinned-local census disagrees with the incremental mutation oracle"
     );
     let mut p = p;
     let parts = PredecodedFunctionParts {
@@ -890,6 +897,7 @@ struct PredecodeScratch {
     canonical_loop_homes: Vec<bool>,
     unsafe_loop_homes: Vec<bool>,
     side: PredecodeSideScratch,
+    pin_census: PinCensus,
 }
 
 /// Opcode-scoped workspaces, grouped so ownership can move between the
@@ -931,7 +939,7 @@ impl PredecodeScratch {
     /// Capacities of every allocation-owning transient vector. Persistent
     /// function output (`Instr`, branch tables, wide memargs, exceptions) is
     /// intentionally absent from this census.
-    fn capacities(&self) -> [usize; 15] {
+    fn capacities(&self) -> [usize; 16] {
         [
             self.stack.capacity(),
             self.frames.capacity(),
@@ -948,6 +956,7 @@ impl PredecodeScratch {
             self.side.br_pad_for_plan.capacity(),
             self.side.br_entry_pads.capacity(),
             self.side.br_pad_addresses.capacity(),
+            self.pin_census.capacity(),
         ]
     }
 }
@@ -967,8 +976,8 @@ struct Predecoder<'m, 'code> {
     frames: Vec<CtlFrame>,
     dead: bool,
     region: u32,
-    /// Per-local dataflow state and the live pinned-local census. Keeping the
-    /// two together avoids adding an allocation to each decoded function.
+    /// Per-local dataflow state used only by folding decisions while the
+    /// instruction stream is still mutable.
     locals: Vec<LocalState>,
     /// Index of an immediately preceding plain `MovSlot` that another
     /// ordered copy may merge with (NO_DEF = none), and its region.
@@ -1022,11 +1031,9 @@ struct Predecoder<'m, 'code> {
 
 /// Predecode state for one WebAssembly local.
 ///
-/// The first three fields drive destination and accumulator folding. The
-/// remaining counters describe the final instruction stream exactly enough
-/// to choose its two pinned locals without a later full-stream scan. Domain
-/// facts use counters rather than sticky bits because load/store fusion and
-/// the i64 subtraction-branch rewrite can remove an already emitted access.
+/// The three production fields drive destination and accumulator folding.
+/// Tests retain the former incremental pinned-local counters as an independent
+/// mutation oracle for the final-stream postpass.
 #[derive(Clone, Copy, Default)]
 struct LocalState {
     /// 1 + index of the last emitted instruction reading this local.
@@ -1036,14 +1043,24 @@ struct LocalState {
     /// Control region of the last write. Accumulator write-through is safe
     /// only when the writer and reader remain in the same region.
     last_write_region: u32,
+    #[cfg(test)]
     pin_count: u32,
+    #[cfg(test)]
     pin_r_int: u32,
+    #[cfg(test)]
     pin_r_float: u32,
+    #[cfg(test)]
     pin_w_int: u32,
+    #[cfg(test)]
     pin_w_float: u32,
+    #[cfg(test)]
     pin_f32: u32,
 }
 
+#[cfg(not(test))]
+const _: () = assert!(core::mem::size_of::<LocalState>() == 3 * core::mem::size_of::<u32>());
+
+#[cfg(test)]
 #[inline]
 fn adjust(counter: &mut u32, add: bool) {
     if add {
@@ -1054,6 +1071,7 @@ fn adjust(counter: &mut u32, add: bool) {
     }
 }
 
+#[cfg(test)]
 #[inline]
 fn census_read(locals: &mut [LocalState], slot: u64, is_float: bool, is_f32: bool, add: bool) {
     let stat = &mut locals[slot as usize];
@@ -1068,6 +1086,7 @@ fn census_read(locals: &mut [LocalState], slot: u64, is_float: bool, is_f32: boo
     }
 }
 
+#[cfg(test)]
 #[inline]
 fn census_write(
     locals: &mut [LocalState],
@@ -1094,6 +1113,7 @@ fn census_write(
 /// Apply or remove one instruction's contribution using the original
 /// link-time census rules. Keeping this function field-for-field equivalent
 /// to the test-only oracle makes forged instruction streams checkable too.
+#[cfg(test)]
 fn update_pin_census(locals: &mut [LocalState], ins: Instr, add: bool) {
     startup_profile_span!(crate::startup_profile::Stage::PinnedCensus);
     let n = locals.len() as u64;
@@ -1146,7 +1166,8 @@ fn update_pin_census(locals: &mut [LocalState], ins: Instr, add: bool) {
 
 /// Select the same top two locals as the old linker pass from the live
 /// counters maintained above.
-fn select_pinned(locals: &[LocalState]) -> Pinned {
+#[cfg(test)]
+fn select_pinned_incremental(locals: &[LocalState]) -> Pinned {
     if locals.is_empty() {
         return Pinned::NONE;
     }
@@ -1560,17 +1581,21 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     fn emit(&mut self, op: Op, flags: u16, a: u64, b: u64, c: u64) -> u32 {
         let idx = self.code.len() as u32;
         let ins = Instr::new(op, flags, a, b, c);
+        #[cfg(test)]
         update_pin_census(&mut self.locals, ins, true);
         self.code.push(ins);
         idx
     }
 
-    /// Replace an emitted cell while keeping the live pinned-local census in
-    /// step. Every in-place fusion and destination patch goes through here.
+    /// Replace an emitted cell. Every in-place fusion and destination patch
+    /// goes through here so the test-only mutation oracle sees the same edits.
     fn replace_instr(&mut self, index: u32, ins: Instr) {
-        let old = self.code[index as usize];
-        update_pin_census(&mut self.locals, old, false);
-        update_pin_census(&mut self.locals, ins, true);
+        #[cfg(test)]
+        {
+            let old = self.code[index as usize];
+            update_pin_census(&mut self.locals, old, false);
+            update_pin_census(&mut self.locals, ins, true);
+        }
         self.code[index as usize] = ins;
     }
 
@@ -1582,6 +1607,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
 
     fn pop_instr(&mut self) -> Option<Instr> {
         let ins = self.code.pop()?;
+        #[cfg(test)]
         update_pin_census(&mut self.locals, ins, false);
         Some(ins)
     }
@@ -4231,13 +4257,32 @@ mod tests {
     use std::string::String as StdString;
     use std::vec::Vec as StdVec;
 
-    fn assert_pinned_fields_match(code: &[Instr], locals: &[LocalState], context: &str) {
-        let actual = PackedPinned::new(select_pinned(locals)).expand();
-        let expected = super::super::engine::select_pinned_reference(code, locals.len() as u32);
-        assert_eq!(actual.l0, expected.l0, "{context}: l0");
-        assert_eq!(actual.l1, expected.l1, "{context}: l1");
-        assert_eq!(actual.l0_float, expected.l0_float, "{context}: l0_float");
-        assert_eq!(actual.l1_float, expected.l1_float, "{context}: l1_float");
+    fn assert_pinned_fields_match(
+        code: &[Instr],
+        locals: &[LocalState],
+        postpass: &mut PinCensus,
+        context: &str,
+    ) {
+        let incremental = PackedPinned::new(select_pinned_incremental(locals)).expand();
+        let reused = postpass.select(code, locals.len() as u32);
+        let fresh = super::super::engine::select_pinned_reference(code, locals.len() as u32);
+        for (field, actual, expected) in [
+            ("l0", reused.l0, incremental.l0),
+            ("l1", reused.l1, incremental.l1),
+            (
+                "l0_float",
+                u64::from(reused.l0_float),
+                u64::from(incremental.l0_float),
+            ),
+            (
+                "l1_float",
+                u64::from(reused.l1_float),
+                u64::from(incremental.l1_float),
+            ),
+        ] {
+            assert_eq!(actual, expected, "{context}: reused postpass {field}");
+        }
+        assert_eq!(reused, fresh, "{context}: reused versus fresh postpass");
     }
 
     fn generated_field(state: u64, n_locals: u32) -> u64 {
@@ -4252,12 +4297,13 @@ mod tests {
     }
 
     #[test]
-    fn incremental_pinned_census_matches_reference_for_generated_mutations() {
+    fn reused_postpass_pinned_census_matches_incremental_mutation_oracle() {
         // Begin with the layouts which bypass ordinary slot_fields handling,
         // plus float readers/writers and the 16-bit call-record boundary.
         let n_locals = 8194u32;
         let mut locals = vec![LocalState::default(); n_locals as usize];
         let mut code = StdVec::new();
+        let mut postpass = PinCensus::default();
         let edge_cells = [
             Instr::new(Op::MovPair, 0, 0, 1, 8191u64 << 32 | 8192),
             Instr::new(Op::Select, 0, 2, 3, 4u64 << 32 | 5),
@@ -4271,7 +4317,7 @@ mod tests {
         for (i, ins) in edge_cells.into_iter().enumerate() {
             update_pin_census(&mut locals, ins, true);
             code.push(ins);
-            assert_pinned_fields_match(&code, &locals, &format!("edge push {i}"));
+            assert_pinned_fields_match(&code, &locals, &mut postpass, &format!("edge push {i}"));
         }
 
         // Exercise the exact edit protocol: remove the old contribution,
@@ -4286,11 +4332,11 @@ mod tests {
             update_pin_census(&mut locals, old, false);
             update_pin_census(&mut locals, replacement, true);
             code[i] = replacement;
-            assert_pinned_fields_match(&code, &locals, &format!("edge replace {i}"));
+            assert_pinned_fields_match(&code, &locals, &mut postpass, &format!("edge replace {i}"));
         }
         let removed = code.pop().unwrap();
         update_pin_census(&mut locals, removed, false);
-        assert_pinned_fields_match(&code, &locals, "edge pop");
+        assert_pinned_fields_match(&code, &locals, &mut postpass, "edge pop");
 
         // The generated streams include forged field/flag combinations on
         // purpose. The old linker accepted any Instr payload, so metadata
@@ -4339,6 +4385,7 @@ mod tests {
                     assert_pinned_fields_match(
                         &code,
                         &locals,
+                        &mut postpass,
                         &format!("generated stream {stream}"),
                     );
                 }
@@ -4610,7 +4657,7 @@ mod tests {
         let mut scratch = PredecodeScratch::default();
         let mut prior = scratch.capacities();
         let mut shared_growth_owners = 0usize;
-        let mut legacy_fresh_owners = 0usize;
+        let mut fresh_owner_equivalent = 0usize;
         let mut owner_count = None;
 
         for func_index in 0..FUNCTION_COUNT {
@@ -4638,18 +4685,18 @@ mod tests {
                 allocated_owners,
                 "identical bodies must exercise the same transient owners"
             );
-            // The pre-change path created these allocation-owning Vecs anew
-            // for each body. This is a static owner census, independent of
-            // allocator implementation and benchmark timing.
-            legacy_fresh_owners += allocated_owners;
+            // Count the owner allocations a fresh per-function scratch would
+            // require. This is a static census, independent of allocator
+            // implementation and benchmark timing.
+            fresh_owner_equivalent += allocated_owners;
             prior = capacities;
         }
 
         let owner_count = owner_count.expect("at least one function");
-        assert_eq!(owner_count, 15, "the fixture must cover every scratch Vec");
+        assert_eq!(owner_count, 16, "the fixture must cover every scratch Vec");
         assert_eq!(
-            (legacy_fresh_owners, shared_growth_owners),
-            (210_000, 15),
+            (fresh_owner_equivalent, shared_growth_owners),
+            (224_000, 16),
             "14k fresh-scratch owner allocations must collapse to one module-scoped growth per owner"
         );
     }
