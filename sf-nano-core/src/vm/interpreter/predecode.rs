@@ -171,11 +171,9 @@ pub(crate) fn predecode_function(
             frames: Vec::new(),
             dead: false,
             region: 0,
-            last_read: vec![0u32; n_locals as usize],
-            last_write: vec![0u32; n_locals as usize],
+            local_access: vec![LocalAccess::default(); n_locals as usize],
             last_mat_mov: NO_DEF,
             last_mat_region: 0,
-            last_write_region: vec![0u32; n_locals as usize],
             br_tables: Vec::new(),
             wide_memargs: Vec::new(),
             exception_sites: Vec::new(),
@@ -352,10 +350,8 @@ struct Predecoder<'m> {
     frames: Vec<CtlFrame>,
     dead: bool,
     region: u32,
-    /// Per local: 1 + index of the last emitted instruction reading /
-    /// writing it (0 = never). Used by the dst-folding soundness rules.
-    last_read: Vec<u32>,
-    last_write: Vec<u32>,
+    /// Per-local dataflow facts used by destination and accumulator folding.
+    local_access: Vec<LocalAccess>,
     /// Index of an immediately preceding plain `MovSlot` that another
     /// ordered copy may merge with (NO_DEF = none), and its region.
     ///
@@ -364,11 +360,6 @@ struct Predecoder<'m> {
     /// particular Wasm source pattern about `MovPair`.
     last_mat_mov: u32,
     last_mat_region: u32,
-    /// Control region of the last write per local (acc write-through:
-    /// a consumer may read the accumulator only when the write happened
-    /// in the same region — a merge between them means the consumer can
-    /// be reached with a stale accumulator).
-    last_write_region: Vec<u32>,
     br_tables: Vec<Vec<u32>>,
     wide_memargs: Vec<(u32, u64)>,
     exception_sites: Vec<ExceptionSite>,
@@ -405,6 +396,25 @@ struct Predecoder<'m> {
     /// Exception landing metadata currently names canonical temp spans, so
     /// an actual decoded `try_table` requires all loop homes to stay there.
     force_canonical_loop_homes: bool,
+}
+
+/// The predecoder's dataflow state for one WebAssembly local.
+///
+/// Keeping the three facts together makes construction one allocation per
+/// function instead of three, and the folding rules normally consult them
+/// together. Large cold-start workloads contain thousands of small functions,
+/// so avoiding two allocator round trips per function matters more than the
+/// unchanged twelve-byte payload.
+#[derive(Clone, Copy, Default)]
+struct LocalAccess {
+    /// 1 + index of the last emitted instruction reading this local.
+    last_read: u32,
+    /// 1 + index of the last emitted instruction writing this local.
+    /// Zero means it has never been written.
+    last_write: u32,
+    /// Control region of the last write. Accumulator write-through is safe
+    /// only within that region; a merge can otherwise expose a stale value.
+    last_write_region: u32,
 }
 
 fn block_arity(types: &TypeContext, bt: &BlockType) -> Result<(u32, u32), WasmError> {
@@ -826,7 +836,7 @@ impl<'m> Predecoder<'m> {
     fn operand(&mut self, d: Desc, at: u32) -> (u64, bool) {
         match d {
             Desc::Local(i) => {
-                self.last_read[i as usize] = at + 1;
+                self.local_access[i as usize].last_read = at + 1;
                 (i as u64, false)
             }
             Desc::ConstV(k) => (k, true),
@@ -867,7 +877,7 @@ impl<'m> Predecoder<'m> {
             Desc::Local(l) => {
                 let slot = self.temp_slot_used(height);
                 let idx = self.emit_ordered_mov_slot(0, l as u64, slot);
-                self.last_read[l as usize] = idx + 1;
+                self.local_access[l as usize].last_read = idx + 1;
                 idx
             }
             Desc::ConstV(k) => {
@@ -894,7 +904,7 @@ impl<'m> Predecoder<'m> {
         match d {
             Desc::Local(l) => {
                 let idx = self.emit_ordered_mov_slot(0, l as u64, dst);
-                self.last_read[l as usize] = idx + 1;
+                self.local_access[l as usize].last_read = idx + 1;
             }
             Desc::ConstV(k) => {
                 self.emit(Op::MovConst, FLAG_A_CONST, k, 0, dst);
@@ -1083,10 +1093,10 @@ impl<'m> Predecoder<'m> {
                 // immediately preceding instruction" — and the nonzero
                 // gate keeps never-written locals at function start from
                 // colliding with an empty stream.
-                let write = self.last_write[x as usize];
+                let write = self.local_access[x as usize].last_write;
                 if write > 0
                     && write == self.code.len() as u32
-                    && self.last_write_region[x as usize] == self.region
+                    && self.local_access[x as usize].last_write_region == self.region
                     && result_is_float(self.code[write as usize - 1].op) == want_float
                     // Both packed destinations are written by one MovPair
                     // cell, but only destination 2 is its accumulator
@@ -1181,8 +1191,8 @@ impl<'m> Predecoder<'m> {
                     && region == self.region
                     && !flushed
                     && self.code[def as usize].op != Op::MovPair
-                    && self.last_read[idx as usize] <= def + 1
-                    && self.last_write[idx as usize] <= def + 1 =>
+                    && self.local_access[idx as usize].last_read <= def + 1
+                    && self.local_access[idx as usize].last_write <= def + 1 =>
             {
                 Some(def)
             }
@@ -1191,8 +1201,8 @@ impl<'m> Predecoder<'m> {
 
         if let Some(def) = fold_def {
             self.patch_dst(def, idx as u64);
-            self.last_write[idx as usize] = def + 1;
-            self.last_write_region[idx as usize] = self.region;
+            self.local_access[idx as usize].last_write = def + 1;
+            self.local_access[idx as usize].last_write_region = self.region;
         } else {
             let (op, flags, a, read_local) = match top {
                 Desc::Local(src) => {
@@ -1211,10 +1221,10 @@ impl<'m> Predecoder<'m> {
                 self.emit(op, flags, a, 0, idx as u64)
             };
             if let Some(src) = read_local {
-                self.last_read[src as usize] = at + 1;
+                self.local_access[src as usize].last_read = at + 1;
             }
-            self.last_write[idx as usize] = at + 1;
-            self.last_write_region[idx as usize] = self.region;
+            self.local_access[idx as usize].last_write = at + 1;
+            self.local_access[idx as usize].last_write_region = self.region;
         }
         if is_tee {
             self.stack.push(Desc::Local(idx));
@@ -1434,8 +1444,8 @@ impl<'m> Predecoder<'m> {
             };
             let at = self.emit(Op::MovSlot, 0, src, 0, dst);
             if let Some(local) = dst_local {
-                self.last_write[local as usize] = at + 1;
-                self.last_write_region[local as usize] = self.region;
+                self.local_access[local as usize].last_write = at + 1;
+                self.local_access[local as usize].last_write_region = self.region;
             }
         }
     }
@@ -1531,10 +1541,10 @@ impl<'m> Predecoder<'m> {
         let Desc::Local(local) = cond else {
             return None;
         };
-        let write = self.last_write[local as usize];
+        let write = self.local_access[local as usize].last_write;
         if write == 0
             || write != self.code.len() as u32
-            || self.last_write_region[local as usize] != self.region
+            || self.local_access[local as usize].last_write_region != self.region
         {
             return None;
         }
@@ -1566,8 +1576,11 @@ impl<'m> Predecoder<'m> {
             return None;
         };
 
-        let write = self.last_write[local as usize];
-        if write == 0 || write != cmp_def || self.last_write_region[local as usize] != self.region {
+        let write = self.local_access[local as usize].last_write;
+        if write == 0
+            || write != cmp_def
+            || self.local_access[local as usize].last_write_region != self.region
+        {
             return None;
         }
         let mut fusion = self.sub_br_if_update(write - 1, local, true)?;
@@ -2505,7 +2518,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                                 "the i64 zero comparison must immediately follow its update"
                             );
                             self.code.pop();
-                            self.last_read[fusion.local as usize] = fusion.def + 1;
+                            self.local_access[fusion.local as usize].last_read = fusion.def + 1;
                         }
                         self.code[fusion.def as usize].op = fusion.op;
                         self.code[fusion.def as usize].b = fusion.b;
