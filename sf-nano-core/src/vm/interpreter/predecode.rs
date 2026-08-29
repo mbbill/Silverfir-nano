@@ -1422,6 +1422,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 Instr {
                     op: Op::MovPair,
                     flags: 0,
+                    head_pad: 0,
                     a: pm.a,
                     b: src,
                     c: pm.c << 32 | dst,
@@ -2635,6 +2636,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     Instr {
                         op: lop,
                         flags: afl | FLAG_FUSED,
+                        head_pad: 0,
                         a: a1,
                         b: offset,
                         c: a2 << 32 | dst,
@@ -2707,6 +2709,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                     Instr {
                         op: sop,
                         flags: flags | afl | FLAG_FUSED,
+                        head_pad: 0,
                         a: a1,
                         b,
                         c: a2 << 32 | offset,

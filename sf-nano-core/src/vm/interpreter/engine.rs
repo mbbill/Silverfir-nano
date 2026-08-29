@@ -108,6 +108,107 @@ pub(super) struct DCell {
     pub c: u64,
 }
 
+// Stage A owns exactly the same allocation layout as stage B. The explicit
+// `Instr::head_pad` makes the leading eight bytes fully initialized before
+// ownership is transferred; these assertions make a future field/layout
+// drift a compile-time failure rather than allocator or aliasing UB.
+const _: () = {
+    assert!(core::mem::size_of::<Instr>() == core::mem::size_of::<DCell>());
+    assert!(core::mem::align_of::<Instr>() == core::mem::align_of::<DCell>());
+    assert!(core::mem::offset_of!(Instr, a) == core::mem::offset_of!(DCell, a));
+    assert!(core::mem::offset_of!(Instr, b) == core::mem::offset_of!(DCell, b));
+    assert!(core::mem::offset_of!(Instr, c) == core::mem::offset_of!(DCell, c));
+};
+
+/// Transfer the module-wide stage-A allocation into its stage-B element
+/// type without allocating or copying any instruction payloads.
+fn into_dispatch_cells(instrs: Vec<Instr>) -> Vec<DCell> {
+    let mut instrs = core::mem::ManuallyDrop::new(instrs);
+    let ptr = instrs.as_mut_ptr().cast::<DCell>();
+    let len = instrs.len();
+    let capacity = instrs.capacity();
+    // SAFETY: the compile-time assertions above prove identical element
+    // size/alignment and a field-for-field payload layout. `Instr` is Copy
+    // and has no drop glue; its explicit head padding is initialized. The
+    // ManuallyDrop transfers the one allocation to this Vec, so there is one
+    // owner throughout and no live reference into it crosses the transfer.
+    unsafe { Vec::from_raw_parts(ptr, len, capacity) }
+}
+
+/// Native handlers which can return `EXIT_SLOW` after their cell payload has
+/// been transformed. Static slow cells keep raw a/b/c and need no inverse.
+const fn native_may_exit_slow(op: Op) -> bool {
+    use Op::*;
+    matches!(
+        op,
+        I32_DivS
+            | I32_DivU
+            | I32_RemS
+            | I32_RemU
+            | I64_DivS
+            | I64_DivU
+            | I64_RemS
+            | I64_RemU
+            | I32_TruncF32S
+            | I32_TruncF32U
+            | I32_TruncF64S
+            | I32_TruncF64U
+            | I64_TruncF32S
+            | I64_TruncF32U
+            | I64_TruncF64S
+            | I64_TruncF64U
+            | MemoryFill
+            | MemoryCopy
+            | MemoryFillCopy
+            | CallIndirect
+    )
+}
+
+/// Recreate a native cell's stage-A payload on an `EXIT_SLOW` edge.
+/// `call_indirect` is the sole non-invertible fixup: its canonical type id
+/// replaces the module type index, supplied by the sparse side table.
+fn restore_native_slow_instr(
+    head: u32,
+    cell: &DCell,
+    indirect_type_index: Option<u32>,
+) -> Option<Instr> {
+    let op = super::instr::op_from_index((head & 0xffff) as usize);
+    let flags = (head >> 16) as u16;
+    if !native_may_exit_slow(op) {
+        return None;
+    }
+    let unscale = |value: u64| {
+        debug_assert_eq!(value & 7, 0);
+        value / 8
+    };
+    let (a, b, c) = match op {
+        Op::CallIndirect => {
+            let type_index = indirect_type_index?;
+            (
+                unscale(cell.a & ((1u64 << 48) - 1)),
+                unscale(cell.b & 0xffff_ffff),
+                type_index as u64,
+            )
+        }
+        Op::MemoryFill | Op::MemoryCopy => (unscale(cell.a), unscale(cell.b), unscale(cell.c)),
+        Op::MemoryFillCopy => (unscale(cell.a), unscale(cell.b), cell.c),
+        _ => {
+            let a = if flags & FLAG_A_CONST != 0 {
+                cell.a
+            } else {
+                unscale(cell.a)
+            };
+            let b = if flags & FLAG_B_CONST != 0 {
+                cell.b
+            } else {
+                unscale(cell.b)
+            };
+            (a, b, unscale(cell.c))
+        }
+    };
+    Some(Instr::from_packed_head(head, a, b, c))
+}
+
 /// One linked function's slice in a module-wide [`LinkPlan`]. Dispatch cells
 /// mirror `PredecodedFunction::code` index-for-index, followed by one prefetch
 /// pad cell. The arena owns storage; this keeps a stable absolute entry address

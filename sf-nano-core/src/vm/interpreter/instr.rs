@@ -571,6 +571,9 @@ pub enum Op {
 pub(crate) struct Instr {
     pub op: Op,
     pub flags: u16,
+    /// Initialized explicitly so every byte can be transferred into the
+    /// stage-B dispatch-word representation without reading Rust padding.
+    pub(crate) head_pad: u32,
     pub a: u64,
     pub b: u64,
     pub c: u64,
@@ -578,6 +581,30 @@ pub(crate) struct Instr {
 
 impl Instr {
     pub(crate) fn new(op: Op, flags: u16, a: u64, b: u64, c: u64) -> Self {
-        Instr { op, flags, a, b, c }
+        Instr {
+            op,
+            flags,
+            head_pad: 0,
+            a,
+            b,
+            c,
+        }
+    }
+
+    #[inline]
+    pub(crate) const fn packed_head(self) -> u32 {
+        self.op as u32 | (self.flags as u32) << 16
+    }
+
+    #[inline]
+    pub(crate) const fn from_packed_head(head: u32, a: u64, b: u64, c: u64) -> Self {
+        Self {
+            op: op_from_index((head & 0xffff) as usize),
+            flags: (head >> 16) as u16,
+            head_pad: 0,
+            a,
+            b,
+            c,
+        }
     }
 }
