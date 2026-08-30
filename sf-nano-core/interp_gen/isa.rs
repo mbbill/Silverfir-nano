@@ -15,15 +15,20 @@ use super::asm::Asm;
 use super::instr::Op;
 use super::layout::{Cls, DstCls, PairDstCls};
 
-/// Shared ordering of the target-specific multi-cell handler table. The
-/// build script copies these offsets into the generated runtime facts file,
-/// so the library never needs to compile generator-only ABI declarations.
+/// Shared ordering of the target-specific appended handler table. The build
+/// script copies these offsets into the generated runtime facts file, so the
+/// library never needs to compile generator-only ABI declarations.
 pub const SUPER_MOVPAIR_LOAD_STORE_BRIF: usize = 0;
 pub const SUPER_ADD4: usize = 1;
 pub const SUPER_ADD_BRNE: usize = 2;
 pub const SUPER_SHRU_AND: usize = 3;
 pub const SUPER_AND_BREQ: usize = 4;
-pub const SUPER_HANDLER_SLOTS: usize = 5;
+/// Three register-source variants, in [`Cls::Acc`], [`Cls::L0`],
+/// [`Cls::L1`] order. They are single-cell replacements selected only for
+/// link-time-proven backward branches.
+pub const SUPER_BACKEDGE_BRIF_REG_BASE: usize = 5;
+pub const SUPER_BACKEDGE_BRIFNOT_REG_BASE: usize = 8;
+pub const SUPER_HANDLER_SLOTS: usize = 11;
 
 /// Build-time-only views of [`PairDstCls`]: which destination class the
 /// first and second results of a pair op land in. Only the generator asks
