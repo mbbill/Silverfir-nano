@@ -1609,6 +1609,252 @@ mod tests {
     use crate::collections::{vec, Vec};
     use crate::vm::interpreter::predecode::linker_test_function;
 
+    #[cfg(sf_has_apple_arm64_interp_supers)]
+    struct ForcedPinnedLinkFunction {
+        code_len: usize,
+        pin: Pinned,
+    }
+
+    #[cfg(sf_has_apple_arm64_interp_supers)]
+    impl LinkFunction for ForcedPinnedLinkFunction {
+        fn code_start(&self) -> usize {
+            0
+        }
+
+        fn code_len(&self) -> usize {
+            self.code_len
+        }
+
+        fn pinned(&self) -> Pinned {
+            self.pin
+        }
+
+        fn br_table_count(&self) -> usize {
+            0
+        }
+
+        fn br_table(&self, _index: usize) -> Option<&[u32]> {
+            None
+        }
+
+        fn has_exception_handlers_at(&self, _pc: u32) -> bool {
+            false
+        }
+    }
+
+    /// Link `code` after a separately linked function, returning its final
+    /// dispatch cells. The prefix makes the tested function start at cell 3,
+    /// so SuperWindow's absolute ring indices exercise a non-zero boundary.
+    #[cfg(sf_has_apple_arm64_interp_supers)]
+    fn link_super_test_cells(
+        engine: &NativeEngine,
+        prefix: &[Instr],
+        code: &[Instr],
+        pin: Pinned,
+    ) -> Vec<DCell> {
+        let planned_cells = prefix.len() + 1 + code.len() + 1;
+        let mut plan = LinkPlan {
+            cells: Vec::with_capacity(planned_cells),
+            heads: Vec::new(),
+            br_flat: Vec::new(),
+            call_fixups: Vec::with_capacity(2),
+            planned_cells,
+            planned_br_entries: 0,
+            linked_cells: 0,
+            in_place: false,
+        };
+        let mut scratch = LinkScratch::default();
+        let mut indirect_types = Vec::new();
+        let prefix_func = ForcedPinnedLinkFunction {
+            code_len: prefix.len(),
+            pin,
+        };
+        let _ = engine.link_source(
+            &prefix_func,
+            BorrowedCode(prefix),
+            0,
+            &mut plan,
+            &mut scratch,
+            &mut indirect_types,
+        );
+        let func = ForcedPinnedLinkFunction {
+            code_len: code.len(),
+            pin,
+        };
+        let linked = engine.link_source(
+            &func,
+            BorrowedCode(code),
+            1,
+            &mut plan,
+            &mut scratch,
+            &mut indirect_types,
+        );
+        plan.finish_layout();
+        plan.cells(&linked).to_vec()
+    }
+
+    #[cfg(sf_has_apple_arm64_interp_supers)]
+    #[test]
+    fn apple_super_fusions_select_linked_handlers_at_nonzero_cell_start() {
+        let engine = NativeEngine::new();
+        let pin = Pinned {
+            l0: 0,
+            l1: 1,
+            l0_float: false,
+            l1_float: false,
+        };
+        let prefix = [
+            Instr::new(Op::MovConst, FLAG_A_CONST, 7, 0, 6),
+            Instr::new(Op::Return, 0, 0, 0, 0),
+        ];
+        let cases = [
+            (
+                "ordered list step",
+                vec![
+                    Instr::new(Op::MovPair, 0, 0, 2, (3 << 32) | 0),
+                    Instr::new(Op::I32_Load, FLAG_A_ACC, 0, 0, 2),
+                    Instr::new(Op::I32_Store, 0, 0, 3, 0),
+                    Instr::new(Op::BrIf, 0, 2, 0, 0),
+                ],
+                0,
+                INTERP_SUPER_MOVPAIR_LOAD_STORE_BRIF,
+            ),
+            (
+                "four dependent adds",
+                vec![
+                    Instr::new(Op::MovConst, FLAG_A_CONST | FLAG_DST_ACC, 9, 0, 2),
+                    Instr::new(Op::I32_Add, FLAG_A_ACC | FLAG_DST_ACC, 2, 1, 2),
+                    Instr::new(Op::I32_Add, FLAG_B_ACC, 3, 2, 1),
+                    Instr::new(Op::I32_Add, 0, 0, 4, 0),
+                    Instr::new(Op::I32_Add, FLAG_B_CONST, 5, 4, 5),
+                ],
+                1,
+                INTERP_SUPER_ADD4,
+            ),
+            (
+                "add then not-equal branch",
+                vec![
+                    Instr::new(Op::I32_Add, FLAG_B_CONST, 2, 7, 2),
+                    Instr::new(Op::I32_BrNe, FLAG_B_ACC, 3, 2, 0),
+                ],
+                0,
+                INTERP_SUPER_ADD_BRNE,
+            ),
+            (
+                "shift then mask",
+                vec![
+                    Instr::new(Op::MovConst, FLAG_A_CONST | FLAG_DST_ACC, 9, 0, 2),
+                    Instr::new(
+                        Op::I32_ShrU,
+                        FLAG_A_ACC | FLAG_B_CONST | FLAG_DST_ACC,
+                        2,
+                        37,
+                        3,
+                    ),
+                    Instr::new(Op::I32_And, FLAG_A_ACC | FLAG_B_CONST, 3, 0xff, 4),
+                ],
+                1,
+                INTERP_SUPER_SHRU_AND,
+            ),
+            (
+                "mask then equal branch",
+                vec![
+                    Instr::new(Op::I32_And, FLAG_B_CONST, 2, 0xff, 3),
+                    Instr::new(Op::I32_BrEq, FLAG_A_ACC | FLAG_B_CONST, 3, 7, 0),
+                ],
+                0,
+                INTERP_SUPER_AND_BREQ,
+            ),
+        ];
+
+        for (name, code, start, slot) in cases {
+            let cells = link_super_test_cells(&engine, &prefix, &code, pin);
+            let expected = engine
+                .super_handler_at(slot)
+                .expect("Apple ARM64 superhandler slot");
+            assert_eq!(
+                cells[start].h, expected as u64,
+                "{name} must replace its first linked handler"
+            );
+        }
+    }
+
+    #[cfg(sf_has_apple_arm64_interp_supers)]
+    #[test]
+    fn apple_super_fusions_reject_alias_constant_and_function_boundary_changes() {
+        let engine = NativeEngine::new();
+        let pin = Pinned {
+            l0: 0,
+            l1: 1,
+            l0_float: false,
+            l1_float: false,
+        };
+        let benign_prefix = [
+            Instr::new(Op::MovConst, FLAG_A_CONST, 7, 0, 6),
+            Instr::new(Op::Return, 0, 0, 0, 0),
+        ];
+
+        // MovPair reads its second source after committing destination 1.
+        // Aliasing those slots changes the value observed by the load and
+        // must keep the ordered ordinary handlers.
+        let list_alias = vec![
+            Instr::new(Op::MovPair, 0, 0, 3, (3 << 32) | 0),
+            Instr::new(Op::I32_Load, FLAG_A_ACC, 0, 0, 3),
+            Instr::new(Op::I32_Store, 0, 0, 3, 0),
+            Instr::new(Op::BrIf, 0, 3, 0, 0),
+        ];
+        let cells = link_super_test_cells(&engine, &benign_prefix, &list_alias, pin);
+        let ordinary = engine.handler_for(&list_alias[0], list_alias[0].flags, &pin);
+        assert_ne!(ordinary, 0);
+        assert_eq!(cells[0].h, ordinary as u64);
+        assert_ne!(
+            cells[0].h,
+            engine
+                .super_handler_at(INTERP_SUPER_MOVPAIR_LOAD_STORE_BRIF)
+                .expect("list-step superhandler") as u64
+        );
+
+        // The emitted fourth add uses an immediate #4. No other constant is
+        // semantically interchangeable with that handler.
+        let add8 = vec![
+            Instr::new(Op::MovConst, FLAG_A_CONST | FLAG_DST_ACC, 9, 0, 2),
+            Instr::new(Op::I32_Add, FLAG_A_ACC | FLAG_DST_ACC, 2, 1, 2),
+            Instr::new(Op::I32_Add, FLAG_B_ACC, 3, 2, 1),
+            Instr::new(Op::I32_Add, 0, 0, 4, 0),
+            Instr::new(Op::I32_Add, FLAG_B_CONST, 5, 8, 5),
+        ];
+        let cells = link_super_test_cells(&engine, &benign_prefix, &add8, pin);
+        let ordinary = engine.handler_for(&add8[1], add8[1].flags, &pin);
+        assert_ne!(ordinary, 0);
+        assert_eq!(cells[1].h, ordinary as u64);
+        assert_ne!(
+            cells[1].h,
+            engine
+                .super_handler_at(INTERP_SUPER_ADD4)
+                .expect("add4 superhandler") as u64
+        );
+
+        // Even if the preceding function ends with the first three add4
+        // cells, a one-cell function cannot complete that rolling window.
+        let add4_prefix = vec![
+            Instr::new(Op::MovConst, FLAG_A_CONST | FLAG_DST_ACC, 9, 0, 2),
+            Instr::new(Op::I32_Add, FLAG_A_ACC | FLAG_DST_ACC, 2, 1, 2),
+            Instr::new(Op::I32_Add, FLAG_B_ACC, 3, 2, 1),
+            Instr::new(Op::I32_Add, 0, 0, 4, 0),
+        ];
+        let last_add = [Instr::new(Op::I32_Add, FLAG_B_CONST, 5, 4, 5)];
+        let cells = link_super_test_cells(&engine, &add4_prefix, &last_add, pin);
+        let ordinary = engine.handler_for(&last_add[0], last_add[0].flags, &pin);
+        assert_ne!(ordinary, 0);
+        assert_eq!(cells[0].h, ordinary as u64);
+        assert_ne!(
+            cells[0].h,
+            engine
+                .super_handler_at(INTERP_SUPER_ADD4)
+                .expect("add4 superhandler") as u64
+        );
+    }
+
     #[cfg(sf_has_apple_arm64_interp_tuning)]
     #[test]
     fn apple_backedge_branch_bank_selects_only_pinned_sources_and_backward_targets() {
