@@ -1690,7 +1690,7 @@ mod tests {
             &mut indirect_types,
         );
         plan.finish_layout();
-        plan.cells(&linked).to_vec()
+        plan.cells(&linked).to_vec().into()
     }
 
     #[cfg(sf_has_apple_arm64_interp_supers)]
