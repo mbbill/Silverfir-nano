@@ -25,6 +25,8 @@ use super::layout::slot_fields;
 use super::layout::{
     c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
 };
+#[cfg(sf_has_apple_arm64_interp_tuning)]
+use super::layout::{op_base, Cls};
 use super::predecode::LinkFunction;
 #[cfg(test)]
 use super::predecode::PredecodedFunction;
@@ -53,8 +55,8 @@ extern "C" {
     /// of the `Op` set, which Rust cannot spell in an `extern` array type
     /// without duplicating it as a literal.
     static sf_interp_handlers: u32;
-    /// Target-specific multi-cell handler offsets.
-    #[cfg(sf_has_apple_arm64_interp_supers)]
+    /// Target-specific appended handler offsets.
+    #[cfg(sf_has_apple_arm64_interp_tuning)]
     static sf_interp_supers: u32;
 }
 
@@ -881,7 +883,7 @@ pub(super) const NATIVE_CALLS: bool = INTERP_NATIVE_CALLS;
 pub(super) struct NativeEngine {
     base: usize,
     handlers: *const u32,
-    #[cfg(sf_has_apple_arm64_interp_supers)]
+    #[cfg(sf_has_apple_arm64_interp_tuning)]
     supers: *const u32,
     slow_stub: usize,
     call_handler: usize,
@@ -911,7 +913,7 @@ impl NativeEngine {
         NativeEngine {
             base,
             handlers: unsafe { &sf_interp_handlers as *const u32 },
-            #[cfg(sf_has_apple_arm64_interp_supers)]
+            #[cfg(sf_has_apple_arm64_interp_tuning)]
             supers: unsafe { &sf_interp_supers as *const u32 },
             slow_stub,
             call_handler: base + meta[3] as usize,
@@ -964,11 +966,23 @@ impl NativeEngine {
         }
     }
 
-    #[cfg(sf_has_apple_arm64_interp_supers)]
+    #[cfg(sf_has_apple_arm64_interp_tuning)]
     fn super_handler_at(&self, slot: usize) -> Option<usize> {
         debug_assert!(slot < INTERP_SUPER_HANDLER_SLOTS);
         let off = unsafe { *self.supers.add(slot) };
         (off != 0).then_some(self.base + off as usize)
+    }
+
+    #[cfg(all(test, sf_has_apple_arm64_interp_tuning))]
+    pub(super) fn is_backedge_branch_handler(&self, op: Op, handler: usize) -> bool {
+        let base = if op == Op::BrIf {
+            INTERP_SUPER_BACKEDGE_BRIF_REG_BASE
+        } else if op == Op::BrIfNot {
+            INTERP_SUPER_BACKEDGE_BRIFNOT_REG_BASE
+        } else {
+            return false;
+        };
+        (0..3).any(|index| self.super_handler_at(base + index) == Some(handler))
     }
 
     /// Handler address for one cell under a given pinned-local choice, or
@@ -1068,6 +1082,40 @@ impl NativeEngine {
             state.flags &= !FLAG_DST_ACC;
             state.handler = self.handler_for(ins, state.flags, pin);
         }
+    }
+
+    /// Replace a scalar register-source conditional branch with its appended
+    /// Apple ARM64 handler only when the still-raw target index names the same
+    /// or an earlier cell. This runs after accumulator resolution, so the
+    /// class agrees with the final flags installed in the dispatch cell.
+    #[cfg(sf_has_apple_arm64_interp_tuning)]
+    fn backedge_branch_handler(
+        &self,
+        ins: &Instr,
+        index: usize,
+        ordinary: usize,
+        flags: u16,
+        pin: &Pinned,
+    ) -> usize {
+        if ordinary == 0 || !matches!(ins.op, Op::BrIf | Op::BrIfNot) || ins.c > index as u64 {
+            return ordinary;
+        }
+        let Some(slot) = op_slot(ins, flags, pin) else {
+            return ordinary;
+        };
+        let Some(class_index) = slot.checked_sub(op_base(ins.op) as usize) else {
+            return ordinary;
+        };
+        if !(Cls::Acc.index()..=Cls::L1.index()).contains(&class_index) {
+            return ordinary;
+        }
+        let base = if ins.op == Op::BrIf {
+            INTERP_SUPER_BACKEDGE_BRIF_REG_BASE
+        } else {
+            INTERP_SUPER_BACKEDGE_BRIFNOT_REG_BASE
+        };
+        let super_slot = base + class_index - Cls::Acc.index();
+        self.super_handler_at(super_slot).unwrap_or(ordinary)
     }
 
     /// The former whole-function resolver, retained only as a differential
@@ -1268,8 +1316,12 @@ impl NativeEngine {
                 self.push_cell(
                     plan,
                     cell_start + prev_index,
+                    #[cfg(sf_has_apple_arm64_interp_tuning)]
+                    prev_index,
                     &prev_ins,
                     prev,
+                    #[cfg(sf_has_apple_arm64_interp_tuning)]
+                    &pin,
                     cells_base,
                     br_base,
                     func,
@@ -1307,8 +1359,12 @@ impl NativeEngine {
             self.push_cell(
                 plan,
                 cell_start + prev_index,
+                #[cfg(sf_has_apple_arm64_interp_tuning)]
+                prev_index,
                 &prev_ins,
                 prev,
+                #[cfg(sf_has_apple_arm64_interp_tuning)]
+                &pin,
                 cells_base,
                 br_base,
                 func,
@@ -1394,8 +1450,10 @@ impl NativeEngine {
         &self,
         plan: &mut LinkPlan,
         cell_index: usize,
+        #[cfg(sf_has_apple_arm64_interp_tuning)] local_index: usize,
         ins: &Instr,
         state: ResolvedCell,
+        #[cfg(sf_has_apple_arm64_interp_tuning)] pin: &Pinned,
         cells_base: u64,
         br_base: u64,
         func: &F,
@@ -1403,6 +1461,10 @@ impl NativeEngine {
     ) {
         let fl = state.flags;
         let mut h = Some(state.handler).filter(|&h| h != 0);
+        #[cfg(sf_has_apple_arm64_interp_tuning)]
+        if let Some(ordinary) = h {
+            h = Some(self.backedge_branch_handler(ins, local_index, ordinary, fl, pin));
+        }
         // A 32-bit host reads a cell's static offset as one machine
         // word, so a wasm offset that does not fit in 32 bits cannot
         // run natively — the handler would silently use the truncated
@@ -1471,6 +1533,149 @@ mod tests {
     use super::*;
     use crate::collections::{vec, Vec};
     use crate::vm::interpreter::predecode::linker_test_function;
+
+    #[cfg(sf_has_apple_arm64_interp_tuning)]
+    #[test]
+    fn apple_backedge_branch_bank_selects_only_register_sources_and_backward_targets() {
+        let engine = NativeEngine::new();
+        let pin = Pinned {
+            l0: 3,
+            l1: 5,
+            l0_float: false,
+            l1_float: false,
+        };
+        let sources = [
+            ("slot", 0, 7, None),
+            ("const", FLAG_A_CONST, 7, None),
+            ("acc", FLAG_A_ACC, 7, Some(0usize)),
+            ("l0", 0, pin.l0, Some(1usize)),
+            ("l1", 0, pin.l1, Some(2usize)),
+        ];
+
+        for (op, base) in [
+            (Op::BrIf, INTERP_SUPER_BACKEDGE_BRIF_REG_BASE),
+            (Op::BrIfNot, INTERP_SUPER_BACKEDGE_BRIFNOT_REG_BASE),
+        ] {
+            for (name, flags, operand, register_index) in sources {
+                for (target, backward) in [(2, true), (8, true), (9, false)] {
+                    let ins = Instr::new(op, flags, operand, 0, target);
+                    let ordinary = engine.handler_for(&ins, flags, &pin);
+                    assert_ne!(ordinary, 0, "{op:?}/{name} must have an ordinary handler");
+                    let selected = engine.backedge_branch_handler(&ins, 8, ordinary, flags, &pin);
+
+                    let expected = if backward {
+                        register_index
+                            .and_then(|index| engine.super_handler_at(base + index))
+                            .unwrap_or(ordinary)
+                    } else {
+                        ordinary
+                    };
+                    assert_eq!(selected, expected, "{op:?}/{name} backward={backward}");
+                    assert_eq!(
+                        selected != ordinary,
+                        backward && register_index.is_some(),
+                        "{op:?}/{name} specialization boundary"
+                    );
+                }
+            }
+        }
+
+        // op_slot gives a pinned payload precedence over an ACC hint. The
+        // specialized selection must inherit that exact linker rule rather
+        // than interpreting flags and payload independently.
+        let ins = Instr::new(Op::BrIf, FLAG_A_ACC, pin.l0, 0, 2);
+        let ordinary = engine.handler_for(&ins, FLAG_A_ACC, &pin);
+        assert_eq!(
+            engine.backedge_branch_handler(&ins, 8, ordinary, FLAG_A_ACC, &pin),
+            engine
+                .super_handler_at(INTERP_SUPER_BACKEDGE_BRIF_REG_BASE + 1)
+                .expect("l0 backedge handler")
+        );
+
+        let float_pin = Pinned {
+            l0_float: true,
+            ..pin
+        };
+        let ins = Instr::new(Op::BrIf, 0, float_pin.l0, 0, 2);
+        let ordinary = engine.handler_for(&ins, 0, &float_pin);
+        assert_eq!(
+            engine.backedge_branch_handler(&ins, 8, ordinary, 0, &float_pin),
+            ordinary,
+            "an integer branch cannot consume a float-pinned source register"
+        );
+    }
+
+    #[cfg(sf_has_apple_arm64_interp_tuning)]
+    #[test]
+    fn apple_backedge_selection_uses_function_local_indices_at_materialization() {
+        let engine = NativeEngine::new();
+        let mut first_code = Vec::new();
+        for slot in 0..16 {
+            first_code.push(Instr::new(Op::MovConst, FLAG_A_CONST, slot, 0, slot));
+        }
+        first_code.push(Instr::new(Op::Return, 0, 0, 0, 0));
+        let first = linker_test_function(first_code, Vec::new(), 16);
+
+        let second_code = vec![
+            Instr::new(Op::MovConst, FLAG_A_CONST | FLAG_DST_ACC, 1, 0, 7),
+            // Forward in this function, despite its raw target being below
+            // the module-global arena index after `first` is linked.
+            Instr::new(Op::BrIf, FLAG_A_ACC, 7, 0, 3),
+            Instr::new(Op::MovConst, FLAG_A_CONST | FLAG_DST_ACC, 1, 0, 7),
+            // A legal self-backedge exercises the inclusive boundary.
+            Instr::new(Op::BrIfNot, FLAG_A_ACC, 7, 0, 3),
+            Instr::new(Op::Return, 0, 0, 0, 0),
+        ];
+        let second = linker_test_function(second_code, Vec::new(), 8);
+        let last_code = vec![
+            Instr::new(Op::MovConst, FLAG_A_CONST | FLAG_DST_ACC, 1, 0, 7),
+            Instr::new(Op::BrIf, FLAG_A_ACC, 7, 0, 0),
+        ];
+        let last = linker_test_function(last_code, Vec::new(), 8);
+        let mut plan = LinkPlan::for_functions([&first, &second, &last].into_iter());
+        let mut scratch = LinkScratch::default();
+        let mut indirect_types = Vec::new();
+        let _ = engine.link(&first, 0, &mut plan, &mut scratch, &mut indirect_types);
+        let linked = engine.link(&second, 1, &mut plan, &mut scratch, &mut indirect_types);
+        let last_linked = engine.link(&last, 2, &mut plan, &mut scratch, &mut indirect_types);
+        plan.finish_layout();
+
+        let pin = second.pinned();
+        let resolved = engine.resolve_reference(&second.code, &pin);
+        let cells = plan.cells(&linked);
+        assert_eq!(
+            cells[1].h, resolved[1].handler as u64,
+            "a forward target must keep the ordinary handler"
+        );
+        assert_eq!(
+            cells[3].h,
+            engine.backedge_branch_handler(
+                &second.code[3],
+                3,
+                resolved[3].handler,
+                resolved[3].flags,
+                &pin,
+            ) as u64,
+            "an intermediate push must specialize an inclusive self-backedge"
+        );
+        assert_ne!(cells[3].h, resolved[3].handler as u64);
+
+        let pin = last.pinned();
+        let resolved = engine.resolve_reference(&last.code, &pin);
+        let cells = plan.cells(&last_linked);
+        assert_eq!(
+            cells[1].h,
+            engine.backedge_branch_handler(
+                &last.code[1],
+                1,
+                resolved[1].handler,
+                resolved[1].flags,
+                &pin,
+            ) as u64,
+            "finish_last and the final push must specialize a backedge"
+        );
+        assert_ne!(cells[1].h, resolved[1].handler as u64);
+    }
 
     #[test]
     fn caller_call_fixup_gate_matches_the_legacy_match_for_all_ops_and_flags() {
@@ -1604,9 +1809,15 @@ mod tests {
         }
 
         let mut cells = Vec::with_capacity(func.code.len() + 1);
-        for (ins, state) in func.code.iter().zip(resolved) {
+        #[cfg(sf_has_apple_arm64_interp_tuning)]
+        let pin = func.pinned();
+        for (index, (ins, state)) in func.code.iter().zip(resolved).enumerate() {
             let flags = state.flags;
             let mut handler = Some(state.handler).filter(|&handler| handler != 0);
+            #[cfg(sf_has_apple_arm64_interp_tuning)]
+            if let Some(ordinary) = handler {
+                handler = Some(engine.backedge_branch_handler(ins, index, ordinary, flags, &pin));
+            }
             if INTERP_PTR_BYTES == 4 && !offset_fits_word(ins) {
                 handler = None;
             }
