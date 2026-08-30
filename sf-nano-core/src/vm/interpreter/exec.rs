@@ -5749,7 +5749,7 @@ mod tests {
                 native
                     .engine
                     .is_backedge_branch_handler(op, cell.h as usize),
-                "{export} must link to an Acc/L0/L1 backedge-bank handler"
+                "{export} must link to an L0/L1 backedge-bank handler"
             );
 
             let before = inst.dispatch_count();

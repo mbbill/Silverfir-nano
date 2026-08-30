@@ -25,8 +25,6 @@ use super::layout::slot_fields;
 use super::layout::{
     c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
 };
-#[cfg(sf_has_apple_arm64_interp_tuning)]
-use super::layout::{op_base, Cls};
 use super::predecode::LinkFunction;
 #[cfg(test)]
 use super::predecode::PredecodedFunction;
@@ -1084,7 +1082,7 @@ impl NativeEngine {
         }
     }
 
-    /// Replace a scalar register-source conditional branch with its appended
+    /// Replace a pinned-register-source conditional branch with its appended
     /// Apple ARM64 handler only when the still-raw target index names the same
     /// or an earlier cell. This runs after accumulator resolution, so the
     /// class agrees with the final flags installed in the dispatch cell.
@@ -1100,22 +1098,31 @@ impl NativeEngine {
         if ordinary == 0 || !matches!(ins.op, Op::BrIf | Op::BrIfNot) || ins.c > index as u64 {
             return ordinary;
         }
-        let Some(slot) = op_slot(ins, flags, pin) else {
+        // Conditional branches vary only over source A. Classify that one
+        // operand directly instead of re-entering the generic handler-table
+        // indexer during module linking. Keep the same Const > pinned > Acc
+        // precedence as `op_slot`.
+        let register_index = if flags & FLAG_A_CONST != 0 {
+            return ordinary;
+        } else if ins.a == pin.l0 && !pin.l0_float {
+            1
+        } else if ins.a == pin.l1 && !pin.l1_float {
+            2
+        } else if flags & FLAG_A_ACC != 0 {
+            // Accumulator branches are already dependency-optimal in the
+            // ordinary bank. Keeping them there also avoids perturbing the
+            // common GlobalGet -> BrIf countdown shape.
+            return ordinary;
+        } else {
             return ordinary;
         };
-        let Some(class_index) = slot.checked_sub(op_base(ins.op) as usize) else {
-            return ordinary;
-        };
-        if !(Cls::Acc.index()..=Cls::L1.index()).contains(&class_index) {
-            return ordinary;
-        }
         let base = if ins.op == Op::BrIf {
             INTERP_SUPER_BACKEDGE_BRIF_REG_BASE
         } else {
             INTERP_SUPER_BACKEDGE_BRIFNOT_REG_BASE
         };
-        let super_slot = base + class_index - Cls::Acc.index();
-        self.super_handler_at(super_slot).unwrap_or(ordinary)
+        self.super_handler_at(base + register_index)
+            .unwrap_or(ordinary)
     }
 
     /// The former whole-function resolver, retained only as a differential
@@ -1461,10 +1468,6 @@ impl NativeEngine {
     ) {
         let fl = state.flags;
         let mut h = Some(state.handler).filter(|&h| h != 0);
-        #[cfg(sf_has_apple_arm64_interp_tuning)]
-        if let Some(ordinary) = h {
-            h = Some(self.backedge_branch_handler(ins, local_index, ordinary, fl, pin));
-        }
         // A 32-bit host reads a cell's static offset as one machine
         // word, so a wasm offset that does not fit in 32 bits cannot
         // run natively — the handler would silently use the truncated
@@ -1485,6 +1488,8 @@ impl NativeEngine {
                 }
             }
             Some(h) => {
+                #[cfg(sf_has_apple_arm64_interp_tuning)]
+                let mut h = h;
                 let a = if fl & FLAG_A_CONST != 0 {
                     ins.a
                 } else {
@@ -1492,6 +1497,10 @@ impl NativeEngine {
                 };
                 let (b, mut c) = transform_bc(ins, fl);
                 if c_is_branch_target(ins.op) {
+                    #[cfg(sf_has_apple_arm64_interp_tuning)]
+                    if matches!(ins.op, Op::BrIf | Op::BrIfNot) && ins.c <= local_index as u64 {
+                        h = self.backedge_branch_handler(ins, local_index, h, fl, pin);
+                    }
                     c += cells_base;
                 }
                 DCell {
@@ -1536,7 +1545,7 @@ mod tests {
 
     #[cfg(sf_has_apple_arm64_interp_tuning)]
     #[test]
-    fn apple_backedge_branch_bank_selects_only_register_sources_and_backward_targets() {
+    fn apple_backedge_branch_bank_selects_only_pinned_sources_and_backward_targets() {
         let engine = NativeEngine::new();
         let pin = Pinned {
             l0: 3,
@@ -1547,7 +1556,7 @@ mod tests {
         let sources = [
             ("slot", 0, 7, None),
             ("const", FLAG_A_CONST, 7, None),
-            ("acc", FLAG_A_ACC, 7, Some(0usize)),
+            ("acc", FLAG_A_ACC, 7, None),
             ("l0", 0, pin.l0, Some(1usize)),
             ("l1", 0, pin.l1, Some(2usize)),
         ];
