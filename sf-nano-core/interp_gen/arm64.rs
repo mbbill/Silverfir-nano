@@ -876,10 +876,20 @@ impl Isa for Arm64 {
             Return => return self.emit_return(a, v),
             Br => {
                 self.bump(a, v.counted);
-                a.ins("ldr x12, [x19, #24]");
-                a.ins("mov x19, x12"); // c is an absolute cell address
-                a.ins("ldr x9, [x19]");
-                a.ins("br x9");
+                if self.apple_tuning {
+                    // Publish the absolute target cell directly into the PC
+                    // register. The unreachable pad keeps later handler
+                    // addresses unchanged, isolating the dynamic saving.
+                    a.ins("ldr x19, [x19, #24]");
+                    a.ins("ldr x9, [x19]");
+                    a.ins("br x9");
+                    a.ins("nop");
+                } else {
+                    a.ins("ldr x12, [x19, #24]");
+                    a.ins("mov x19, x12"); // c is an absolute cell address
+                    a.ins("ldr x9, [x19]");
+                    a.ins("br x9");
+                }
                 return;
             }
             BrIf | BrIfNot => {

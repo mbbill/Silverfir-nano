@@ -6255,6 +6255,58 @@ mod tests {
     }
 
     #[test]
+    fn unconditional_loop_branch_stays_native() {
+        let src = r#"(module
+            (func (export "sum") (param $n i32) (result i32)
+                (local $total i32)
+                (block $done
+                    (loop $again
+                        local.get $n
+                        i32.eqz
+                        br_if $done
+                        local.get $total
+                        local.get $n
+                        i32.add
+                        local.set $total
+                        local.get $n
+                        i32.const 1
+                        i32.sub
+                        local.set $n
+                        br $again))
+                local.get $total))"#;
+        let (bin, _) = instantiate(src);
+        let module = Module::new("native-unconditional-branch", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let sum = inst.find_export("sum").expect("sum");
+        let (branch, _, _) = linked_cell_for_op(&inst, sum, Op::Br);
+        assert_ne!(
+            branch.h,
+            inst.native
+                .as_ref()
+                .expect("native state")
+                .engine
+                .slow_stub_addr(),
+            "the loop back edge must use a native Br handler"
+        );
+
+        let mut result = [u64::MAX];
+        inst.invoke(sum, &[100], &mut result).expect("invoke");
+        assert_eq!(result[0], 5050);
+        assert!(
+            inst.slow_exit_stats()
+                .iter()
+                .all(|&(op, exits)| op != Op::Br || exits == 0),
+            "the native back edge must not exit through the shared executor"
+        );
+    }
+
+    #[test]
     fn try_table_catches_in_the_same_function() {
         // A same-function throw follows the same runtime exception path as a
         // cross-call throw; only the unwind search stops in the current
