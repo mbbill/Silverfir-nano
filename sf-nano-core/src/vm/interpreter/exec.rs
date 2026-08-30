@@ -590,13 +590,13 @@ pub struct InterpInstance {
     /// back into the module, so there is nothing to keep alive separately
     /// and nothing for an embedder to have to outlive.
     module: Module,
-    /// Published only after the shared instruction allocation has been
-    /// transferred into dispatch cells. Each defined body keeps the original
-    /// per-function `Rc` metadata and side-table vectors.
+    /// Published during initialization. A module with defined bodies publishes
+    /// these after transferring the shared instruction allocation into dispatch
+    /// cells; a bodyless module publishes its import slots directly.
     funcs: Option<Vec<Option<Rc<PredecodedFunction>>>>,
-    /// Owned stage-A arena. It exists only between `build` and the first
-    /// step of `initialize`, where link consumes it in place and publishes
-    /// immutable function metadata.
+    /// Owned stage-A arena. It exists only between `build` and the first step
+    /// of `initialize`, where it is either published directly for a bodyless
+    /// module or consumed in place by native linking.
     unlinked_funcs: Option<UnlinkedPredecodedFunctions>,
     /// Runtime state only the executor touches. Instance construction still
     /// builds it on every target -- doing so is what rejects
@@ -634,9 +634,9 @@ pub struct InterpInstance {
     /// owns the buffer and a re-entry must use a temporary pair.
     ///
     /// Keeping the owner slot present but empty lets instantiation avoid
-    /// allocating and zeroing 2 MiB of runtime-only storage. Predecode and
-    /// native linking remain eager; only memory that cannot be observed
-    /// before a call is deferred.
+    /// allocating and zeroing 2 MiB of runtime-only storage. Predecode and,
+    /// when there is a defined body, native linking remain eager; only memory
+    /// that cannot be observed before a call is deferred.
     config: Config,
     stack: Option<Vec<u64>>,
     ret_stack: Option<Vec<u64>>,
@@ -1048,10 +1048,10 @@ impl InterpInstance {
     }
 
     pub(in crate::vm) fn initialize(mut inst: Self) -> Result<Self, (Option<Self>, WasmError)> {
-        // Link the dispatch chain BEFORE the data segments: a partial
-        // instance handed back after a trap still has to be callable, and
-        // linking is not observable, so its position is free.
-        inst.enable_native_dispatch().map_err(|e| (None, e))?;
+        // Publish the function map and link any dispatch chain BEFORE the data
+        // segments: a partial instance handed back after a trap still has to be
+        // callable, and linking is not observable, so its position is free.
+        inst.initialize_functions().map_err(|e| (None, e))?;
         if let Err(e) = inst.apply_element_segments() {
             return Err((Some(inst), e));
         }
@@ -1695,32 +1695,42 @@ impl InterpInstance {
         Ok(())
     }
 
-    /// Native dispatch is the interpreter's only execution engine (the
-    /// stage-A Rust loop was removed after B validation; `exec_ins`
-    /// remains as the native chain's slow path). A target whose ISA has
-    /// no generated handler set fails instantiation cleanly here.
-
-    /// Link every predecoded function against the handler set that was
-    /// generated into this binary at build time. Nothing is emitted or
-    /// mapped here — the engine is already in `.text`.
     fn functions(&self) -> &[Option<Rc<PredecodedFunction>>] {
         self.funcs
             .as_deref()
-            .expect("interpreter functions must be published after link")
+            .expect("interpreter functions must be published after initialization")
     }
 
-    fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
-        let engine = NativeEngine::new();
-        let mut scratch = LinkScratch::default();
+    /// Publish every function's index-preserving entry. Defined bodies are
+    /// linked against the handler set generated into this binary at build
+    /// time; a bodyless module has no dispatch cells and publishes its import
+    /// slots directly. Nothing is emitted or mapped here.
+    ///
+    /// Native dispatch is the interpreter's only execution engine for defined
+    /// bodies (the stage-A Rust loop was removed after B validation;
+    /// `exec_ins` remains as the native chain's slow path). A target whose ISA
+    /// has no generated handler set therefore rejects only modules that need
+    /// one.
+    fn initialize_functions(&mut self) -> Result<(), WasmError> {
         let mut unlinked = self
             .unlinked_funcs
             .take()
             .ok_or_else(|| WasmError::internal("interpreter functions already linked"))?;
+        let function_count = unlinked.defined_count();
+        if function_count == 0 {
+            // Imports execute at the Rust host boundary and have no dispatch
+            // cells. Publish their index-preserving `None` slots without
+            // constructing an engine whose handlers can never be entered.
+            self.funcs = Some(unlinked.publish(None));
+            return Ok(());
+        }
+
+        let engine = NativeEngine::new();
+        let mut scratch = LinkScratch::default();
         #[cfg(test)]
         let test_code = Some(unlinked.clone_code_for_oracle());
         #[cfg(not(test))]
         let test_code = None;
-        let function_count = unlinked.defined_count();
         let br_entry_count = unlinked.br_entry_count();
         let instrs = unlinked.take_code();
         let mut plan = LinkPlan::from_instr_arena(instrs, function_count, br_entry_count);
@@ -1912,13 +1922,15 @@ impl InterpInstance {
         }
     }
 
-    /// Static adjacent-pair census over the predecoded streams: a pair
-    /// is counted only when the first op falls through (no control
-    /// transfer), i.e. exactly where a fused handler could replace two
-    /// dispatches with one. Descending by count.
+    /// Static adjacent-pair census over the predecoded streams: a pair is
+    /// counted only when the first op falls through (no control transfer),
+    /// i.e. exactly where a fused handler could replace two dispatches with
+    /// one. Descending by count; empty when there are no defined bodies.
     pub fn bigram_stats(&self) -> Vec<((Op, Op), u64)> {
         let mut map: tracked_alloc::BTreeMap<(u16, u16), u64> = tracked_alloc::BTreeMap::new();
-        let native = self.native.as_ref().expect("native state");
+        let Some(native) = self.native.as_ref() else {
+            return Vec::new();
+        };
         for function in native.linked.iter().flatten() {
             for w in native.plan.instruction_heads(function).windows(2) {
                 let first = (w[0] & 0xffff) as u16;
@@ -4811,10 +4823,13 @@ mod tests {
     }
 
     #[test]
-    fn imported_start_leaves_owner_stacks_unmaterialized() {
+    fn import_only_start_skips_native_state_and_owner_stacks() {
         let (bin, _) = instantiate(
             r#"(module
                 (import "host" "start" (func $start))
+                (memory 1)
+                (data (i32.const 0) "\2a")
+                (export "start" (func $start))
                 (start $start))"#,
         );
         let module = Module::new("imported-start-call-stacks", &bin).expect("module");
@@ -4827,14 +4842,15 @@ mod tests {
         );
         let calls = Rc::new(Cell::new(0usize));
         let host_calls = Rc::clone(&calls);
-        let host = InterpInstance::boxed_host(move |_module, _name, _memory, args, results| {
+        let host = InterpInstance::boxed_host(move |_module, _name, memory, args, results| {
             assert!(args.is_empty());
             assert!(results.is_empty());
+            assert_eq!(memory[0], 0x2a, "active data must precede the start call");
             host_calls.set(host_calls.get() + 1);
             Ok(())
         });
 
-        let inst = InterpInstance::new(
+        let mut inst = InterpInstance::new(
             &crate::vm::engine::Engine::with_defaults(),
             module,
             Some(host),
@@ -4843,6 +4859,18 @@ mod tests {
         .expect("instantiate");
 
         assert_eq!(calls.get(), 1, "the imported start must still execute");
+        let start = inst.find_export("start").expect("exported import");
+        inst.invoke(start, &[], &mut [])
+            .expect("invoke exported import without native state");
+        assert_eq!(calls.get(), 2, "the exported import must remain callable");
+        assert!(
+            inst.native.is_none(),
+            "a module without defined bodies has no native code to enter"
+        );
+        assert_eq!(inst.dispatch_count(), 0);
+        assert_eq!(inst.engine_code_len(), 0);
+        assert!(inst.bigram_stats().is_empty());
+        assert!(inst.slow_exit_stats().is_empty());
         assert!(
             inst.stack.as_ref().is_some_and(Vec::is_empty),
             "an imported start has no guest frame and must not allocate the owner stack"
