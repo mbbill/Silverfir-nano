@@ -468,19 +468,27 @@ struct ResolvedCell {
 #[cfg(sf_has_apple_arm64_interp_supers)]
 #[derive(Clone, Copy)]
 struct SuperCell {
-    ins: Instr,
-    state: ResolvedCell,
+    op: Op,
+    flags: u16,
+    handler: u64,
+    a: u64,
+    b: u64,
+    c: u64,
     index: usize,
 }
 
 /// Four-cell, allocation-free look-behind for the small Apple ARM64
-/// superhandler bank. It observes the link-resolved flags, so a demoted
-/// accumulator edge can never be mistaken for a live register dependency.
+/// superhandler bank.
+///
+/// The linked arena already retains every operand word. Only the resolved
+/// op/flag head is transient, so the rolling state is four `u32`s instead of
+/// four complete instruction and resolution records. Candidate opcodes read
+/// the preceding linked cells directly; all other cells pay one packed-head
+/// store and one opcode match.
 #[cfg(sf_has_apple_arm64_interp_supers)]
 struct SuperWindow {
-    cells: [Option<SuperCell>; 4],
-    next: usize,
-    len: usize,
+    heads: [u32; 4],
+    cell_start: usize,
     covered_until: usize,
 }
 
@@ -488,29 +496,43 @@ struct SuperWindow {
 impl SuperWindow {
     fn new(cell_start: usize) -> Self {
         Self {
-            cells: [None; 4],
-            next: 0,
-            len: 0,
+            heads: [0; 4],
+            cell_start,
             covered_until: cell_start,
         }
     }
 
-    fn back(&self, distance: usize) -> SuperCell {
-        debug_assert!(distance < self.len);
-        self.cells[(self.next + 3 - distance) & 3].expect("initialized super window cell")
+    fn cell(&self, plan: &LinkPlan, index: usize) -> SuperCell {
+        let head = self.heads[index & 3];
+        let cell = &plan.cells[index];
+        SuperCell {
+            op: super::instr::op_from_index((head & 0xffff) as usize),
+            flags: (head >> 16) as u16,
+            handler: cell.h,
+            a: cell.a,
+            b: cell.b,
+            c: cell.c,
+            index,
+        }
     }
 
-    fn push(&mut self, engine: &NativeEngine, plan: &mut LinkPlan, pin: &Pinned, cell: SuperCell) {
-        self.cells[self.next] = Some(cell);
-        self.next = (self.next + 1) & 3;
-        self.len = (self.len + 1).min(4);
+    fn push(
+        &mut self,
+        engine: &NativeEngine,
+        plan: &mut LinkPlan,
+        pin: &Pinned,
+        index: usize,
+        op: Op,
+        flags: u16,
+    ) {
+        self.heads[index & 3] = op as u32 | ((flags as u32) << 16);
 
-        let candidate = match cell.ins.op {
-            Op::BrIf => self.match_list_step(pin),
-            Op::I32_Add => self.match_add4(pin),
-            Op::I32_BrNe => self.match_add_brne(pin),
-            Op::I32_And => self.match_shru_and(pin),
-            Op::I32_BrEq => self.match_and_breq(pin),
+        let candidate = match op {
+            Op::BrIf => self.match_list_step(plan, pin, index, engine.slow_stub as u64),
+            Op::I32_Add => self.match_add4(plan, pin, index, engine.slow_stub as u64),
+            Op::I32_BrNe => self.match_add_brne(plan, pin, index, engine.slow_stub as u64),
+            Op::I32_And => self.match_shru_and(plan, pin, index, engine.slow_stub as u64),
+            Op::I32_BrEq => self.match_and_breq(plan, pin, index, engine.slow_stub as u64),
             _ => None,
         };
         let Some((slot, start, cells)) = candidate else {
@@ -526,129 +548,172 @@ impl SuperWindow {
         self.covered_until = start + cells;
     }
 
-    fn all_native(cells: &[SuperCell]) -> bool {
-        cells.iter().all(|cell| cell.state.handler != 0)
+    fn all_native(cells: &[SuperCell], slow_stub: u64) -> bool {
+        cells.iter().all(|cell| cell.handler != slow_stub)
     }
 
-    fn plain_int_slot(slot: u64, pin: &Pinned) -> bool {
-        slot != pin.l0 && slot != pin.l1
+    fn is_pin_offset(offset: u64, slot: u64) -> bool {
+        slot != u64::MAX && offset == slot * 8
+    }
+
+    fn plain_int_slot(offset: u64, pin: &Pinned) -> bool {
+        !Self::is_pin_offset(offset, pin.l0) && !Self::is_pin_offset(offset, pin.l1)
     }
 
     fn int_pins(pin: &Pinned) -> bool {
         pin.l0 != u64::MAX && pin.l1 != u64::MAX && !pin.l0_float && !pin.l1_float
     }
 
-    fn match_list_step(&self, pin: &Pinned) -> Option<(usize, usize, usize)> {
-        if self.len < 4 || !Self::int_pins(pin) {
+    fn match_list_step(
+        &self,
+        plan: &LinkPlan,
+        pin: &Pinned,
+        index: usize,
+        slow_stub: u64,
+    ) -> Option<(usize, usize, usize)> {
+        if index < self.cell_start + 3 || !Self::int_pins(pin) {
             return None;
         }
-        let cells = [self.back(3), self.back(2), self.back(1), self.back(0)];
+        let cells = [
+            self.cell(plan, index - 3),
+            self.cell(plan, index - 2),
+            self.cell(plan, index - 1),
+            self.cell(plan, index),
+        ];
         let [mov, load, store, branch] = cells;
-        let dst1 = mov.ins.c >> 32;
-        let dst2 = mov.ins.c & 0xffff_ffff;
-        if !Self::all_native(&cells)
-            || (mov.ins.op, mov.state.flags) != (Op::MovPair, 0)
-            || (load.ins.op, load.state.flags) != (Op::I32_Load, FLAG_A_ACC)
-            || (store.ins.op, store.state.flags) != (Op::I32_Store, 0)
-            || (branch.ins.op, branch.state.flags) != (Op::BrIf, 0)
-            || mov.ins.a != pin.l0
-            || dst2 != pin.l0
-            || !Self::plain_int_slot(mov.ins.b, pin)
+        let dst1 = mov.c >> 32;
+        let dst2 = mov.c & 0xffff_ffff;
+        if !Self::all_native(&cells, slow_stub)
+            || (mov.op, mov.flags) != (Op::MovPair, 0)
+            || (load.op, load.flags) != (Op::I32_Load, FLAG_A_ACC)
+            || (store.op, store.flags) != (Op::I32_Store, 0)
+            || (branch.op, branch.flags) != (Op::BrIf, 0)
+            || !Self::is_pin_offset(mov.a, pin.l0)
+            || !Self::is_pin_offset(dst2, pin.l0)
+            || !Self::plain_int_slot(mov.b, pin)
             || !Self::plain_int_slot(dst1, pin)
-            || mov.ins.b == dst1
-            || load.ins.a != dst2
-            || load.ins.b != 0
-            || load.ins.c != mov.ins.b
-            || store.ins.a != load.ins.a
-            || store.ins.b != dst1
-            || store.ins.c != load.ins.b
-            || branch.ins.a != load.ins.c
+            || mov.b == dst1
+            || load.a != dst2
+            || load.b != 0
+            || load.c != mov.b
+            || store.a != load.a
+            || store.b != dst1
+            || store.c != load.b
+            || branch.a != load.c
         {
             return None;
         }
         Some((INTERP_SUPER_MOVPAIR_LOAD_STORE_BRIF, mov.index, 4))
     }
 
-    fn match_add4(&self, pin: &Pinned) -> Option<(usize, usize, usize)> {
-        if self.len < 4 || !Self::int_pins(pin) {
+    fn match_add4(
+        &self,
+        plan: &LinkPlan,
+        pin: &Pinned,
+        index: usize,
+        slow_stub: u64,
+    ) -> Option<(usize, usize, usize)> {
+        if index < self.cell_start + 3 || !Self::int_pins(pin) {
             return None;
         }
-        let cells = [self.back(3), self.back(2), self.back(1), self.back(0)];
+        let cells = [
+            self.cell(plan, index - 3),
+            self.cell(plan, index - 2),
+            self.cell(plan, index - 1),
+            self.cell(plan, index),
+        ];
         let [a0, a1, a2, a3] = cells;
-        if !Self::all_native(&cells)
-            || (a0.ins.op, a0.state.flags) != (Op::I32_Add, FLAG_A_ACC | FLAG_DST_ACC)
-            || (a1.ins.op, a1.state.flags) != (Op::I32_Add, FLAG_B_ACC)
-            || (a2.ins.op, a2.state.flags) != (Op::I32_Add, 0)
-            || (a3.ins.op, a3.state.flags) != (Op::I32_Add, FLAG_B_CONST)
-            || a0.ins.a != a0.ins.c
-            || !Self::plain_int_slot(a0.ins.a, pin)
-            || a0.ins.b != pin.l1
-            || a1.ins.b != a0.ins.c
-            || !Self::plain_int_slot(a1.ins.a, pin)
-            || a1.ins.c != pin.l1
-            || a2.ins.a != pin.l0
-            || a2.ins.c != pin.l0
-            || !Self::plain_int_slot(a2.ins.b, pin)
-            || a3.ins.a != a3.ins.c
-            || !Self::plain_int_slot(a3.ins.a, pin)
-            || a3.ins.b != 4
+        if !Self::all_native(&cells, slow_stub)
+            || (a0.op, a0.flags) != (Op::I32_Add, FLAG_A_ACC | FLAG_DST_ACC)
+            || (a1.op, a1.flags) != (Op::I32_Add, FLAG_B_ACC)
+            || (a2.op, a2.flags) != (Op::I32_Add, 0)
+            || (a3.op, a3.flags) != (Op::I32_Add, FLAG_B_CONST)
+            || a0.a != a0.c
+            || !Self::plain_int_slot(a0.a, pin)
+            || !Self::is_pin_offset(a0.b, pin.l1)
+            || a1.b != a0.c
+            || !Self::plain_int_slot(a1.a, pin)
+            || !Self::is_pin_offset(a1.c, pin.l1)
+            || !Self::is_pin_offset(a2.a, pin.l0)
+            || !Self::is_pin_offset(a2.c, pin.l0)
+            || !Self::plain_int_slot(a2.b, pin)
+            || a3.a != a3.c
+            || !Self::plain_int_slot(a3.a, pin)
+            || a3.b != 4
         {
             return None;
         }
         Some((INTERP_SUPER_ADD4, a0.index, 4))
     }
 
-    fn match_add_brne(&self, pin: &Pinned) -> Option<(usize, usize, usize)> {
-        if self.len < 2 {
+    fn match_add_brne(
+        &self,
+        plan: &LinkPlan,
+        pin: &Pinned,
+        index: usize,
+        slow_stub: u64,
+    ) -> Option<(usize, usize, usize)> {
+        if index < self.cell_start + 1 {
             return None;
         }
-        let cells = [self.back(1), self.back(0)];
+        let cells = [self.cell(plan, index - 1), self.cell(plan, index)];
         let [add, branch] = cells;
-        if !Self::all_native(&cells)
-            || (add.ins.op, add.state.flags) != (Op::I32_Add, FLAG_B_CONST)
-            || (branch.ins.op, branch.state.flags) != (Op::I32_BrNe, FLAG_B_ACC)
-            || add.ins.a != add.ins.c
-            || branch.ins.b != add.ins.c
-            || !Self::plain_int_slot(add.ins.a, pin)
-            || !Self::plain_int_slot(branch.ins.a, pin)
+        if !Self::all_native(&cells, slow_stub)
+            || (add.op, add.flags) != (Op::I32_Add, FLAG_B_CONST)
+            || (branch.op, branch.flags) != (Op::I32_BrNe, FLAG_B_ACC)
+            || add.a != add.c
+            || branch.b != add.c
+            || !Self::plain_int_slot(add.a, pin)
+            || !Self::plain_int_slot(branch.a, pin)
         {
             return None;
         }
         Some((INTERP_SUPER_ADD_BRNE, add.index, 2))
     }
 
-    fn match_shru_and(&self, pin: &Pinned) -> Option<(usize, usize, usize)> {
-        if self.len < 2 {
+    fn match_shru_and(
+        &self,
+        plan: &LinkPlan,
+        pin: &Pinned,
+        index: usize,
+        slow_stub: u64,
+    ) -> Option<(usize, usize, usize)> {
+        if index < self.cell_start + 1 {
             return None;
         }
-        let cells = [self.back(1), self.back(0)];
+        let cells = [self.cell(plan, index - 1), self.cell(plan, index)];
         let [shift, and] = cells;
-        if !Self::all_native(&cells)
-            || (shift.ins.op, shift.state.flags)
-                != (Op::I32_ShrU, FLAG_A_ACC | FLAG_B_CONST | FLAG_DST_ACC)
-            || (and.ins.op, and.state.flags) != (Op::I32_And, FLAG_A_ACC | FLAG_B_CONST)
-            || and.ins.a != shift.ins.c
-            || !Self::plain_int_slot(shift.ins.a, pin)
-            || !Self::plain_int_slot(shift.ins.c, pin)
-            || !Self::plain_int_slot(and.ins.c, pin)
+        if !Self::all_native(&cells, slow_stub)
+            || (shift.op, shift.flags) != (Op::I32_ShrU, FLAG_A_ACC | FLAG_B_CONST | FLAG_DST_ACC)
+            || (and.op, and.flags) != (Op::I32_And, FLAG_A_ACC | FLAG_B_CONST)
+            || and.a != shift.c
+            || !Self::plain_int_slot(shift.a, pin)
+            || !Self::plain_int_slot(shift.c, pin)
+            || !Self::plain_int_slot(and.c, pin)
         {
             return None;
         }
         Some((INTERP_SUPER_SHRU_AND, shift.index, 2))
     }
 
-    fn match_and_breq(&self, pin: &Pinned) -> Option<(usize, usize, usize)> {
-        if self.len < 2 {
+    fn match_and_breq(
+        &self,
+        plan: &LinkPlan,
+        pin: &Pinned,
+        index: usize,
+        slow_stub: u64,
+    ) -> Option<(usize, usize, usize)> {
+        if index < self.cell_start + 1 {
             return None;
         }
-        let cells = [self.back(1), self.back(0)];
+        let cells = [self.cell(plan, index - 1), self.cell(plan, index)];
         let [and, branch] = cells;
-        if !Self::all_native(&cells)
-            || (and.ins.op, and.state.flags) != (Op::I32_And, FLAG_B_CONST)
-            || (branch.ins.op, branch.state.flags) != (Op::I32_BrEq, FLAG_A_ACC | FLAG_B_CONST)
-            || branch.ins.a != and.ins.c
-            || !Self::plain_int_slot(and.ins.a, pin)
-            || !Self::plain_int_slot(and.ins.c, pin)
+        if !Self::all_native(&cells, slow_stub)
+            || (and.op, and.flags) != (Op::I32_And, FLAG_B_CONST)
+            || (branch.op, branch.flags) != (Op::I32_BrEq, FLAG_A_ACC | FLAG_B_CONST)
+            || branch.a != and.c
+            || !Self::plain_int_slot(and.a, pin)
+            || !Self::plain_int_slot(and.c, pin)
         {
             return None;
         }
@@ -1339,11 +1404,9 @@ impl NativeEngine {
                     self,
                     plan,
                     &pin,
-                    SuperCell {
-                        ins: prev_ins,
-                        state: prev,
-                        index: cell_start + prev_index,
-                    },
+                    cell_start + prev_index,
+                    prev_ins.op,
+                    prev.flags,
                 );
                 if call_fixup_op(prev_ins.op) {
                     Self::record_call_fixup(
@@ -1382,11 +1445,9 @@ impl NativeEngine {
                 self,
                 plan,
                 &pin,
-                SuperCell {
-                    ins: prev_ins,
-                    state: prev,
-                    index: cell_start + prev_index,
-                },
+                cell_start + prev_index,
+                prev_ins.op,
+                prev.flags,
             );
             if call_fixup_op(prev_ins.op) {
                 Self::record_call_fixup(
