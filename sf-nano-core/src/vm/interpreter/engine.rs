@@ -1451,7 +1451,12 @@ impl NativeEngine {
         }
     }
 
-    #[inline]
+    // This is the per-cell body of the link loop. Leaving the inliner to its
+    // size heuristic turned the whole routine into one out-of-line call per
+    // instruction when the rare Apple backedge case was added. Keep the
+    // common cell materialization in the caller; the uncommon selector below
+    // remains independently outlined.
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn push_cell<F: LinkFunction + ?Sized>(
         &self,
