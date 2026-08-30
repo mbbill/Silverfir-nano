@@ -26,7 +26,7 @@ pub mod x86_64;
 
 use asm::{Asm, ObjFmt};
 use instr::{op_from_index, Op};
-use isa::{Isa, PairDstSplit, Stubs, Variant};
+use isa::{Isa, PairDstSplit, Stubs, Variant, SUPER_HANDLER_SLOTS};
 use layout::{family, op_base, total_slots, Cls, DstCls, Fam, PairDstCls, N_OPS};
 
 /// One emission group: a run of ops sharing a shape, in the order the
@@ -401,6 +401,11 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
         }
     }
 
+    // Target-specific multi-cell handlers are appended so no ordinary
+    // handler address or cache-line phase moves when this bank changes.
+    let super_labels = isa.emit_superhandlers(&mut a, &st, counting);
+    assert_eq!(super_labels.len(), SUPER_HANDLER_SLOTS);
+
     let end = a.local("sf_end");
     a.label(&end);
 
@@ -435,6 +440,17 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
             // Offset 0 is the blob base, which is never a handler, so it
             // doubles as the "no native form" sentinel.
             None => a.word(0),
+        }
+    }
+
+    if super_labels.iter().any(Option::is_some) {
+        a.align(2);
+        a.global_label("sf_interp_supers");
+        for label in super_labels.iter() {
+            match label {
+                Some(l) => a.code_off(l),
+                None => a.word(0),
+            }
         }
     }
 
