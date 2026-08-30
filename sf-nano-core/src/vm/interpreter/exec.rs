@@ -6198,6 +6198,40 @@ mod tests {
     }
 
     #[test]
+    fn byte_memory_bounds_cover_empty_last_end_and_large_offset() {
+        let empty = r#"(module (memory 0)
+            (func (export "load") (result i32)
+                i32.const 0 i32.load8_u)
+            (func (export "store") (result i32)
+                i32.const 0 i32.const 1 i32.store8
+                i32.const 0))"#;
+        assert!(matches!(run1(empty, "load", &[]), Err(WasmError::Trap(_))));
+        assert!(matches!(run1(empty, "store", &[]), Err(WasmError::Trap(_))));
+
+        let one_page = r#"(module (memory 1)
+            (func (export "last") (result i32)
+                i32.const 65535 i32.const 171 i32.store8
+                i32.const 65535 i32.load8_u)
+            (func (export "load_end") (result i32)
+                i32.const 65536 i32.load8_u)
+            (func (export "store_end") (result i32)
+                i32.const 65536 i32.const 1 i32.store8
+                i32.const 0)
+            (func (export "load_large") (result i32)
+                i32.const 1 i32.load8_u offset=4294967295)
+            (func (export "store_large") (result i32)
+                i32.const 1 i32.const 1 i32.store8 offset=4294967295
+                i32.const 0))"#;
+        assert_eq!(run1(one_page, "last", &[]).unwrap(), 171);
+        for export in ["load_end", "store_end", "load_large", "store_large"] {
+            assert!(
+                matches!(run1(one_page, export, &[]), Err(WasmError::Trap(_))),
+                "{export} must trap"
+            );
+        }
+    }
+
+    #[test]
     fn globals_counter() {
         let src = r#"(module (global $g (mut i32) (i32.const 5))
             (func (export "bump") (result i32)
