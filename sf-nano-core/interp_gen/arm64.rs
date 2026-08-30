@@ -9,7 +9,7 @@
 //!   x27 = return-stack limit                   x28 = value-stack limit
 //!   x8  = accumulator     x17 = l0     x14 = l1     x15 = dispatch counter
 //!   x7  = prefetched next handler word
-//!   x9-x13, x16 = scratch;  v16 = float acc, v17/v18 = float l0/l1
+//!   x6, x9-x13, x16 = scratch;  v16 = float acc, v17/v18 = float l0/l1
 //!   v0, v1 = float scratch;  sp belongs to the entry trampoline's frame
 //! ```
 //!
@@ -19,7 +19,10 @@
 
 use super::asm::Asm;
 use super::instr::Op;
-use super::isa::{Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS};
+use super::isa::{
+    Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS, SUPER_ADD4, SUPER_ADD_BRNE,
+    SUPER_AND_BREQ, SUPER_HANDLER_SLOTS, SUPER_MOVPAIR_LOAD_STORE_BRIF, SUPER_SHRU_AND,
+};
 use super::layout::{Cls, DstCls, Fam};
 
 const ACC: u32 = 8;
@@ -69,7 +72,11 @@ fn inv(c: &str) -> &'static str {
     }
 }
 
-pub struct Arm64;
+pub struct Arm64 {
+    /// Apple ARM64 gets the static superhandler bank. Other ARM64 targets
+    /// retain the ordinary handler blob and linker behavior.
+    pub superhandlers: bool,
+}
 
 impl Arm64 {
     /// Prefetch the NEXT cell's handler word at handler entry: the load
@@ -251,6 +258,134 @@ impl Arm64 {
         if !set {
             a.ins(&format!("movz {}, #0", x(rd)));
         }
+    }
+
+    /// `MovPair -> i32.load -> i32.store -> br_if` list walk. The linker
+    /// admits only the shape where the load and store use the same address
+    /// and width, so one bounds check preserves the original trap order.
+    fn emit_super_list_step(&self, a: &mut Asm, st: &Stubs, counted: bool) {
+        self.bump(a, counted);
+        a.ins("mov x6, x17"); // ordered copy source 1: old L0
+        a.ins("ldr x10, [x19, #16]"); // ordered copy source 2 slot
+        a.ins("ldr x11, [x20, x10]");
+        a.ins("ldr x13, [x19, #24]"); // dst1 << 32 | dst2
+        a.ins("lsr x10, x13, #32");
+        a.ins("str x6, [x20, x10]");
+        a.ins("ubfx x10, x13, #0, #32");
+        a.ins("str x11, [x20, x10]");
+        a.ins("mov x17, x11");
+
+        // Publish the load cell before its bounds check. A trap must resume
+        // at the load, after the ordered copies that already committed.
+        a.ins("add x19, x19, #32");
+        a.ins("ldr x12, [x19, #88]"); // final branch target
+        a.ins("ldr x9, [x12]");
+        a.ins("mov w10, w17"); // zero-extended memory address
+        a.ins("add x11, x10, #4");
+        a.ins("cmp x11, x23");
+        a.ins(&format!("b.hi {}", st.trap_oob));
+        a.ins("ldr w8, [x22, x10]");
+        a.ins("ldr x11, [x19, #24]"); // load destination slot
+        a.ins("str x8, [x20, x11]");
+        a.ins("str w6, [x22, x10]"); // store old L0 to same address
+
+        let fall = a.fresh("super_list_fall");
+        a.ins(&format!("cbz w8, {fall}"));
+        a.ins("mov x19, x12");
+        a.ins("br x9");
+        a.label(&fall);
+        a.ins("ldr x7, [x19, #96]");
+        a.ins("add x19, x19, #96");
+        a.ins("br x7");
+    }
+
+    /// Four exact accumulator/pinned/slot i32 adds used by the matrix inner
+    /// loop. Payload offsets remain dynamic; only the proven residency and
+    /// dependency shape is specialized.
+    fn emit_super_add4(&self, a: &mut Asm, counted: bool) {
+        self.bump(a, counted);
+        a.ins("add w8, w8, w14"); // Acc + L1 -> Acc
+
+        a.ins("ldr x10, [x19, #40]"); // cell 1 source A
+        a.ins("ldr x10, [x20, x10]");
+        a.ins("add w14, w10, w8"); // Slot + Acc -> L1
+        a.ins("ldr x11, [x19, #56]");
+        a.ins("str x14, [x20, x11]");
+
+        a.ins("ldr x10, [x19, #80]"); // cell 2 source B
+        a.ins("ldr x10, [x20, x10]");
+        a.ins("add w17, w17, w10"); // L0 + Slot -> L0
+        a.ins("ldr x11, [x19, #72]");
+        a.ins("str x17, [x20, x11]");
+
+        a.ins("ldr x10, [x19, #104]"); // cell 3 in-place slot
+        a.ins("ldr w8, [x20, x10]");
+        a.ins("add w8, w8, #4");
+        a.ins("str x8, [x20, x10]");
+        a.ins("ldr x7, [x19, #128]");
+        a.ins("add x19, x19, #128");
+        a.ins("br x7");
+    }
+
+    /// In-place constant add followed by `i32.ne` branch consuming the new
+    /// accumulator value.
+    fn emit_super_add_brne(&self, a: &mut Asm, counted: bool) {
+        self.bump(a, counted);
+        a.ins("ldr x10, [x19, #8]");
+        a.ins("ldr w8, [x20, x10]");
+        a.ins("ldr w11, [x19, #16]");
+        a.ins("add w8, w8, w11");
+        a.ins("str x8, [x20, x10]");
+        a.ins("ldr x12, [x19, #56]");
+        a.ins("ldr x9, [x12]");
+        a.ins("ldr x11, [x19, #40]");
+        a.ins("ldr w11, [x20, x11]");
+        a.ins("cmp w11, w8");
+        let fall = a.fresh("super_addne_fall");
+        a.ins(&format!("b.eq {fall}"));
+        a.ins("mov x19, x12");
+        a.ins("br x9");
+        a.label(&fall);
+        a.ins("ldr x7, [x19, #64]");
+        a.ins("add x19, x19, #64");
+        a.ins("br x7");
+    }
+
+    /// Accumulator shift-right followed by a constant mask.
+    fn emit_super_shru_and(&self, a: &mut Asm, counted: bool) {
+        self.bump(a, counted);
+        a.ins("ldr w11, [x19, #16]");
+        a.ins("lsr w8, w8, w11");
+        a.ins("ldr w11, [x19, #48]");
+        a.ins("and w8, w8, w11");
+        a.ins("ldr x10, [x19, #56]");
+        a.ins("str x8, [x20, x10]");
+        a.ins("ldr x7, [x19, #64]");
+        a.ins("add x19, x19, #64");
+        a.ins("br x7");
+    }
+
+    /// `i32.and` whose accumulator result feeds an equality branch.
+    fn emit_super_and_breq(&self, a: &mut Asm, counted: bool) {
+        self.bump(a, counted);
+        a.ins("ldr x10, [x19, #8]");
+        a.ins("ldr w10, [x20, x10]");
+        a.ins("ldr w11, [x19, #16]");
+        a.ins("and w8, w10, w11");
+        a.ins("ldr x10, [x19, #24]");
+        a.ins("str x8, [x20, x10]");
+        a.ins("ldr x12, [x19, #56]");
+        a.ins("ldr x9, [x12]");
+        a.ins("ldr w11, [x19, #48]");
+        a.ins("cmp w8, w11");
+        let fall = a.fresh("super_andeq_fall");
+        a.ins(&format!("b.ne {fall}"));
+        a.ins("mov x19, x12");
+        a.ins("br x9");
+        a.label(&fall);
+        a.ins("ldr x7, [x19, #64]");
+        a.ins("add x19, x19, #64");
+        a.ins("br x7");
     }
 }
 
@@ -592,6 +727,11 @@ impl Isa for Arm64 {
         a.ins("lsr x13, x9, #48");
         a.ins("str x13, [x26, #24]");
         a.ins("add x26, x26, #32");
+        // The callee's first handler is independent of frame initialization
+        // and pinned-local reloads. Start that load here so the final
+        // indirect branch does not wait on a fresh pointer chase.
+        a.ins("ubfx x24, x9, #0, #48");
+        a.ins("ldr x6, [x24]");
         a.ins("mov x20, x10");
         // zero the fresh locals: [n_params*8, n_locals*8)
         a.ins("ubfx x10, x12, #0, #16");
@@ -619,10 +759,8 @@ impl Isa for Arm64 {
         let cont = a.fresh("callcont");
         a.ins(&format!("tbnz x11, #31, {fp}"));
         a.label(&cont);
-        a.ins("ubfx x24, x9, #0, #48");
         a.ins("mov x19, x24");
-        a.ins("ldr x9, [x19]");
-        a.ins("br x9");
+        a.ins("br x6");
         a.label(&fp);
         a.ins("fmov d17, x17");
         a.ins("fmov d18, x14");
@@ -1134,6 +1272,48 @@ impl Isa for Arm64 {
         }
         self.tail(a, v.counted);
     }
+
+    fn emit_superhandlers(
+        &mut self,
+        a: &mut Asm,
+        st: &Stubs,
+        counting: bool,
+    ) -> Vec<Option<String>> {
+        let mut labels = vec![None; SUPER_HANDLER_SLOTS];
+        if !self.superhandlers {
+            return labels;
+        }
+        assert!(
+            !counting,
+            "interp-count must retain one ordinary handler per measured dispatch"
+        );
+
+        let label = a.fresh("super_list");
+        a.label(&label);
+        self.emit_super_list_step(a, st, counting);
+        labels[SUPER_MOVPAIR_LOAD_STORE_BRIF] = Some(label);
+
+        let label = a.fresh("super_add4");
+        a.label(&label);
+        self.emit_super_add4(a, counting);
+        labels[SUPER_ADD4] = Some(label);
+
+        let label = a.fresh("super_add_brne");
+        a.label(&label);
+        self.emit_super_add_brne(a, counting);
+        labels[SUPER_ADD_BRNE] = Some(label);
+
+        let label = a.fresh("super_shru_and");
+        a.label(&label);
+        self.emit_super_shru_and(a, counting);
+        labels[SUPER_SHRU_AND] = Some(label);
+
+        let label = a.fresh("super_and_breq");
+        a.label(&label);
+        self.emit_super_and_breq(a, counting);
+        labels[SUPER_AND_BREQ] = Some(label);
+        labels
+    }
 }
 
 impl Arm64 {
@@ -1189,6 +1369,9 @@ impl Arm64 {
         a.ins(&format!("cbnz x11, {cl}"));
         a.label(&pop);
         a.ins("ldp x13, x20, [x26, #-32]!");
+        // Overlap the caller continuation's handler load with the remaining
+        // return-record and pinned-local reloads.
+        a.ins("ldr x9, [x13]");
         a.ins("ldr x12, [x26, #16]"); // caller code | caller_l0off<<48
         a.ins("ldr x10, [x26, #24]"); // caller l1off
         a.ins("lsr x11, x12, #48");
@@ -1204,7 +1387,6 @@ impl Arm64 {
         a.ins("ldr x14, [x20, x10]");
         a.label(&join);
         a.ins("mov x19, x13");
-        a.ins("ldr x9, [x19]");
         a.ins("br x9");
         a.label(&fp);
         a.ins("sub x11, x11, #1");

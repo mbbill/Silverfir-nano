@@ -15,6 +15,16 @@ use super::asm::Asm;
 use super::instr::Op;
 use super::layout::{Cls, DstCls, PairDstCls};
 
+/// Shared ordering of the target-specific multi-cell handler table. The
+/// build script copies these offsets into the generated runtime facts file,
+/// so the library never needs to compile generator-only ABI declarations.
+pub const SUPER_MOVPAIR_LOAD_STORE_BRIF: usize = 0;
+pub const SUPER_ADD4: usize = 1;
+pub const SUPER_ADD_BRNE: usize = 2;
+pub const SUPER_SHRU_AND: usize = 3;
+pub const SUPER_AND_BREQ: usize = 4;
+pub const SUPER_HANDLER_SLOTS: usize = 5;
+
 /// Build-time-only views of [`PairDstCls`]: which destination class the
 /// first and second results of a pair op land in. Only the generator asks
 /// this question — the runtime library indexes the already-generated
@@ -150,4 +160,17 @@ pub trait Isa {
     /// Emit the handler body. The driver has already placed the entry
     /// label; the body must end in a dispatch tail on every path.
     fn emit_handler(&mut self, a: &mut Asm, st: &Stubs, v: &Variant);
+
+    /// Emit target-specific multi-cell handlers after every ordinary
+    /// handler, returning one label per shared superhandler slot. A zero
+    /// table entry on unsupported targets leaves linking byte-for-byte on
+    /// the ordinary path.
+    fn emit_superhandlers(
+        &mut self,
+        _a: &mut Asm,
+        _st: &Stubs,
+        _counting: bool,
+    ) -> Vec<Option<String>> {
+        vec![None; SUPER_HANDLER_SLOTS]
+    }
 }
