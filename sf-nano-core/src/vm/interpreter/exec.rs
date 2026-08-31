@@ -7008,6 +7008,172 @@ mod tests {
     }
 
     #[test]
+    fn local_calls_zero_fresh_locals_for_every_short_loop_shape() {
+        let src = r#"(module
+            (type $t (func (param i32) (result i64)))
+            (table 5 funcref)
+            (elem (i32.const 0) $zero $one $two $three $four)
+            (func $zero (type $t) (param $value i32) (result i64)
+                local.get $value
+                i64.extend_i32_u)
+            (func $one (type $t) (param $write i32) (result i64)
+                (local $a i64)
+                local.get $write
+                if
+                    i64.const 1
+                    local.set $a
+                end
+                local.get $a)
+            (func $two (type $t) (param $write i32) (result i64)
+                (local $a i64) (local $b i64)
+                local.get $write
+                if
+                    i64.const 1
+                    local.set $a
+                    i64.const 2
+                    local.set $b
+                end
+                local.get $a
+                local.get $b
+                i64.add)
+            (func $three (type $t) (param $write i32) (result i64)
+                (local $a i64) (local $b i64) (local $c i64)
+                local.get $write
+                if
+                    i64.const 1
+                    local.set $a
+                    i64.const 2
+                    local.set $b
+                    i64.const 4
+                    local.set $c
+                end
+                local.get $a
+                local.get $b
+                i64.add
+                local.get $c
+                i64.add)
+            (func $four (type $t) (param $write i32) (result i64)
+                (local $a i64) (local $b i64) (local $c i64) (local $d i64)
+                local.get $write
+                if
+                    i64.const 1
+                    local.set $a
+                    i64.const 2
+                    local.set $b
+                    i64.const 4
+                    local.set $c
+                    i64.const 8
+                    local.set $d
+                end
+                local.get $a
+                local.get $b
+                i64.add
+                local.get $c
+                i64.add
+                local.get $d
+                i64.add)
+            (func (export "direct") (result i64)
+                i32.const 73
+                call $zero
+                i32.const 1
+                call $one
+                drop
+                i32.const 0
+                call $one
+                i64.add
+                i32.const 1
+                call $two
+                drop
+                i32.const 0
+                call $two
+                i64.add
+                i32.const 1
+                call $three
+                drop
+                i32.const 0
+                call $three
+                i64.add
+                i32.const 1
+                call $four
+                drop
+                i32.const 0
+                call $four
+                i64.add)
+            (func (export "indirect")
+                (param $zero_index i32)
+                (param $one_index i32)
+                (param $two_index i32)
+                (param $three_index i32)
+                (param $four_index i32)
+                (result i64)
+                i32.const 73
+                local.get $zero_index
+                call_indirect (type $t)
+                i32.const 1
+                local.get $one_index
+                call_indirect (type $t)
+                drop
+                i32.const 0
+                local.get $one_index
+                call_indirect (type $t)
+                i64.add
+                i32.const 1
+                local.get $two_index
+                call_indirect (type $t)
+                drop
+                i32.const 0
+                local.get $two_index
+                call_indirect (type $t)
+                i64.add
+                i32.const 1
+                local.get $three_index
+                call_indirect (type $t)
+                drop
+                i32.const 0
+                local.get $three_index
+                call_indirect (type $t)
+                i64.add
+                i32.const 1
+                local.get $four_index
+                call_indirect (type $t)
+                drop
+                i32.const 0
+                local.get $four_index
+                call_indirect (type $t)
+                i64.add))"#;
+        let (bin, _) = instantiate(src);
+        let module = Module::new("call-fresh-local-zeroing", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        assert!(
+            inst.native.is_some(),
+            "test requires native interpreter state"
+        );
+
+        let direct = inst.find_export("direct").expect("direct export");
+        let indirect = inst.find_export("indirect").expect("indirect export");
+        let mut result = [u64::MAX];
+        inst.invoke(direct, &[], &mut result).expect("direct calls");
+        assert_eq!(result, [73]);
+        inst.invoke(indirect, &[0, 1, 2, 3, 4], &mut result)
+            .expect("indirect calls");
+        assert_eq!(result, [73]);
+
+        let slow_exits = inst.slow_exit_stats();
+        assert!(
+            slow_exits
+                .iter()
+                .all(|&(op, exits)| !matches!(op, Op::Call | Op::CallIndirect) || exits == 0),
+            "local calls must stay native: {slow_exits:?}"
+        );
+    }
+
+    #[test]
     fn reference_slot_encoding_round_trips_function_range_endpoints() {
         for encoded in [0, crate::vm::value::FUNCADDR_TOP] {
             let handle = RefValue::new(encoded);
