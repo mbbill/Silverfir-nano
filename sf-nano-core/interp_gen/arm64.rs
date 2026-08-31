@@ -1478,12 +1478,6 @@ impl Arm64 {
         let (size, load, kind) = mem_kind(v.op).unwrap();
         let fp = is_fp_mem(v.op);
         let d = v.d;
-        if self.apple_tuning {
-            // Schedule the limit computation ahead of the effective address.
-            // CCMP below turns len < size into HI; otherwise it compares the
-            // effective address with the last valid start address.
-            a.ins(&format!("subs x16, x23, #{size}"));
-        }
         let ra1 = self.src_a(a, v.a, 10); // address (u32 low bits)
         if v.fused {
             // ea = zext32(addr1 + addr2) + static offset, the
@@ -1511,12 +1505,8 @@ impl Arm64 {
             }
             a.ins(&format!("add x12, x11, {}, uxtw", w(ra1))); // ea = offset + zext(addr)
         }
-        if self.apple_tuning {
-            a.ins("ccmp x12, x16, #2, hs");
-        } else {
-            a.ins(&format!("add x13, x12, #{size}"));
-            a.ins("cmp x13, x23");
-        }
+        a.ins(&format!("add x13, x12, #{size}"));
+        a.ins("cmp x13, x23");
         a.ins(&format!("b.hi {}", st.trap_oob));
         if load {
             if fp {
