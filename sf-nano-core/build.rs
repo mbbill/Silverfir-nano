@@ -182,6 +182,7 @@ fn emit_interp_engine() {
         || (backend == TargetBackend::Armv7a && env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some());
     let mut isa: Box<dyn Isa> = match backend {
         TargetBackend::Arm64 => Box::new(interp_gen::arm64::Arm64 {
+            apple_tuning: apple_arm64_interp_tuning_enabled(),
             superhandlers: apple_arm64_interp_supers_enabled(),
         }),
         TargetBackend::X64 => Box::new(interp_gen::x86_64::X86_64 {
@@ -378,11 +379,14 @@ fn emit_apple_arm64_interp_supers_cfg() {
     }
 }
 
-fn apple_arm64_interp_supers_enabled() -> bool {
+fn apple_arm64_interp_tuning_enabled() -> bool {
     target_backend() == Some(TargetBackend::Arm64)
         && env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple")
         && env::var_os("CARGO_FEATURE_INTERP").is_some()
-        && env::var_os("CARGO_FEATURE_INTERP_COUNT").is_none()
+}
+
+fn apple_arm64_interp_supers_enabled() -> bool {
+    apple_arm64_interp_tuning_enabled() && env::var_os("CARGO_FEATURE_INTERP_COUNT").is_none()
 }
 
 fn emit_os_cfgs() {
