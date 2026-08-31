@@ -21,10 +21,9 @@ use super::asm::Asm;
 use super::instr::Op;
 use super::isa::{
     Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS, SUPER_ADD4, SUPER_ADD_BRNE,
-    SUPER_AND_BREQ, SUPER_BACKEDGE_BRIFNOT_REG_BASE, SUPER_BACKEDGE_BRIF_REG_BASE,
-    SUPER_HANDLER_SLOTS, SUPER_MOVPAIR_LOAD_STORE_BRIF, SUPER_SHRU_AND,
+    SUPER_AND_BREQ, SUPER_HANDLER_SLOTS, SUPER_MOVPAIR_LOAD_STORE_BRIF, SUPER_SHRU_AND,
 };
-use super::layout::{Cls, DstCls, Fam, PairDstCls};
+use super::layout::{Cls, DstCls, Fam};
 
 const ACC: u32 = 8;
 const L0R: u32 = 17;
@@ -74,10 +73,6 @@ fn inv(c: &str) -> &'static str {
 }
 
 pub struct Arm64 {
-    /// Apple ARM64-only single-cell tuning. Unlike multi-cell fusion this
-    /// remains enabled under interp-count because each selected handler still
-    /// represents exactly one measured dispatch.
-    pub apple_tuning: bool,
     /// Apple ARM64 gets the static superhandler bank. Other ARM64 targets
     /// retain the ordinary handler blob and linker behavior.
     pub superhandlers: bool,
@@ -1285,85 +1280,43 @@ impl Isa for Arm64 {
         counting: bool,
     ) -> Vec<Option<String>> {
         let mut labels = vec![None; SUPER_HANDLER_SLOTS];
-        if self.superhandlers {
-            assert!(
-                !counting,
-                "interp-count must retain one ordinary handler per measured dispatch"
-            );
-
-            let label = a.fresh("super_list");
-            a.label(&label);
-            self.emit_super_list_step(a, st, counting);
-            labels[SUPER_MOVPAIR_LOAD_STORE_BRIF] = Some(label);
-
-            let label = a.fresh("super_add4");
-            a.label(&label);
-            self.emit_super_add4(a, counting);
-            labels[SUPER_ADD4] = Some(label);
-
-            let label = a.fresh("super_add_brne");
-            a.label(&label);
-            self.emit_super_add_brne(a, counting);
-            labels[SUPER_ADD_BRNE] = Some(label);
-
-            let label = a.fresh("super_shru_and");
-            a.label(&label);
-            self.emit_super_shru_and(a, counting);
-            labels[SUPER_SHRU_AND] = Some(label);
-
-            let label = a.fresh("super_and_breq");
-            a.label(&label);
-            self.emit_super_and_breq(a, counting);
-            labels[SUPER_AND_BREQ] = Some(label);
+        if !self.superhandlers {
+            return labels;
         }
+        assert!(
+            !counting,
+            "interp-count must retain one ordinary handler per measured dispatch"
+        );
 
-        if self.apple_tuning {
-            for (op, base) in [
-                (Op::BrIf, SUPER_BACKEDGE_BRIF_REG_BASE),
-                (Op::BrIfNot, SUPER_BACKEDGE_BRIFNOT_REG_BASE),
-            ] {
-                // Accumulator branches already use their dependency-optimal
-                // ordinary handlers. Keep the reserved Acc table slot empty
-                // and emit only the pinned-local variants the linker selects.
-                for (register_index, cls) in [(1, Cls::L0), (2, Cls::L1)] {
-                    let label = a.fresh("backedge_branch");
-                    a.label(&label);
-                    let counted =
-                        super::counted(counting, cls, Cls::Slot, DstCls::Mem, PairDstCls::None);
-                    self.emit_backedge_branch(a, op, cls, counted);
-                    labels[base + register_index] = Some(label);
-                }
-            }
-        }
+        let label = a.fresh("super_list");
+        a.label(&label);
+        self.emit_super_list_step(a, st, counting);
+        labels[SUPER_MOVPAIR_LOAD_STORE_BRIF] = Some(label);
+
+        let label = a.fresh("super_add4");
+        a.label(&label);
+        self.emit_super_add4(a, counting);
+        labels[SUPER_ADD4] = Some(label);
+
+        let label = a.fresh("super_add_brne");
+        a.label(&label);
+        self.emit_super_add_brne(a, counting);
+        labels[SUPER_ADD_BRNE] = Some(label);
+
+        let label = a.fresh("super_shru_and");
+        a.label(&label);
+        self.emit_super_shru_and(a, counting);
+        labels[SUPER_SHRU_AND] = Some(label);
+
+        let label = a.fresh("super_and_breq");
+        a.label(&label);
+        self.emit_super_and_breq(a, counting);
+        labels[SUPER_AND_BREQ] = Some(label);
         labels
     }
 }
 
 impl Arm64 {
-    /// Register-source conditional branch selected only when the linker has
-    /// proved that `c` names the same or an earlier cell. Backedges normally
-    /// stay in the loop, so only that path eagerly loads its target handler;
-    /// the fallthrough handler is fetched once, when the loop exits.
-    fn emit_backedge_branch(&self, a: &mut Asm, op: Op, cls: Cls, counted: bool) {
-        let condition = match cls {
-            Cls::L0 => L0R,
-            Cls::L1 => L1R,
-            Cls::Acc | Cls::Slot | Cls::Const => unreachable!(),
-        };
-        let fallthrough = a.fresh("backedge_fallthrough");
-        a.ins("ldr x12, [x19, #24]");
-        a.ins("ldr x9, [x12]");
-        self.bump(a, counted);
-        let branch = if op == Op::BrIf { "cbz" } else { "cbnz" };
-        a.ins(&format!("{branch} {}, {fallthrough}", w(condition)));
-        a.ins("mov x19, x12");
-        a.ins("br x9");
-        a.label(&fallthrough);
-        a.ins("ldr x7, [x19, #32]");
-        a.ins("add x19, x19, #32");
-        a.ins("br x7");
-    }
-
     fn emit_int_un(&mut self, a: &mut Asm, v: &Variant) {
         use Op::*;
         let ra = self.src_a(a, v.a, 10);
