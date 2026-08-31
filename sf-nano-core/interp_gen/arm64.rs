@@ -886,6 +886,8 @@ impl Isa for Arm64 {
     fn emit_handler(&mut self, a: &mut Asm, st: &Stubs, v: &Variant) {
         use Op::*;
         let d = v.d;
+        let paired_mov =
+            self.apple_tuning && v.op == MovSlot && v.a == Cls::Slot && d != DstCls::Acc;
         // ---- control flow: no operand plumbing ----
         match v.op {
             Return => return self.emit_return(a, v),
@@ -1028,11 +1030,22 @@ impl Isa for Arm64 {
                     }
                     Cls::Const => a.ins(&format!("ldr {}, [x19, #8]", x(rd))),
                     Cls::Slot => {
-                        a.ins("ldr x10, [x19, #8]");
+                        if paired_mov {
+                            // MovSlot mirrors c's destination offset into its
+                            // otherwise-unused b word. Pair both payload reads
+                            // while leaving the next-handler prefetch early.
+                            a.ins("ldp x10, x12, [x19, #8]");
+                        } else {
+                            a.ins("ldr x10, [x19, #8]");
+                        }
                         a.ins(&format!("ldr {}, [x20, x10]", x(rd)));
                     }
                 }
-                self.finish(a, d, rd);
+                if paired_mov {
+                    a.ins(&format!("str {}, [x20, x12]", x(rd)));
+                } else {
+                    self.finish(a, d, rd);
+                }
             }
             MovPair => {
                 // Strictly ordered: commit dst1 (including its pinned
@@ -1291,6 +1304,11 @@ impl Isa for Arm64 {
             }
         }
         self.tail(a, v.counted);
+        if paired_mov {
+            // Preserve every following handler's address; pairing this
+            // payload load must not cascade a one-instruction layout shift.
+            a.ins("nop");
+        }
     }
 
     fn emit_superhandlers(
