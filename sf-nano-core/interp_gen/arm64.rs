@@ -1322,7 +1322,10 @@ impl Isa for Arm64 {
                 (Op::BrIf, SUPER_BACKEDGE_BRIF_REG_BASE),
                 (Op::BrIfNot, SUPER_BACKEDGE_BRIFNOT_REG_BASE),
             ] {
-                for (register_index, cls) in [Cls::Acc, Cls::L0, Cls::L1].into_iter().enumerate() {
+                // Accumulator branches already use their dependency-optimal
+                // ordinary handlers. Keep the reserved Acc table slot empty
+                // and emit only the pinned-local variants the linker selects.
+                for (register_index, cls) in [(1, Cls::L0), (2, Cls::L1)] {
                     let label = a.fresh("backedge_branch");
                     a.label(&label);
                     let counted =
@@ -1343,10 +1346,9 @@ impl Arm64 {
     /// the fallthrough handler is fetched once, when the loop exits.
     fn emit_backedge_branch(&self, a: &mut Asm, op: Op, cls: Cls, counted: bool) {
         let condition = match cls {
-            Cls::Acc => ACC,
             Cls::L0 => L0R,
             Cls::L1 => L1R,
-            Cls::Slot | Cls::Const => unreachable!(),
+            Cls::Acc | Cls::Slot | Cls::Const => unreachable!(),
         };
         let fallthrough = a.fresh("backedge_fallthrough");
         a.ins("ldr x12, [x19, #24]");

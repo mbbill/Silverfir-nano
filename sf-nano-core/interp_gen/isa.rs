@@ -23,9 +23,9 @@ pub const SUPER_ADD4: usize = 1;
 pub const SUPER_ADD_BRNE: usize = 2;
 pub const SUPER_SHRU_AND: usize = 3;
 pub const SUPER_AND_BREQ: usize = 4;
-/// Three register-source variants, in [`Cls::Acc`], [`Cls::L0`],
-/// [`Cls::L1`] order. They are single-cell replacements selected only for
-/// link-time-proven backward branches.
+/// Three reserved register-source slots, in [`Cls::Acc`], [`Cls::L0`],
+/// [`Cls::L1`] order. The Apple ARM64 backend leaves the Acc slot empty and
+/// emits pinned-local replacements only for link-time-proven backedges.
 pub const SUPER_BACKEDGE_BRIF_REG_BASE: usize = 5;
 pub const SUPER_BACKEDGE_BRIFNOT_REG_BASE: usize = 8;
 pub const SUPER_HANDLER_SLOTS: usize = 11;
