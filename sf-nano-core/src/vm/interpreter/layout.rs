@@ -233,6 +233,10 @@ enum BcShape {
     /// b = operand (scaled unless const), c = destination slot. Also the
     /// shape of every op with no native handler, where it is inert.
     Plain,
+    /// `MovSlot`: b mirrors the destination byte offset in c. Its source is
+    /// carried by a, so the otherwise-unused b word can pair both offsets
+    /// for backends that benefit from an early payload load.
+    MirroredDst,
     /// b = static offset (stays raw), c = destination slot.
     LoadOffset,
     /// b = value operand, c = static offset (stays raw).
@@ -550,6 +554,7 @@ pub(crate) fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
         BcShape::OperandPackB => (ins.b * 8, ins.c),
         BcShape::RawBoth => (ins.b, ins.c),
         BcShape::PackedCondDst => (scaled_b, packed_slots),
+        BcShape::MirroredDst => (ins.c * 8, ins.c * 8),
         BcShape::Plain => (scaled_b, ins.c * 8),
     }
 }
@@ -573,6 +578,7 @@ const fn compute_bc_shape(op: Op) -> BcShape {
             MemoryFillCopy => BcShape::OperandPackB,
             Return => BcShape::RawBoth,
             Select => BcShape::PackedCondDst,
+            MovSlot => BcShape::MirroredDst,
             // Plain value ops, GlobalGet included, and every op with no
             // native form at all.
             _ => BcShape::Plain,
@@ -1050,6 +1056,7 @@ mod tests {
                         scaled_b(ins),
                         ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8,
                     ),
+                    MovSlot => (ins.c * 8, ins.c * 8),
                     _ => (scaled_b(ins), ins.c * 8),
                 },
             }
