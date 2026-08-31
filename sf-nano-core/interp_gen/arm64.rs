@@ -142,17 +142,22 @@ impl Arm64 {
         }
     }
 
-    /// Fetch both operands. When both live in slots the two cell fields
-    /// load with a single `ldp` — one instruction saved on the hottest
-    /// binop variant. Pairing the cell PAYLOAD is safe; pairing two FRAME
-    /// slot reads would not be, because store-to-load forwarding does not
-    /// work through pair instructions on Apple silicon and frame-slot
-    /// forwarding is exactly what the slot-edge cost model depends on.
+    /// Fetch both operands. Apple ARM64 pairs the two cell fields whenever
+    /// both operands consume them; other targets retain the established
+    /// slot/slot pair. Pairing cell PAYLOAD is safe, unlike pairing two frame
+    /// reads: Apple store-to-load forwarding does not work through the latter.
     fn src_ab(&self, a: &mut Asm, ac: Cls, bc: Cls) -> (u32, u32) {
-        if ac == Cls::Slot && bc == Cls::Slot {
+        let pair_payloads = matches!(ac, Cls::Slot | Cls::Const)
+            && matches!(bc, Cls::Slot | Cls::Const)
+            && (self.apple_tuning || (ac == Cls::Slot && bc == Cls::Slot));
+        if pair_payloads {
             a.ins("ldp x10, x11, [x19, #8]");
-            a.ins("ldr x10, [x20, x10]");
-            a.ins("ldr x11, [x20, x11]");
+            if ac == Cls::Slot {
+                a.ins("ldr x10, [x20, x10]");
+            }
+            if bc == Cls::Slot {
+                a.ins("ldr x11, [x20, x11]");
+            }
             (10, 11)
         } else {
             (self.src_a(a, ac, 10), self.src_b(a, bc, 11))
@@ -888,6 +893,24 @@ impl Isa for Arm64 {
         let d = v.d;
         let paired_mov =
             self.apple_tuning && v.op == MovSlot && v.a == Cls::Slot && d != DstCls::Acc;
+        let paired_ab = self.apple_tuning
+            && matches!(v.a, Cls::Slot | Cls::Const)
+            && matches!(v.b, Cls::Slot | Cls::Const)
+            && (v.a == Cls::Const || v.b == Cls::Const)
+            && (int_bin(v.op).is_some()
+                || int_cmp(v.op).is_some()
+                || matches!(
+                    v.op,
+                    Select
+                        | I32_DivS
+                        | I32_DivU
+                        | I32_RemS
+                        | I32_RemU
+                        | I64_DivS
+                        | I64_DivU
+                        | I64_RemS
+                        | I64_RemU
+                ));
         // ---- control flow: no operand plumbing ----
         match v.op {
             Return => return self.emit_return(a, v),
@@ -1004,6 +1027,11 @@ impl Isa for Arm64 {
                 a.ins("br x9");
                 a.label(&nt);
                 self.tail(a, v.counted);
+                if paired_ab {
+                    // Match the scalar-payload handler's size so every
+                    // following handler keeps the same address.
+                    a.ins("nop");
+                }
                 return;
             }
         }
@@ -1307,6 +1335,12 @@ impl Isa for Arm64 {
         if paired_mov {
             // Preserve every following handler's address; pairing this
             // payload load must not cascade a one-instruction layout shift.
+            a.ins("nop");
+        }
+        if paired_ab {
+            // The paired payload load removes one dynamic instruction. Keep
+            // later handler addresses fixed so the measurement is not a
+            // cache-placement reroll.
             a.ins("nop");
         }
     }

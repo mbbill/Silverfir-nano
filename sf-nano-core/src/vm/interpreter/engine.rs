@@ -1566,6 +1566,37 @@ mod tests {
         }
     }
 
+    #[cfg(sf_has_apple_arm64_interp_supers)]
+    fn native_handler_size(engine: &NativeEngine, ins: Instr) -> usize {
+        let start = engine.handler_for(&ins, ins.flags, &Pinned::NONE);
+        assert_ne!(start, 0, "missing native handler for {:?}", ins.op);
+        let end = (0..INTERP_HANDLER_SLOTS)
+            .filter_map(|slot| engine.handler_at(slot))
+            .filter(|&address| address > start)
+            .min()
+            .unwrap_or(engine.base + engine.code_len);
+        end - start
+    }
+
+    #[cfg(sf_has_apple_arm64_interp_supers)]
+    #[test]
+    fn apple_paired_operand_payloads_preserve_handler_sizes() {
+        let engine = NativeEngine::new();
+        for op in [Op::I32_Add, Op::I32_BrNe] {
+            for (flags, reference_flags) in [
+                (FLAG_A_CONST, 0),
+                (FLAG_B_CONST, 0),
+                (FLAG_A_CONST | FLAG_B_CONST, FLAG_B_ACC),
+            ] {
+                assert_eq!(
+                    native_handler_size(&engine, Instr::new(op, flags, 1, 2, 3)),
+                    native_handler_size(&engine, Instr::new(op, reference_flags, 1, 2, 3)),
+                    "{op:?} paired-payload handler changed size for flags {flags:#x}",
+                );
+            }
+        }
+    }
+
     /// Link `code` after a separately linked function, returning its final
     /// dispatch cells. The prefix makes the tested function start at cell 3,
     /// so SuperWindow's absolute ring indices exercise a non-zero boundary.
