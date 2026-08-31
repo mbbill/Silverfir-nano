@@ -1877,6 +1877,10 @@ mod tests {
             (Op::BrIf, INTERP_SUPER_BACKEDGE_BRIF_REG_BASE),
             (Op::BrIfNot, INTERP_SUPER_BACKEDGE_BRIFNOT_REG_BASE),
         ] {
+            assert!(
+                engine.super_handler_at(base).is_none(),
+                "{op:?} Acc backedge slot must remain empty"
+            );
             for (name, flags, operand, register_index) in sources {
                 for (target, backward) in [(2, true), (8, true), (9, false)] {
                     let ins = Instr::new(op, flags, operand, 0, target);
