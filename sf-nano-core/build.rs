@@ -51,9 +51,6 @@
 //   (derived)      → sf_has_debug_regions (set when any consumer of DebugRegion is compiled
 //                                          in: sf_ir_dump or sf_jitdump)
 //   (derived)      → sf_has_simd         (arm64 with NEON, x64 with SSE4.1+SSSE3)
-//   (derived)      → sf_has_apple_arm64_interp_tuning
-//                                        (Apple arm64 interpreter-only handler tuning,
-//                                         including the exact interp-count diagnostic)
 //   (derived)      → sf_has_apple_arm64_interp_supers
 //                                        (Apple arm64 build-time interpreter superhandlers,
 //                                         disabled by the exact interp-count diagnostic)
@@ -116,7 +113,6 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_has_std",
     "sf_has_guard_pages",
     "sf_has_debug_regions",
-    "sf_has_apple_arm64_interp_tuning",
     "sf_has_apple_arm64_interp_supers",
     "sf_jit",
     "sf_interp",
@@ -186,7 +182,6 @@ fn emit_interp_engine() {
         || (backend == TargetBackend::Armv7a && env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some());
     let mut isa: Box<dyn Isa> = match backend {
         TargetBackend::Arm64 => Box::new(interp_gen::arm64::Arm64 {
-            apple_tuning: apple_arm64_interp_tuning_enabled(),
             superhandlers: apple_arm64_interp_supers_enabled(),
         }),
         TargetBackend::X64 => Box::new(interp_gen::x86_64::X86_64 {
@@ -239,11 +234,7 @@ fn emit_interp_engine() {
          const INTERP_SUPER_SHRU_AND: usize = {};\n\
          #[cfg(sf_has_apple_arm64_interp_supers)]\n\
          const INTERP_SUPER_AND_BREQ: usize = {};\n\
-         #[cfg(sf_has_apple_arm64_interp_tuning)]\n\
-         const INTERP_SUPER_BACKEDGE_BRIF_REG_BASE: usize = {};\n\
-         #[cfg(sf_has_apple_arm64_interp_tuning)]\n\
-         const INTERP_SUPER_BACKEDGE_BRIFNOT_REG_BASE: usize = {};\n\
-         #[cfg(sf_has_apple_arm64_interp_tuning)]\n\
+         #[cfg(sf_has_apple_arm64_interp_supers)]\n\
          const INTERP_SUPER_HANDLER_SLOTS: usize = {};\n",
         caps.has_l1,
         caps.has_float_regs,
@@ -256,8 +247,6 @@ fn emit_interp_engine() {
         interp_gen::isa::SUPER_ADD_BRNE,
         interp_gen::isa::SUPER_SHRU_AND,
         interp_gen::isa::SUPER_AND_BREQ,
-        interp_gen::isa::SUPER_BACKEDGE_BRIF_REG_BASE,
-        interp_gen::isa::SUPER_BACKEDGE_BRIFNOT_REG_BASE,
         interp_gen::isa::SUPER_HANDLER_SLOTS,
     );
     std::fs::write(dir.join("interp_engine_cfg.rs"), cfg).expect("write interp_engine_cfg.rs");
@@ -384,22 +373,16 @@ fn emit_backend_cfgs() {
 }
 
 fn emit_apple_arm64_interp_supers_cfg() {
-    if apple_arm64_interp_tuning_enabled() {
-        println!("cargo:rustc-cfg=sf_has_apple_arm64_interp_tuning");
-    }
     if apple_arm64_interp_supers_enabled() {
         println!("cargo:rustc-cfg=sf_has_apple_arm64_interp_supers");
     }
 }
 
-fn apple_arm64_interp_tuning_enabled() -> bool {
+fn apple_arm64_interp_supers_enabled() -> bool {
     target_backend() == Some(TargetBackend::Arm64)
         && env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple")
         && env::var_os("CARGO_FEATURE_INTERP").is_some()
-}
-
-fn apple_arm64_interp_supers_enabled() -> bool {
-    apple_arm64_interp_tuning_enabled() && env::var_os("CARGO_FEATURE_INTERP_COUNT").is_none()
+        && env::var_os("CARGO_FEATURE_INTERP_COUNT").is_none()
 }
 
 fn emit_os_cfgs() {
