@@ -4,16 +4,18 @@ Seven WebAssembly runtimes on an Apple M4, measured 2026-07-24: Silverfir's JIT
 and interpreter, Wasmtime Cranelift 47.0.2, V8 TurboFan (Node.js 25.9), Wasmtime
 Winch 47.0.2, wasm3, and wasmi 2.0.0-beta.7. Winch was added and the Silverfir
 interpreter re-measured on 2026-07-25; wasmi moved from 1.1.0 to 2.0.0-beta.7
-on 2026-07-26.
+on 2026-07-26. The interpreter CoreMark row was refreshed on 2026-08-31 with
+the current reported scores; its wasmi entry uses 2.0.0-beta.10.
 
 Every metric is a **rate — higher is better**. The benchmarks self-time to a
 wall-clock target (2 s by default) and report work per second, so a regression
 suite costs about the same on any engine and the numbers stay comparable across
 a 20× spread in speed. The harness invokes CoreMark's explicit non-standard
-regression mode for this bounded run. CoreMark's source and bare command line
-remain compatible with upstream EEMBC CoreMark: without the option, its own
-calibration runs the measured interval for at least 10 seconds and emits the
-official result format.
+regression mode for this bounded run. The refreshed interpreter CoreMark row is
+the sole exception and shows the current standalone scores. CoreMark's source
+and bare command line remain compatible with upstream EEMBC CoreMark: without
+the option, its own calibration runs the measured interval for at least 10
+seconds and emits the official result format.
 
 The compiled and interpreted engines get **separate charts**: a compiler is ~7×
 an interpreter here, so putting both on one scale would crush the interpreter
@@ -67,10 +69,11 @@ still a median 2.93× of Silverfir's interpreter — except on mandelbrot, where
 that lead narrows to 1.11×.
 
 Its **interpreter** wins every dispatch-sensitive benchmark — 14 of 15 metrics —
-by 1.16–1.73× over wasm3 and 1.07–2.41× over wasmi 2.0.0-beta.7. The two rivals
+by 1.16–2.01× over wasm3 and 1.07–2.41× over wasmi 2.0. The two rivals
 trade places by benchmark, so the margin over whichever is faster on each row is
-**1.07–1.73×**, median ~1.39×: wasmi 2.0 is the closer one on the STREAM
-arithmetic kernels and Lua, wasm3 on CoreMark, bzip2, LZ4 and the float pair.
+**1.07–1.69×**, median ~1.39×: wasmi 2.0 is the closer one on CoreMark, the
+STREAM arithmetic kernels and Lua; wasm3 is closer on bzip2, LZ4 and the float
+pair.
 
 ## Running them
 
@@ -101,7 +104,7 @@ both link into it.
 
 Nine files come out of a run: the eight above, plus
 [`assets/coremark.svg`](../../assets/coremark.svg), the summary the top-level
-README leads with. That one is CoreMark alone, but with all seven runtimes on
-a single shared scale instead of split by class — one row of bars can carry a
-12× spread, which is exactly what the split exists to avoid on a fifteen-row
-chart.
+README leads with. That one compares the three interpreters on a single shared
+scale and orders them fastest-first. The refreshed CoreMark row in the larger
+interpreter chart uses the same ordering; its other rows retain their stable
+runtime order.

@@ -7,7 +7,9 @@ Silverfir interpreter column was re-measured 2026-07-25 after the dispatch
 work (absolute branch targets, and the dispatch counter compiled out); no
 other column moved. The wasmi column moved from 1.1.0 to 2.0.0-beta.7 on
 2026-07-26 — see [the note on it](#the-wasmi-20-column), which changes the
-interpreter-tier story more than any engine change in this file has.
+interpreter-tier story more than any engine change in this file has. The three
+interpreter cells in the CoreMark row were refreshed on 2026-08-31; that wasmi
+cell uses 2.0.0-beta.10, while the other wasmi cells remain 2.0.0-beta.7.
 
 | Runtime | Version | Class |
 |---|---|---|
@@ -17,7 +19,7 @@ interpreter-tier story more than any engine change in this file has.
 | V8 / Node.js | Node 25.9.0, V8 14.1.146 | compiled (TurboFan) |
 | Winch / wasmtime | 47.0.2, same build, `-C compiler=winch` | compiled (baseline) |
 | wasm3 | `~/Dev/wasm3` build-release | interpreted |
-| wasmi | 2.0.0-beta.7 (`cargo install wasmi_cli --version 2.0.0-beta.7`) | interpreted |
+| wasmi | 2.0.0-beta.7; CoreMark uses 2.0.0-beta.10 | interpreted |
 
 Winch is wasmtime's **baseline** compiler: single-pass, built to compile fast
 rather than to run fast. It shares the compiled chart with the optimizing tier
@@ -29,11 +31,12 @@ Charts: [README.md](README.md)
 
 ## How to read these numbers
 
-**Every metric is a rate, and higher is always better.** No time-based metrics
-remain: each benchmark self-times to a wall-clock target (2 s by default) and
-reports work per second, so the same binary costs about the same wherever it
-runs. That is also why a runtime being 7× slower no longer means a 7× longer
-benchmark run.
+**Every metric is a rate, and higher is always better.** Except for the refreshed
+interpreter CoreMark cells, each benchmark self-times to a wall-clock target
+(2 s by default) and reports work per second, so the same binary costs about the
+same wherever it runs. That is also why a runtime being 7× slower no longer
+means a 7× longer benchmark run. The refreshed CoreMark cells are the current
+standalone scores requested for this comparison.
 
 Silverfir JIT, Cranelift, V8 and Winch are the **mean of two interleaved
 rounds**, with the machine allowed to cool between runs; run-to-run spread was
@@ -77,6 +80,10 @@ auto-dispatch,unstable` — the `unstable` variant of that dispatch — was also
 measured over four rounds and landed within 0.99–1.03×, so there is no faster
 wasmi build being left on the table here.
 
+The comparison below describes that complete beta.7 sweep. The later beta.10
+CoreMark cell shown in the current table is not part of this historical
+beta.7-versus-1.1.0 comparison.
+
 Against 1.1.0, 2.0 is faster on 8 of 15 metrics and slower on 4, median 1.23×.
 The gains are concentrated in the STREAM arithmetic kernels (Scale 1.92×, Triad
 1.74×, Add 1.67×), the float pair (mandelbrot 1.65×, c-ray 1.61×) and SHA-256
@@ -95,7 +102,7 @@ re-measure both sides.
 <!-- chart file="benchmark_integer.svg" title="Integer / Control Flow" -->
 | Benchmark | SF (JIT) | Cranelift | V8 | Winch | SF (interp) | wasm3 | wasmi |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| CoreMark (score) | 44,958 | **45,874** | 44,378 | 21,379 | **8,188** | 4,746 | 3,456 |
+| CoreMark (score) | 44,958 | **45,874** | 44,378 | 21,379 | **8,586.4** | 4,268 | 5,482 |
 | SHA-256 (MB/s) | **250.6** | 216.8 | 212.4 | 128.0 | **40.69** | 29.14 | 30.05 |
 | bzip2 (MB/s) | **30.68** | 26.86 | 29.66 | 13.88 | **5.21** | 3.10 | 2.68 |
 | LZ4 compress (MB/s) | **926.0** | 916.3 | 911.2 | 587.4 | **313.8** | 206.7 | 150.2 |
@@ -184,21 +191,20 @@ dispatch-sensitive benchmark** — 14 of the 15 metrics, the exception being the
 
 | vs | worst | best | median |
 |---|---:|---:|---:|
-| wasm3 | 1.16× (STREAM Add) | 1.73× (CoreMark) | ~1.47× |
-| wasmi 2.0.0-beta.7 | 1.07× (STREAM Add) | 2.41× (LZ4 decompress) | ~1.63× |
-| whichever of the two is faster per row | 1.07× (STREAM Add) | 1.73× (CoreMark) | ~1.39× |
+| wasm3 | 1.16× (STREAM Add) | 2.01× (CoreMark) | ~1.47× |
+| wasmi 2.0 | 1.07× (STREAM Add) | 2.41× (LZ4 decompress) | ~1.57× |
+| whichever of the two is faster per row | 1.07× (STREAM Add) | 1.69× (lua / fib) | ~1.39× |
 
 wasmi 2.0 splits the field rather than shifting it: it is now the closer rival
-on the STREAM arithmetic kernels (Add 1.07×, Triad 1.12×, Scale 1.15×) and on
-Lua (sunfish 1.28×, json 1.31×), while wasm3 remains the one to beat on
-CoreMark, bzip2, LZ4 and the float pair. Neither interpreter is second place
-everywhere, so the honest margin is the third row: **1.07–1.73× over the better
+on CoreMark, the STREAM arithmetic kernels (Add 1.07×, Triad 1.12×, Scale
+1.15×) and Lua (sunfish 1.28×, json 1.31×), while wasm3 remains the one to beat
+on bzip2, LZ4 and the float pair. Neither interpreter is second place
+everywhere, so the honest margin is the third row: **1.07–1.69× over the better
 of the two on each benchmark**, median ~1.39×.
 
-The largest margins against wasmi are no longer the float pair but the two
-benchmarks where 2.0 regressed against 1.1.0 — LZ4 decompress 2.41× and
-CoreMark 2.37×. Mandelbrot and c-ray, which led this comparison at 2.89× and
-2.88× against 1.1.0, now read 1.74× and 1.79×.
+The largest margins against wasmi are LZ4 decompress at 2.41× and LZ4 compress
+at 2.09×. Mandelbrot and c-ray read 1.74× and 1.79×; the refreshed CoreMark row
+reads 1.57×.
 
 ## Caveats worth knowing
 

@@ -46,20 +46,20 @@
   <rect class="s-w3" x="364.0" y="53" width="10" height="10" rx="2"/>
   <text class="legend" x="379.0" y="62">wasm3</text>
   <rect class="s-wi" x="552.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="567.0" y="62">wasmi 2.0.0-beta.7</text>
+  <text class="legend" x="567.0" y="62">wasmi 2.0</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="652"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">CoreMark</text>
   <text class="unit" x="176" y="94">score</text>
-  <text class="name" x="168" y="117" text-anchor="end">Silverfir (interp)</text>
+  <text class="name" x="168" y="117" text-anchor="end">Silverfir-nano</text>
   <rect class="s-si" x="176" y="104" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="117">8,188</text>
-  <text class="name" x="168" y="137" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="124" width="262.0" height="18" rx="4"/>
-  <text class="val" x="444.0" y="137">4,746</text>
-  <text class="name" x="168" y="157" text-anchor="end">wasmi 2.0.0-beta.7</text>
-  <rect class="s-wi" x="176" y="144" width="190.8" height="18" rx="4"/>
-  <text class="val" x="372.8" y="157">3,456</text>
+  <text class="val" x="634.0" y="117">8,586.4</text>
+  <text class="name" x="168" y="137" text-anchor="end">Wasmi 2.0.0-beta.10</text>
+  <rect class="s-wi" x="176" y="124" width="288.6" height="18" rx="4"/>
+  <text class="val" x="470.6" y="137">5,482</text>
+  <text class="name" x="168" y="157" text-anchor="end">Wasm3 0.9.0</text>
+  <rect class="s-w3" x="176" y="144" width="224.7" height="18" rx="4"/>
+  <text class="val" x="406.7" y="157">4,268</text>
   <text class="metric" x="168" y="190" text-anchor="end">SHA-256</text>
   <text class="unit" x="176" y="190">MB/s</text>
   <text class="name" x="168" y="213" text-anchor="end">Silverfir (interp)</text>

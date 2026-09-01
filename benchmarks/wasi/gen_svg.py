@@ -13,9 +13,9 @@ Design notes, so the next person does not have to reverse-engineer them:
   A compiler is ~7x an interpreter here; mixing them on one scale would
   crush the interpreter bars into unreadable slivers, so they are grouped
   and separated by a rule.
-* One exception: the README hero chart (see HERO_* below) puts a single
-  benchmark's whole field on one shared scale, because there the spread is
-  the point and one row of bars can carry it.
+* One exception: the README hero chart (see HERO_* below) puts the three
+  interpreters on one shared scale, because one row of bars can carry the
+  whole comparison directly.
 * Colour is categorical (identity = runtime), assigned in a fixed order and
   never cycled. The palette is validated for the adjacent-pair CVD and
   normal-vision floors in BOTH light and dark mode -- see SERIES below.
@@ -62,11 +62,7 @@ HERO_Y0 = 72          # first tier caption, clear of the title + subtitle
 #   compiled dark:  worst adjacent CVD dE  9.0, normal-vision 26.5 -> all PASS
 #   interp light:   worst adjacent CVD dE 25.0, normal-vision 29.9 -> all PASS
 #   interp dark:    worst adjacent CVD dE 27.3, normal-vision 27.5 -> all PASS
-#   hero light:     worst adjacent CVD dE  9.2, normal-vision 16.7 -> all PASS
-#   hero dark:      worst adjacent CVD dE  9.0, normal-vision 18.7 -> all PASS
-# The hero is its own pairlist: it is the only chart that puts all seven in
-# one column, so it has adjacencies (Winch-vs-interp-violet) the split charts
-# never form. That pair is the tightest in the file at dE 16.7.
+# The hero reuses the three interpreter colours and labels every bar directly.
 # Both Silverfir engines wear the same violet family on purpose, so "ours"
 # reads at a glance; they are never adjacent in this order, and the hues
 # beside them are deliberately far from violet (orange, teal, amber).
@@ -118,22 +114,21 @@ LABEL = {k: n for k, n, _c, _l, _d in SERIES}
 BY_COLUMN = {c: k for k, _n, c, _l, _d in SERIES}
 
 # ── README hero ─────────────────────────────────────────────────────────
-# The top-level README wants ONE chart, and it has to carry the whole field:
-# the three optimizing compilers, the baseline compiler, and the three
-# interpreters, on a single shared scale. That deliberately breaks the split
-# above. The split exists so a fifteen-row chart stays legible in both
-# classes; the hero is one row, so the ~12x spread is the story rather than a
-# legibility problem — the smallest bar still lands ~38px wide and prints its
-# score. Tier captions replace the legend so nobody reads a 12x-shorter bar as
-# a bad compiler instead of a different class of engine.
+# The top-level README wants one direct interpreter comparison. A single
+# CoreMark row fits all three runtimes on one shared scale, so every bar length
+# is comparable and the current ordering can stay fastest-first.
 #
 HERO_FILE = 'coremark.svg'
 HERO_BENCH = 'CoreMark'
 HERO_TIERS = [
-    ('Optimizing compilers', ['sf', 'cl', 'v8']),
-    ('Baseline compiler',    ['wn']),
-    ('Interpreters',         ['si', 'w3', 'wi']),
+    ('Interpreters', ['si', 'wi', 'w3']),
 ]
+COREMARK_LABEL = {
+    'si': 'Silverfir-nano',
+    'wi': 'Wasmi 2.0.0-beta.10',
+    'w3': 'Wasm3 0.9.0',
+}
+LEGEND_LABEL = {'wi': 'wasmi 2.0'}
 
 
 def fmt(n):
@@ -164,11 +159,16 @@ def row_svg(y, bench, keys):
                    f'text-anchor="end">{esc(bench["note"])}</text>')
 
     by = y + ROW_HEAD
-    for key in keys:
+    row_keys = keys
+    if bench['name'] == HERO_BENCH and set(keys) == set(COREMARK_LABEL):
+        row_keys = sorted(keys, key=lambda k: bench['data'][k], reverse=True)
+    for key in row_keys:
         val = bench['data'][key]
         w = max(2.0, BAR_MAX * val / best)
+        label = (COREMARK_LABEL.get(key, LABEL[key])
+                 if bench['name'] == HERO_BENCH else LABEL[key])
         out.append(f'<text class="name" x="{GUTTER}" y="{by + 13}" '
-                   f'text-anchor="end">{esc(LABEL[key])}</text>')
+                   f'text-anchor="end">{esc(label)}</text>')
         out.append(f'<rect class="s-{key}" x="{X0}" y="{by}" '
                    f'width="{w:.1f}" height="{BAR_H}" rx="4"/>')
         # Value labels always sit just past the bar end, in ink tokens.
@@ -214,7 +214,8 @@ def legend_svg(keys):
         y = LEGEND_Y0 + row * LEGEND_ROW
         out.append(f'<rect class="s-{key}" x="{x}" y="{y - 9}" width="10" '
                    f'height="10" rx="2"/>')
-        out.append(f'<text class="legend" x="{x + 15}" y="{y}">{esc(LABEL[key])}</text>')
+        label = LEGEND_LABEL.get(key, LABEL[key])
+        out.append(f'<text class="legend" x="{x + 15}" y="{y}">{esc(label)}</text>')
     return '\n  '.join(out)
 
 
@@ -286,7 +287,7 @@ def make_svg(title, subtitle, benches, filename, keys):
 
 
 def make_hero(bench, filename, title, subtitle):
-    """One benchmark, every runtime, one shared scale, grouped by engine tier.
+    """One benchmark, selected runtimes, one shared scale, fastest first.
 
     No legend and no per-row renormalisation: there is only one row, so the
     bar lengths are directly comparable end to end, which is the whole reason
@@ -305,12 +306,12 @@ def make_hero(bench, filename, title, subtitle):
         body.append(f'<line class="rule" x1="{X0}" y1="{y + 10}" '
                     f'x2="{W - 20}" y2="{y + 10}"/>')
         y += HERO_TIER_HEAD
-        for key in keys:
+        for key in sorted(keys, key=lambda k: bench['data'][k], reverse=True):
             val = bench['data'][key]
             w = max(2.0, BAR_MAX * val / best)
             base = y + HERO_BAR_H / 2 + 4.5
             body.append(f'<text class="name" x="{GUTTER}" y="{base:.1f}" '
-                        f'text-anchor="end">{esc(LABEL[key])}</text>')
+                        f'text-anchor="end">{esc(COREMARK_LABEL.get(key, LABEL[key]))}</text>')
             body.append(f'<rect class="s-{key}" x="{X0}" y="{y}" '
                         f'width="{w:.1f}" height="{HERO_BAR_H}" rx="5"/>')
             body.append(f'<text class="val" x="{X0 + w + 8:.1f}" '
@@ -409,5 +410,6 @@ if __name__ == '__main__':
     if hero is None:
         raise SystemExit(f'{RESULTS}: no "{HERO_BENCH}" row in any chart table; '
                          f'the README hero has nothing to draw')
-    make_hero(hero, os.path.join(ASSETS, HERO_FILE), f'{HERO_BENCH} — Apple M4',
-              f'{hero["unit"]} · higher is better · seven runtimes on one shared scale')
+    make_hero(hero, os.path.join(ASSETS, HERO_FILE),
+              f'{HERO_BENCH} — Nano vs Wasmi vs Wasm3',
+              f'Apple M4 MacBook Air · CoreMark {hero["unit"]} · higher is better')
