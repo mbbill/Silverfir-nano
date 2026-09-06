@@ -27,12 +27,6 @@ struct FrameWord {
     width: MachineMemWidth,
 }
 
-#[derive(Clone, Copy)]
-enum CacheBlockFacts {
-    Barrier,
-    Registers(u64),
-}
-
 fn loaded_word(kind: &MachineInstKind, gp_bytes: u8) -> Option<FrameWord> {
     let MachineInstKind::Load {
         ty: MachineStorageType::GpWord,
@@ -73,15 +67,12 @@ pub(super) fn cache_loop_frame_words(
         + u16::from(ctx.config.allocatable_gp_dynamic_budget());
     let available_mask = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
         .fold(0, |mask, reg| mask | reg_bit(MachineReg(reg)));
-    'headers: for header in (0..blocks.len()).rev() {
+    for header in (0..blocks.len()).rev() {
         if graph.latches_by_header[header].is_empty() {
             continue;
         }
-        let CacheBlockFacts::Registers(header_mask) =
-            *masks[header].get_or_insert_with(|| block_cache_facts(&blocks[header]))
-        else {
-            continue;
-        };
+        let header_mask =
+            *masks[header].get_or_insert_with(|| block_register_mask(&blocks[header]));
         if gp_end <= 64 && header_mask & available_mask == available_mask {
             continue;
         }
@@ -95,12 +86,7 @@ pub(super) fn cache_loop_frame_words(
         }
         let mut loop_mask = 0;
         for &index in &nodes {
-            let CacheBlockFacts::Registers(mask) =
-                *masks[index].get_or_insert_with(|| block_cache_facts(&blocks[index]))
-            else {
-                continue 'headers;
-            };
-            loop_mask |= mask;
+            loop_mask |= *masks[index].get_or_insert_with(|| block_register_mask(&blocks[index]));
         }
         // Register pressure often rules out a loop before any frame-slot or
         // entry-edge analysis is useful.
@@ -115,24 +101,13 @@ fn reg_bit(reg: MachineReg) -> u64 {
     1u64.checked_shl(u32::from(reg.0)).unwrap_or(0)
 }
 
-fn block_cache_facts(block: &MachineBlock) -> CacheBlockFacts {
-    if matches!(
-        block.terminator,
-        MachineTerminator::Call { .. } | MachineTerminator::TailCall { .. }
-    ) {
-        return CacheBlockFacts::Barrier;
-    }
+fn block_register_mask(block: &MachineBlock) -> u64 {
     let mut mask = 0;
     let mut note = |reg| mask |= reg_bit(reg);
     for param in &block.params {
         note(param.reg);
     }
     for inst in &block.ops {
-        // Calls and frame-base changes rule out every frame word at once.
-        // Remember that fact before allocating or scanning entry-edge state.
-        if inst_defines(&inst.kind, MACHINE_FP_REG) || !transparent(&inst.kind) {
-            return CacheBlockFacts::Barrier;
-        }
         inst.kind.for_each_defined_reg(&mut note);
         visit_source_values(&inst.kind, |value| {
             if let MachineValue::Reg(reg) = value {
@@ -141,7 +116,7 @@ fn block_cache_facts(block: &MachineBlock) -> CacheBlockFacts {
         });
     }
     visit_terminator_source_regs(&block.terminator, &mut note);
-    CacheBlockFacts::Registers(mask)
+    mask
 }
 
 fn try_cache_word(
@@ -150,7 +125,7 @@ fn try_cache_word(
     nodes: &[usize],
     graph: &LoopGraph,
     ctx: &mut BlockOptCtx,
-    masks: &mut [Option<CacheBlockFacts>],
+    masks: &mut [Option<u64>],
     loop_mask: u64,
 ) {
     let mut in_loop = collections::vec![false; blocks.len()];
@@ -202,7 +177,16 @@ fn try_cache_word(
 
     let mut candidates: collections::Vec<(FrameWord, usize)> = collections::Vec::new();
     for &index in nodes {
+        if matches!(
+            blocks[index].terminator,
+            MachineTerminator::Call { .. } | MachineTerminator::TailCall { .. }
+        ) {
+            return;
+        }
         for inst in &blocks[index].ops {
+            if inst_defines(&inst.kind, MACHINE_FP_REG) || !transparent(&inst.kind) {
+                return;
+            }
             if let Some(word) = loaded_word(&inst.kind, config.gp_unit_bytes) {
                 if let Some((_, count)) = candidates.iter_mut().find(|(found, _)| *found == word) {
                     *count += 1;
@@ -460,11 +444,11 @@ mod tests {
                 run(&mut blocks, MachineBlockId(0), 6);
             }
             for block in &blocks {
-                let CacheBlockFacts::Registers(mask) = block_cache_facts(block) else {
-                    panic!("the fixture has no cache barrier");
-                };
                 for reg in (0..64).map(MachineReg) {
-                    assert_eq!(mask & reg_bit(reg) != 0, block_mentions_reg(block, reg),);
+                    assert_eq!(
+                        block_register_mask(block) & reg_bit(reg) != 0,
+                        block_mentions_reg(block, reg),
+                    );
                 }
             }
         }
