@@ -27,18 +27,8 @@ jobs:
           env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare
       - uses: actions/checkout@v7
         with:
-          ref: 9a8208289a883c08f0c93e1340ed837f8da74eab
-          path: source-loop
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          ref: b54ff280a201decba57afe3b6a00333f423d1118
-          path: source-flags
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          ref: 431b2062b9260d67b0eadfcd9e00f9a0959f050b
-          path: source-noalu
+          ref: f73219f56a70b77028f0d79730c7efca29ba3439
+          path: source-main
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -47,31 +37,65 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
+          ref: dc54913447b297bbd6d41703bc9bc3598dd5a632
+          path: source-dse
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: dc54913447b297bbd6d41703bc9bc3598dd5a632
+          path: source-nocache
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
           repository: wasmi-labs/wasmi-benchmarks
           ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
           path: wasmi-benchmarks
-          submodules: true
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: x64-nano-probes
+      - name: Disable loop caching in the isolated third candidate
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          path = Path('source-nocache/sf-nano-core/src/vm/jit/machine/peephole/mod.rs')
+          code = path.read_text()
+          declaration = 'mod cache_loop_frame_words;\n'
+          call = '''    cache_loop_frame_words::cache_loop_frame_words(
+                  &mut program.blocks,
+                  &loop_graph,
+                  entry,
+                  &mut ctx,
+              );
+          '''
+          assert code.count(declaration) == 1 and code.count(call) == 1
+          path.write_text(code.replace(declaration, '').replace(call, ''))
+          PYCODE
       - name: Prepare identical probe manifests
         run: |
           python3 - <<'PYCODE'
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['loop', 'flags', 'noalu', 'float']:
+          for name in ['main', 'float', 'dse', 'nocache']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
               source = Path('source-' + name).resolve() / 'sf-nano-core'
               manifest.write_text(manifest.read_text().replace('"../../sf-nano-core"', json.dumps(str(source))))
           PYCODE
-      - name: Build every Nano revision before measuring
+      - name: Save and audit the source variants
         run: |
-          for name in loop flags noalu float; do
+          git -C source-nocache diff > coremark-out/nocache.patch
+          for name in main float dse nocache; do
+            (cd "source-$name" && python3 -m ci.lint_policy)
+          done
+      - name: Build every Nano revision before measuring
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          for name in main float dse nocache; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             if rg '^warning(\[[^]]+\])?:' "coremark-out/build-$name.log"; then
@@ -87,36 +111,27 @@ jobs:
           rustc --version > coremark-out/rustc.txt
           sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
-            --variant loop="$PWD/coremark-out/loop" \
-            --variant flags="$PWD/coremark-out/flags" \
-            --variant noalu="$PWD/coremark-out/noalu" \
+            --variant main="$PWD/coremark-out/main" \
             --variant float="$PWD/coremark-out/float" \
+            --variant dse="$PWD/coremark-out/dse" \
+            --variant nocache="$PWD/coremark-out/nocache" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
-      - name: Compare spectralnorm with the suite's exact result oracle
-        run: |
-          sha256sum wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm > coremark-out/spectralnorm-sha256.txt
-          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
-            --variant noalu="$PWD/coremark-out/noalu" \
-            --variant float="$PWD/coremark-out/float" \
-            --wasm wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm \
-            --mode setup --input 500 --seconds 3 --expected-output-f64 1.2742241159529095 \
-            --rounds 6 --out-dir spectralnorm-out
       - name: Capture the native code of every revision
         run: |
-          for name in loop flags noalu float; do
+          for name in main float dse nocache; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-dependencies-${{ matrix.draw }}
+          name: nano-coremark-dse-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
             coremark-out/*.txt
             coremark-out/*.md
+            coremark-out/*.patch
             native-out/
-            spectralnorm-out/
           if-no-files-found: error
           retention-days: 30
