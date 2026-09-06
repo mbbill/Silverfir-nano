@@ -170,6 +170,7 @@ fn preserve_frame_value_before_clobber(block: &mut MachineBlock, config: Backend
             || src == dst
             || !matches!(arithmetic, MachineInstKind::IntBinary { .. })
             || !inst_defines(arithmetic, src)
+            || inst_defines(arithmetic, addr.base)
             || inst_defines(arithmetic, dst)
             || inst_uses_value(arithmetic, dst)
             || rewrite_move_storage_type(
@@ -269,7 +270,7 @@ mod tests {
     #[test]
     fn keeps_reload_when_early_copy_would_change_an_operand_or_representation() {
         let config = BackendConfig::new(8, 6, 0, 0);
-        for case in 0..8 {
+        for case in 0..9 {
             let mut block = spill(config);
             match case {
                 0 => {
@@ -314,6 +315,15 @@ mod tests {
                 7 => {
                     if let MachineInstKind::Store { width, .. } = &mut block.ops[0].kind {
                         *width = MachineMemWidth::U32;
+                    }
+                }
+                8 => {
+                    if let MachineInstKind::Store { src, .. } = &mut block.ops[0].kind {
+                        *src = MachineValue::Reg(MACHINE_FP_REG);
+                    }
+                    if let MachineInstKind::IntBinary { dst, lhs, .. } = &mut block.ops[1].kind {
+                        *dst = MACHINE_FP_REG;
+                        *lhs = MachineValue::Reg(MACHINE_FP_REG);
                     }
                 }
                 _ => unreachable!(),
