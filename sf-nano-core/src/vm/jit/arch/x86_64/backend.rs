@@ -712,8 +712,13 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Branch fixup helpers ─────────────────────────────────────────────
 
-    /// Emit JMP rel32 with a fixup to be patched later.
+    /// Bound nearby targets use rel8 immediately; others keep a rel32 fixup.
     pub(super) fn emit_jmp(&mut self, label: usize) {
+        if let Some(target) = self.core.labels.get(label).copied().flatten() {
+            if enc::try_branch_rel8(&mut self.core.text, None, target) {
+                return;
+            }
+        }
         let rel32_offset = enc::jmp_rel32(&mut self.core.text);
         self.fixups.push(BranchFixup {
             rel32_offset,
@@ -721,8 +726,13 @@ impl<'a> X86_64Backend<'a> {
         });
     }
 
-    /// Emit Jcc rel32 with a fixup to be patched later.
+    /// Bound nearby targets use rel8 immediately; others keep a rel32 fixup.
     pub(super) fn emit_jcc(&mut self, cc: Cc, label: usize) {
+        if let Some(target) = self.core.labels.get(label).copied().flatten() {
+            if enc::try_branch_rel8(&mut self.core.text, Some(cc), target) {
+                return;
+            }
+        }
         let rel32_offset = enc::jcc_rel32(&mut self.core.text, cc);
         self.fixups.push(BranchFixup {
             rel32_offset,

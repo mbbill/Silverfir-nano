@@ -1301,6 +1301,53 @@ pub(crate) fn pop(e: &mut TextEmitter, reg: X86Reg) {
 // Branches / Calls / Return
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Emit a two-byte branch to an already-bound label if it fits rel8.
+/// The text buffer only grows, so a bound target needs no later relaxation.
+pub(crate) fn try_branch_rel8(e: &mut TextEmitter, cc: Option<Cc>, target: usize) -> bool {
+    let displacement = target as i64 - (e.len() as i64 + 2);
+    let Ok(displacement) = i8::try_from(displacement) else {
+        return false;
+    };
+    e.emit_u8(cc.map_or(0xEB, |cc| 0x70 + cc as u8));
+    e.emit_u8(displacement as u8);
+    true
+}
+
+#[cfg(test)]
+mod short_branch_tests {
+    use super::*;
+
+    #[test]
+    fn rel8_boundaries_and_declining_to_change_the_buffer() {
+        for cc in [None, Some(Cc::E), Some(Cc::NE), Some(Cc::L), Some(Cc::AE)] {
+            for displacement in [-129i64, -128, -2, 0, 127, 128] {
+                let mut text = TextEmitter::new();
+                for _ in 0..256 {
+                    text.emit_u8(0x90);
+                }
+                let target = (258 + displacement) as usize;
+                let fits = (-128..=127).contains(&displacement);
+                assert_eq!(try_branch_rel8(&mut text, cc, target), fits);
+                let bytes = text.finish();
+                if fits {
+                    let opcode = match cc {
+                        None => 0xEB,
+                        Some(Cc::E) => 0x74,
+                        Some(Cc::NE) => 0x75,
+                        Some(Cc::L) => 0x7C,
+                        Some(Cc::AE) => 0x73,
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(&bytes[256..], &[opcode, displacement as i8 as u8]);
+                    assert_eq!(258 + i64::from(bytes[257] as i8), target as i64);
+                } else {
+                    assert_eq!(bytes.len(), 256);
+                }
+            }
+        }
+    }
+}
+
 /// JMP rel32 (E9 cd). Returns offset of the rel32 field for patching.
 pub(crate) fn jmp_rel32(e: &mut TextEmitter) -> usize {
     e.emit_u8(0xE9);
