@@ -2,6 +2,7 @@ pub(crate) mod backend;
 pub(crate) mod core;
 pub(crate) mod eval;
 pub(crate) mod helpers;
+mod loop_alignment;
 pub(crate) mod pipeline;
 pub(crate) mod scratch_pool;
 pub(crate) mod template;

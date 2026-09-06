@@ -33,6 +33,10 @@ pub(crate) trait ArchBackend<'a>: Sized {
     /// Architecture name for error messages (e.g. "arm64").
     const NAME: &'static str;
 
+    /// Request control-flow loop discovery before `align_loop_header` calls.
+    /// Backends that do not pad loop entries need no alignment analysis.
+    const ALIGN_LOOP_HEADERS: bool = false;
+
     // ── Capacity queries (no &self — pure arch facts) ────────────────────
 
     fn max_total_regs() -> usize;

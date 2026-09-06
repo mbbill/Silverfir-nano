@@ -10,7 +10,7 @@ use crate::{
             MachineAddr, MachineArgSrc, MachineBlockParam, MachineCallArgs, MachineCallLaneArg,
             MachineFloatWidth, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FP_REG,
+            MachineTrapKind, MachineValue, MACHINE_FP_REG,
         },
         jit::middle::frame::FrameSlot,
         jit::runtime::code::CodegenModuleView,
@@ -97,47 +97,13 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     }
 
     // Blocks
-    // Loop headers: blocks some same-or-later layout block branches back
-    // to. Their labels get the arch's loop alignment below; everything
-    // else stays packed.
-    let is_loop_header = {
-        let blocks = b.core().mir_blocks()?;
-        let mut layout_pos = collections::Vec::new();
-        layout_pos.resize(blocks.len(), usize::MAX);
-        for (index, block_id) in block_layout.iter().enumerate() {
-            layout_pos[block_id.as_usize()] = index;
-        }
-        let mut heads = collections::Vec::new();
-        heads.resize(blocks.len(), false);
-        let mut targets: collections::Vec<usize> = collections::Vec::new();
-        for (index, block_id) in block_layout.iter().enumerate() {
-            targets.clear();
-            match &blocks[block_id.as_usize()].terminator {
-                MachineTerminator::Jump(edge) => targets.push(edge.target.as_usize()),
-                MachineTerminator::Branch {
-                    then_edge,
-                    else_edge,
-                    ..
-                } => {
-                    targets.push(then_edge.target.as_usize());
-                    targets.push(else_edge.target.as_usize());
-                }
-                MachineTerminator::JumpTable { entries, .. } => {
-                    targets.extend(entries.iter().map(|edge| edge.target.as_usize()));
-                }
-                MachineTerminator::Call { success, .. } => targets.push(success.target.as_usize()),
-                MachineTerminator::TailCall { .. }
-                | MachineTerminator::Return
-                | MachineTerminator::ReturnScalar { .. }
-                | MachineTerminator::Trap { .. } => {}
-            }
-            for &target in &targets {
-                if layout_pos[target] <= index {
-                    heads[target] = true;
-                }
-            }
-        }
-        heads
+    // A backward text edge can be an acyclic join. Align only entries
+    // reached by a control-flow cycle, and skip this analysis entirely on
+    // backends whose alignment hook does not emit padding.
+    let is_loop_header = if A::ALIGN_LOOP_HEADERS {
+        super::loop_alignment::loop_headers(&function.program.blocks, function.program.entry)
+    } else {
+        collections::Vec::new()
     };
     for (index, block_id) in block_layout.iter().copied().enumerate() {
         if entry_guard && index == 0 {
@@ -148,7 +114,7 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
             .mir_blocks()?
             .get(block_id.as_usize())
             .ok_or_else(|| WasmError::internal("block layout references missing block"))?;
-        if is_loop_header[block_id.as_usize()] {
+        if A::ALIGN_LOOP_HEADERS && is_loop_header[block_id.as_usize()] {
             b.align_loop_header();
         }
         let label = b.core().block_label(block.id)?;

@@ -227,6 +227,7 @@ impl X86_64Backend<'_> {
 // ── ArchBackend trait implementation ─────────────────────────────────────────
 
 impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
+    const ALIGN_LOOP_HEADERS: bool = true;
     const NAME: &'static str = "x86_64";
 
     fn max_total_regs() -> usize {
