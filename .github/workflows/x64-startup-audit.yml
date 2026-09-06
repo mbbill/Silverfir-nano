@@ -31,13 +31,13 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: ef0c12ef64642161f5c34c3e942a34aa209a25ea
-          path: source-analysis
+          ref: 39ba77b3166801b397bd997577dd2c24b28a2307
+          path: source-current
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 523712c4df4f381f5190ccd8ce01cf39c66fd8ab
-          path: source-remat
+          ref: 0878b63edf093b883b61db17f3095e3118c59a67
+          path: source-lean
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -55,7 +55,7 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           import json, os, shutil
-          for name in ['main', 'analysis', 'remat']:
+          for name in ['main', 'current', 'lean']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('startup-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -64,18 +64,18 @@ jobs:
               # Match normal JIT features; debug exporters would add startup work.
               manifest.write_text(code.replace(', "jit-debug"', ''))
           PYCODE
-          for name in main analysis remat; do
+          for name in main current lean; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Build identical probes for every source revision
         run: |
           RUSTFLAGS="${RUSTFLAGS:-}"
-          for name in main analysis remat; do
+          for name in main current lean; do
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$PWD/source-$name=/nano-source"
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$RUNNER_TEMP/startup-$name=/nano-probe"
           done
           export RUSTFLAGS
-          for name in main analysis remat; do
+          for name in main current lean; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
               --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
             if rg '^warning(\[[^]]+\])?:' "startup-out/build-$name.log"; then
@@ -92,8 +92,8 @@ jobs:
           for workload in coremark bz2 ffmpeg; do
             taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_startup_compare \
               --variant main="$PWD/startup-out/main" \
-              --variant analysis="$PWD/startup-out/analysis" \
-              --variant remat="$PWD/startup-out/remat" \
+              --variant current="$PWD/startup-out/current" \
+              --variant lean="$PWD/startup-out/lean" \
               --wasm "wasmi-benchmarks/res/wasm/$workload.wasm" \
               --rounds 6 --seconds 2 --out-dir "startup-out/$workload-results"
             sha256sum "wasmi-benchmarks/res/wasm/$workload.wasm" > "startup-out/$workload-sha256.txt"
@@ -104,7 +104,7 @@ jobs:
           sudo apt-get install -y -qq linux-tools-common linux-tools-generic
           PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
           sudo sysctl -w kernel.perf_event_paranoid=1
-          for name in analysis remat; do
+          for name in current lean; do
             taskset -c 1 setarch "$(uname -m)" -R "$PERF_BIN" record \
               -e cpu-clock:u -F 999 -k mono -o "startup-out/$name-perf.data" -- \
               "$PWD/startup-out/$name" wasmi-benchmarks/res/wasm/bz2.wasm startup 0 10
@@ -114,7 +114,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-startup-frame-remat
+          name: nano-startup-lean-loop
           path: |
             startup-out/**/*.log
             startup-out/**/*.json
