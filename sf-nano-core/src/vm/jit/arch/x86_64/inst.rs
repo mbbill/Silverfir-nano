@@ -2272,19 +2272,22 @@ impl<'a> X86_64Backend<'a> {
             // Int -> Float conversions
             MachineConvertOp::F32ConvertI32S => {
                 // CVTSI2SS xmm, r32
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F32, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F32, *fp1 as u8)?;
                 enc::cvtsi2ss_r32(&mut self.core.text, dst_fp, src_gp);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F32, dst_fp)?;
             }
             MachineConvertOp::F32ConvertI32U => {
                 // Zero-extend to 64-bit first for unsigned interpretation
                 enc::mov_rr_32(&mut self.core.text, *gp0, src_gp);
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F32, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F32, *fp1 as u8)?;
                 enc::cvtsi2ss_r64(&mut self.core.text, dst_fp, *gp0);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F32, dst_fp)?;
             }
             MachineConvertOp::F32ConvertI64S => {
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F32, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F32, *fp1 as u8)?;
                 enc::cvtsi2ss_r64(&mut self.core.text, dst_fp, src_gp);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F32, dst_fp)?;
             }
@@ -2292,7 +2295,8 @@ impl<'a> X86_64Backend<'a> {
                 // x86_64 has no unsigned int-to-float instruction.
                 // For values that fit in i64 (bit 63 = 0), use signed conversion.
                 // For values with bit 63 set, shift right by 1, convert, then double.
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F32, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F32, *fp1 as u8)?;
                 enc::test_rr_64(&mut self.core.text, src_gp, src_gp);
                 let large = self.core.new_label();
                 self.emit_jcc(Cc::S, large); // JS = sign flag set = bit 63 is 1
@@ -2313,23 +2317,27 @@ impl<'a> X86_64Backend<'a> {
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F32, dst_fp)?;
             }
             MachineConvertOp::F64ConvertI32S => {
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F64, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F64, *fp1 as u8)?;
                 enc::cvtsi2sd_r32(&mut self.core.text, dst_fp, src_gp);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F64, dst_fp)?;
             }
             MachineConvertOp::F64ConvertI32U => {
                 enc::mov_rr_32(&mut self.core.text, *gp0, src_gp);
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F64, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F64, *fp1 as u8)?;
                 enc::cvtsi2sd_r64(&mut self.core.text, dst_fp, *gp0);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F64, dst_fp)?;
             }
             MachineConvertOp::F64ConvertI64S => {
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F64, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F64, *fp1 as u8)?;
                 enc::cvtsi2sd_r64(&mut self.core.text, dst_fp, src_gp);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F64, dst_fp)?;
             }
             MachineConvertOp::F64ConvertI64U => {
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F64, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F64, *fp1 as u8)?;
                 enc::test_rr_64(&mut self.core.text, src_gp, src_gp);
                 let large = self.core.new_label();
                 self.emit_jcc(Cc::S, large);
@@ -2879,20 +2887,26 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Float conversion helpers ────────────────────────────────────────────
 
-    /// Get FP destination register: if dst is FP reg, use it directly; else use scratch.
-    fn dst_float_reg(
+    /// Integer conversion defines a scalar from scratch. Clear the whole XMM
+    /// destination first: legacy CVTSI2SS/SD otherwise retain its upper bits,
+    /// creating a dependency on the previous value (often a prior loop's
+    /// division). No source lives in this FP register, and scalar carriers
+    /// have no observable upper lanes. XORPS leaves integer EFLAGS intact.
+    fn prepare_int_to_float_dst(
         &mut self,
         dst: MachineReg,
         width: MachineFloatWidth,
         scratch_fp: u8,
     ) -> Result<u8, WasmError> {
-        if self.core.is_fp_reg(dst) {
+        let dst_fp = if self.core.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)? as u8;
             self.core.set_fp_reg_width(dst, width)?;
-            Ok(dst_fp)
+            dst_fp
         } else {
-            Ok(scratch_fp)
-        }
+            scratch_fp
+        };
+        enc::xorps(&mut self.core.text, dst_fp, dst_fp);
+        Ok(dst_fp)
     }
 
     /// If dst is a GP register, move float result from XMM to GP.
