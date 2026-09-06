@@ -102,8 +102,6 @@ pub(crate) struct X86_64Backend<'a> {
     /// form when the next op arrives. Emission order is preserved on
     /// every path — hit, miss, and block-end drain.
     pending_op: Option<(&'a MachineInst, usize)>,
-    /// The store already emitted by an adjacent load/ALU/store fusion.
-    fused_store_index: Option<usize>,
 }
 
 /// One deferred jump table: the movabs immediate to patch with the
@@ -247,7 +245,6 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             flags32: None,
             pending_jump_tables: collections::Vec::new(),
             pending_op: None,
-            fused_store_index: None,
         }
     }
 
@@ -426,7 +423,6 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         // Streaming entry: the lookahead never carries across blocks.
         self.pending_op = None;
-        self.fused_store_index = None;
         // A fallthrough edge may emit no bytes, but other predecessors do
         // not promise the same flags. Position stamps only prove reuse
         // within the current block.
@@ -438,33 +434,10 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
-        if self.fused_store_index == Some(index) {
-            self.fused_store_index = None;
-            return Ok(());
-        }
         // Try to fuse the buffered load with this incoming op. On a hit
         // one instruction consumes both; on a miss the load is emitted
         // solo first, preserving program order (and trap order).
         if let Some((prev, prev_index)) = self.pending_op.take() {
-            let update = self.core.current_block.and_then(|id| {
-                let block = self.core.mir_blocks().ok()?.get(id.as_usize())?;
-                let store = block.ops.get(index + 1)?;
-                let update = super::fusion::memory_update_fusion(prev, inst, store)?;
-                (!crate::vm::jit::machine::peephole::helpers::reg_live_after(
-                    &block.ops[index + 2..],
-                    &block.terminator,
-                    update.loaded,
-                ))
-                .then_some(update)
-            });
-            if let Some(update) = update {
-                self.core.current_op_index = Some(prev_index);
-                self.lower_memory_update(&update)?;
-                self.fused_store_index = Some(index + 1);
-                self.gp_scratch.assert_all_free();
-                self.fp_scratch.assert_all_free();
-                return Ok(());
-            }
             if let Some(fusion) = super::fusion::load_alu_fusion(prev, inst) {
                 let loaded_dead = self
                     .core
@@ -539,7 +512,6 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         term: &MachineTerminator,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        debug_assert!(self.fused_store_index.is_none());
         if let Some((prev, prev_index)) = self.pending_op.take() {
             self.core.current_op_index = Some(prev_index);
             self.lower_inst(prev)?;

@@ -107,10 +107,7 @@ fn emit_modrm_rr(e: &mut TextEmitter, reg: X86Reg, rm: X86Reg) {
 /// Emit ModR/M for [rm] (mod=00), [rm+disp8] (mod=01), [rm+disp32] (mod=10).
 /// Handles RSP (SIB needed) and RBP (disp8 needed) special cases.
 fn emit_modrm_mem(e: &mut TextEmitter, reg: X86Reg, base: X86Reg, disp: i32) {
-    emit_modrm_mem_digit(e, reg.idx3(), base, disp);
-}
-
-fn emit_modrm_mem_digit(e: &mut TextEmitter, reg3: u8, base: X86Reg, disp: i32) {
+    let reg3 = reg.idx3();
     let base3 = base.idx3();
 
     // RSP/R12 as base requires SIB byte
@@ -1210,37 +1207,6 @@ impl MemAluOp {
             Self::Sub => 0x2B,
             Self::Xor => 0x33,
         }
-    }
-}
-
-/// Non-atomic OP [base + optional index + disp], imm32/imm8.
-pub(crate) fn alu_mi(
-    e: &mut TextEmitter,
-    op: MemAluOp,
-    w64: bool,
-    base: X86Reg,
-    index: Option<X86Reg>,
-    disp: i32,
-    immediate: i32,
-) {
-    if let Some(index) = index {
-        emit_rex_idx(e, w64, false, index, base);
-    } else {
-        emit_rex(e, w64, X86Reg::RAX, base);
-    }
-    let short = fits_i8(immediate);
-    e.emit_u8(if short { 0x83 } else { 0x81 });
-    // Group 1 uses the same operation row as the register/memory opcodes.
-    let digit = op.opcode() >> 3;
-    if let Some(index) = index {
-        emit_modrm_mem_idx(e, digit, base, index, disp);
-    } else {
-        emit_modrm_mem_digit(e, digit, base, disp);
-    }
-    if short {
-        e.emit_u8(immediate as u8);
-    } else {
-        emit_i32(e, immediate);
     }
 }
 
