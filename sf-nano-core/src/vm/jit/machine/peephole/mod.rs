@@ -282,7 +282,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     // Memmove recognition deliberately matches the still-explicit
     // ZeroExtend32 memory sequence, so it must precede the irreversible
     // relaxation below.
-    recognize_memmove::recognize_memmove(program);
+    recognize_memmove::recognize_memmove(program, config);
     // Run this exactly once after every materialized MachineIR rewrite. The
     // fold may have emitted new ZeroExtend32 forms, and clean block parameters
     // (including loop-carried values) can now use the direct indexed form.
