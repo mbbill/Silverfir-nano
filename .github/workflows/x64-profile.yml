@@ -32,18 +32,18 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 886d1d5721940d13749991a9933b1dfa7d48182e
-          path: source-float
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
           ref: dc54913447b297bbd6d41703bc9bc3598dd5a632
           path: source-dse
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: dc54913447b297bbd6d41703bc9bc3598dd5a632
-          path: source-nocache
+          ref: 39ba77b3166801b397bd997577dd2c24b28a2307
+          path: source-tables
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: fca23555e9fe0e84642a8851476e1e1d593b587a
+          path: source-commute
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -51,34 +51,23 @@ jobs:
           ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
           path: wasmi-benchmarks
           persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/rust-benchmarks
+          ref: 32e233bd1922425448851ffbd0fdc04e8c6e0f76
+          path: wasmi-benchmarks/res/rust
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: x64-nano-probes
-      - name: Disable loop caching in the isolated third candidate
-        run: |
-          python3 - <<'PYCODE'
-          from pathlib import Path
-          path = Path('source-nocache/sf-nano-core/src/vm/jit/machine/peephole/mod.rs')
-          code = path.read_text()
-          declaration = 'mod cache_loop_frame_words;\n'
-          call = '''    cache_loop_frame_words::cache_loop_frame_words(
-                  &mut program.blocks,
-                  &loop_graph,
-                  entry,
-                  &mut ctx,
-              );
-          '''
-          assert code.count(declaration) == 1 and code.count(call) == 1
-          path.write_text(code.replace(declaration, '').replace(call, ''))
-          PYCODE
       - name: Prepare identical probe manifests
         run: |
           python3 - <<'PYCODE'
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['main', 'float', 'dse', 'nocache']:
+          for name in ['main', 'dse', 'tables', 'commute']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -87,15 +76,14 @@ jobs:
           PYCODE
       - name: Save and audit the source variants
         run: |
-          git -C source-nocache diff > coremark-out/nocache.patch
-          for name in main float dse nocache; do
+          for name in main dse tables commute; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Build every Nano revision before measuring
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in main float dse nocache; do
+          for name in main dse tables commute; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             if rg '^warning(\[[^]]+\])?:' "coremark-out/build-$name.log"; then
@@ -112,26 +100,47 @@ jobs:
           sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant main="$PWD/coremark-out/main" \
-            --variant float="$PWD/coremark-out/float" \
             --variant dse="$PWD/coremark-out/dse" \
-            --variant nocache="$PWD/coremark-out/nocache" \
+            --variant tables="$PWD/coremark-out/tables" \
+            --variant commute="$PWD/coremark-out/commute" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
+      - name: Measure nbody at the suite's 400-body input
+        run: |
+          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
+            --variant tables="$PWD/coremark-out/tables" \
+            --variant commute="$PWD/coremark-out/commute" \
+            --wasm wasmi-benchmarks/res/rust/cases/nbody/out.wasm \
+            --mode setup --input 400 --seconds 3 --rounds 6 --out-dir nbody-out
+          sha256sum wasmi-benchmarks/res/rust/cases/nbody/out.wasm > nbody-out/wasm-sha256.txt
       - name: Capture the native code of every revision
         run: |
-          for name in main float dse nocache; do
+          for name in main dse tables commute; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
+      - name: Sample current CoreMark and nbody machine-code hotspots
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common linux-tools-generic
+          PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
+            --perf "$PERF_BIN" --out-dir profile-out/coremark -- \
+            "$PWD/coremark-out/commute" wasmi-benchmarks/res/wasm/coremark.wasm coremark
+          taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
+            --perf "$PERF_BIN" --out-dir profile-out/nbody -- \
+            "$PWD/coremark-out/commute" wasmi-benchmarks/res/rust/cases/nbody/out.wasm setup 400 10
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-dse-${{ matrix.draw }}
+          name: nano-coremark-tables-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
             coremark-out/*.txt
             coremark-out/*.md
-            coremark-out/*.patch
             native-out/
+            nbody-out/
+            profile-out/
           if-no-files-found: error
           retention-days: 30
