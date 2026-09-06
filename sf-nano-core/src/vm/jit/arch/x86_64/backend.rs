@@ -652,9 +652,17 @@ impl<'a> crate::vm::jit::arch::shared_64::ModuleLinkBackend64<'a> for X86_64Back
 impl<'a> X86_64Backend<'a> {
     #[inline]
     pub(super) fn emit_gp_move_width(&mut self, width: MachineIntWidth, dst: X86Reg, src: X86Reg) {
+        let flags = self
+            .current_flags32()
+            .filter(|&producer| dst != producer || dst == src);
         match width {
             MachineIntWidth::I32 => enc::mov_rr_32(&mut self.core.text, dst, src),
             MachineIntWidth::I64 => enc::mov_rr_64(&mut self.core.text, dst, src),
+        }
+        // MOV preserves flags, but a copy over the producing register would
+        // invalidate the association with that register's current low word.
+        if let Some(producer) = flags {
+            self.note_flags32(producer);
         }
     }
 
@@ -668,8 +676,9 @@ impl<'a> X86_64Backend<'a> {
         match ty {
             // GpWord carries both i32 values and references. Preserve the full
             // 64-bit carrier here so ref null sentinels survive plain moves.
-            MachineStorageType::GpWord => enc::mov_rr_64(&mut self.core.text, dst, src),
-            MachineStorageType::GpI64 => enc::mov_rr_64(&mut self.core.text, dst, src),
+            MachineStorageType::GpWord | MachineStorageType::GpI64 => {
+                self.emit_gp_move_width(MachineIntWidth::I64, dst, src)
+            }
             MachineStorageType::Fp32 | MachineStorageType::Fp64 | MachineStorageType::V128 => {
                 return Err(WasmError::internal(
                     "x86_64 GP move requested for FP storage type".into(),
