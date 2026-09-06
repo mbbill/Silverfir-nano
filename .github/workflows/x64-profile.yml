@@ -32,13 +32,13 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 92c1d465818d0f814b8c59b11146b5796af53059
+          ref: be3db3a50017ae334d7a289129de0140568ad293
           path: source-parent
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 1e899334e154ad50cbdb45c55a45a9b82fe915d3
-          path: source-loopalign
+          ref: 8d867e57597dbff1bf24d87ec830cdc2a75b06c0
+          path: source-memsize
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -56,7 +56,7 @@ jobs:
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['main', 'parent', 'loopalign']:
+          for name in ['main', 'parent', 'memsize']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -65,11 +65,11 @@ jobs:
           PYCODE
       - name: Save and audit the source variants
         run: |
-          for name in main parent loopalign; do
+          for name in main parent memsize; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-loopalign
+        working-directory: source-memsize
         env:
           CARGO_TERM_COLOR: never
         run: |
@@ -78,6 +78,8 @@ jobs:
             echo "Native BMI2 execution validation was skipped" >&2
             exit 1
           fi
+          cargo test --locked -p sf-nano-core --no-default-features --features jit,interp \
+            --test memory_length 2>&1 | tee ../coremark-out/correctness-unguarded-memory.log
           cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
             2>&1 | tee ../coremark-out/correctness-spec-build.log
           target/release/sf-nano-spectest --backend jit --log-level info \
@@ -87,7 +89,7 @@ jobs:
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in main parent loopalign; do
+          for name in main parent memsize; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
@@ -102,11 +104,11 @@ jobs:
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant main="$PWD/coremark-out/main" \
             --variant parent="$PWD/coremark-out/parent" \
-            --variant loopalign="$PWD/coremark-out/loopalign" \
+            --variant memsize="$PWD/coremark-out/memsize" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
       - name: Capture the native code of every revision
         run: |
-          for name in main parent loopalign; do
+          for name in main parent memsize; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
@@ -118,11 +120,11 @@ jobs:
           sudo sysctl -w kernel.perf_event_paranoid=1
           taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
             --perf "$PERF_BIN" --out-dir profile-out/coremark -- \
-            "$PWD/coremark-out/loopalign" wasmi-benchmarks/res/wasm/coremark.wasm coremark
+            "$PWD/coremark-out/memsize" wasmi-benchmarks/res/wasm/coremark.wasm coremark
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-loopalign-${{ matrix.draw }}
+          name: nano-coremark-memsize-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
