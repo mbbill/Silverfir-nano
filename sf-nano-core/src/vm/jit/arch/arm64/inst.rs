@@ -2354,6 +2354,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         if matches!(op, MachineIntBinaryOp::And) {
             return self.lower_int_and_flags(width, dst, lhs, rhs);
         }
+        let dst_m = dst;
         let dst = self.map_gp_reg(dst)?;
         // Try immediate form: check reg+imm and imm+reg (for commutative ops).
         if let MachineValue::Imm64(imm) = rhs {
@@ -2384,6 +2385,16 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 }
             }
         }
+        // Two immediate operands would occupy both backend temporaries,
+        // leaving none for signed-division checks, remainder, or rotation.
+        // The destination has no incoming value in this case, so stage the
+        // left constant there and keep one backend temporary available.
+        let lhs = if let (MachineValue::Imm64(imm), MachineValue::Imm64(_)) = (lhs, rhs) {
+            self.materialize_u64(dst, imm);
+            MachineValue::Reg(dst_m)
+        } else {
+            lhs
+        };
         let lhs = prepare_gp(
             self.core.compiled.backend(),
             &self.core.fp_reg_widths,
