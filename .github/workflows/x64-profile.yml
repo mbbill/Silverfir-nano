@@ -1,5 +1,5 @@
 # Isolated Nano-only campaign measurement; no main, PR or dev trigger.
-name: x64-nano-call-cost
+name: x64-nano-coremark
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,7 +12,7 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano recursive calls / draw ${{ matrix.draw }}
+    name: Nano CoreMark / draw ${{ matrix.draw }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -32,13 +32,13 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: cb5b3da3100d3f69f12e9b907ba5b6b30fcdc096
+          ref: 20b01c3dba8b209228bc8ce9a64c92305847ab13
           path: source-parent
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 7a8e7f12eed6754030e2df6836d9d76f0e0fc92a
-          path: source-callflags
+          ref: e437baa5a22aef7acaf98eb2094694920fbf8d70
+          path: source-tablebounds
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -56,7 +56,7 @@ jobs:
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['main', 'parent', 'callflags']:
+          for name in ['main', 'parent', 'tablebounds']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -65,11 +65,11 @@ jobs:
           PYCODE
       - name: Save and audit the source variants
         run: |
-          for name in main parent callflags; do
+          for name in main parent tablebounds; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-callflags
+        working-directory: source-tablebounds
         env:
           CARGO_TERM_COLOR: never
         run: |
@@ -79,7 +79,7 @@ jobs:
             exit 1
           fi
           cargo test --locked -p sf-nano-core --no-default-features --features jit,interp \
-            --test memory_length --test call_status --test integer_division 2>&1 | tee ../coremark-out/correctness-unguarded-memory.log
+            --test memory_length --test call_status --test integer_division --test jump_table_membership 2>&1 | tee ../coremark-out/correctness-unguarded-memory.log
           cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
             2>&1 | tee ../coremark-out/correctness-spec-build.log
           target/release/sf-nano-spectest --backend jit --log-level info \
@@ -89,28 +89,26 @@ jobs:
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in main parent callflags; do
+          for name in main parent tablebounds; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
             cp probe-target/release/sf-x64-probe "coremark-out/$name"
             git -C "source-$name" rev-parse HEAD > "coremark-out/$name-source.txt"
           done
-      - name: Compare recursive calls from the fixed execution corpus
+      - name: Compare the exact CoreMark module
         run: |
           lscpu > coremark-out/cpu.txt
           rustc --version > coremark-out/rustc.txt
-          sha256sum wasmi-benchmarks/res/wat/fibonacci-rec.wat > coremark-out/wasm-sha256.txt
+          sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant main="$PWD/coremark-out/main" \
             --variant parent="$PWD/coremark-out/parent" \
-            --variant callflags="$PWD/coremark-out/callflags" \
-            --wasm wasmi-benchmarks/res/wat/fibonacci-rec.wat \
-            --mode i64 --input 30 --expected-output-i64 832040 \
-            --seconds 2 --rounds 6 --out-dir fib-out
+            --variant tablebounds="$PWD/coremark-out/tablebounds" \
+            --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
       - name: Capture the native code of every revision
         run: |
-          for name in main parent callflags; do
+          for name in main parent tablebounds; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
@@ -122,17 +120,16 @@ jobs:
           sudo sysctl -w kernel.perf_event_paranoid=1
           taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
             --perf "$PERF_BIN" --out-dir profile-out/coremark -- \
-            "$PWD/coremark-out/callflags" wasmi-benchmarks/res/wasm/coremark.wasm coremark
+            "$PWD/coremark-out/tablebounds" wasmi-benchmarks/res/wasm/coremark.wasm coremark
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-recursive-callflags-${{ matrix.draw }}
+          name: nano-coremark-tablebounds-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
             coremark-out/*.txt
             coremark-out/*.md
-            fib-out/
             native-out/
             profile-out/
           if-no-files-found: error
