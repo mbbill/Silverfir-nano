@@ -81,9 +81,6 @@ pub(super) struct FpLiteralFixup {
 
 pub(crate) struct X86_64Backend<'a> {
     pub core: CompilerCore<'a>,
-    /// True only when the entire MIR body uses inline, non-calling lowerings.
-    /// Preserved registers and guarded Wasm-frame probes remain necessary.
-    leaf_body: bool,
     pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: GpScratchPool,
     pub(super) fp_scratch: ScratchPool<u32, 2>,
@@ -165,8 +162,7 @@ impl X86_64Backend<'_> {
     /// The body's preserved-lane save set and the alignment shim paired
     /// with it. Body entry has rsp ≡ 8 (mod 16) and internal calls need
     /// rsp ≡ 0, so the shim is 8 bytes for an even save count and 0 for
-    /// an odd one. Proven inline leaf bodies need no alignment shim, even
-    /// when their preserved lanes still need saving. The prelude and every
+    /// an odd one. Deterministic per function: the prelude and every
     /// exit path (return, error tail, tail call) consume the same plan.
     pub(super) fn body_frame_plan(&self) -> (collections::Vec<X86Reg>, u8) {
         let mut saves = collections::Vec::new();
@@ -179,11 +175,7 @@ impl X86_64Backend<'_> {
                 saves.push(mapped);
             }
         }
-        let shim = if !self.leaf_body && saves.len() % 2 == 0 {
-            8
-        } else {
-            0
-        };
+        let shim = if saves.len() % 2 == 0 { 8 } else { 0 };
         (saves, shim)
     }
 
@@ -243,14 +235,8 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn new(core: CompilerCore<'a>) -> Self {
-        // Streaming/template compilation has no whole-body proof and keeps
-        // the existing alignment contract.
-        let leaf_body = core
-            .mir_function()
-            .is_ok_and(super::body_frame::is_inline_leaf);
         Self {
             core,
-            leaf_body,
             fixups: collections::Vec::new(),
             gp_scratch: GpScratchPool::new(abi::gp_backend_owned_regs()),
             fp_scratch: abi::new_fp_scratch_pool(),
