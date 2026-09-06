@@ -46,15 +46,19 @@ fn main() {
         let result = instance.invoke("run", &params).unwrap();
         std::hint::black_box(&result);
         count += 1;
-        if start.elapsed() >= Duration::from_secs_f64(seconds) {
-            eprintln!(
-                "runs={count} elapsed={:?} result={result:?}",
-                start.elapsed()
-            );
+        let elapsed = start.elapsed();
+        if elapsed >= Duration::from_secs_f64(seconds) {
+            eprintln!("runs={count} elapsed={:?} result={result:?}", elapsed);
+            println!("measurement runs={count} elapsed_ns={}", elapsed.as_nanos());
             break;
         }
     }
     if mode == "setup" {
+        if let Some(expected) = args.get(5) {
+            let expected: f64 = expected.parse().unwrap();
+            let result = instance.invoke("output", &params).unwrap();
+            assert_eq!(result.as_slice(), &[Value::F64(expected)]);
+        }
         if args[1].contains("argon2") {
             let result = instance.invoke("output", &params).unwrap();
             assert_eq!(result[0], Value::I64(0x4CDBBC7DE0EAA94));

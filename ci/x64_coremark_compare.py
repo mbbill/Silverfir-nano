@@ -1,4 +1,4 @@
-"""Nano-only paired CoreMark experiment; ordinary regression CI remains the gate."""
+"""Nano-only paired execution experiment; ordinary regression CI remains the gate."""
 from __future__ import annotations
 import argparse
 import json
@@ -20,16 +20,32 @@ def score_from_output(output: str) -> float:
     return score
 
 
+def throughput_from_output(output: str) -> float:
+    measurements = re.findall(r"^measurement runs=(\d+) elapsed_ns=(\d+)$", output, re.MULTILINE)
+    if len(measurements) != 1:
+        raise ValueError(f"expected exactly one execution measurement, got {len(measurements)}")
+    runs, elapsed_ns = map(int, measurements[0])
+    if runs <= 0 or elapsed_ns <= 0:
+        raise ValueError("execution requires positive work and duration")
+    return runs * 1e9 / elapsed_ns
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", action="append", required=True)
     parser.add_argument("--wasm", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--rounds", type=int, default=4)
+    parser.add_argument("--mode", choices=["coremark", "setup"], default="coremark")
+    parser.add_argument("--input", type=int, default=0)
+    parser.add_argument("--seconds", type=float, default=3)
+    parser.add_argument("--expected-output-f64", type=float)
     args = parser.parse_args()
     variants = dict(v.split("=", 1) for v in args.variant)
     if len(variants) != len(args.variant) or len(variants) < 2 or args.rounds < 2:
         parser.error("need distinct variants and at least two rounds")
+    if not math.isfinite(args.seconds) or not 0 < args.seconds <= 60:
+        parser.error("execution duration must be positive and at most 60 seconds")
     out = args.out_dir
     out.mkdir(parents=True, exist_ok=True)
     scores = {name: [] for name in variants}
@@ -39,13 +55,18 @@ def main() -> None:
         if round_index % 2:
             order.reverse()
         for name in order:
-            command = [variants[name], str(args.wasm.resolve()), "coremark"]
+            command = [variants[name], str(args.wasm.resolve()), args.mode]
+            if args.mode == "setup":
+                command += [str(args.input), str(args.seconds)]
+                if args.expected_output_f64 is not None:
+                    command += [str(args.expected_output_f64)]
             result = subprocess.run(command, capture_output=True, text=True, timeout=180)
             output = result.stdout + result.stderr
             (out / f"round-{round_index}-{name}.log").write_text(output)
             if result.returncode:
                 raise RuntimeError(f"{name} exited {result.returncode}: {output}")
-            score = score_from_output(output)
+            score = (score_from_output(output) if args.mode == "coremark"
+                     else throughput_from_output(output))
             scores[name].append(score)
             records.append({"round": round_index, "variant": name, "score": score})
             print(f"round={round_index} variant={name} score={score}", flush=True)
@@ -57,11 +78,15 @@ def main() -> None:
     for left, right in zip(list(variants)[1:], list(variants)[2:]):
         comparisons[f"{right}/{left}"] = probability_summary([
             b/a for a, b in zip(scores[left], scores[right])])
-    doc = {"scores": scores, "schedule": records, "comparisons": comparisons}
+    doc = {"mode": args.mode, "input": args.input, "seconds": args.seconds,
+           "expected_output_f64": args.expected_output_f64,
+           "scores": scores, "schedule": records, "comparisons": comparisons}
     (out / "comparison.json").write_text(json.dumps(doc, indent=2) + "\n")
-    lines = ["## Nano-only wasmi CoreMark experiment", "",
+    title = "CoreMark" if args.mode == "coremark" else args.wasm.parent.name
+    unit = "score" if args.mode == "coremark" else "runs/second"
+    lines = [f"## Nano-only wasmi {title} experiment", "",
              f"{args.rounds} process pairs per comparison, alternating variant order; score ratios.", "",
-             "| Variant | Geomean score |", "|---|---:|"]
+             f"| Variant | Geomean {unit} |", "|---|---:|"]
     for name, values in scores.items():
         lines.append(f"| {name} | {geometric_mean(values):.2f} |")
     lines += ["", "| Comparison | Throughput change | P(improvement) | P(regression) |",

@@ -27,29 +27,30 @@ jobs:
           env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare
       - uses: actions/checkout@v7
         with:
-          ref: f73219f56a70b77028f0d79730c7efca29ba3439
-          path: source-base
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          ref: 35e315c6372ea3506fd85c36b7a01a707d56dea5
-          path: source-corrected
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          ref: a9ed016724da8de9f0b15f7a6464c940fa41209d
-          path: source-alu
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
           ref: 9a8208289a883c08f0c93e1340ed837f8da74eab
           path: source-loop
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: b54ff280a201decba57afe3b6a00333f423d1118
+          path: source-flags
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 431b2062b9260d67b0eadfcd9e00f9a0959f050b
+          path: source-noalu
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 886d1d5721940d13749991a9933b1dfa7d48182e
+          path: source-float
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
           repository: wasmi-labs/wasmi-benchmarks
           ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
           path: wasmi-benchmarks
+          submodules: true
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2.9.1
@@ -61,7 +62,7 @@ jobs:
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['base', 'corrected', 'alu', 'loop']:
+          for name in ['loop', 'flags', 'noalu', 'float']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -70,7 +71,7 @@ jobs:
           PYCODE
       - name: Build every Nano revision before measuring
         run: |
-          for name in base corrected alu loop; do
+          for name in loop flags noalu float; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             if rg '^warning(\[[^]]+\])?:' "coremark-out/build-$name.log"; then
@@ -86,26 +87,36 @@ jobs:
           rustc --version > coremark-out/rustc.txt
           sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
-            --variant base="$PWD/coremark-out/base" \
-            --variant corrected="$PWD/coremark-out/corrected" \
-            --variant alu="$PWD/coremark-out/alu" \
             --variant loop="$PWD/coremark-out/loop" \
+            --variant flags="$PWD/coremark-out/flags" \
+            --variant noalu="$PWD/coremark-out/noalu" \
+            --variant float="$PWD/coremark-out/float" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
+      - name: Compare spectralnorm with the suite's exact result oracle
+        run: |
+          sha256sum wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm > coremark-out/spectralnorm-sha256.txt
+          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
+            --variant noalu="$PWD/coremark-out/noalu" \
+            --variant float="$PWD/coremark-out/float" \
+            --wasm wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm \
+            --mode setup --input 500 --seconds 3 --expected-output-f64 1.2742241159529095 \
+            --rounds 6 --out-dir spectralnorm-out
       - name: Capture the native code of every revision
         run: |
-          for name in base corrected alu loop; do
+          for name in loop flags noalu float; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-loops-${{ matrix.draw }}
+          name: nano-coremark-dependencies-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
             coremark-out/*.txt
             coremark-out/*.md
             native-out/
+            spectralnorm-out/
           if-no-files-found: error
           retention-days: 30
