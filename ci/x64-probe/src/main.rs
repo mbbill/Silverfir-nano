@@ -16,6 +16,48 @@ fn main() {
         },
     )];
     let engine = Engine::new(Config::new().tier(Tier::Jit).parallel_compilation(false)).unwrap();
+    if mode == "startup" {
+        // Build the inert import list before timing, just as wasmi-benchmarks
+        // does. Each timed iteration reparses and instantiates the full bytes.
+        let module = sf_nano_core::module::Module::new("imports", &wasm).unwrap();
+        assert!(
+            module.start_function_index().is_none(),
+            "startup fixture must not execute a start function"
+        );
+        let imports: Vec<_> = module
+            .functions()
+            .iter()
+            .filter_map(|function| {
+                let sf_nano_core::module::entities::FunctionDef::Import { module, name, .. } =
+                    function.def()
+                else {
+                    return None;
+                };
+                Some(Import::func(
+                    module.as_str(),
+                    name.as_str(),
+                    |_: &mut Caller, _: &[Value], _: &mut [Value]| {
+                        panic!("startup fixture invoked an import")
+                    },
+                ))
+            })
+            .collect();
+        drop(module);
+        let start = Instant::now();
+        let mut count = 0u64;
+        loop {
+            let instance = Instance::new(&engine, &wasm, &imports).unwrap();
+            std::hint::black_box(&instance);
+            drop(instance);
+            count += 1;
+            let elapsed = start.elapsed();
+            if elapsed >= Duration::from_secs_f64(seconds) {
+                println!("measurement runs={count} elapsed_ns={}", elapsed.as_nanos());
+                break;
+            }
+        }
+        return;
+    }
     let mut instance = Instance::new(
         &engine,
         &wasm,

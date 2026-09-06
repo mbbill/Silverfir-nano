@@ -1,0 +1,171 @@
+# Temporary Nano-only compilation-cost isolation. No PR/main/dev trigger.
+name: x64-startup-audit
+on:
+  push:
+    branches: ["codex/x64-profiling"]
+    paths: [".github/workflows/x64-startup-audit.yml", "ci/x64_startup_compare.py"]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  compare:
+    name: Nano JIT startup / pass isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v7
+      - name: Audit the measurement tool
+        run: |
+          python3 -m ci.lint_policy
+          python3 -m py_compile ci/x64_startup_compare.py
+          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare
+      - uses: actions/checkout@v7
+        with:
+          ref: f73219f56a70b77028f0d79730c7efca29ba3439
+          path: source-main
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 35e315c6372ea3506fd85c36b7a01a707d56dea5
+          path: source-corrected
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 9a8208289a883c08f0c93e1340ed837f8da74eab
+          path: source-loop
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 39ba77b3166801b397bd997577dd2c24b28a2307
+          path: source-current
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 39ba77b3166801b397bd997577dd2c24b28a2307
+          path: source-nocache
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 39ba77b3166801b397bd997577dd2c24b28a2307
+          path: source-nodse
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: x64-startup-audit
+      - name: Prepare and record isolated pass removals
+        run: |
+          mkdir startup-out
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import json, os, shutil
+          p = Path('source-nocache/sf-nano-core/src/vm/jit/machine/peephole/mod.rs')
+          s = p.read_text()
+          declaration = 'mod cache_loop_frame_words;\n'
+          call = '    cache_loop_frame_words::cache_loop_frame_words(\n        &mut program.blocks,\n        &loop_graph,\n        entry,\n        &mut ctx,\n    );\n'
+          assert s.count(declaration) == 1 and s.count(call) == 1
+          p.write_text(s.replace(declaration, '').replace(call, ''))
+          p = Path('source-nodse/sf-nano-core/src/vm/jit/machine/peephole/mod.rs')
+          s = p.read_text()
+          s = s.replace('mod eliminate_overwritten_frame_stores;\n', '')
+          lines = s.splitlines(True)
+          # Remove just the two complete calls; the enclosing feature gates stay.
+          begin = 'eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores('
+          result = []
+          removing = False
+          removed = 0
+          for line in lines:
+              if begin in line:
+                  removing = True
+                  removed += 1
+              if not removing:
+                  result.append(line)
+              elif ');' in line:
+                  removing = False
+          assert removed == 2 and not removing
+          p.write_text(''.join(result))
+          for name in ['main', 'corrected', 'loop', 'current', 'nocache', 'nodse']:
+              dest = Path(os.environ['RUNNER_TEMP']) / ('startup-' + name)
+              shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
+              manifest = dest / 'Cargo.toml'
+              source = Path('source-' + name).resolve() / 'sf-nano-core'
+              code = manifest.read_text().replace('"../../sf-nano-core"', json.dumps(str(source)))
+              # Match normal JIT features; debug exporters would add startup work.
+              manifest.write_text(code.replace(', "jit-debug"', ''))
+          PYCODE
+          git -C source-nocache diff > startup-out/nocache.patch
+          git -C source-nodse diff > startup-out/nodse.patch
+          for name in main corrected loop current nocache nodse; do
+            (cd "source-$name" && python3 -m ci.lint_policy)
+          done
+      - name: Build identical probes for every source revision
+        run: |
+          RUSTFLAGS="${RUSTFLAGS:-}"
+          for name in main corrected loop current nocache nodse; do
+            RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$PWD/source-$name=/nano-source"
+            RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$RUNNER_TEMP/startup-$name=/nano-probe"
+          done
+          export RUSTFLAGS
+          for name in main corrected loop current nocache nodse; do
+            cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
+              --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
+            if rg '^warning(\[[^]]+\])?:' "startup-out/build-$name.log"; then
+              echo '::error::ACTION REQUIRED: compiler warning'
+              exit 1
+            fi
+            cp startup-target/release/sf-x64-probe "startup-out/$name"
+            git -C "source-$name" rev-parse HEAD > "startup-out/$name-source.txt"
+          done
+      - name: Measure small and large compilation workloads
+        run: |
+          lscpu > startup-out/cpu.txt
+          rustc --version > startup-out/rustc.txt
+          for workload in coremark bz2 ffmpeg; do
+            taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_startup_compare \
+              --variant main="$PWD/startup-out/main" \
+              --variant corrected="$PWD/startup-out/corrected" \
+              --variant loop="$PWD/startup-out/loop" \
+              --variant current="$PWD/startup-out/current" \
+              --variant nocache="$PWD/startup-out/nocache" \
+              --variant nodse="$PWD/startup-out/nodse" \
+              --wasm "wasmi-benchmarks/res/wasm/$workload.wasm" \
+              --rounds 4 --seconds 2 --out-dir "startup-out/$workload-results"
+            sha256sum "wasmi-benchmarks/res/wasm/$workload.wasm" > "startup-out/$workload-sha256.txt"
+          done
+      - name: Profile native compilation of bz2
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common linux-tools-generic
+          PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          for name in main current; do
+            taskset -c 1 setarch "$(uname -m)" -R "$PERF_BIN" record \
+              -e cpu-clock:u -F 999 -k mono -o "startup-out/$name-perf.data" -- \
+              "$PWD/startup-out/$name" wasmi-benchmarks/res/wasm/bz2.wasm startup 0 10
+            "$PERF_BIN" report -i "startup-out/$name-perf.data" --stdio --no-children \
+              --percent-limit 0.1 > "startup-out/$name-profile.txt"
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nano-startup-pass-isolation
+          path: |
+            startup-out/**/*.log
+            startup-out/**/*.json
+            startup-out/**/*.txt
+            startup-out/**/*.md
+            startup-out/**/*.patch
+            startup-out/*.data
+          if-no-files-found: error
+          retention-days: 30
