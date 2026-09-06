@@ -35,6 +35,7 @@ mod cache_loop_frame_words;
 mod copy_propagate;
 mod deduplicate_constants;
 mod eliminate_dead_params;
+mod eliminate_overwritten_frame_stores;
 mod fold_induction_offsets;
 mod forward_stored_values;
 mod fuse_compare_branch;
@@ -178,6 +179,12 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     if features.may_fuse_isel {
         fuse_isel::fuse_isel(block, ctx.config);
     }
+    if features.has_store {
+        eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores(
+            block,
+            ctx.config.gp_unit_bytes,
+        );
+    }
     if ctx.config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
     }
@@ -220,6 +227,10 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
             &mut ctx.tracked_stores,
         );
         fuse_isel::fuse_isel(&mut unconditional_oracle, ctx.config);
+        eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores(
+            &mut unconditional_oracle,
+            ctx.config.gp_unit_bytes,
+        );
         if ctx.config.is_32bit_gp_target() {
             fuse_smull_sign_ext::fuse_smull_sign_ext(
                 &mut unconditional_oracle,
