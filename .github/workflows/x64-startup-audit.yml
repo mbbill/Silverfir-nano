@@ -31,28 +31,18 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 35e315c6372ea3506fd85c36b7a01a707d56dea5
-          path: source-corrected
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          ref: 9a8208289a883c08f0c93e1340ed837f8da74eab
-          path: source-loop
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
           ref: 39ba77b3166801b397bd997577dd2c24b28a2307
           path: source-current
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 39ba77b3166801b397bd997577dd2c24b28a2307
-          path: source-nocache
+          ref: 1401981aae423d2617620c82176555439035c4e4
+          path: source-flags
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 39ba77b3166801b397bd997577dd2c24b28a2307
-          path: source-nodse
+          ref: ef0c12ef64642161f5c34c3e942a34aa209a25ea
+          path: source-analysis
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -64,38 +54,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: x64-startup-audit
-      - name: Prepare and record isolated pass removals
+      - name: Prepare identical single-thread compilation probes
         run: |
           mkdir startup-out
           python3 - <<'PYCODE'
           from pathlib import Path
           import json, os, shutil
-          p = Path('source-nocache/sf-nano-core/src/vm/jit/machine/peephole/mod.rs')
-          s = p.read_text()
-          declaration = 'mod cache_loop_frame_words;\n'
-          call = '    cache_loop_frame_words::cache_loop_frame_words(\n        &mut program.blocks,\n        &loop_graph,\n        entry,\n        &mut ctx,\n    );\n'
-          assert s.count(declaration) == 1 and s.count(call) == 1
-          p.write_text(s.replace(declaration, '').replace(call, ''))
-          p = Path('source-nodse/sf-nano-core/src/vm/jit/machine/peephole/mod.rs')
-          s = p.read_text()
-          s = s.replace('mod eliminate_overwritten_frame_stores;\n', '')
-          lines = s.splitlines(True)
-          # Remove just the two complete calls; the enclosing feature gates stay.
-          begin = 'eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores('
-          result = []
-          removing = False
-          removed = 0
-          for line in lines:
-              if begin in line:
-                  removing = True
-                  removed += 1
-              if not removing:
-                  result.append(line)
-              elif ');' in line:
-                  removing = False
-          assert removed == 2 and not removing
-          p.write_text(''.join(result))
-          for name in ['main', 'corrected', 'loop', 'current', 'nocache', 'nodse']:
+          for name in ['main', 'current', 'flags', 'analysis']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('startup-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -104,20 +69,18 @@ jobs:
               # Match normal JIT features; debug exporters would add startup work.
               manifest.write_text(code.replace(', "jit-debug"', ''))
           PYCODE
-          git -C source-nocache diff > startup-out/nocache.patch
-          git -C source-nodse diff > startup-out/nodse.patch
-          for name in main corrected loop current nocache nodse; do
+          for name in main current flags analysis; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Build identical probes for every source revision
         run: |
           RUSTFLAGS="${RUSTFLAGS:-}"
-          for name in main corrected loop current nocache nodse; do
+          for name in main current flags analysis; do
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$PWD/source-$name=/nano-source"
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$RUNNER_TEMP/startup-$name=/nano-probe"
           done
           export RUSTFLAGS
-          for name in main corrected loop current nocache nodse; do
+          for name in main current flags analysis; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
               --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
             if rg '^warning(\[[^]]+\])?:' "startup-out/build-$name.log"; then
@@ -134,13 +97,11 @@ jobs:
           for workload in coremark bz2 ffmpeg; do
             taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_startup_compare \
               --variant main="$PWD/startup-out/main" \
-              --variant corrected="$PWD/startup-out/corrected" \
-              --variant loop="$PWD/startup-out/loop" \
               --variant current="$PWD/startup-out/current" \
-              --variant nocache="$PWD/startup-out/nocache" \
-              --variant nodse="$PWD/startup-out/nodse" \
+              --variant flags="$PWD/startup-out/flags" \
+              --variant analysis="$PWD/startup-out/analysis" \
               --wasm "wasmi-benchmarks/res/wasm/$workload.wasm" \
-              --rounds 4 --seconds 2 --out-dir "startup-out/$workload-results"
+              --rounds 6 --seconds 2 --out-dir "startup-out/$workload-results"
             sha256sum "wasmi-benchmarks/res/wasm/$workload.wasm" > "startup-out/$workload-sha256.txt"
           done
       - name: Profile native compilation of bz2
@@ -149,7 +110,7 @@ jobs:
           sudo apt-get install -y -qq linux-tools-common linux-tools-generic
           PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
           sudo sysctl -w kernel.perf_event_paranoid=1
-          for name in main current; do
+          for name in current analysis; do
             taskset -c 1 setarch "$(uname -m)" -R "$PERF_BIN" record \
               -e cpu-clock:u -F 999 -k mono -o "startup-out/$name-perf.data" -- \
               "$PWD/startup-out/$name" wasmi-benchmarks/res/wasm/bz2.wasm startup 0 10
@@ -159,7 +120,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-startup-pass-isolation
+          name: nano-startup-loop-analysis
           path: |
             startup-out/**/*.log
             startup-out/**/*.json
