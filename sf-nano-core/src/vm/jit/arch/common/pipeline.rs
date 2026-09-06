@@ -81,6 +81,8 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     let internal_entry_offset = b.core().text.len();
     #[cfg(sf_has_debug_regions)]
     let body_prelude_start = internal_entry_offset;
+    let block_layout = b.core().block_layout()?;
+    let entry_guard = b.lower_body_entry_guard(block_layout.get(1).copied())?;
     b.lower_body_prelude();
     #[cfg(sf_has_guard_pages)]
     emit_body_stack_probe(&mut b)?;
@@ -94,7 +96,6 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     }
 
     // Blocks
-    let block_layout = b.core().block_layout()?;
     // Loop headers: blocks some same-or-later layout block branches back
     // to. Their labels get the arch's loop alignment below; everything
     // else stays packed.
@@ -138,6 +139,9 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
         heads
     };
     for (index, block_id) in block_layout.iter().copied().enumerate() {
+        if entry_guard && index == 0 {
+            continue;
+        }
         let block = b
             .core()
             .mir_blocks()?

@@ -381,6 +381,10 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.core.bind_label(done);
     }
 
+    fn lower_body_entry_guard(&mut self, next: Option<MachineBlockId>) -> Result<bool, WasmError> {
+        self.emit_body_entry_guard(next)
+    }
+
     /// Body entry prelude. On x86_64, `call` already pushed the return
     /// address onto the host stack when the caller stub entered, leaving SP
     /// misaligned by 8 (relative to the 16-byte requirement). The body

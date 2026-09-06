@@ -4,6 +4,7 @@ mod callconv;
 mod control;
 mod cpu;
 pub(crate) mod enc;
+mod entry_guard;
 mod fusion;
 mod gp_scratch;
 pub(crate) mod helpers;
