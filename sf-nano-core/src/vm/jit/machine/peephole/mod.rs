@@ -65,7 +65,7 @@ struct BlockFeatures {
     // oracle at the end of `optimize_block` guards this contract as passes
     // gain new patterns.
     load_count: usize,
-    has_store: bool,
+    store_count: usize,
     has_move: bool,
     has_address_add: bool,
     may_fuse_isel: bool,
@@ -76,7 +76,7 @@ impl BlockFeatures {
     fn observe(&mut self, kind: &MachineInstKind) {
         match kind {
             MachineInstKind::Load { .. } => self.load_count += 1,
-            MachineInstKind::Store { .. } => self.has_store = true,
+            MachineInstKind::Store { .. } => self.store_count += 1,
             MachineInstKind::Move { .. } => self.has_move = true,
             MachineInstKind::IntBinary { op, .. } => {
                 self.has_bitwise |= matches!(
@@ -125,6 +125,7 @@ pub(crate) struct BlockOptCtx {
     first_fp_reg: u16,
     total_reg_count: usize,
     cp_scratch: copy_propagate::CopyPropagateScratch,
+    const_scratch: deduplicate_constants::ConstantScratch,
     tracked_stores: crate::collections::Vec<TrackedStore>,
     tracked_loads: crate::collections::Vec<TrackedLoad>,
     bit_scratch: crate::collections::Vec<u64>,
@@ -139,6 +140,7 @@ impl BlockOptCtx {
             first_fp_reg: config.first_fp_reg(),
             total_reg_count,
             cp_scratch: copy_propagate::CopyPropagateScratch::new(total_reg_count),
+            const_scratch: deduplicate_constants::ConstantScratch::default(),
             tracked_stores: crate::collections::Vec::new(),
             tracked_loads: crate::collections::Vec::new(),
             bit_scratch: crate::collections::Vec::new(),
@@ -157,11 +159,15 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     #[cfg(any(debug_assertions, test))]
     let mut unconditional_oracle = block.clone();
 
-    let features = deduplicate_constants::deduplicate_constants(block, ctx.first_fp_reg);
-    let may_forward_store = features.has_store && features.load_count != 0;
+    let features = deduplicate_constants::deduplicate_constants(
+        block,
+        ctx.first_fp_reg,
+        &mut ctx.const_scratch,
+    );
+    let may_forward_store = features.store_count != 0 && features.load_count != 0;
     let may_reuse_load = features.load_count > 1;
     let may_fuse_indexed =
-        features.has_address_add && (features.has_store || features.load_count != 0);
+        features.has_address_add && (features.store_count != 0 || features.load_count != 0);
 
     if may_forward_store {
         forward_stored_values::forward_stored_values(block, ctx.config, &mut ctx.tracked_stores);
@@ -187,7 +193,9 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     if features.may_fuse_isel {
         fuse_isel::fuse_isel(block, ctx.config);
     }
-    if features.has_store {
+    // Earlier local passes can remove stores or rewrite their addresses,
+    // but cannot introduce a second store. One store cannot be overwritten.
+    if features.store_count > 1 {
         eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores(
             block,
             ctx.config.gp_unit_bytes,
@@ -214,6 +222,7 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
         let _ = deduplicate_constants::deduplicate_constants(
             &mut unconditional_oracle,
             ctx.first_fp_reg,
+            &mut ctx.const_scratch,
         );
         forward_stored_values::forward_stored_values(
             &mut unconditional_oracle,
