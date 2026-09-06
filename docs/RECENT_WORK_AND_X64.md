@@ -126,8 +126,12 @@ Its repository lint check inadvertently included the separate upstream suite;
 the repair runs that check immediately after checking out Nano, before adding
 the comparison repository. No lint suppression or upstream source was edited.
 
-Current result: fresh ranking pending CI completion. No new x64 speedup has
-been measured or claimed. Local validation of the instrument: 118 Python CI
+Current result: [the complete baseline](performance-baseline-2026-09-06/README.md)
+finished in run 34026700835: all four jobs and all non-skipped steps successful.
+The 20-case corpus is 1.035–1.038× Cranelift time and 1.149–1.167× V8 time;
+WASI is 1.108–1.169× CL and 1.258–1.306× V8, on the SKUs named in the
+report. No new x64 speedup has been measured or claimed. Local validation of
+the instrument: 118 Python CI
 tests passed, including four new incomplete/invalid-result regressions; lint
 policy and whitespace checks passed. Rust is unavailable on the local host,
 so Rust builds and actual native measurements belong to CI.

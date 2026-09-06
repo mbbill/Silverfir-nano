@@ -1,0 +1,114 @@
+{
+  "mean_ns": {
+    "argon2/10000": {
+      "silverfir-nano.jit": 102715972.9,
+      "v8": 81176598.73333333,
+      "wasmtime.cranelift": 88527069.1
+    },
+    "bulk-ops/5000": {
+      "silverfir-nano.jit": 410102.6982579811,
+      "v8": 330003.65414469957,
+      "wasmtime.cranelift": 310520.55999092007
+    },
+    "compression/152089": {
+      "silverfir-nano.jit": 10153812.810337301,
+      "v8": 10727684.203501984,
+      "wasmtime.cranelift": 9591940.993055556
+    },
+    "counter-global/500000": {
+      "silverfir-nano.jit": 146098.0359331746,
+      "v8": 146064.7382266173,
+      "wasmtime.cranelift": 150071.87439480046
+    },
+    "counter-local/1000000": {
+      "silverfir-nano.jit": 291515.7661685714,
+      "v8": 293162.519838955,
+      "wasmtime.cranelift": 295512.28223544976
+    },
+    "counter-param/1000000": {
+      "silverfir-nano.jit": 293989.0235259857,
+      "v8": 289775.9594825269,
+      "wasmtime.cranelift": 295283.08758480544
+    },
+    "fibonacci-iter/2000000": {
+      "silverfir-nano.jit": 591811.2533045314,
+      "v8": 595278.4602124935,
+      "wasmtime.cranelift": 591750.9638536867
+    },
+    "fibonacci-rec/30": {
+      "silverfir-nano.jit": 3921615.1856269846,
+      "v8": 2720143.847094671,
+      "wasmtime.cranelift": 4524107.760520282
+    },
+    "fibonacci-tail/1000000": {
+      "silverfir-nano.jit": 576928.6626933736,
+      "v8": 294184.8622526455,
+      "wasmtime.cranelift": 782089.62749409
+    },
+    "json_parse/1727205": {
+      "silverfir-nano.jit": 4919772.26625,
+      "v8": 5756230.321842404,
+      "wasmtime.cranelift": 4516140.808633156
+    },
+    "mandelbrot/150": {
+      "silverfir-nano.jit": 16181407.951732803,
+      "v8": 16363239.787592594,
+      "wasmtime.cranelift": 16068154.962526456
+    },
+    "matrix_mul/400": {
+      "silverfir-nano.jit": 35085786.02369048,
+      "v8": 46615930.475,
+      "wasmtime.cranelift": 33436127.46168651
+    },
+    "nbody/400": {
+      "silverfir-nano.jit": 9233028.352132935,
+      "v8": 9133226.331396824,
+      "wasmtime.cranelift": 7374803.129587302
+    },
+    "prime_sieve/10000000": {
+      "silverfir-nano.jit": 23962163.385119047,
+      "v8": 26098499.921388887,
+      "wasmtime.cranelift": 19369201.029107142
+    },
+    "regex_redux/10245": {
+      "silverfir-nano.jit": 24652.037952790713,
+      "v8": 25418.694537421237,
+      "wasmtime.cranelift": 24723.426334655178
+    },
+    "reverse_complement/10245": {
+      "silverfir-nano.jit": 27653.242791883087,
+      "v8": 19881.97060712767,
+      "wasmtime.cranelift": 19045.607883743927
+    },
+    "sort/1000000": {
+      "silverfir-nano.jit": 39139465.30690476,
+      "v8": 27338503.014801584,
+      "wasmtime.cranelift": 38967605.78853175
+    },
+    "spectralnorm/500": {
+      "silverfir-nano.jit": 53348060.33047619,
+      "v8": 14073845.340833332,
+      "wasmtime.cranelift": 72763749.37749998
+    },
+    "tiny_keccak": {
+      "silverfir-nano.jit": 14561.251780065868,
+      "v8": 12708.713305042444,
+      "wasmtime.cranelift": 14914.185399359014
+    },
+    "word_count/152089": {
+      "silverfir-nano.jit": 1008885.966906907,
+      "v8": 956111.1141771094,
+      "wasmtime.cranelift": 886727.5602248677
+    }
+  },
+  "notes": [
+    "commit: fe334819db782b603026f8ec315dc537b2c89bc9",
+    "cpu: INTEL(R) XEON(R) PLATINUM 8573C",
+    "rustc: rustc 1.98.1 (48a229cea 2026-09-01)",
+    "suite: wasmi-benchmarks@16a3d7c8",
+    "pinning: taskset -c 1, ASLR off (setarch -R)"
+  ],
+  "source_artifact": 9987407274,
+  "source_job": 101468871238,
+  "source_run": 34026700835
+}
