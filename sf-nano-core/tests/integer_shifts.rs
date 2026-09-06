@@ -2,6 +2,97 @@
 use sf_nano_core::{Config, Engine, Instance, Value};
 
 #[test]
+fn shifted_binary_operands_preserve_live_and_overlapping_inputs() {
+    for width in [32, 64] {
+        let ty = format!("i{width}");
+        let mut wat = String::from("(module");
+        let mut cases = Vec::new();
+        for op in ["add", "sub", "and", "or", "xor"] {
+            for shift in ["shl", "shr_u", "shr_s", "rotr"] {
+                for amount in [0, 1, 7, 31, 32, 63, 64] {
+                    for live in [false, true] {
+                        let name = format!("{op}_{shift}_{amount}_{live}");
+                        let extra_types = if live {
+                            format!(" {ty} {ty}")
+                        } else {
+                            String::new()
+                        };
+                        let extra_values = if live {
+                            "(local.get 0) (local.get 1)"
+                        } else {
+                            ""
+                        };
+                        wat.push_str(&format!(
+                            r#"(func (export "{name}") (param {ty} {ty}) (result {ty}{extra_types})
+                                ({ty}.{op} (local.get 0)
+                                    ({ty}.{shift} (local.get 1) ({ty}.const {amount})))
+                                {extra_values})"#
+                        ));
+                        cases.push((name, op, shift, amount, live));
+                    }
+                }
+            }
+        }
+        wat.push(')');
+        let wasm = wat::parse_str(&wat).unwrap();
+        let engine = Engine::new(Config::new()).unwrap();
+        let mut instance = Instance::new(&engine, &wasm, &[]).unwrap();
+        let value = |raw| {
+            if width == 32 {
+                Value::I32(raw as i32)
+            } else {
+                Value::I64(raw as i64)
+            }
+        };
+        let width_mask = if width == 32 {
+            u64::from(u32::MAX)
+        } else {
+            u64::MAX
+        };
+        for (left, right) in [
+            (0u64, 0u64),
+            (1, 1),
+            (u64::MAX, u64::MAX),
+            (0x1234_5678_abcd_0000, 0xfedc_ba98_0123_ffff),
+            (1 << 31, 1 << 63),
+            (u64::MAX, 0),
+            (0, u64::MAX),
+        ] {
+            for (name, op, shift, amount, live) in &cases {
+                let right_word = right & width_mask;
+                let count = amount & (width - 1);
+                let shifted = match *shift {
+                    "shl" => right_word.wrapping_shl(count),
+                    "shr_u" => right_word.wrapping_shr(count),
+                    "shr_s" if width == 32 => (right as i32).wrapping_shr(count) as u32 as u64,
+                    "shr_s" => (right as i64).wrapping_shr(count) as u64,
+                    "rotr" if width == 32 => u64::from((right as u32).rotate_right(count)),
+                    "rotr" => right.rotate_right(count),
+                    _ => unreachable!(),
+                } & width_mask;
+                let result = match *op {
+                    "add" => left.wrapping_add(shifted),
+                    "sub" => left.wrapping_sub(shifted),
+                    "and" => left & shifted,
+                    "or" => left | shifted,
+                    "xor" => left ^ shifted,
+                    _ => unreachable!(),
+                };
+                let mut expected = vec![value(result)];
+                if *live {
+                    expected.extend([value(left), value(right)]);
+                }
+                assert_eq!(
+                    instance.invoke(name, &[value(left), value(right)]).unwrap(),
+                    expected,
+                    "{ty} {name}({left:x}, {right:x})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn shifts_and_rotates_match_scalar_widths_with_live_inputs() {
     for width in [32, 64] {
         let ty = format!("i{width}");

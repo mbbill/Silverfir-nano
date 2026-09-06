@@ -1953,75 +1953,87 @@ impl<'a> X86_64Backend<'a> {
         shift: MachineShiftOp,
         amount: u8,
     ) -> Result<(), WasmError> {
-        // Decompose: dst = lhs OP (rhs SHIFT amount)
-        // Step 1: shift rhs into scratch
+        // Decompose: dst = lhs OP (rhs SHIFT amount).
         let dst = self.map_gp_reg(dst)?;
         let lhs = self.map_gp_reg(lhs)?;
         let rhs = self.map_gp_reg(rhs)?;
         let scratch = self.gp_scratch.scoped_alloc().detach();
-        if *scratch != rhs {
-            self.emit_gp_move_width(width, *scratch, rhs);
+        // A commutative operation can shift directly into a destination that
+        // does not hold lhs. This preserves both input lifetimes and avoids
+        // copying lhs after the shift. Subtraction and dst == lhs still need
+        // the scratch result so the unshifted left operand survives.
+        let commute = dst != lhs
+            && matches!(
+                op,
+                MachineIntBinaryOp::Add
+                    | MachineIntBinaryOp::And
+                    | MachineIntBinaryOp::Or
+                    | MachineIntBinaryOp::Xor
+            );
+        let shifted = if commute { dst } else { *scratch };
+        if shifted != rhs {
+            self.emit_gp_move_width(width, shifted, rhs);
         }
         match (width, shift) {
             (MachineIntWidth::I64, MachineShiftOp::Lsl) => {
-                enc::shl_imm_64(&mut self.core.text, *scratch, amount)
+                enc::shl_imm_64(&mut self.core.text, shifted, amount)
             }
             (MachineIntWidth::I32, MachineShiftOp::Lsl) => {
-                enc::shl_imm_32(&mut self.core.text, *scratch, amount)
+                enc::shl_imm_32(&mut self.core.text, shifted, amount)
             }
             (MachineIntWidth::I64, MachineShiftOp::Lsr) => {
-                enc::shr_imm_64(&mut self.core.text, *scratch, amount)
+                enc::shr_imm_64(&mut self.core.text, shifted, amount)
             }
             (MachineIntWidth::I32, MachineShiftOp::Lsr) => {
-                enc::shr_imm_32(&mut self.core.text, *scratch, amount)
+                enc::shr_imm_32(&mut self.core.text, shifted, amount)
             }
             (MachineIntWidth::I64, MachineShiftOp::Asr) => {
-                enc::sar_imm_64(&mut self.core.text, *scratch, amount)
+                enc::sar_imm_64(&mut self.core.text, shifted, amount)
             }
             (MachineIntWidth::I32, MachineShiftOp::Asr) => {
-                enc::sar_imm_32(&mut self.core.text, *scratch, amount)
+                enc::sar_imm_32(&mut self.core.text, shifted, amount)
             }
             (MachineIntWidth::I64, MachineShiftOp::Ror) => {
-                enc::ror_imm_64(&mut self.core.text, *scratch, amount)
+                enc::ror_imm_64(&mut self.core.text, shifted, amount)
             }
             (MachineIntWidth::I32, MachineShiftOp::Ror) => {
-                enc::ror_imm_32(&mut self.core.text, *scratch, amount)
+                enc::ror_imm_32(&mut self.core.text, shifted, amount)
             }
         }
-        // Step 2: dst = lhs OP scratch
-        if dst != lhs {
+        let other = if commute { lhs } else { *scratch };
+        if !commute && dst != lhs {
             self.emit_gp_move_width(width, dst, lhs);
         }
         match (width, op) {
             (MachineIntWidth::I64, MachineIntBinaryOp::Add) => {
-                enc::add_rr_64(&mut self.core.text, dst, *scratch)
+                enc::add_rr_64(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::Add) => {
-                enc::add_rr_32(&mut self.core.text, dst, *scratch)
+                enc::add_rr_32(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => {
-                enc::sub_rr_64(&mut self.core.text, dst, *scratch)
+                enc::sub_rr_64(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => {
-                enc::sub_rr_32(&mut self.core.text, dst, *scratch)
+                enc::sub_rr_32(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I64, MachineIntBinaryOp::And) => {
-                enc::and_rr_64(&mut self.core.text, dst, *scratch)
+                enc::and_rr_64(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::And) => {
-                enc::and_rr_32(&mut self.core.text, dst, *scratch)
+                enc::and_rr_32(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I64, MachineIntBinaryOp::Or) => {
-                enc::or_rr_64(&mut self.core.text, dst, *scratch)
+                enc::or_rr_64(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::Or) => {
-                enc::or_rr_32(&mut self.core.text, dst, *scratch)
+                enc::or_rr_32(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I64, MachineIntBinaryOp::Xor) => {
-                enc::xor_rr_64(&mut self.core.text, dst, *scratch)
+                enc::xor_rr_64(&mut self.core.text, dst, other)
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::Xor) => {
-                enc::xor_rr_32(&mut self.core.text, dst, *scratch)
+                enc::xor_rr_32(&mut self.core.text, dst, other)
             }
             _ => return Err(WasmError::internal("IntBinaryShifted: unsupported op")),
         }
