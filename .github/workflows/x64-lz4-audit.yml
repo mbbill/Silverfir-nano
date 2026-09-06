@@ -1,0 +1,110 @@
+# Temporary Nano-only investigation of a confirmed Windows regression.
+name: x64-lz4-audit
+on:
+  push:
+    branches: ["codex/x64-profiling"]
+    paths: [".github/workflows/x64-lz4-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    name: Windows LZ4 / ${{ matrix.name }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: corrected-to-loop
+            baseline: 35e315c6372ea3506fd85c36b7a01a707d56dea5
+            candidate: 9a8208289a883c08f0c93e1340ed837f8da74eab
+            remove_cache: false
+          - name: flags-and-remove-frame-alu
+            baseline: 9a8208289a883c08f0c93e1340ed837f8da74eab
+            candidate: 431b2062b9260d67b0eadfcd9e00f9a0959f050b
+            remove_cache: false
+          - name: remove-loop-cache
+            baseline: 431b2062b9260d67b0eadfcd9e00f9a0959f050b
+            candidate: 431b2062b9260d67b0eadfcd9e00f9a0959f050b
+            remove_cache: true
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/audit-target
+    steps:
+      - run: git config --system core.longpaths true
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.baseline }}
+          path: source-base
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.candidate }}
+          path: source-candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: x64-windows-regression-audit
+          workspaces: ". -> audit-target"
+      - name: Record CPU and source experiment
+        env:
+          REMOVE_CACHE: ${{ matrix.remove_cache }}
+        run: |
+          mkdir audit-out
+          powershell.exe -NoProfile -Command 'Get-CimInstance Win32_Processor | Select-Object Name,Manufacturer | Format-List' > audit-out/cpu.txt
+          rustc --version > audit-out/rustc.txt
+          python3 - <<'PYCODE'
+          import os
+          from pathlib import Path
+          if os.environ['REMOVE_CACHE'] == 'true':
+              path = Path('source-candidate/sf-nano-core/src/vm/jit/machine/peephole/mod.rs')
+              code = path.read_text()
+              declaration = 'mod cache_loop_frame_words;\n'
+              call = '''    cache_loop_frame_words::cache_loop_frame_words(
+                  &mut program.blocks,
+                  &loop_graph,
+                  entry,
+                  &mut ctx,
+              );
+          '''
+              assert code.count(declaration) == 1 and code.count(call) == 1
+              path.write_text(code.replace(declaration, '').replace(call, ''))
+          PYCODE
+          git -C source-candidate diff > audit-out/candidate.patch
+          python3 -m ci.lint_policy
+      - name: Build matched performance binaries
+        run: |
+          python3 -m ci.performance_build \
+            --baseline-source source-base --candidate-source source-candidate \
+            --out-dir audit-bin --engine jit --platform x64-windows --exe-suffix .exe \
+            --baseline-sha '${{ matrix.baseline }}' \
+            --candidate-sha '${{ matrix.candidate }};remove_loop_cache=${{ matrix.remove_cache }}' \
+            2>&1 | tee audit-out/build.log
+          if rg '^warning(\[[^]]+\])?:' audit-out/build.log; then
+            echo '::error::ACTION REQUIRED: compiler warning'
+            exit 1
+          fi
+      - name: Measure LZ4 with the existing correctness and regression gates
+        run: |
+          python3 -m ci.performance \
+            --baseline-exec audit-bin/baseline.exe --candidate-exec audit-bin/candidate.exe \
+            --engine jit --platform x64-windows --only lz4-compress \
+            --baseline-sha '${{ matrix.baseline }}' \
+            --candidate-sha '${{ matrix.candidate }};remove_loop_cache=${{ matrix.remove_cache }}' \
+            --build-metadata audit-bin/build-metadata.json \
+            --blocks 2 --min-pairs 6 --max-pairs 16 --family-jobs 3 \
+            --minimum-effect-percent 1 --out-dir audit-out/performance
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: lz4-audit-${{ matrix.name }}
+          path: |
+            audit-out/
+            audit-bin/build-metadata.json
+          if-no-files-found: error
+          retention-days: 30
