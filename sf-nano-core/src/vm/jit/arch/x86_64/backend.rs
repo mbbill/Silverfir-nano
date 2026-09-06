@@ -103,6 +103,7 @@ pub(crate) struct X86_64Backend<'a> {
     /// Emission order is preserved on
     /// every path — hit, miss, and block-end drain.
     pending_op: Option<(&'a MachineInst, usize)>,
+    pub(super) narrow_equality: Option<super::narrow_equality::NarrowEquality>,
 }
 
 /// One deferred jump table: the movabs immediate to patch with the
@@ -246,6 +247,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             flags32: None,
             pending_jump_tables: collections::Vec::new(),
             pending_op: None,
+            narrow_equality: None,
         }
     }
 
@@ -428,6 +430,8 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         // Streaming entry: the lookahead never carries across blocks.
         self.pending_op = None;
+        self.narrow_equality =
+            super::narrow_equality::narrow_equality(block, self.core.mir_blocks()?);
         // A fallthrough edge may emit no bytes, but other predecessors do
         // not promise the same flags. Position stamps only prove reuse
         // within the current block.
@@ -439,6 +443,13 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+        if self
+            .narrow_equality
+            .is_some_and(|plan| index >= plan.first_skipped)
+        {
+            debug_assert!(self.pending_op.is_none());
+            return Ok(());
+        }
         // Try to consume the buffered pair together. On a miss, emit
         // the previous op first, preserving program order and trap order.
         if let Some((prev, prev_index)) = self.pending_op.take() {
@@ -567,6 +578,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         }
         self.core.current_op_index = None;
         let result = self.lower_terminator(term, fallthrough);
+        self.narrow_equality = None;
         self.gp_scratch.assert_all_free();
         self.fp_scratch.assert_all_free();
         self.core.current_block = None;

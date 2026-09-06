@@ -10,6 +10,7 @@ mod gp_scratch;
 pub(crate) mod helpers;
 mod inst;
 mod jump_table;
+mod narrow_equality;
 mod preserved;
 mod reg;
 mod simd;

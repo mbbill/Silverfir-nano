@@ -5,8 +5,9 @@ use crate::{
     vm::jit::machine::machine_ir::{
         MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
         MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineIntWidth,
-        MachineResultDst, MachineResultSrc, MachineReturnValue, MachineStorageType,
-        MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+        MachineMemWidth, MachineResultDst, MachineResultSrc, MachineReturnValue,
+        MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+        MACHINE_FP_REG,
     },
 };
 
@@ -217,7 +218,21 @@ impl<'a> X86_64Backend<'a> {
                 lhs,
                 rhs,
             } => {
-                self.lower_branch_compare(width, kind, lhs, rhs)?;
+                if let Some(plan) = self.narrow_equality {
+                    let loaded = self.map_gp_reg(plan.loaded)?;
+                    let source = self.map_gp_reg(plan.source)?;
+                    match plan.width {
+                        MachineMemWidth::U8 => {
+                            enc::cmp_rr_8(&mut self.core.text, loaded, source);
+                        }
+                        MachineMemWidth::U16 => {
+                            enc::cmp_rr_16(&mut self.core.text, loaded, source);
+                        }
+                        _ => unreachable!("validated narrow equality width"),
+                    }
+                } else {
+                    self.lower_branch_compare(width, kind, lhs, rhs)?;
+                }
                 let cc = map_int_cond(kind, sign);
                 if else_fallthrough {
                     if let Some(label) = then_label {

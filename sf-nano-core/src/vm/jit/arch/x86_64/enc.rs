@@ -485,6 +485,16 @@ pub(crate) fn xor_ri_32(e: &mut TextEmitter, dst: X86Reg, imm: i32) {
 }
 
 // CMP
+pub(crate) fn cmp_rr_8(e: &mut TextEmitter, lhs: X86Reg, rhs: X86Reg) {
+    // Even a bare REX is required for SIL/DIL/BPL/SPL instead of AH/CH/DH/BH.
+    e.emit_u8(rex(false, lhs.needs_rex_ext(), false, rhs.needs_rex_ext()));
+    e.emit_u8(0x3A);
+    emit_modrm_rr(e, lhs, rhs);
+}
+pub(crate) fn cmp_rr_16(e: &mut TextEmitter, lhs: X86Reg, rhs: X86Reg) {
+    e.emit_u8(0x66);
+    alu_rr(e, 0x3B, false, lhs, rhs);
+}
 pub(crate) fn cmp_rr_64(e: &mut TextEmitter, lhs: X86Reg, rhs: X86Reg) {
     alu_rr(e, 0x3B, true, lhs, rhs);
 }
