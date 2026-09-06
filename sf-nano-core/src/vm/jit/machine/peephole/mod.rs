@@ -47,7 +47,6 @@ mod hoist_loop_address_bases;
 mod promote_self_loop_globals;
 mod recognize_memmove;
 mod relax_index_extends;
-mod rematerialize_frame_reloads;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
@@ -293,12 +292,6 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         &loop_graph,
         entry,
         &mut ctx,
-    );
-    rematerialize_frame_reloads::rematerialize_frame_reloads(
-        &mut program.blocks,
-        &loop_graph,
-        entry,
-        config.gp_unit_bytes,
     );
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
     // After compare-branch fusion: the fold reads loop bounds from
