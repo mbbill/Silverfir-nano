@@ -36,8 +36,8 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 8b0d6f4c66e768e13e686040a23ab598df0da337
-          path: source-recurrence
+          ref: 91b6dd12df70150c2accd3c07120be95fa7dea64
+          path: source-address
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -55,7 +55,7 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           import json, os, shutil
-          for name in ['main', 'parent', 'recurrence']:
+          for name in ['main', 'parent', 'address']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('startup-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -64,18 +64,18 @@ jobs:
               # Match normal JIT features; debug exporters would add startup work.
               manifest.write_text(code.replace(', "jit-debug"', ''))
           PYCODE
-          for name in main parent recurrence; do
+          for name in main parent address; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Build identical probes for every source revision
         run: |
           RUSTFLAGS="${RUSTFLAGS:-}"
-          for name in main parent recurrence; do
+          for name in main parent address; do
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$PWD/source-$name=/nano-source"
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$RUNNER_TEMP/startup-$name=/nano-probe"
           done
           export RUSTFLAGS
-          for name in main parent recurrence; do
+          for name in main parent address; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
               --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
             python3 -m ci.x64_warning_audit "startup-out/build-$name.log"
@@ -90,7 +90,7 @@ jobs:
             taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_startup_compare \
               --variant main="$PWD/startup-out/main" \
               --variant parent="$PWD/startup-out/parent" \
-              --variant recurrence="$PWD/startup-out/recurrence" \
+              --variant address="$PWD/startup-out/address" \
               --wasm "wasmi-benchmarks/res/wasm/$workload.wasm" \
               --rounds 6 --seconds 2 --out-dir "startup-out/$workload-results"
             sha256sum "wasmi-benchmarks/res/wasm/$workload.wasm" > "startup-out/$workload-sha256.txt"
@@ -101,7 +101,7 @@ jobs:
           sudo apt-get install -y -qq linux-tools-common linux-tools-generic
           PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
           sudo sysctl -w kernel.perf_event_paranoid=1
-          for name in parent recurrence; do
+          for name in parent address; do
             taskset -c 1 setarch "$(uname -m)" -R "$PERF_BIN" record \
               -e cpu-clock:u -F 999 -k mono -o "startup-out/$name-perf.data" -- \
               "$PWD/startup-out/$name" wasmi-benchmarks/res/wasm/bz2.wasm startup 0 10
@@ -111,7 +111,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-startup-recurrence
+          name: nano-startup-address
           path: |
             startup-out/**/*.log
             startup-out/**/*.json
