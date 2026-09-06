@@ -238,12 +238,24 @@ fn try_cache_word(
             },
         });
     }
+    let mut rewritten = collections::Vec::new();
     for &index in nodes {
         blocks[index].params.push(MachineBlockParam {
             reg: carry,
             ty: MachineStorageType::GpWord,
             owner: MachineRegOwner::CachedCell,
         });
+        // Carry-only blocks gain an edge binding but have no new local value
+        // flow to simplify. Leave their instruction storage intact and avoid
+        // running the complete block-local pipeline again.
+        if !blocks[index].ops.iter().any(|inst| {
+            loaded_word(&inst.kind, config.gp_unit_bytes) == Some(word)
+                || matches!(inst.kind, MachineInstKind::Store { addr, width, .. }
+                    if addr == word.addr && width == word.width)
+        }) {
+            continue;
+        }
+        rewritten.push(index);
         let old = core::mem::take(&mut blocks[index].ops);
         let mut ops = collections::Vec::with_capacity(old.len());
         for mut inst in old {
@@ -285,8 +297,10 @@ fn try_cache_word(
                 edge.args.push(MachineValue::Reg(carry));
             }
         });
-        optimize_block(ctx, &mut blocks[index]);
         masks[index] = None;
+    }
+    for &index in rewritten.iter().chain(preheaders.iter()) {
+        optimize_block(ctx, &mut blocks[index]);
     }
 }
 
