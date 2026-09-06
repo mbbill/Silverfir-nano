@@ -179,3 +179,92 @@ Validation: 525 default x64 unit tests and the complete core integration
 suite, 558 ARM64 unit tests and core integration suite, all 260 x64 spec
 files, and CoreMark's guest result validation. Native performance is pending;
 local Rosetta timings are not evidence of performance gains.
+
+### Frame ALU and loop cache measurements
+
+[Run 34033234473](https://github.com/mbbill/Silverfir-nano/actions/runs/34033234473)
+finished both native jobs without failed steps or compiler warnings. Four
+alternating process pairs; all source hashes and samples are retained in
+`coremark-loops-draw-*`.
+
+| Comparison | EPYC 7763 | EPYC 9V74 |
+|---|---:|---:|
+| corrected candidate / main | +1.91% | +1.83% |
+| frame ALU / corrected candidate | -0.44% | -0.93% |
+| loop cache / frame ALU | +0.87% | +0.82% |
+| loop cache + frame ALU / main | +2.35% | +1.71% |
+
+The memory-operand candidate loses on both hosts; `431b2062` removes it.
+Loop caching helps relative to its immediate parent. These main-relative
+numbers replace, rather than add to, earlier main-relative measurements.
+The full dev run for `f6362a74` is still being audited.
+
+### Next isolated candidates
+
+`b54ff280` preserves i32 zero-flag proofs across plain register stores and
+uses them for equality/inequality branches against zero. Proof capture is
+after operand materialization. Ordering, i64 comparisons and unknown CFG
+entries retain explicit comparisons. Actual CoreMark matrix code drops one
+TEST after its decrement/store pair. Arithmetic/store integration tests cover
+wrapping, zero literals, signed/unsigned ordering, and both integer widths.
+
+`886d1d57` clears the XMM destination before every scalar integer-to-float
+conversion. The source is a GP value; no upper scalar carrier lane is
+observable. This breaks the otherwise unnecessary previous-destination
+dependency without changing conversion rounding. The spectralnorm native
+loop reused the same XMM register for conversion and the previous division.
+This is a performance hypothesis pending native paired measurement. A
+corresponding independent compiler example is in the
+[Dart compiler source](https://dart.googlesource.com/sdk/+/dbe5496ade6003efaebf22a660582c1bbaf05b59%5E1..dbe5496ade6003efaebf22a660582c1bbaf05b59/).
+
+Validation includes 524 default x64 unit tests, the complete core integration
+suite, all 260 x64 specification files, and the lint policy. The isolated
+Nano-only workflow compares loop/flags/ALU-removal/float revisions and
+spectralnorm at the suite's original 500-element input with its exact
+`1.2742241159529095` result oracle. No competitor engine is rebuilt.
+
+### Native scalar-conversion result
+
+[Run 34034022693](https://github.com/mbbill/Silverfir-nano/actions/runs/34034022693)
+completed on Intel 8573C (draw 1) and AMD 7763 (draw 2). Spectralnorm compares
+`886d1d57` directly with its parent `431b2062`, six alternating process pairs:
+**+225.95%** throughput on Intel (18.08 to 58.92 runs/s), **+0.36%** on AMD
+(57.39 to 57.59 runs/s, inconclusive). Every process checked the suite's exact
+output. This supports the false-dependency hypothesis for the Intel gap.
+It is an isolated Nano revision comparison, not a new competitor ranking.
+
+CoreMark in the same experiment: flags/loop is +0.13% Intel, +1.20% AMD;
+removing frame ALU on top of flags is -0.42% / -0.50%, both inconclusive;
+float conversion on top of that is +0.28% / +0.12%, also inconclusive.
+Instruction interactions mean the ALU-removal result does not simply invert
+its earlier isolated measurement. All samples and CPU identities are in
+`dependency-draw-*`.
+
+### Full loop-candidate dev findings remain action-required
+
+[Dev run 34033253457](https://github.com/mbbill/Silverfir-nano/actions/runs/34033253457)
+measures `f6362a74` (runtime `9a820828`) against main. Full wasmi execute
+geomeans are +10.1297% on AMD 9V45 and +4.4904% on ARM Neoverse N2. All 20
+rows are retained in `loop-dev-{x64,arm64}-comparison.json`; tiny_keccak's
+x64 -3.55% PLACEMENT observation remains visible. This new CPU model has no
+competitor anchor, so it cannot establish a ranking against V8/Cranelift.
+
+Windows LZ4 compression is a confirmed regression: primary -12.25%,
+independent confirmation -11.89%. The cross-run verdict step failed.
+The x64 JIT startup primary also flags bz2 -3.24%, spidermonkey -1.60%,
+ffmpeg -2.61%; ARM64 flags bz2 -1.91% and CoreMark -1.67%. Confirmation and
+final-report auditing continue. This run is not a pass.
+
+### Pending dead-frame-store elimination (`dc549134`)
+
+Delete an exact native frame-word store only when another store overwrites
+it in the same block before any read, potentially trapping operation, call,
+frame-base definition or opaque operation. The final store remains. This
+simple linear pass tracks one candidate and runs after store forwarding and
+instruction selection. Native CoreMark CRC code has one rather than six
+stores to its scratch slot. No benchmark or guest function name participates.
+
+Validation: 527 x64 units, 561 ARM64 units, both complete core integration
+suites, all 260 x64 spec files, and CoreMark's own result validation. Native
+measurement is pending, including a separate variant with loop caching off
+to quantify its benefit and its possible role in the CI regressions.

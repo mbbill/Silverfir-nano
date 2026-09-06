@@ -1,0 +1,1 @@
+1a4abcbf5f98089668d620aae935d53409d9f2bb5e685433f6d13f01de69cce4  wasmi-benchmarks/res/wasm/coremark.wasm

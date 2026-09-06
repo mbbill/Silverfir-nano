@@ -1,0 +1,1 @@
+45fb385492891c1811b9a6fdadae4f4eb3a4c9602c08d1d1e9e7b27e7d64154f  wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm

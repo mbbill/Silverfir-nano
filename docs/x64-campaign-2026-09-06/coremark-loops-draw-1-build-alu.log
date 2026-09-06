@@ -1,0 +1,4 @@
+[1m[92m   Compiling[0m sf-nano-core v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/source-alu/sf-nano-core)
+[1m[92m   Compiling[0m sf-nano-tracked-alloc v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/source-alu/tools/tracked-alloc)
+[1m[92m   Compiling[0m sf-x64-probe v0.0.0 (/home/runner/work/_temp/probe-alu)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 46.28s

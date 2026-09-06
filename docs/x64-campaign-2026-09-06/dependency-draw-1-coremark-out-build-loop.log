@@ -1,0 +1,24 @@
+[1m[92m    Updating[0m crates.io index
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m wat v1.258.0
+[1m[92m  Downloaded[0m bitflags v2.13.1
+[1m[92m  Downloaded[0m bumpalo v3.20.3
+[1m[92m  Downloaded[0m semver v1.0.28
+[1m[92m  Downloaded[0m wasm-encoder v0.258.0
+[1m[92m  Downloaded[0m indexmap v2.14.2
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m  Downloaded[0m hashbrown v0.17.1
+[1m[92m  Downloaded[0m wast v258.0.0
+[1m[92m  Downloaded[0m wasmparser v0.258.0
+[1m[92m   Compiling[0m leb128fmt v0.1.0
+[1m[92m   Compiling[0m paste v1.0.15
+[1m[92m   Compiling[0m bumpalo v3.20.3
+[1m[92m   Compiling[0m unicode-width v0.2.2
+[1m[92m   Compiling[0m wasm-encoder v0.258.0
+[1m[92m   Compiling[0m memchr v2.8.3
+[1m[92m   Compiling[0m sf-nano-core v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/source-loop/sf-nano-core)
+[1m[92m   Compiling[0m wast v258.0.0
+[1m[92m   Compiling[0m sf-nano-tracked-alloc v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/source-loop/tools/tracked-alloc)
+[1m[92m   Compiling[0m wat v1.258.0
+[1m[92m   Compiling[0m sf-x64-probe v0.0.0 (/home/runner/work/_temp/probe-loop)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 49.69s
