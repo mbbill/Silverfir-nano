@@ -63,8 +63,12 @@ pub(super) fn cache_loop_frame_words(
     // for the low registers; unusually high synthetic/future lanes retain
     // the original membership scan below.
     let mut masks = collections::vec![None; blocks.len()];
-    let gp_end = crate::vm::jit::backend::BackendConfig::FIXED
-        + u16::from(ctx.config.allocatable_gp_dynamic_budget());
+    // Lowering has finished: its reserved dynamic lanes are ordinary explicit
+    // MachineIR registers now. A lane absent from the complete loop and entry
+    // arguments can carry a value here, including an unused lowering reserve.
+    // Backend-owned scratch registers are outside this dynamic bank.
+    let gp_end =
+        crate::vm::jit::backend::BackendConfig::FIXED + u16::from(ctx.config.gp_dynamic_budget);
     let available_mask = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
         .fold(0, |mask, reg| mask | reg_bit(MachineReg(reg)));
     for header in (0..blocks.len()).rev() {
@@ -156,8 +160,8 @@ fn try_cache_word(
     }
 
     let config = ctx.config;
-    let gp_end = crate::vm::jit::backend::BackendConfig::FIXED
-        + u16::from(config.allocatable_gp_dynamic_budget());
+    let gp_end =
+        crate::vm::jit::backend::BackendConfig::FIXED + u16::from(config.gp_dynamic_budget);
     let Some(carry) = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
         .map(MachineReg)
         .find(|&reg| {
@@ -430,7 +434,7 @@ mod tests {
     fn run(blocks: &mut [MachineBlock], entry: MachineBlockId, gp_budget: u8) {
         let graph = analyze_loop_graph(blocks, entry);
         // The synthetic config reserves one lowering-only scratch lane.
-        // A budget of five leaves r4..r7 allocatable and keeps r8 out.
+        // Late caching can use it once its absence from the loop is proven.
         let config = BackendConfig::new(8, gp_budget, 0, 0);
         let mut ctx = BlockOptCtx::new(config);
         cache_loop_frame_words(blocks, &graph, entry, &mut ctx);
@@ -494,13 +498,40 @@ mod tests {
     }
 
     #[test]
+    fn uses_the_lowering_reserve_only_when_the_loop_leaves_it_untouched() {
+        let mut blocks = loop_blocks();
+        run(&mut blocks, MachineBlockId(0), 4);
+        assert_eq!(blocks[1].params.last().unwrap().reg, MachineReg(7));
+        assert!(!blocks[1..3].iter().any(|block| block
+            .ops
+            .iter()
+            .any(|inst| loaded_word(&inst.kind, 8).is_some())));
+
+        let mut blocks = loop_blocks();
+        blocks[1].ops.insert(
+            0,
+            MachineInst {
+                kind: MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord,
+                    dst: MachineReg(7),
+                    src: MachineValue::Imm64(42),
+                },
+            },
+        );
+        let before = blocks.clone();
+        run(&mut blocks, MachineBlockId(0), 4);
+        assert_eq!(blocks, before);
+    }
+
+    #[test]
     fn rejects_aliases_calls_live_lanes_and_ambiguous_entries() {
         for case in 0..8 {
             let mut blocks = loop_blocks();
             let mut entry = MachineBlockId(0);
             let mut budget = 5;
             match case {
-                0 => budget = 4,
+                0 => budget = 3,
                 1 => {
                     blocks[0].terminator = MachineTerminator::Branch {
                         cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(4))),
@@ -532,6 +563,7 @@ mod tests {
                 }
                 7 => {
                     // The only spare loop lane holds an existing entry argument.
+                    budget = 4;
                     blocks[0].terminator = MachineTerminator::Jump(edge(1, &[7]));
                 }
                 _ => unreachable!(),
