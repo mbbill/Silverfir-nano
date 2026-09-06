@@ -417,6 +417,10 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         // Streaming entry: the lookahead never carries across blocks.
         self.pending_op = None;
+        // A fallthrough edge may emit no bytes, but other predecessors do
+        // not promise the same flags. Position stamps only prove reuse
+        // within the current block.
+        self.flags32 = None;
         self.core.current_block = Some(block.id);
         self.core.current_edge_target = None;
         self.core.reset_block_fp_state(block)?;

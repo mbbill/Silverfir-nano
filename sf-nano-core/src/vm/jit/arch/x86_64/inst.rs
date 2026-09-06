@@ -2037,7 +2037,9 @@ impl<'a> X86_64Backend<'a> {
                     let done = self.core.new_label();
                     // Wasm select conditions are i32 values; ignore any stale
                     // upper half that may remain in a GpWord carrier.
-                    enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
+                    if !self.flags32_current(cond_gp) {
+                        enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
+                    }
                     self.emit_jcc(Cc::E, false_label);
                     let true_fp = self.prepare_float_operand(width, on_true, *gp0, *fp0)?;
                     if dst_fp != true_fp as u8 {
@@ -2089,7 +2091,9 @@ impl<'a> X86_64Backend<'a> {
             };
             // Wasm select conditions are i32 values; ignore any stale
             // upper half that may remain in a GpWord carrier.
-            enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
+            if !self.flags32_current(cond_gp) {
+                enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
+            }
             if dst == true_reg && dst != false_reg {
                 self.emit_gp_cmov_ty(ty, Cc::E, dst, false_reg)?;
             } else if dst == false_reg {
