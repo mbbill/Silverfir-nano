@@ -4,7 +4,7 @@ use super::enc::{Cc, MemAluOp};
 use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind,
     MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineRegOwner, MachineSign, MachineStorageType, MachineValue,
+    MachineRegOwner, MachineSign, MachineStorageType, MachineValue, MACHINE_FP_REG,
 };
 
 /// A fused `load + ALU` pair: `dst <- dst OP [mem]` in one instruction,
@@ -36,6 +36,9 @@ pub(super) enum LoadAluMem {
 /// Width must match exactly — the memory operand reads exactly the ALU
 /// width — which also excludes every extending load except the
 /// zero-extending 32-bit form consumed by a 32-bit op.
+/// An aligned native frame word is the sole narrowing exception: an i32
+/// consumer can read its low half directly. Both widths touch the same page
+/// of the aligned, runtime-owned frame, so no guest access or trap is elided.
 pub(super) fn load_alu_fusion(prev: &MachineInst, next: &MachineInst) -> Option<LoadAluFusion> {
     let (loaded, mem, mem_width) = match &prev.kind {
         MachineInstKind::Load {
@@ -87,6 +90,12 @@ pub(super) fn load_alu_fusion(prev: &MachineInst, next: &MachineInst) -> Option<
     let w32 = match (width, mem_width) {
         (MachineIntWidth::I64, MachineMemWidth::U64) => false,
         (MachineIntWidth::I32, MachineMemWidth::U32) => true,
+        (MachineIntWidth::I32, MachineMemWidth::U64)
+            if matches!(&mem, LoadAluMem::Base(addr)
+                if addr.base == MACHINE_FP_REG && addr.offset % 8 == 0) =>
+        {
+            true
+        }
         _ => return None,
     };
     let dst = *dst;
@@ -207,5 +216,87 @@ pub(super) fn map_int_cond(kind: MachineCompareKind, sign: MachineSign) -> Cc {
         (MachineCompareKind::Le, MachineSign::Unsigned) => Cc::BE,
         (MachineCompareKind::Ge, MachineSign::Signed) => Cc::GE,
         (MachineCompareKind::Ge, MachineSign::Unsigned) => Cc::AE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn i32_alu_can_read_low_half_of_aligned_native_frame_word() {
+        let alu = MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32,
+                op: MachineIntBinaryOp::Add,
+                dst: MachineReg(5),
+                lhs: MachineValue::Reg(MachineReg(5)),
+                rhs: MachineValue::Reg(MachineReg(4)),
+            },
+        };
+        for (base, offset, width, extension, accepted) in [
+            (
+                MACHINE_FP_REG,
+                24,
+                MachineMemWidth::U64,
+                MachineLoadExtension::None,
+                true,
+            ),
+            (
+                MACHINE_FP_REG,
+                24,
+                MachineMemWidth::U64,
+                MachineLoadExtension::ZeroExtend,
+                true,
+            ),
+            (
+                MACHINE_FP_REG,
+                28,
+                MachineMemWidth::U64,
+                MachineLoadExtension::None,
+                false,
+            ),
+            (
+                MachineReg(6),
+                24,
+                MachineMemWidth::U64,
+                MachineLoadExtension::None,
+                false,
+            ),
+            (
+                MACHINE_FP_REG,
+                24,
+                MachineMemWidth::U16,
+                MachineLoadExtension::None,
+                false,
+            ),
+            (
+                MACHINE_FP_REG,
+                24,
+                MachineMemWidth::U32,
+                MachineLoadExtension::SignExtend,
+                false,
+            ),
+        ] {
+            let load = MachineInst {
+                kind: MachineInstKind::Load {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord,
+                    dst: MachineReg(4),
+                    addr: MachineAddr { base, offset },
+                    width,
+                    extension,
+                },
+            };
+            let fusion = load_alu_fusion(&load, &alu);
+            assert_eq!(
+                fusion.is_some(),
+                accepted,
+                "{base:?} + {offset}, {width:?}, {extension:?}"
+            );
+            if let Some(fusion) = fusion {
+                assert!(fusion.w32);
+            }
+        }
     }
 }
