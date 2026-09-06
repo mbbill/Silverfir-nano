@@ -12,9 +12,11 @@ use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
     MachineCompareKind, MachineConvertOp, MachineEdge, MachineIndexExtend, MachineInst,
     MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-    MachineProgram, MachineReg, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
-    MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+    MachineProgram, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
+    MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+    MACHINE_MEM0_SIZE_REG,
 };
+use crate::vm::jit::runtime::layout::native_runtime_abi_layout;
 
 pub(super) fn recognize_memmove(program: &mut MachineProgram, config: BackendConfig) {
     // Widened endpoint checks below require a 64-bit GP carrier. Leave the
@@ -92,17 +94,41 @@ pub(super) fn recognize_memmove(program: &mut MachineProgram, config: BackendCon
     let bound = |id, success| {
         let mut params = original.params.clone();
         params.push(MachineBlockParam::gp_word(end));
+        // `count` is disjoint from the three carried operands and `end`.
+        // Its widened-count value is dead after the endpoint calculation.
+        let (ops, size) = if config.cache_mem0_size {
+            (collections::vec![], MACHINE_MEM0_SIZE_REG)
+        } else {
+            (
+                collections::vec![MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: count,
+                        addr: MachineAddr {
+                            base: MACHINE_CTX_REG,
+                            offset: native_runtime_abi_layout(config.gp_unit_bytes)
+                                .context
+                                .mem0_size_offset as i32,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                }],
+                count,
+            )
+        };
         MachineBlock {
             id,
             params,
-            ops: collections::vec![],
+            ops,
             terminator: MachineTerminator::Branch {
                 cond: MachineBranchCond::IntCompare {
                     width: MachineIntWidth::I64,
                     kind: MachineCompareKind::Le,
                     sign: MachineSign::Unsigned,
                     lhs: reg(end),
-                    rhs: reg(MACHINE_MEM0_SIZE_REG),
+                    rhs: reg(size),
                 },
                 then_edge: edge(success),
                 else_edge: edge(fallback_id),

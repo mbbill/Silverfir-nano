@@ -22,9 +22,10 @@ use crate::{
             MachineAddr, MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineFuncId,
             MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
             MachineMemWidth, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
-            MachineTrapKind, MachineValue, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_MEM0_BASE_REG,
+            MACHINE_MEM0_SIZE_REG,
         },
-        jit::runtime::{code::CodegenModuleView, code_buf::CodeBuffer},
+        jit::runtime::{code::CodegenModuleView, code_buf::CodeBuffer, context::ctx_offset},
     },
 };
 
@@ -112,7 +113,7 @@ fn template_shape(
     if config.gp_unit_bytes != 4 && config.gp_unit_bytes != 8 {
         return Err(unsupported());
     }
-    if config.gp_dynamic_budget < 2 {
+    if config.gp_dynamic_budget < 2 || (!config.cache_mem0_size && config.gp_volatile_dynamic < 3) {
         return Err(unsupported());
     }
 
@@ -570,6 +571,7 @@ struct TemplateEmitter<'a> {
     operand_base: u16,
     result_count: u16,
     gp_unit_bytes: u8,
+    cache_mem0_size: bool,
     stack_height: u16,
     control: [TemplateControlFrame; TEMPLATE_MAX_CONTROL_DEPTH],
     control_depth: usize,
@@ -648,6 +650,7 @@ impl<'a> TemplateEmitter<'a> {
             operand_base: shape.operand_base,
             result_count: shape.result_count,
             gp_unit_bytes: shape.gp_unit_bytes,
+            cache_mem0_size: config.cache_mem0_size,
             stack_height: 0,
             control: [TemplateControlFrame::EMPTY; TEMPLATE_MAX_CONTROL_DEPTH],
             control_depth: 0,
@@ -1239,6 +1242,29 @@ impl<'a> TemplateEmitter<'a> {
             )?;
             self.memory_oob_label = oob_label;
         }
+        let size = if self.cache_mem0_size {
+            MACHINE_MEM0_SIZE_REG
+        } else {
+            // Template values live in frame slots. A third temporary keeps
+            // both the original address and its checked endpoint intact.
+            let size = MachineReg(BackendConfig::FIXED + 2);
+            backend.emit_template_load(
+                MachineRegOwner::LinearValue,
+                MachineStorageType::GpWord,
+                size,
+                MachineAddr {
+                    base: MACHINE_CTX_REG,
+                    offset: ctx_offset::MEM0_SIZE as i32,
+                },
+                if self.gp_unit_bytes == 8 {
+                    MachineMemWidth::U64
+                } else {
+                    MachineMemWidth::U32
+                },
+                MachineLoadExtension::None,
+            )?;
+            size
+        };
         let mut oob_label = self.memory_oob_label;
         self.emit_branch_to_label(
             backend,
@@ -1247,7 +1273,7 @@ impl<'a> TemplateEmitter<'a> {
                 kind: MachineCompareKind::Le,
                 sign: MachineSign::Unsigned,
                 lhs: MachineValue::Reg(self.gp1()),
-                rhs: MachineValue::Reg(MACHINE_MEM0_SIZE_REG),
+                rhs: MachineValue::Reg(size),
             },
             TemplateBranchSense::IfFalse,
             &mut oob_label,

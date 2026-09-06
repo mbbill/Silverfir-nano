@@ -9,7 +9,7 @@ use super::machine_ir::{
     MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineCompareKind,
     MachineConstId, MachineEdge, MachineFloatWidth, MachineFuncId, MachineInst, MachineReg,
     MachineRegOwner, MachineResultDst, MachineResultSrc, MachineReturnValue, MachineSign,
-    MachineTrapKind, MachineValue, MACHINE_FP_REG,
+    MachineTrapKind, MachineValue, MACHINE_FP_REG, MACHINE_MEM0_SIZE_REG,
 };
 use super::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConvertOp, MachineInstKind,
@@ -1178,6 +1178,11 @@ impl MachineProgram {
 
     #[cfg(any(debug_assertions, test))]
     fn validate_reg(&self, reg: MachineReg, config: BackendConfig) -> ValidateResult {
+        if reg == MACHINE_MEM0_SIZE_REG && !config.cache_mem0_size {
+            return Err(WasmError::internal(
+                "machine mem0-size role is not mapped by this ABI",
+            ));
+        }
         let reg_count = config.total_reg_count();
         let first_fp = config.first_fp_reg();
         if reg.0 >= reg_count {

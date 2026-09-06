@@ -31,6 +31,10 @@ pub(crate) struct BackendConfig {
     /// across the currently supported backends, both `f32` and `f64` consume
     /// exactly one FP register budget unit.
     pub gp_unit_bytes: u8,
+    /// Whether the mem0-size MachineIR role has a pinned physical register.
+    /// Otherwise lowering reads the current length from the runtime context.
+    /// Its logical ID stays reserved so the remaining fixed roles are stable.
+    pub cache_mem0_size: bool,
     pub gp_volatile_dynamic: u8,
     pub gp_preserved_dynamic: u8,
     pub gp_internal_scratch: u8,
@@ -109,6 +113,7 @@ impl BackendConfig {
         let fp_dynamic_budget = fp_volatile_dynamic.saturating_add(fp_preserved_dynamic);
         Self {
             gp_unit_bytes,
+            cache_mem0_size: true,
             gp_volatile_dynamic,
             gp_preserved_dynamic,
             gp_internal_scratch,

@@ -40,6 +40,7 @@ use super::lower_context::BlockLowerContext;
 /// rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineRegFile {
+    mem0_size: Option<MachineReg>,
     gp_dynamic: collections::Vec<MachineReg>,
     fp_dynamic: collections::Vec<MachineReg>,
     gp_allocatable_count: usize,
@@ -72,6 +73,7 @@ impl MachineRegFile {
         // Layout: [fixed | gp_volatile | gp_preserved | gp_internal_scratch
         //          | fp_volatile | fp_preserved]
         Ok(Self {
+            mem0_size: config.cache_mem0_size.then_some(MACHINE_MEM0_SIZE_REG),
             gp_dynamic,
             fp_dynamic,
             gp_allocatable_count,
@@ -102,8 +104,8 @@ impl MachineRegFile {
     }
 
     #[inline]
-    pub(super) const fn mem0_size(&self) -> MachineReg {
-        MACHINE_MEM0_SIZE_REG
+    pub(super) const fn mem0_size(&self) -> Option<MachineReg> {
+        self.mem0_size
     }
 
     #[inline]
@@ -732,7 +734,15 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         count: usize,
     ) -> Result<collections::Vec<MachineReg>, WasmError> {
-        if let Some(regs) = self.try_borrow_free_gp_dynamic_regs(count) {
+        self.borrow_free_gp_dynamic_regs_excluding(count, &[])
+    }
+
+    pub(super) fn borrow_free_gp_dynamic_regs_excluding(
+        &mut self,
+        count: usize,
+        excluded: &[MachineReg],
+    ) -> Result<collections::Vec<MachineReg>, WasmError> {
+        if let Some(regs) = self.try_borrow_free_gp_dynamic_regs(count, excluded) {
             return Ok(regs);
         }
         // Same housekeeping as alloc_*: drop lanes whose owning SSA value
@@ -740,18 +750,20 @@ impl<'a> BlockLowerContext<'a> {
         // that already have canonical frame homes; after that, a free-lane
         // failure is a middle-end budget bug.
         self.release_dead_values()?;
-        if let Some(regs) = self.try_borrow_free_gp_dynamic_regs(count) {
+        if let Some(regs) = self.try_borrow_free_gp_dynamic_regs(count, excluded) {
             return Ok(regs);
         }
         self.publish_register_params_to_frame()?;
-        self.try_borrow_free_gp_dynamic_regs(count).ok_or_else(|| {
-            WasmError::internal("native lowering requires free GP dynamic registers")
-        })
+        self.try_borrow_free_gp_dynamic_regs(count, excluded)
+            .ok_or_else(|| {
+                WasmError::internal("native lowering requires free GP dynamic registers")
+            })
     }
 
     fn try_borrow_free_gp_dynamic_regs(
         &self,
         count: usize,
+        excluded: &[MachineReg],
     ) -> Option<collections::Vec<MachineReg>> {
         let regfile = self.regfile();
         let mut regs = collections::Vec::with_capacity(count);
@@ -771,7 +783,7 @@ impl<'a> BlockLowerContext<'a> {
             let Some(reg) = regfile.ordered_gp_dynamic(ordinal) else {
                 continue;
             };
-            if self.dynamic_reg_available(reg) {
+            if !excluded.contains(&reg) && self.dynamic_reg_available(reg) {
                 regs.push(reg);
                 if regs.len() == count {
                     return Some(regs);

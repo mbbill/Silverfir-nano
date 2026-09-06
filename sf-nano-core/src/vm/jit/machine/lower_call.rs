@@ -507,7 +507,7 @@ impl<'a> BlockLowerContext<'a> {
         // The reloads that follow repair machine-visible runtime state that may
         // have changed while the host callback executed, most importantly the
         // cached mem0 base/size pair after a possible memory growth.
-        collections::vec![
+        let mut ops = collections::vec![
             MachineInst {
                 kind: MachineInstKind::CallRuntime(MachineCallRuntime { metadata }),
             },
@@ -521,17 +521,20 @@ impl<'a> BlockLowerContext<'a> {
                     extension: MachineLoadExtension::None,
                 },
             },
-            MachineInst {
+        ];
+        if let Some(dst) = self.regfile().mem0_size() {
+            ops.push(MachineInst {
                 kind: MachineInstKind::Load {
                     owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
-                    dst: self.regfile().mem0_size(),
+                    dst,
                     addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),
                     width: self.gp_word_mem_width(),
                     extension: MachineLoadExtension::None,
                 },
-            },
-        ]
+            });
+        }
+        ops
     }
 
     pub(super) fn emit_call_runtime(&mut self, metadata: MachineConstId) -> Result<(), WasmError> {

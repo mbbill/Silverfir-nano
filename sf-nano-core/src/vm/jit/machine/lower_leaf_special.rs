@@ -88,14 +88,7 @@ impl<'a> BlockLowerContext<'a> {
             (self.alloc_result_value(result)?, None)
         };
         if mem_idx == 0 {
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst,
-                    src: MachineValue::Reg(self.mem0_size_reg()),
-                },
-            });
+            self.emit_memory_len_load(0, dst)?;
         } else {
             let runtime_layout = self.runtime_abi_layout();
             let temp = self.borrow_free_gp_dynamic_regs(1)?[0];
@@ -1714,6 +1707,16 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_effective_addr(offset, addr, addr32, index_is_64)?;
         self.emit_address_add_wrap_trap_if(addr32, offset, index_is_64);
         self.emit_memory_len_load(memidx, scratch)?;
+        self.emit_bounds_check_for_length(addr32, scratch, access_bytes, index_is_64)
+    }
+
+    fn emit_bounds_check_for_length(
+        &mut self,
+        addr32: MachineReg,
+        scratch: MachineReg,
+        access_bytes: u32,
+        index_is_64: bool,
+    ) -> Result<u32, WasmError> {
         if access_bytes == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
@@ -1808,86 +1811,16 @@ impl<'a> BlockLowerContext<'a> {
         {
             return Ok(0);
         }
-        if access_bytes == 0 {
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::TrapIf {
-                    kind: MachineTrapKind::MemoryOutOfBounds,
-                    cond: MachineBranchCond::IntCompare {
-                        width: self.gp_word_int_width(),
-                        kind: MachineCompareKind::Gt,
-                        sign: MachineSign::Unsigned,
-                        lhs: MachineValue::Reg(addr32),
-                        rhs: MachineValue::Reg(self.mem0_size_reg()),
-                    },
-                },
-            });
-            return Ok(0);
-        }
-        // Try to use a separate scratch register for the bounds-check
-        // addition so that addr32 stays unmodified (residual = 0).
-        //
-        // Guard: the borrowed register must differ from addr32.  When
-        // addr32 came from dead_value_reg it is back in the free pool,
-        // so borrow_free_gp_dynamic_regs can hand it out again. If that
-        // happens, `check_reg = addr32 + access_bytes` silently corrupts
-        // addr32 while the caller believes residual is 0 (untouched).
-        // Filtering it out forces the in-place fallback path below,
-        // which correctly reports the residual for later subtraction.
-        if let Some(check_reg) = self
-            .borrow_free_gp_dynamic_regs(1)
-            .ok()
-            .map(|s| s[0])
-            .filter(|r| *r != addr32)
-        {
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::IntBinary {
-                    width: self.gp_word_int_width(),
-                    op: MachineIntBinaryOp::Add,
-                    dst: check_reg,
-                    lhs: MachineValue::Reg(addr32),
-                    rhs: MachineValue::Imm64(access_bytes as u64),
-                },
-            });
-            self.emit_address_add_wrap_trap_if(check_reg, access_bytes, index_is_64);
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::TrapIf {
-                    kind: MachineTrapKind::MemoryOutOfBounds,
-                    cond: MachineBranchCond::IntCompare {
-                        width: self.gp_word_int_width(),
-                        kind: MachineCompareKind::Gt,
-                        sign: MachineSign::Unsigned,
-                        lhs: MachineValue::Reg(check_reg),
-                        rhs: MachineValue::Reg(self.mem0_size_reg()),
-                    },
-                },
-            });
-            Ok(0)
+        let size = if let Some(size) = self.mem0_size_reg() {
+            size
         } else {
-            let check_addend = access_bytes as u64;
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::IntBinary {
-                    width: self.gp_word_int_width(),
-                    op: MachineIntBinaryOp::Add,
-                    dst: addr32,
-                    lhs: MachineValue::Reg(addr32),
-                    rhs: MachineValue::Imm64(check_addend),
-                },
-            });
-            self.emit_address_add_wrap_trap_if(addr32, access_bytes, index_is_64);
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::TrapIf {
-                    kind: MachineTrapKind::MemoryOutOfBounds,
-                    cond: MachineBranchCond::IntCompare {
-                        width: self.gp_word_int_width(),
-                        kind: MachineCompareKind::Gt,
-                        sign: MachineSign::Unsigned,
-                        lhs: MachineValue::Reg(addr32),
-                        rhs: MachineValue::Reg(self.mem0_size_reg()),
-                    },
-                },
-            });
-            Ok(access_bytes)
-        }
+            // addr32 may already be released by dead-input reuse, but its
+            // effective address must survive the temporary length load.
+            let size = self.borrow_free_gp_dynamic_regs_excluding(1, &[addr32])?[0];
+            self.emit_memory_len_load(0, size)?;
+            size
+        };
+        self.emit_bounds_check_for_length(addr32, size, access_bytes, index_is_64)
     }
 
     fn lower_memory_continuation(
@@ -2528,14 +2461,24 @@ impl<'a> BlockLowerContext<'a> {
 
     fn emit_memory_len_load(&mut self, memidx: u32, dst: MachineReg) -> Result<(), WasmError> {
         if memidx == 0 {
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
+            let kind = if let Some(size) = self.mem0_size_reg() {
+                MachineInstKind::Move {
                     owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
-                    src: MachineValue::Reg(self.mem0_size_reg()),
-                },
-            });
+                    src: MachineValue::Reg(size),
+                }
+            } else {
+                MachineInstKind::Load {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord,
+                    dst,
+                    addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),
+                    width: self.gp_word_mem_width(),
+                    extension: MachineLoadExtension::None,
+                }
+            };
+            self.emit_machine_inst(MachineInst { kind });
             return Ok(());
         }
 

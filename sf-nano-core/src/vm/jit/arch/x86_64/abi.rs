@@ -26,7 +26,6 @@ struct RegPlan {
     ctx: X86Reg,
     fp: X86Reg,
     mem0_base: X86Reg,
-    mem0_size: X86Reg,
     gp_unit_bytes: u8,
     /// Ordered GP dynamic bank. Earlier entries are preferred for allocation.
     gp_dynamic: &'static [X86Reg],
@@ -49,12 +48,11 @@ const REG_PLAN: RegPlan = RegPlan {
     ctx: X86Reg::RBX,
     fp: X86Reg::RBP,
     mem0_base: X86Reg::R12,
-    mem0_size: X86Reg::R13,
 
     gp_unit_bytes: 8,
 
     // Positional lane classes: [volatile | preserved | internal scratch].
-    // Caller-saved GP regs first for short-lived SSA traffic; R14/R15 are
+    // Caller-saved GP regs first for short-lived SSA traffic; R13/R14/R15 are
     // callee-saved in both SysV and Win64 and form the preserved lanes —
     // values in them survive C helper calls, and SF->SF bodies lazy-save
     // them (`body_frame_plan`).
@@ -66,6 +64,7 @@ const REG_PLAN: RegPlan = RegPlan {
         X86Reg::R10,
         X86Reg::R14,
         X86Reg::R15,
+        X86Reg::R13,
         X86Reg::R11,
     ],
     // x86_64 ordinary lowering sometimes requires these exact registers.
@@ -120,7 +119,7 @@ const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
 
 // Lane-class widths over `REG_PLAN.gp_dynamic`, in positional order.
 const GP_VOLATILE_DYNAMIC: u8 = 5;
-const GP_PRESERVED_DYNAMIC: u8 = 2;
+const GP_PRESERVED_DYNAMIC: u8 = 3;
 const GP_INTERNAL_SCRATCH: u8 = 1;
 const GP_ARG_LANES: u8 = 4;
 const FP_ARG_LANES: u8 = 4;
@@ -133,7 +132,7 @@ const _: () = assert!(
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::with_volatility(
+    let mut config = BackendConfig::with_volatility(
         REG_PLAN.gp_unit_bytes,
         GP_VOLATILE_DYNAMIC,
         GP_PRESERVED_DYNAMIC,
@@ -153,7 +152,11 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
     .with_preserved_lane_save_overhead(5)
     // r32-form instructions clear bits 63:32, so the peephole may drop
     // ZeroExtend32 index obligations whose index was defined by one.
-    .with_gp32_zero_extending_defs()
+    .with_gp32_zero_extending_defs();
+    // The SF-to-SF ABI carries only mem0's base. Explicit length consumers
+    // load CTX instead, leaving R13 available to ordinary preserved values.
+    config.cache_mem0_size = false;
+    config
 }
 
 // ── Scratch pool construction ────────────────────────────────────────────────
@@ -197,13 +200,17 @@ pub(super) fn map_fixed_reg(reg: MachineReg) -> X86Reg {
         MACHINE_CTX_REG => REG_PLAN.ctx,
         MACHINE_FP_REG => REG_PLAN.fp,
         MACHINE_MEM0_BASE_REG => REG_PLAN.mem0_base,
-        MACHINE_MEM0_SIZE_REG => REG_PLAN.mem0_size,
         _ => unreachable!("not a fixed machine reg"),
     }
 }
 
 #[inline]
 pub(super) fn map_reg(reg: MachineReg) -> Result<X86Reg, WasmError> {
+    if reg == MACHINE_MEM0_SIZE_REG {
+        return Err(WasmError::internal(
+            "x86_64 does not pin the mem0-size role",
+        ));
+    }
     if reg.0 < MACHINE_FIXED_REG_COUNT {
         return Ok(map_fixed_reg(reg));
     }

@@ -404,7 +404,8 @@ mod tests {
             *dst = MachineReg(7);
         }
         assert!(copied_narrow_load(&copy, &overwrite, &[], &edge).is_some());
-        for reg in [0, 1, 2, 3, 12, 40] {
+        let first_fp = super::super::abi::compile_backend_config().first_fp_reg();
+        for reg in [0, 1, 2, 3, first_fp, 40] {
             let mut invalid = copy.clone();
             if let MachineInstKind::Move { src, .. } = &mut invalid.kind {
                 *src = MachineValue::Reg(MachineReg(reg));

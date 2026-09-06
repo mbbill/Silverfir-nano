@@ -15,7 +15,7 @@ use crate::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
             MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg, MachineRegOwner,
             MachineReturnAbi, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
-            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
         },
         jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -335,18 +335,12 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         callconv::emit_prologue_extra(self);
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_CTX_REG), C_ARG0);
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_FP_REG), C_ARG1);
-        // Load mem0 base/size from ctx
+        // Only mem0's base is pinned by the x64 internal ABI.
         enc::load_64(
             &mut self.core.text,
             map_fixed_reg(MACHINE_MEM0_BASE_REG),
             map_fixed_reg(MACHINE_CTX_REG),
             ctx_offset::MEM0_BASE as i32,
-        );
-        enc::load_64(
-            &mut self.core.text,
-            map_fixed_reg(MACHINE_MEM0_SIZE_REG),
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::MEM0_SIZE as i32,
         );
     }
 

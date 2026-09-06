@@ -1,7 +1,7 @@
 use super::MachineReg;
 use crate::vm::jit::backend::BackendConfig;
 
-/// Fixed machine-register roles shared by all MachineIR backends.
+/// Fixed MachineIR role IDs. A backend may leave the mem0-size role unmapped.
 pub(crate) const MACHINE_CTX_REG: MachineReg = MachineReg(0);
 pub(crate) const MACHINE_FP_REG: MachineReg = MachineReg(1);
 pub(crate) const MACHINE_MEM0_BASE_REG: MachineReg = MachineReg(2);
@@ -31,7 +31,7 @@ pub(crate) fn is_fp_reg(reg: MachineReg, config: BackendConfig) -> bool {
 /// Returns `true` if `reg` belongs to the GP bank (fixed or dynamic).
 #[inline]
 pub(crate) fn is_gp_reg(reg: MachineReg, config: BackendConfig) -> bool {
-    reg.0 < config.first_fp_reg()
+    reg.0 < config.first_fp_reg() && (reg != MACHINE_MEM0_SIZE_REG || config.cache_mem0_size)
 }
 
 /// Returns `true` if `reg` belongs to either GP or FP dynamic bank.

@@ -601,7 +601,7 @@ impl<'a> BlockLowerContext<'a> {
         self.regfile.mem0_base()
     }
 
-    pub(super) fn mem0_size_reg(&self) -> MachineReg {
+    pub(super) fn mem0_size_reg(&self) -> Option<MachineReg> {
         self.regfile.mem0_size()
     }
 

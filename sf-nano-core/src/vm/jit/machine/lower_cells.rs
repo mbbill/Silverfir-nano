@@ -204,16 +204,18 @@ impl<'a> BlockLowerContext<'a> {
                 extension: MachineLoadExtension::None,
             },
         });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: self.regfile().mem0_size(),
-                addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),
-                width: self.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        });
+        if let Some(dst) = self.regfile().mem0_size() {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord,
+                    dst,
+                    addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),
+                    width: self.gp_word_mem_width(),
+                    extension: MachineLoadExtension::None,
+                },
+            });
+        }
     }
 
     fn plan_carries_cached_cell_across_local_call(
