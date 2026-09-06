@@ -13,9 +13,9 @@ use crate::{
     vm::{
         jit::machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineIntWidth, MachineReg, MachineReturnAbi, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg, MachineRegOwner,
+            MachineReturnAbi, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -97,9 +97,10 @@ pub(crate) struct X86_64Backend<'a> {
     /// body next to the FP literal pool so table data never sits in the
     /// instruction stream between a dispatch and its handlers.
     pub(super) pending_jump_tables: collections::Vec<PendingJumpTable>,
-    /// 1-slot peephole lookahead, mirroring the arm64 backend: holds a
-    /// fusible load so `emit_inst_at` can try the memory-operand ALU
-    /// form when the next op arrives. Emission order is preserved on
+    /// 1-slot peephole lookahead for load+ALU, compare+select, and GP
+    /// address snapshots immediately followed by a narrow load.
+    /// `emit_inst_at` proves each pair before lowering it together.
+    /// Emission order is preserved on
     /// every path — hit, miss, and block-end drain.
     pending_op: Option<(&'a MachineInst, usize)>,
 }
@@ -438,10 +439,30 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
-        // Try to fuse the buffered load with this incoming op. On a hit
-        // one instruction consumes both; on a miss the load is emitted
-        // solo first, preserving program order (and trap order).
+        // Try to consume the buffered pair together. On a miss, emit
+        // the previous op first, preserving program order and trap order.
         if let Some((prev, prev_index)) = self.pending_op.take() {
+            if matches!(prev.kind, MachineInstKind::Move { .. }) {
+                let load = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .and_then(|block| {
+                        super::fusion::copied_narrow_load(
+                            prev,
+                            inst,
+                            &block.ops[index + 1..],
+                            &block.terminator,
+                        )
+                    });
+                if let Some(load) = load {
+                    self.core.current_op_index = Some(index);
+                    self.lower_inst(&load)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
             if let Some(fusion) = super::fusion::load_alu_fusion(prev, inst) {
                 let loaded_dead = self
                     .core
@@ -500,6 +521,28 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         }
         if super::fusion::fusible_load(&inst.kind)
             || matches!(inst.kind, MachineInstKind::IntCompare { .. })
+            || (matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord | MachineStorageType::GpI64,
+                    src: MachineValue::Reg(_),
+                    ..
+                }
+            ) && self
+                .core
+                .current_block
+                .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                .and_then(|block| block.ops.get(index + 1))
+                .is_some_and(|next| {
+                    matches!(
+                        next.kind,
+                        MachineInstKind::IndexedLoad {
+                            width: MachineMemWidth::U8 | MachineMemWidth::U16,
+                            ..
+                        }
+                    )
+                }))
         {
             self.pending_op = Some((inst, index));
             return Ok(());
