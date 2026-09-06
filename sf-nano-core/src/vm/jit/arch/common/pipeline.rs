@@ -77,6 +77,7 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     //
     // Direct call patches resolve against `internal_entry_label`, NOT
     // against "the byte right after lower_prologue".
+    b.align_internal_entry();
     let internal_entry_label = b.core().internal_entry_label;
     b.core_mut().bind_label(internal_entry_label);
     let internal_entry_offset = b.core().text.len();
@@ -320,6 +321,7 @@ where
         label: String::from("public_entry"),
     });
 
+    b.align_internal_entry();
     let internal_entry_label = b.core().internal_entry_label;
     b.core_mut().bind_label(internal_entry_label);
     let internal_entry_offset = b.core().text.len();

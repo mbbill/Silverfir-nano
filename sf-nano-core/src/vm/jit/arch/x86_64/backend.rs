@@ -261,6 +261,14 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.core
     }
 
+    fn align_internal_entry(&mut self) {
+        const INTERNAL_ENTRY_ALIGN: usize = 16;
+        let misalign = self.core.text.next_addr_for_alignment() % INTERNAL_ENTRY_ALIGN;
+        if misalign != 0 {
+            enc::emit_nops(&mut self.core.text, INTERNAL_ENTRY_ALIGN - misalign);
+        }
+    }
+
     /// 16-byte-align loop headers so a tight loop body never straddles a
     /// fetch window: a straddled two-instruction loop measured 2 cycles
     /// per iteration where the aligned form sustains 1. Padding executes

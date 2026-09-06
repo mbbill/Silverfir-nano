@@ -65,7 +65,7 @@ pub(crate) trait ArchBackend<'a>: Sized {
     //                                    to the C caller. `C_RET0` already
     //                                    holds 0 (success) or the trap
     //                                    kind (error) — see §9.
-    //   4. (internal_entry_label binding)
+    //   4. `align_internal_entry`, then internal_entry_label binding
     //   5. `lower_body_prelude`       — body entry prelude: per-arch setup
     //                                    such as link-save state on
     //                                    link-register targets or stack
@@ -82,6 +82,10 @@ pub(crate) trait ArchBackend<'a>: Sized {
     fn lower_prologue(&mut self);
     fn lower_root_caller_stub(&mut self);
     fn lower_epilogue(&mut self);
+    /// Pad before binding the internal call target. The public epilogue
+    /// already returned, and direct/indirect body calls land after this
+    /// padding, so no call executes it.
+    fn align_internal_entry(&mut self) {}
     /// Optionally consume an empty entry branch before setting up the body
     /// frame. A successful lowering must bind the entry block label, return
     /// without a frame on its fast arm, and fall through to `next` on its
