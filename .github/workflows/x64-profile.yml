@@ -32,13 +32,13 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: ff5c13ee2a7013022e45e5696f5aaed9161c8b77
-          path: source-bits
+          ref: 9b6032ebdcf317289ac8ec91fd5fa93874fd7abf
+          path: source-scratch
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 1e37ec0409b40b2191e06d417de34ded29c2096f
-          path: source-bextr
+          ref: 96019ff4ec8b8e05d11695dc0921cc2b9c72945f
+          path: source-short
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -56,7 +56,7 @@ jobs:
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['main', 'bits', 'bextr']:
+          for name in ['main', 'scratch', 'short']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -65,11 +65,11 @@ jobs:
           PYCODE
       - name: Save and audit the source variants
         run: |
-          for name in main bits bextr; do
+          for name in main scratch short; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-bextr
+        working-directory: source-short
         env:
           CARGO_TERM_COLOR: never
         run: |
@@ -78,12 +78,12 @@ jobs:
             2>&1 | tee ../coremark-out/correctness-spec-build.log
           target/release/sf-nano-spectest --backend jit --log-level info \
             2>&1 | tee ../coremark-out/correctness-spec.log
-          PYTHONPATH=.. python3 -m ci.x64_warning_audit ../coremark-out/correctness-*.log
+          (cd .. && python3 -m ci.x64_warning_audit coremark-out/correctness-*.log)
       - name: Build every Nano revision before measuring
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in main bits bextr; do
+          for name in main scratch short; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
@@ -97,27 +97,15 @@ jobs:
           sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant main="$PWD/coremark-out/main" \
-            --variant bits="$PWD/coremark-out/bits" \
-            --variant bextr="$PWD/coremark-out/bextr" \
+            --variant scratch="$PWD/coremark-out/scratch" \
+            --variant short="$PWD/coremark-out/short" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
       - name: Capture the native code of every revision
         run: |
-          for name in main bits bextr; do
+          for name in main scratch short; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
-      - name: Verify which CPU path was emitted
-        run: |
-          objdump -D -b binary -m i386:x86-64 native-out/bextr/native_code.bin > coremark-out/bextr-disassembly.txt
-          python3 - <<'PYCODE'
-          from pathlib import Path
-          cpu = Path('coremark-out/cpu.txt').read_text()
-          asm = Path('coremark-out/bextr-disassembly.txt').read_text()
-          count = asm.count('bextr ')
-          expected = 'AuthenticAMD' in cpu and ' bmi1 ' in cpu
-          print(f'BEXTR instructions: {count}; AMD BMI1: {expected}')
-          assert (count > 0) == expected
-          PYCODE
       - name: Sample current CoreMark machine-code hotspots
         run: |
           sudo apt-get update -qq
@@ -126,11 +114,11 @@ jobs:
           sudo sysctl -w kernel.perf_event_paranoid=1
           taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
             --perf "$PERF_BIN" --out-dir profile-out/coremark -- \
-            "$PWD/coremark-out/bextr" wasmi-benchmarks/res/wasm/coremark.wasm coremark
+            "$PWD/coremark-out/short" wasmi-benchmarks/res/wasm/coremark.wasm coremark
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-bextr-${{ matrix.draw }}
+          name: nano-coremark-short-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
