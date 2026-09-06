@@ -28,28 +28,44 @@ const PROBE_UNSUPPORTED: u8 = 2;
 /// Cached result of `probe()`. Racing threads may probe concurrently; CPUID is
 /// pure, so every racer computes the same value and the store is idempotent.
 static SIMD_SUPPORT: AtomicU8 = AtomicU8::new(PROBE_PENDING);
-static BEXTR_PREFERENCE: AtomicU8 = AtomicU8::new(PROBE_PENDING);
+static CPU_TUNING: AtomicU8 = AtomicU8::new(0);
+const TUNING_READY: u8 = 1 << 7;
+const PREFER_BEXTR: u8 = 1 << 0;
+const CLEAR_INT_TO_FLOAT_DST: u8 = 1 << 1;
+
+fn tuning() -> u8 {
+    let mut state = CPU_TUNING.load(Ordering::Relaxed);
+    if state == 0 {
+        let vendor = __cpuid(0);
+        let amd = vendor.ebx == u32::from_le_bytes(*b"Auth")
+            && vendor.edx == u32::from_le_bytes(*b"enti")
+            && vendor.ecx == u32::from_le_bytes(*b"cAMD");
+        state = TUNING_READY;
+        if amd {
+            if vendor.eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 3) != 0 {
+                state |= PREFER_BEXTR;
+            }
+        } else {
+            state |= CLEAR_INT_TO_FLOAT_DST;
+        }
+        CPU_TUNING.store(state, Ordering::Relaxed);
+    }
+    state
+}
 
 /// AMD's single-operation BEXTR can shorten a shift-and-mask dependency.
 /// Intel implementations commonly use two operations, so retain their
 /// existing lowering. This is a CPU cost preference, not an ISA requirement.
 /// See Agner Fog's instruction tables, Zen 3 and Skylake BEXTR entries.
 pub(super) fn prefer_bextr() -> bool {
-    let mut state = BEXTR_PREFERENCE.load(Ordering::Relaxed);
-    if state == PROBE_PENDING {
-        let vendor = __cpuid(0);
-        let amd = vendor.ebx == u32::from_le_bytes(*b"Auth")
-            && vendor.edx == u32::from_le_bytes(*b"enti")
-            && vendor.ecx == u32::from_le_bytes(*b"cAMD");
-        let supported = amd && vendor.eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 3) != 0;
-        state = if supported {
-            PROBE_SUPPORTED
-        } else {
-            PROBE_UNSUPPORTED
-        };
-        BEXTR_PREFERENCE.store(state, Ordering::Relaxed);
-    }
-    state == PROBE_SUPPORTED
+    tuning() & PREFER_BEXTR != 0
+}
+
+/// Intel needs the dependency break before legacy CVTSI2SS/SD. On AMD the
+/// extra XORPS instead costs throughput; retain the original conversion.
+/// Scalar upper lanes are unobservable, so both forms have the same semantics.
+pub(super) fn clear_int_to_float_dst() -> bool {
+    tuning() & CLEAR_INT_TO_FLOAT_DST != 0
 }
 
 fn probe() -> u8 {
