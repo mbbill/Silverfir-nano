@@ -32,13 +32,18 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 79809a89fd9bd74ad95ee546cb426c37df77ac7a
-          path: source-flags
+          ref: 35e315c6372ea3506fd85c36b7a01a707d56dea5
+          path: source-corrected
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 1f904642bdd9532751056aaa6fb7d02f213eacdf
-          path: source-spill
+          ref: a9ed016724da8de9f0b15f7a6464c940fa41209d
+          path: source-alu
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 9a8208289a883c08f0c93e1340ed837f8da74eab
+          path: source-loop
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -55,15 +60,8 @@ jobs:
           python3 - <<'PYCODE'
           import json, os, shutil
           from pathlib import Path
-          path = Path('source-flags/sf-nano-core/src/vm/jit/arch/x86_64/inst.rs')
-          original = path.read_text()
-          changed = original.replace('if dst != lhs_gp {\n                            // Keep two-operand ADD/SUB', 'if dst != lhs_gp && width == MachineIntWidth::I64 {\n                            // Keep two-operand ADD/SUB')
-          assert changed != original
-          path.write_text(changed)
-          import difflib
           Path('coremark-out').mkdir()
-          Path('coremark-out/flags.patch').write_text(''.join(difflib.unified_diff(original.splitlines(True), changed.splitlines(True), fromfile=str(path), tofile=str(path))))
-          for name in ['base', 'flags', 'spill']:
+          for name in ['base', 'corrected', 'alu', 'loop']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -72,7 +70,7 @@ jobs:
           PYCODE
       - name: Build every Nano revision before measuring
         run: |
-          for name in base flags spill; do
+          for name in base corrected alu loop; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             if rg '^warning(\[[^]]+\])?:' "coremark-out/build-$name.log"; then
@@ -89,18 +87,25 @@ jobs:
           sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant base="$PWD/coremark-out/base" \
-            --variant flags="$PWD/coremark-out/flags" \
-            --variant spill="$PWD/coremark-out/spill" \
+            --variant corrected="$PWD/coremark-out/corrected" \
+            --variant alu="$PWD/coremark-out/alu" \
+            --variant loop="$PWD/coremark-out/loop" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
+      - name: Capture the native code of every revision
+        run: |
+          for name in base corrected alu loop; do
+            SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
+              "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
+          done
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-spill-${{ matrix.draw }}
+          name: nano-coremark-loops-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
             coremark-out/*.txt
             coremark-out/*.md
-            coremark-out/*.patch
+            native-out/
           if-no-files-found: error
           retention-days: 30

@@ -19,9 +19,16 @@ fn main() {
     let mut instance = Instance::new(
         &engine,
         &wasm,
-        if mode == "coremark" { &imports } else { &[] },
+        if matches!(mode.as_str(), "coremark" | "coremark-dump") {
+            &imports
+        } else {
+            &[]
+        },
     )
     .unwrap();
+    if mode == "coremark-dump" {
+        return;
+    }
     let params = match mode.as_str() {
         "coremark" => vec![],
         "i64" => vec![Value::I64(input)],

@@ -54,8 +54,7 @@ def main() -> None:
     for name in list(variants)[1:]:
         comparisons[f"{name}/{baseline}"] = probability_summary([
             candidate/base for candidate, base in zip(scores[name], scores[baseline])])
-    if len(variants) == 3:
-        left, right = list(variants)[1:]
+    for left, right in zip(list(variants)[1:], list(variants)[2:]):
         comparisons[f"{right}/{left}"] = probability_summary([
             b/a for a, b in zip(scores[left], scores[right])])
     doc = {"scores": scores, "schedule": records, "comparisons": comparisons}
