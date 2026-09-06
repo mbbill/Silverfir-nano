@@ -1256,6 +1256,24 @@ impl<'a> X86_64Backend<'a> {
                         || (width == MachineIntWidth::I32 && imm_val as u32 as i32 == imm)
                     {
                         let lhs_gp = self.materialize_value(*scratch0, lhs)?;
+                        // A byte/word truncation defines the entire GP carrier
+                        // in either integer width. MOVZX combines a distinct
+                        // destination's copy and mask, and shortens an in-place
+                        // mask. It does not produce flags; leave flags32's
+                        // position stamp invalidated by the emitted bytes.
+                        if op == MachineIntBinaryOp::And {
+                            match imm {
+                                0xff => {
+                                    enc::movzx_r32_r8(&mut self.core.text, dst, lhs_gp);
+                                    return Ok(());
+                                }
+                                0xffff => {
+                                    enc::movzx_r32_r16(&mut self.core.text, dst, lhs_gp);
+                                    return Ok(());
+                                }
+                                _ => {}
+                            }
+                        }
                         if dst != lhs_gp && width == MachineIntWidth::I64 {
                             // Keep two-operand ADD/SUB when already coalesced.
                             // The i64 form benefits from replacing its copy

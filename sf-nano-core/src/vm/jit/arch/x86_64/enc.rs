@@ -924,6 +924,14 @@ pub(crate) fn movzx_r32_r8(e: &mut TextEmitter, dst: X86Reg, src: X86Reg) {
     emit_modrm_rr(e, dst, src);
 }
 
+/// MOVZX r32, r/m16 (zero-extend word to 32-bit, implicitly to 64): 0F B7
+pub(crate) fn movzx_r32_r16(e: &mut TextEmitter, dst: X86Reg, src: X86Reg) {
+    emit_rex(e, false, dst, src);
+    e.emit_u8(0x0F);
+    e.emit_u8(0xB7);
+    emit_modrm_rr(e, dst, src);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SETcc / CMOVcc
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1896,6 +1904,58 @@ pub(crate) fn sub_rsp_imm32(e: &mut TextEmitter, imm32: u32) {
 pub(crate) fn add_rsp_imm32(e: &mut TextEmitter, imm32: u32) {
     e.emit_bytes(&[0x48, 0x81, 0xC4]);
     e.emit_bytes(&imm32.to_le_bytes());
+}
+
+#[cfg(test)]
+mod narrow_extension_tests {
+    use super::*;
+    use crate::vm::jit::{arch::x86_64::abi::C_ARG0, runtime::code_buf::CodeBuffer};
+
+    #[test]
+    fn byte_and_word_extension_select_low_and_extended_registers() {
+        let mut text = TextEmitter::new();
+        movzx_r32_r8(&mut text, X86Reg::RAX, X86Reg::RSI);
+        movzx_r32_r8(&mut text, X86Reg::R9, X86Reg::R14);
+        movzx_r32_r16(&mut text, X86Reg::RAX, X86Reg::RSI);
+        movzx_r32_r16(&mut text, X86Reg::R9, X86Reg::R14);
+        assert_eq!(
+            text.finish(),
+            [
+                0x40, 0x0f, 0xb6, 0xc6, 0x45, 0x0f, 0xb6, 0xce, 0x0f, 0xb7, 0xc6, 0x45, 0x0f, 0xb7,
+                0xce
+            ]
+        );
+    }
+
+    #[test]
+    fn narrow_extensions_clear_the_entire_carrier_with_aliased_inputs() {
+        for byte in [false, true] {
+            for dst in [X86Reg::RAX, C_ARG0, X86Reg::R9] {
+                let mut text = TextEmitter::new();
+                if byte {
+                    movzx_r32_r8(&mut text, dst, C_ARG0);
+                } else {
+                    movzx_r32_r16(&mut text, dst, C_ARG0);
+                }
+                if dst != X86Reg::RAX {
+                    mov_rr_64(&mut text, X86Reg::RAX, dst);
+                }
+                ret(&mut text);
+                let bytes = text.finish();
+                let mut code = CodeBuffer::with_capacity(4096).unwrap();
+                code.begin_write();
+                code.emit_bytes(&bytes);
+                code.finish_write(0, bytes.len());
+                // The leaf uses only caller-saved C registers.
+                let truncate: unsafe extern "C" fn(u64) -> u64 = unsafe { code.fn_ptr(0) };
+                for low in 0..=u16::MAX {
+                    let raw = 0xfedc_ba98_7654_0000 | u64::from(low);
+                    let expected = raw & if byte { 0xff } else { 0xffff };
+                    assert_eq!(unsafe { truncate(raw) }, expected);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
