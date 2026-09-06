@@ -2912,11 +2912,8 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Float conversion helpers ────────────────────────────────────────────
 
-    /// Integer conversion defines a scalar from scratch. Clear the whole XMM
-    /// destination first: legacy CVTSI2SS/SD otherwise retain its upper bits,
-    /// creating a dependency on the previous value (often a prior loop's
-    /// division). No source lives in this FP register, and scalar carriers
-    /// have no observable upper lanes. XORPS leaves integer EFLAGS intact.
+    /// Experimental ablation: preserve the destination's unused upper lanes
+    /// to measure the cost of the XORPS dependency break on each x64 CPU.
     fn prepare_int_to_float_dst(
         &mut self,
         dst: MachineReg,
@@ -2930,7 +2927,6 @@ impl<'a> X86_64Backend<'a> {
         } else {
             scratch_fp
         };
-        enc::xorps(&mut self.core.text, dst_fp, dst_fp);
         Ok(dst_fp)
     }
 
