@@ -1,0 +1,11 @@
+--- source-flags/sf-nano-core/src/vm/jit/arch/x86_64/inst.rs
++++ source-flags/sf-nano-core/src/vm/jit/arch/x86_64/inst.rs
+@@ -1249,7 +1249,7 @@
+                         || (width == MachineIntWidth::I32 && imm_val as u32 as i32 == imm)
+                     {
+                         let lhs_gp = self.materialize_value(*scratch0, lhs)?;
+-                        if dst != lhs_gp {
++                        if dst != lhs_gp && width == MachineIntWidth::I64 {
+                             // Keep two-operand ADD/SUB when already coalesced.
+                             // Otherwise LEA replaces the copy plus arithmetic.
+                             // i64 SUB must not negate MIN into a signed disp32;

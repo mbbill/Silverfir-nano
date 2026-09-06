@@ -124,3 +124,58 @@ The next candidate restores two-operand immediate i32 ADD/SUB globally,
 while retaining i64 LEA and register-sum LEA. CoreMark uses the affected i32
 form; the full corpus is needed to validate retaining the separately useful
 i64 form. No function name, guest input or benchmark name selects the path.
+
+### Corrected candidate: CoreMark and full-corpus measurements
+
+[Nano CoreMark run 34031452780](https://github.com/mbbill/Silverfir-nano/actions/runs/34031452780)
+compares main with the i64-only immediate-LEA/flags combination and with the
+additional spill-copy pass. Four alternating process pairs per host:
+
+| Comparison | EPYC 7763 | EPYC 9V74 |
+|---|---:|---:|
+| corrected LEA + flags / main | +0.75% | +1.74% |
+| plus spill copies / main | +2.03% | +1.75% |
+| spill copies / corrected LEA + flags | +1.27% | +0.01% |
+
+The large CoreMark regression is eliminated on both AMD generations. The
+spill-copy change has a measurable benefit on 7763 and is neutral on 9V74.
+These revision gains do not yet close the competitor gap. Full measurements
+are in `coremark-spill-draw-*`.
+
+[Dev run 34031425369](https://github.com/mbbill/Silverfir-nano/actions/runs/34031425369)
+compares `35e315c6` (runtime `1f904642`) with main. The complete 20-item
+wasmi x64 execute comparison is +15.0038% on Intel Xeon Platinum 8573C,
+with no REGRESSION rows. All rows and samples are in
+`corrected-wasmi-execute.*`; tiny_keccak's -6.56% PLACEMENT result is retained
+as a negative layout-sensitive observation. Other platform checks and the
+independent confirmation job must still be inspected individually.
+
+The full `35e315c6` dev run has 34 completed jobs with no failed steps.
+However, the secondary WASI suite flagged lz4-compress at -7.46% on Intel
+8573C; its independent confirmation landed on AMD 7763 and measured -2.48%
+(NEGLIGIBLE under that gate). This does not explain the Intel regression.
+Keep the negative finding open even though the workflow conclusion is success;
+WASI optimization remains deferred behind the primary wasmi/CoreMark target.
+
+## Pending frame ALU and loop-frame candidates
+
+`a9ed0167` extends the existing x64 load/ALU encoding to consume the low
+32 bits of an aligned native frame word directly. Guest-memory widths remain
+exact; both frame widths touch the same page. Native CoreMark code confirms
+one loop's frame-load/add pair became a single memory-operand add. Validation:
+391 JIT-only x64 unit tests and all 260 x64 specification files.
+
+`9a820828` carries a repeatedly read native frame word in an allocatable GP
+lane unused throughout a natural loop. It retains every frame store and
+updates the carried copy immediately afterward. It rejects calls, opaque
+operations, overlapping partial writes, writes to the frame base, live lanes,
+ambiguous entry edges, and function-entry loops. It runs after dead-parameter
+elimination so obsolete cached-local bindings cannot hide a free lane.
+CoreMark's state loop now carries its cursor through a previously unused
+register, replacing two repeated frame reads. Argon2 still contains the
+recovered `memory.copy` and passes its output oracle.
+
+Validation: 525 default x64 unit tests and the complete core integration
+suite, 558 ARM64 unit tests and core integration suite, all 260 x64 spec
+files, and CoreMark's guest result validation. Native performance is pending;
+local Rosetta timings are not evidence of performance gains.
