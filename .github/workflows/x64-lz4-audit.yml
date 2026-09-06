@@ -32,10 +32,12 @@ jobs:
       run:
         shell: bash
     env:
+      CARGO_TERM_COLOR: never
       CARGO_TARGET_DIR: ${{ github.workspace }}/audit-target
     steps:
       - run: git config --system core.longpaths true
       - uses: actions/checkout@v7
+      - run: python3 -m ci.lint_policy
       - uses: actions/checkout@v7
         with:
           ref: ${{ matrix.baseline }}
@@ -76,7 +78,8 @@ jobs:
               path.write_text(code.replace(declaration, '').replace(call, ''))
           PYCODE
           git -C source-candidate diff > audit-out/candidate.patch
-          python3 -m ci.lint_policy
+          (cd source-base && python3 -m ci.lint_policy)
+          (cd source-candidate && python3 -m ci.lint_policy)
       - name: Build matched performance binaries
         run: |
           python3 -m ci.performance_build \
