@@ -415,6 +415,10 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     /// the tail leaves `MACHINE_FP_REG` alone.
     fn lower_body_local_error_tail(&mut self) {
         self.lower_body_frame_undo();
+        // Match the internal return ABI after stack adjustment and after
+        // foreign helpers whose return flags are unspecified. C_RET0 is
+        // nonzero here; successful bodies end in XOR EAX,EAX before RET.
+        enc::test_rr_64(&mut self.core.text, abi::C_RET0, abi::C_RET0);
         enc::ret(&mut self.core.text);
     }
 

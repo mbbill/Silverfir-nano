@@ -507,7 +507,8 @@ impl<'a> X86_64Backend<'a> {
         // the return address.
         self.lower_body_frame_undo();
 
-        // Success status: C_RET0 = 0. (xor eax, eax)
+        // Internal return ABI: C_RET0 = 0 and ZF = 1. The caller may
+        // branch directly on these flags after restoring its frame with LEA.
         enc::xor_rr_32(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
         enc::ret(&mut self.core.text);
         Ok(())
@@ -633,9 +634,8 @@ impl<'a> X86_64Backend<'a> {
         // propagation; the caller's error tail expects its own frame.
         self.adjust_frame_pointer_by_delta(frame_delta, false)?;
 
-        // C_RET0 holds 0 (success) or trap kind (error). Status check
-        // propagates to body_local_error_label.
-        enc::test_rr_64(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
+        // Internal entries return ZF = (C_RET0 == 0). The frame restore
+        // above preserves those flags, so no repeated TEST is needed.
         self.emit_jcc(Cc::NE, body_local_error_label);
 
         self.lower_call_result_placement(frame_delta, results)?;
@@ -655,8 +655,12 @@ impl<'a> X86_64Backend<'a> {
         let delta = i32::try_from(delta)
             .map_err(|_| WasmError::internal("x86_64 call frame delta exceeds i32".into()))?;
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        let delta = if add { delta } else { -delta };
-        enc::add_ri_64(&mut self.core.text, fp_reg, delta);
+        if add {
+            enc::add_ri_64(&mut self.core.text, fp_reg, delta);
+        } else {
+            // A compiled callee's return flags carry its success status.
+            enc::lea_offset(&mut self.core.text, true, fp_reg, fp_reg, -delta);
+        }
         Ok(())
     }
 
