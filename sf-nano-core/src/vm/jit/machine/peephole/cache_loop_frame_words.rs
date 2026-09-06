@@ -196,28 +196,12 @@ fn try_cache_word(
             }
         }
     }
-    // Repeated static reads repay entry setup. A single read also benefits
-    // when the loop writes the same slot: carrying the updated value breaks
-    // the store-to-load dependency across iterations.
+    // Require repeated static reads as well as a loop. This avoids paying
+    // entry setup and write-through copies for a lone cheap reload.
     candidates.retain(|(word, count)| {
-        (*count >= 2
-            || nodes.iter().any(|&index| {
-                blocks[index].ops.iter().any(|inst| {
-                    matches!(inst.kind, MachineInstKind::Store {
-                        ty: MachineStorageType::GpWord, addr, width, ..
-                    } if addr == word.addr && width == word.width)
-                })
-            }))
+        *count >= 2
             && nodes.iter().all(|&index| {
                 blocks[index].ops.iter().all(|inst| match inst.kind {
-                    // A lone native read in a mixed-width slot is not the
-                    // whole-word recurrence targeted by the cheaper case.
-                    MachineInstKind::Load { addr, width, .. } => {
-                        *count >= 2
-                            || addr.base != MACHINE_FP_REG
-                            || !store_may_alias(word.addr, word.width, addr, width)
-                            || loaded_word(&inst.kind, config.gp_unit_bytes) == Some(*word)
-                    }
                     MachineInstKind::Store {
                         ty, addr, width, ..
                     } => {
@@ -493,55 +477,6 @@ mod tests {
             1,
             "no carried state leaks onto exit edges"
         );
-    }
-
-    #[test]
-    fn caches_a_single_static_read_when_the_loop_updates_the_slot() {
-        for written in [false, true] {
-            let mut ops = collections::vec![load(5), add(5, 5, 1)];
-            if written {
-                ops.push(store(5));
-            }
-            ops.push(add(4, 4, u64::MAX));
-            let mut blocks = collections::vec![
-                MachineBlock {
-                    id: MachineBlockId(0),
-                    params: collections::vec![MachineBlockParam::gp_word(MachineReg(4))],
-                    ops: collections::vec![store(4)],
-                    terminator: MachineTerminator::Jump(edge(1, &[4])),
-                },
-                MachineBlock {
-                    id: MachineBlockId(1),
-                    params: collections::vec![MachineBlockParam::gp_word(MachineReg(4))],
-                    ops,
-                    terminator: MachineTerminator::Branch {
-                        cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(4))),
-                        then_edge: edge(1, &[4]),
-                        else_edge: edge(2, &[]),
-                    },
-                },
-                MachineBlock {
-                    id: MachineBlockId(2),
-                    params: collections::Vec::new(),
-                    ops: collections::vec![load(4)],
-                    terminator: MachineTerminator::Return,
-                },
-            ];
-            let before = blocks.clone();
-            run(&mut blocks, MachineBlockId(0), 4);
-            if !written {
-                assert_eq!(blocks, before, "one read without a write stays uncached");
-                continue;
-            }
-            let carry = blocks[1].params.last().unwrap().reg;
-            assert_eq!(carry, MachineReg(6));
-            assert!(!blocks[1]
-                .ops
-                .iter()
-                .any(|inst| loaded_word(&inst.kind, 8).is_some()));
-            assert!(blocks[1].ops.contains(&store(5)), "publish every update");
-            assert_eq!(blocks[2], before[2], "exit reads stay in memory");
-        }
     }
 
     #[test]
