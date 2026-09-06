@@ -1941,33 +1941,46 @@ impl<'a> X86_64Backend<'a> {
         let lhs = self.map_gp_reg(lhs)?;
         let rhs = self.map_gp_reg(rhs)?;
         let scratch = self.gp_scratch.scoped_alloc().detach();
-        if *scratch != rhs {
-            self.emit_gp_move_width(width, *scratch, rhs);
-        }
-        match (width, shift) {
-            (MachineIntWidth::I64, MachineShiftOp::Lsl) => {
-                enc::shl_imm_64(&mut self.core.text, *scratch, amount)
+        // RORX reads the original operand independently, so the existing
+        // rotate-and-binary form does not need a separate copy into scratch.
+        // The final ALU operation still produces the operation's result.
+        if shift == MachineShiftOp::Ror && super::cpu::has_bmi2() {
+            enc::rorx_rri(
+                &mut self.core.text,
+                width == MachineIntWidth::I64,
+                *scratch,
+                rhs,
+                amount,
+            );
+        } else {
+            if *scratch != rhs {
+                self.emit_gp_move_width(width, *scratch, rhs);
             }
-            (MachineIntWidth::I32, MachineShiftOp::Lsl) => {
-                enc::shl_imm_32(&mut self.core.text, *scratch, amount)
-            }
-            (MachineIntWidth::I64, MachineShiftOp::Lsr) => {
-                enc::shr_imm_64(&mut self.core.text, *scratch, amount)
-            }
-            (MachineIntWidth::I32, MachineShiftOp::Lsr) => {
-                enc::shr_imm_32(&mut self.core.text, *scratch, amount)
-            }
-            (MachineIntWidth::I64, MachineShiftOp::Asr) => {
-                enc::sar_imm_64(&mut self.core.text, *scratch, amount)
-            }
-            (MachineIntWidth::I32, MachineShiftOp::Asr) => {
-                enc::sar_imm_32(&mut self.core.text, *scratch, amount)
-            }
-            (MachineIntWidth::I64, MachineShiftOp::Ror) => {
-                enc::ror_imm_64(&mut self.core.text, *scratch, amount)
-            }
-            (MachineIntWidth::I32, MachineShiftOp::Ror) => {
-                enc::ror_imm_32(&mut self.core.text, *scratch, amount)
+            match (width, shift) {
+                (MachineIntWidth::I64, MachineShiftOp::Lsl) => {
+                    enc::shl_imm_64(&mut self.core.text, *scratch, amount)
+                }
+                (MachineIntWidth::I32, MachineShiftOp::Lsl) => {
+                    enc::shl_imm_32(&mut self.core.text, *scratch, amount)
+                }
+                (MachineIntWidth::I64, MachineShiftOp::Lsr) => {
+                    enc::shr_imm_64(&mut self.core.text, *scratch, amount)
+                }
+                (MachineIntWidth::I32, MachineShiftOp::Lsr) => {
+                    enc::shr_imm_32(&mut self.core.text, *scratch, amount)
+                }
+                (MachineIntWidth::I64, MachineShiftOp::Asr) => {
+                    enc::sar_imm_64(&mut self.core.text, *scratch, amount)
+                }
+                (MachineIntWidth::I32, MachineShiftOp::Asr) => {
+                    enc::sar_imm_32(&mut self.core.text, *scratch, amount)
+                }
+                (MachineIntWidth::I64, MachineShiftOp::Ror) => {
+                    enc::ror_imm_64(&mut self.core.text, *scratch, amount)
+                }
+                (MachineIntWidth::I32, MachineShiftOp::Ror) => {
+                    enc::ror_imm_32(&mut self.core.text, *scratch, amount)
+                }
             }
         }
         // Step 2: dst = lhs OP scratch
