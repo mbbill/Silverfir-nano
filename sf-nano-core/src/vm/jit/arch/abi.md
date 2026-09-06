@@ -563,12 +563,18 @@ per-function metadata proves the body does not need it.
 |----------|---------------------------------------------|
 | arm64    | `stp x29, x30, [sp, #-16]!` plus preserved dynamic saves, only when needed |
 | armv7a   | link save                                   |
-| x86_64   | `sub rsp, 8` — alignment shim               |
+| x86_64   | preserved dynamic saves plus the nested-call alignment shim |
 
 On arm64, `has_body_host_frame()` is true when the function clobbers preserved
 dynamic registers or contains a body-returning native call. A leaf MIR body
 with no preserved clobbers can return directly through the incoming LR. On
-x86_64 the body alignment shim is still unconditional.
+x86_64 the ordinary body's alignment shim remains unconditional.
+
+An x86_64 scalar early-return guard can precede the body prelude when the
+entry has only an integer comparison, identity outgoing edges, and no CFG
+predecessors. The fast arm returns a register or literal without touching
+the native or Wasm frame. The ordinary arm falls through into the complete
+body prelude and frame probe; all its returns use the usual frame undo.
 
 ### Stack overflow protection
 
@@ -578,11 +584,13 @@ Stack protection has two legal implementations:
   allocates the wasm frame stack from the same OS guard-page infrastructure
   used by guarded linear memory. The usable stack is followed by an inaccessible
   guard range whose size is at least the largest static function frame in the
-  module, rounded to a wasm page. Every body entry emits one stack probe at the
+  module, rounded to a wasm page. A body that uses its frame emits one stack probe at the
   highest byte that the current function frame may touch. If the probe faults
   in `[stack_end, stack_guard_end)`, the signal handler classifies the trap as
   `StackOverflow`; otherwise a JIT-attributed guard fault remains a memory OOB
   trap. Local call sites emit no explicit stack-limit precheck in this mode.
+  A proven frameless early-return arm can return before this probe; all
+  ordinary body paths retain it.
 - **Explicit stack prechecks** on targets without guarded stack pages. Direct
   local calls compare the proposed callee frame against `NativeContext.stack_end`
   before the native call. Dynamic local calls load the callee frame size from

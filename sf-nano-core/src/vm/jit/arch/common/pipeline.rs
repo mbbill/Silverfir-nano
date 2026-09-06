@@ -70,8 +70,9 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     // Internal entry (local SF→SF calls and the public stub's bl land here):
     //
     //   [internal_entry_label]
-    //   [body prelude]          — per-arch non-leaf setup (link save /
-    //                             alignment shim). Always-on in 1A.
+    //   [optional entry guard]  — proven frameless scalar return
+    //   [body prelude]          — per-arch setup (preserved saves / link
+    //                             save / nested-call alignment as needed)
     //   [body blocks]
     //
     // Direct call patches resolve against `internal_entry_label`, NOT
