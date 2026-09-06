@@ -71,7 +71,7 @@ use crate::{
             LowerModuleInput, LoweredMachineModule,
         },
         jit::middle::{
-            frame::{plan_frame_layout, FrameLayoutPlan, FrameSpan},
+            frame::{plan_frame_layout, FrameLayoutPlan, FrameSlot, FrameSpan},
             prepare_function, ModuleFacts, PrepareInput,
         },
         jit::runtime::{
@@ -506,10 +506,16 @@ fn build_static_summaries(
                     let summary = FunctionStaticSummary {
                         id: MachineFuncId(func_idx as u32),
                         frame,
-                        param_locs: derive_param_locs_from_types(
-                            spec.func_type().params(),
-                            backend,
-                        ),
+                        // Streaming template bodies read parameters from
+                        // canonical frame slots, without SSA entry bindings.
+                        // Both public stubs and local callers must populate
+                        // those slots instead of sending register arguments.
+                        param_locs: (0..spec.func_type().params().len())
+                            .map(|index| MachineParamLoc::Frame {
+                                param_index: index as u16,
+                                slot: FrameSlot(index as u16),
+                            })
+                            .collect(),
                         result_count: scan.result_count,
                         return_abi: frame_return_abi(return_results),
                     };

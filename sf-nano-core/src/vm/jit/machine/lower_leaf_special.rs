@@ -44,6 +44,13 @@ impl<'a> BlockLowerContext<'a> {
         Ok((self.use_value(value)?, None))
     }
 
+    fn memory_index_is_64(&self, value: SsaValue) -> bool {
+        matches!(
+            lir_value_storage_type(self.program(), value),
+            MachineStorageType::GpI64
+        )
+    }
+
     #[inline]
     fn emit_memory_index_high_trap_if_nonzero(&mut self, hi: Option<MachineReg>) {
         let Some(hi) = hi else {
@@ -965,8 +972,13 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 dst
             };
-            let residual =
-                self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(
+                spec.offset,
+                access_bytes,
+                addr,
+                addr32,
+                self.memory_index_is_64(addr_value),
+            )?;
             self.emit_machine_ops(self.lower_mem0_load_continuation(
                 addr32,
                 residual,
@@ -986,6 +998,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr,
                 addr32,
                 memory_view,
+                self.memory_index_is_64(addr_value),
             )?;
             self.emit_machine_ops(self.lower_memory_continuation(
                 spec.memidx,
@@ -1063,7 +1076,13 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.borrow_free_gp_dynamic_regs(1)?[0]
             };
-            let residual = self.emit_mem0_bounds_trap_if(offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(
+                offset,
+                access_bytes,
+                addr,
+                addr32,
+                self.memory_index_is_64(addr_value),
+            )?;
             if residual != 0 {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::IntBinary {
@@ -1100,8 +1119,15 @@ impl<'a> BlockLowerContext<'a> {
             let scratch = self.borrow_free_gp_dynamic_regs(2)?;
             let addr32 = scratch[0];
             let base = scratch[1];
-            let residual =
-                self.emit_memory_bounds_trap_if(memidx, offset, access_bytes, addr, addr32, base)?;
+            let residual = self.emit_memory_bounds_trap_if(
+                memidx,
+                offset,
+                access_bytes,
+                addr,
+                addr32,
+                base,
+                self.memory_index_is_64(addr_value),
+            )?;
             if residual != 0 {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::IntBinary {
@@ -1166,7 +1192,13 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.borrow_free_gp_dynamic_regs(1)?[0]
             };
-            let residual = self.emit_mem0_bounds_trap_if(offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(
+                offset,
+                access_bytes,
+                addr,
+                addr32,
+                self.memory_index_is_64(addr_value),
+            )?;
             if residual != 0 {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::IntBinary {
@@ -1202,8 +1234,15 @@ impl<'a> BlockLowerContext<'a> {
             let scratch = self.borrow_free_gp_dynamic_regs(2)?;
             let addr32 = scratch[0];
             let base = scratch[1];
-            let residual =
-                self.emit_memory_bounds_trap_if(memidx, offset, access_bytes, addr, addr32, base)?;
+            let residual = self.emit_memory_bounds_trap_if(
+                memidx,
+                offset,
+                access_bytes,
+                addr,
+                addr32,
+                base,
+                self.memory_index_is_64(addr_value),
+            )?;
             if residual != 0 {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::IntBinary {
@@ -1272,7 +1311,13 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.borrow_free_gp_dynamic_regs(1)?[0]
             };
-            let residual = self.emit_mem0_bounds_trap_if(offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(
+                offset,
+                access_bytes,
+                addr,
+                addr32,
+                self.memory_index_is_64(addr_value),
+            )?;
             if residual != 0 {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::IntBinary {
@@ -1307,8 +1352,15 @@ impl<'a> BlockLowerContext<'a> {
             let scratch = self.borrow_free_gp_dynamic_regs(2)?;
             let addr32 = scratch[0];
             let base = scratch[1];
-            let residual =
-                self.emit_memory_bounds_trap_if(memidx, offset, access_bytes, addr, addr32, base)?;
+            let residual = self.emit_memory_bounds_trap_if(
+                memidx,
+                offset,
+                access_bytes,
+                addr,
+                addr32,
+                base,
+                self.memory_index_is_64(addr_value),
+            )?;
             if residual != 0 {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::IntBinary {
@@ -1370,7 +1422,13 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.borrow_free_gp_dynamic_regs(1)?[0]
             };
-            let residual = self.emit_mem0_bounds_trap_if(offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(
+                offset,
+                access_bytes,
+                addr,
+                addr32,
+                self.memory_index_is_64(addr_value),
+            )?;
             if residual != 0 {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::IntBinary {
@@ -1405,8 +1463,15 @@ impl<'a> BlockLowerContext<'a> {
             let scratch = self.borrow_free_gp_dynamic_regs(2)?;
             let addr32 = scratch[0];
             let base = scratch[1];
-            let residual =
-                self.emit_memory_bounds_trap_if(memidx, offset, access_bytes, addr, addr32, base)?;
+            let residual = self.emit_memory_bounds_trap_if(
+                memidx,
+                offset,
+                access_bytes,
+                addr,
+                addr32,
+                base,
+                self.memory_index_is_64(addr_value),
+            )?;
             if residual != 0 {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::IntBinary {
@@ -1481,8 +1546,13 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.borrow_free_gp_dynamic_regs(1)?[0]
             };
-            let residual =
-                self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(
+                spec.offset,
+                access_bytes,
+                addr,
+                addr32,
+                self.memory_index_is_64(addr_value),
+            )?;
             let src = self.use_value(src_value)?;
             self.emit_machine_ops(
                 self.lower_mem0_store_continuation(addr32, residual, src, spec.ty, spec.width)?,
@@ -1498,6 +1568,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr,
                 addr32,
                 memory_view,
+                self.memory_index_is_64(addr_value),
             )?;
             let src = self.use_value(src_value)?;
             self.emit_machine_ops(self.lower_memory_continuation(
@@ -1526,8 +1597,13 @@ impl<'a> BlockLowerContext<'a> {
         let access_bytes = spec.access_bytes();
         if spec.memidx == 0 {
             let addr32 = dst_lo;
-            let residual =
-                self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(
+                spec.offset,
+                access_bytes,
+                addr,
+                addr32,
+                self.memory_index_is_64(addr_value),
+            )?;
             self.emit_machine_ops(self.lower_mem0_i64_load_continuation(
                 addr32,
                 residual,
@@ -1546,6 +1622,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr,
                 addr32,
                 base,
+                self.memory_index_is_64(addr_value),
             )?;
             self.emit_machine_ops(self.lower_memory_i64_load_continuation(
                 spec.memidx,
@@ -1579,8 +1656,13 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.borrow_free_gp_dynamic_regs(1)?[0]
             };
-            let residual =
-                self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(
+                spec.offset,
+                access_bytes,
+                addr,
+                addr32,
+                self.memory_index_is_64(addr_value),
+            )?;
             let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
             self.emit_machine_ops(
                 self.lower_mem0_i64_store_continuation(
@@ -1601,6 +1683,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr,
                 addr32,
                 base,
+                self.memory_index_is_64(addr_value),
             )?;
             let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
             self.emit_machine_ops(self.lower_memory_i64_store_continuation(
@@ -1626,9 +1709,10 @@ impl<'a> BlockLowerContext<'a> {
         addr: MachineReg,
         addr32: MachineReg,
         scratch: MachineReg,
+        index_is_64: bool,
     ) -> Result<u32, WasmError> {
-        self.emit_effective_addr(offset, addr, addr32)?;
-        self.emit_word_add_immediate_wrap_trap_if(addr32, offset);
+        self.emit_effective_addr(offset, addr, addr32, index_is_64)?;
+        self.emit_address_add_wrap_trap_if(addr32, offset, index_is_64);
         self.emit_memory_len_load(memidx, scratch)?;
         if access_bytes == 0 {
             self.emit_machine_inst(MachineInst {
@@ -1666,7 +1750,7 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(access_bytes as u64),
                 },
             });
-            self.emit_word_add_immediate_wrap_trap_if(check_reg, access_bytes);
+            self.emit_address_add_wrap_trap_if(check_reg, access_bytes, index_is_64);
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
@@ -1690,7 +1774,7 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(access_bytes as u64),
                 },
             });
-            self.emit_word_add_immediate_wrap_trap_if(addr32, access_bytes);
+            self.emit_address_add_wrap_trap_if(addr32, access_bytes, index_is_64);
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
@@ -1713,11 +1797,15 @@ impl<'a> BlockLowerContext<'a> {
         access_bytes: u32,
         addr: MachineReg,
         addr32: MachineReg,
+        index_is_64: bool,
     ) -> Result<u32, WasmError> {
-        self.emit_effective_addr(offset, addr, addr32)?;
-        self.emit_word_add_immediate_wrap_trap_if(addr32, offset);
+        self.emit_effective_addr(offset, addr, addr32, index_is_64)?;
+        self.emit_address_add_wrap_trap_if(addr32, offset, index_is_64);
         #[cfg(sf_has_guard_pages)]
-        if self.use_guard_pages() && !self.needs_explicit_multiword_gp_bounds_check(access_bytes) {
+        if !index_is_64
+            && self.use_guard_pages()
+            && !self.needs_explicit_multiword_gp_bounds_check(access_bytes)
+        {
             return Ok(0);
         }
         if access_bytes == 0 {
@@ -1760,7 +1848,7 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(access_bytes as u64),
                 },
             });
-            self.emit_word_add_immediate_wrap_trap_if(check_reg, access_bytes);
+            self.emit_address_add_wrap_trap_if(check_reg, access_bytes, index_is_64);
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
@@ -1785,7 +1873,7 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(check_addend),
                 },
             });
-            self.emit_word_add_immediate_wrap_trap_if(addr32, access_bytes);
+            self.emit_address_add_wrap_trap_if(addr32, access_bytes, index_is_64);
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
@@ -2380,8 +2468,9 @@ impl<'a> BlockLowerContext<'a> {
         offset: u32,
         addr: MachineReg,
         addr32: MachineReg,
+        index_is_64: bool,
     ) -> Result<(), WasmError> {
-        if self.gp_reg_width() == 8 {
+        if self.gp_reg_width() == 8 && !index_is_64 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Convert {
                     op: MachineConvertOp::I64ExtendI32U,
@@ -2419,8 +2508,8 @@ impl<'a> BlockLowerContext<'a> {
         self.gp_reg_width() == 4 && access_bytes > u32::from(self.gp_reg_width())
     }
 
-    fn emit_word_add_immediate_wrap_trap_if(&mut self, sum: MachineReg, addend: u32) {
-        if self.gp_reg_width() != 4 || addend == 0 {
+    fn emit_address_add_wrap_trap_if(&mut self, sum: MachineReg, addend: u32, index_is_64: bool) {
+        if (self.gp_reg_width() != 4 && !index_is_64) || addend == 0 {
             return;
         }
         self.emit_machine_inst(MachineInst {
