@@ -36,8 +36,8 @@ fn scalar_fp_width(ty: MachineStorageType) -> Result<MachineFloatWidth, WasmErro
 }
 
 impl<'a> X86_64Backend<'a> {
-    /// Only equality consumes the same ZF as the i32 producer. Signed and
-    /// unsigned ordering still need CMP, as does every i64 comparison.
+    /// Only equality at the producer's width consumes the same ZF. Signed
+    /// and unsigned ordering still need CMP, even after a matching ALU op.
     fn lower_branch_compare(
         &mut self,
         width: MachineIntWidth,
@@ -45,16 +45,14 @@ impl<'a> X86_64Backend<'a> {
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
-        if width == MachineIntWidth::I32
-            && matches!(kind, MachineCompareKind::Eq | MachineCompareKind::Ne)
-        {
+        if matches!(kind, MachineCompareKind::Eq | MachineCompareKind::Ne) {
             let reg = match (lhs, rhs) {
                 (MachineValue::Reg(reg), MachineValue::Imm64(0))
                 | (MachineValue::Imm64(0), MachineValue::Reg(reg)) => Some(reg),
                 _ => None,
             };
             if let Some(reg) = reg {
-                if self.flags32_current(self.map_gp_reg(reg)?) {
+                if self.int_flags_current(width, self.map_gp_reg(reg)?) {
                     return Ok(());
                 }
             }
@@ -189,7 +187,7 @@ impl<'a> X86_64Backend<'a> {
                     // upper half that may remain in a GpWord carrier. Skip
                     // the test when EFLAGS already carries this register's
                     // 32-bit result, letting the ALU op and jcc macro-fuse.
-                    if !self.flags32_current(reg) {
+                    if !self.int_flags_current(MachineIntWidth::I32, reg) {
                         enc::test_rr_32(&mut self.core.text, reg, reg);
                     }
                     if else_fallthrough {
@@ -295,7 +293,7 @@ impl<'a> X86_64Backend<'a> {
                     // upper half that may remain in a GpWord carrier. Skip
                     // the test when EFLAGS already carries this register's
                     // 32-bit result.
-                    if !self.flags32_current(reg) {
+                    if !self.int_flags_current(MachineIntWidth::I32, reg) {
                         enc::test_rr_32(&mut self.core.text, reg, reg);
                     }
                     self.emit_jcc(Cc::NE, trap_label);
@@ -357,7 +355,7 @@ impl<'a> X86_64Backend<'a> {
                     let reg = self.map_gp_reg(reg)?;
                     // Same flags reuse as lower_branch: skip the test when
                     // EFLAGS already carries this register's 32-bit result.
-                    if !self.flags32_current(reg) {
+                    if !self.int_flags_current(MachineIntWidth::I32, reg) {
                         enc::test_rr_32(&mut self.core.text, reg, reg);
                     }
                     let cc = match jump_when {

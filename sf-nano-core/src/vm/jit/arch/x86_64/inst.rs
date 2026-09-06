@@ -960,9 +960,14 @@ impl<'a> X86_64Backend<'a> {
                 }
             }
         }
-        if fusion.w32 {
-            self.note_flags32(dst);
-        }
+        self.note_int_flags(
+            if fusion.w32 {
+                MachineIntWidth::I32
+            } else {
+                MachineIntWidth::I64
+            },
+            dst,
+        );
         Ok(())
     }
 
@@ -1159,15 +1164,15 @@ impl<'a> X86_64Backend<'a> {
         // Snapshot after materialization: loading an immediate zero can use
         // XOR and invalidate the producer's ZF. The MOV store itself changes
         // neither flags nor any register, including the producer's value.
-        let flags32 = self.current_flags32();
+        let flags = self.current_int_flags();
         match width {
             MachineMemWidth::U8 => enc::store_8(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U16 => enc::store_16(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U32 => enc::store_32(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U64 => enc::store_64(&mut self.core.text, base, disp, src_gp),
         };
-        if let Some(reg) = flags32 {
-            self.note_flags32(reg);
+        if let Some((produced_width, reg)) = flags {
+            self.note_int_flags(produced_width, reg);
         }
         Ok(())
     }
@@ -1276,7 +1281,7 @@ impl<'a> X86_64Backend<'a> {
                                     displacement,
                                 );
                                 // LEA does not produce result flags. Its emitted
-                                // bytes invalidate flags32's position stamp.
+                                // bytes invalidate int_flags' position stamp.
                                 return Ok(());
                             }
                         }
@@ -1316,9 +1321,7 @@ impl<'a> X86_64Backend<'a> {
                             }
                             _ => unreachable!(),
                         };
-                        if width == MachineIntWidth::I32 {
-                            self.note_flags32(dst);
-                        }
+                        self.note_int_flags(width, dst);
                         return Ok(());
                     }
                 }
@@ -1417,12 +1420,10 @@ impl<'a> X86_64Backend<'a> {
                         _ => unreachable!(),
                     };
                 }
-                // Every path above leaves dst's 32-bit result flags in
-                // EFLAGS: either the ALU op wrote dst last, or its result
-                // was moved into dst and mov does not touch flags.
-                if width == MachineIntWidth::I32 {
-                    self.note_flags32(dst);
-                }
+                // Every path above leaves dst's result ZF in EFLAGS at
+                // this width: either the ALU wrote dst last, or its result
+                // was moved into dst without changing flags.
+                self.note_int_flags(width, dst);
                 Ok(())
             }
             MachineIntBinaryOp::Mul => {
@@ -2102,7 +2103,7 @@ impl<'a> X86_64Backend<'a> {
                     let done = self.core.new_label();
                     // Wasm select conditions are i32 values; ignore any stale
                     // upper half that may remain in a GpWord carrier.
-                    if !self.flags32_current(cond_gp) {
+                    if !self.int_flags_current(MachineIntWidth::I32, cond_gp) {
                         enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
                     }
                     self.emit_jcc(Cc::E, false_label);
@@ -2156,7 +2157,7 @@ impl<'a> X86_64Backend<'a> {
             };
             // Wasm select conditions are i32 values; ignore any stale
             // upper half that may remain in a GpWord carrier.
-            if !self.flags32_current(cond_gp) {
+            if !self.int_flags_current(MachineIntWidth::I32, cond_gp) {
                 enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
             }
             if dst == true_reg && dst != false_reg {

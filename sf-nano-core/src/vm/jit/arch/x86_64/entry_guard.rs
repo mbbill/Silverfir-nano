@@ -183,7 +183,7 @@ impl X86_64Backend<'_> {
         enc::xor_rr_32(&mut self.core.text, abi::C_RET0, abi::C_RET0);
         enc::ret(&mut self.core.text);
         self.core.bind_label(body);
-        self.flags32 = None;
+        self.int_flags = None;
         Ok(true)
     }
 }
