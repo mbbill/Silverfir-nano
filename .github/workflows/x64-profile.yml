@@ -1,5 +1,5 @@
-# Isolated Nano-only MOVZX campaign; no main, PR or dev trigger.
-name: x64-nano-movzx
+# Isolated Nano-only shifted-operand campaign; no main, PR or dev trigger.
+name: x64-nano-shiftcommute
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -29,13 +29,13 @@ jobs:
           env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_wasmi_performance ci.test_x64_warning_audit
       - uses: actions/checkout@v7
         with:
-          ref: 92c1d465818d0f814b8c59b11146b5796af53059
+          ref: 7d1a5f78657fd5e240b10da4bcddf50dcfa344b6
           path: source-parent
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 7d1a5f78657fd5e240b10da4bcddf50dcfa344b6
-          path: source-movzx
+          ref: abae6cdcd621e0ed13c0b4e9df595f867abe26c6
+          path: source-shiftcommute
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -64,43 +64,43 @@ jobs:
           workspaces: ". -> wasmi-target"
       - name: Save source and CPU identities
         run: |
-          mkdir movzx-out
-          lscpu > movzx-out/cpu.txt
-          rustc --version > movzx-out/rustc.txt
-          for name in parent movzx; do
+          mkdir shiftcommute-out
+          lscpu > shiftcommute-out/cpu.txt
+          rustc --version > shiftcommute-out/rustc.txt
+          for name in parent shiftcommute; do
             (cd "source-$name" && python3 -m ci.lint_policy)
-            git -C "source-$name" rev-parse HEAD > "movzx-out/$name-source.txt"
+            git -C "source-$name" rev-parse HEAD > "shiftcommute-out/$name-source.txt"
           done
-          cargo criterion --version | tee movzx-out/cargo-criterion.txt
+          cargo criterion --version | tee shiftcommute-out/cargo-criterion.txt
           python3 - <<'PY'
           from pathlib import Path
-          if '1.1.0' not in Path('movzx-out/cargo-criterion.txt').read_text():
+          if '1.1.0' not in Path('shiftcommute-out/cargo-criterion.txt').read_text():
               raise SystemExit('cargo-criterion version does not match the pinned measurement tool')
           PY
       - name: Validate the candidate and inherited BMI2 path before timing
-        working-directory: source-movzx
+        working-directory: source-shiftcommute
         run: |
-          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../movzx-out/correctness-core.log
+          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../shiftcommute-out/correctness-core.log
           python3 - <<'PY'
           from pathlib import Path
-          log = Path('../movzx-out/correctness-core.log').read_text()
+          log = Path('../shiftcommute-out/correctness-core.log').read_text()
           if 'BMI2 execution check skipped' in log:
               raise SystemExit('runner lacks BMI2: native instruction checks did not execute')
           PY
           cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
-            2>&1 | tee ../movzx-out/correctness-spec-build.log
+            2>&1 | tee ../shiftcommute-out/correctness-spec-build.log
           target/release/sf-nano-spectest --backend jit --log-level info \
-            2>&1 | tee ../movzx-out/correctness-spec.log
-          (cd .. && python3 -m ci.x64_warning_audit movzx-out/correctness-*.log)
+            2>&1 | tee ../shiftcommute-out/correctness-spec.log
+          (cd .. && python3 -m ci.x64_warning_audit shiftcommute-out/correctness-*.log)
       - name: Compare the complete pinned execution corpus
         run: |
           status=0
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
             --suite wasmi-benchmarks \
             --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
-            --baseline-source source-parent --candidate-source source-movzx \
-            --baseline-sha 92c1d465818d0f814b8c59b11146b5796af53059 \
-            --candidate-sha 7d1a5f78657fd5e240b10da4bcddf50dcfa344b6 \
+            --baseline-source source-parent --candidate-source source-shiftcommute \
+            --baseline-sha 7d1a5f78657fd5e240b10da4bcddf50dcfa344b6 \
+            --candidate-sha abae6cdcd621e0ed13c0b4e9df595f867abe26c6 \
             --platform x64-linux --engine jit --category execute \
             --pilot-probability 80 --regression-probability 99.99 \
             --improvement-probability 99.99 --minimum-effect-percent 1.0 \
@@ -109,15 +109,15 @@ jobs:
             --placement-metric execute/json_parse \
             --placement-metric execute/mandelbrot \
             --family-jobs 2 --family-metric-count 20 --max-confirmation-runs 2 \
-            --target-root wasmi-target --out-dir movzx-out/execute || status=$?
-          if [[ -f movzx-out/execute/summary.md ]]; then
-            cat movzx-out/execute/summary.md >> "$GITHUB_STEP_SUMMARY"
+            --target-root wasmi-target --out-dir shiftcommute-out/execute || status=$?
+          if [[ -f shiftcommute-out/execute/summary.md ]]; then
+            cat shiftcommute-out/execute/summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$status"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-wasmi-movzx-${{ matrix.draw }}
-          path: movzx-out/
+          name: nano-wasmi-shiftcommute-${{ matrix.draw }}
+          path: shiftcommute-out/
           if-no-files-found: error
           retention-days: 30
