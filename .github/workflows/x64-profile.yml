@@ -32,13 +32,13 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 4f21ed57c65558d53880d3fc725fb882a29c455e
+          ref: 43b0ff9369deead8b8f79e875c06e753a40177a7
           path: source-parent
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: aa6b2ad79a9d442c7efd612f567fbd296cc4d9d4
-          path: source-reserve
+          ref: 8b0d6f4c66e768e13e686040a23ab598df0da337
+          path: source-recurrence
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -56,7 +56,7 @@ jobs:
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['main', 'parent', 'reserve']:
+          for name in ['main', 'parent', 'recurrence']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -65,11 +65,11 @@ jobs:
           PYCODE
       - name: Save and audit the source variants
         run: |
-          for name in main parent reserve; do
+          for name in main parent recurrence; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-reserve
+        working-directory: source-recurrence
         env:
           CARGO_TERM_COLOR: never
         run: |
@@ -83,7 +83,7 @@ jobs:
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in main parent reserve; do
+          for name in main parent recurrence; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
@@ -98,11 +98,11 @@ jobs:
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant main="$PWD/coremark-out/main" \
             --variant parent="$PWD/coremark-out/parent" \
-            --variant reserve="$PWD/coremark-out/reserve" \
+            --variant recurrence="$PWD/coremark-out/recurrence" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
       - name: Capture the native code of every revision
         run: |
-          for name in main parent reserve; do
+          for name in main parent recurrence; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
@@ -114,11 +114,11 @@ jobs:
           sudo sysctl -w kernel.perf_event_paranoid=1
           taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
             --perf "$PERF_BIN" --out-dir profile-out/coremark -- \
-            "$PWD/coremark-out/reserve" wasmi-benchmarks/res/wasm/coremark.wasm coremark
+            "$PWD/coremark-out/recurrence" wasmi-benchmarks/res/wasm/coremark.wasm coremark
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-reserve-${{ matrix.draw }}
+          name: nano-coremark-recurrence-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
