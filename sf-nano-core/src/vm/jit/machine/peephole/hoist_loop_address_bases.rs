@@ -211,12 +211,21 @@ pub(super) fn natural_loop_nodes(
     latches: &[usize],
     predecessors: &[collections::Vec<usize>],
 ) -> collections::Vec<usize> {
-    let mut included = collections::vec![false; predecessors.len()];
-    included[header] = true;
+    if latches.iter().all(|&latch| latch == header) {
+        return collections::vec![header];
+    }
+    // Most loops occupy a small fraction of a function. Keep compact visited
+    // bits and collect discovered nodes directly instead of scanning every
+    // block again to build the result. Preserve ascending order for callers.
+    let mut included = collections::vec![0u64; predecessors.len().div_ceil(64)];
+    included[header / 64] |= 1u64 << (header % 64);
+    let mut nodes = collections::vec![header];
     let mut pending = collections::Vec::new();
     for &latch in latches {
-        if !included[latch] {
-            included[latch] = true;
+        let bit = 1u64 << (latch % 64);
+        if included[latch / 64] & bit == 0 {
+            included[latch / 64] |= bit;
+            nodes.push(latch);
             pending.push(latch);
         }
     }
@@ -225,17 +234,16 @@ pub(super) fn natural_loop_nodes(
             continue;
         }
         for &predecessor in &predecessors[block] {
-            if !included[predecessor] {
-                included[predecessor] = true;
+            let bit = 1u64 << (predecessor % 64);
+            if included[predecessor / 64] & bit == 0 {
+                included[predecessor / 64] |= bit;
+                nodes.push(predecessor);
                 pending.push(predecessor);
             }
         }
     }
-    included
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, included)| included.then_some(index))
-        .collect()
+    nodes.sort_unstable();
+    nodes
 }
 
 fn try_hoist_one_base(
@@ -610,6 +618,28 @@ mod tests {
     use crate::vm::jit::machine::machine_ir::{
         MachineBranchCond, MachineEdge, MachineLoadExtension,
     };
+
+    #[test]
+    fn natural_loop_members_are_sorted_unique_and_stop_at_the_header() {
+        let mut predecessors = collections::vec![collections::Vec::new(); 194];
+        predecessors[64] = collections::vec![0, 65, 130];
+        predecessors[65] = collections::vec![64];
+        predecessors[129] = collections::vec![65, 130];
+        predecessors[130] = collections::vec![129, 64];
+        predecessors[193] = collections::vec![64];
+        assert_eq!(
+            natural_loop_nodes(64, &[130, 65, 130, 193, 64], &predecessors),
+            collections::vec![64, 65, 129, 130, 193],
+        );
+        assert_eq!(
+            natural_loop_nodes(64, &[64, 64], &predecessors),
+            collections::vec![64]
+        );
+        assert_eq!(
+            natural_loop_nodes(64, &[], &predecessors),
+            collections::vec![64]
+        );
+    }
 
     fn edge(target: u32, args: &[MachineReg]) -> MachineEdge {
         MachineEdge {

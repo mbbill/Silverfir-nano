@@ -58,11 +58,11 @@ pub(super) fn cache_loop_frame_words(
     {
         return;
     }
-    // Summarize mentions once instead of re-walking every instruction for
+    // Summarize loop blocks on demand instead of re-walking every instruction for
     // every physical lane and every enclosing loop. These are exact masks
     // for the low registers; unusually high synthetic/future lanes retain
     // the original membership scan below.
-    let mut masks: collections::Vec<_> = blocks.iter().map(block_register_mask).collect();
+    let mut masks = collections::vec![None; blocks.len()];
     let gp_end = crate::vm::jit::backend::BackendConfig::FIXED
         + u16::from(ctx.config.allocatable_gp_dynamic_budget());
     let available_mask = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
@@ -71,7 +71,9 @@ pub(super) fn cache_loop_frame_words(
         if graph.latches_by_header[header].is_empty() {
             continue;
         }
-        if gp_end <= 64 && masks[header] & available_mask == available_mask {
+        let header_mask =
+            *masks[header].get_or_insert_with(|| block_register_mask(&blocks[header]));
+        if gp_end <= 64 && header_mask & available_mask == available_mask {
             continue;
         }
         let nodes = natural_loop_nodes(
@@ -82,7 +84,16 @@ pub(super) fn cache_loop_frame_words(
         if nodes.iter().any(|&index| blocks[index].id == entry) {
             continue;
         }
-        try_cache_word(blocks, header, &nodes, graph, ctx, &mut masks);
+        let mut loop_mask = 0;
+        for &index in &nodes {
+            loop_mask |= *masks[index].get_or_insert_with(|| block_register_mask(&blocks[index]));
+        }
+        // Register pressure often rules out a loop before any frame-slot or
+        // entry-edge analysis is useful.
+        if gp_end <= 64 && loop_mask & available_mask == available_mask {
+            continue;
+        }
+        try_cache_word(blocks, header, &nodes, graph, ctx, &mut masks, loop_mask);
     }
 }
 
@@ -114,7 +125,8 @@ fn try_cache_word(
     nodes: &[usize],
     graph: &LoopGraph,
     ctx: &mut BlockOptCtx,
-    masks: &mut [u64],
+    masks: &mut [Option<u64>],
+    loop_mask: u64,
 ) {
     let mut in_loop = collections::vec![false; blocks.len()];
     for &index in nodes {
@@ -146,7 +158,6 @@ fn try_cache_word(
     let config = ctx.config;
     let gp_end = crate::vm::jit::backend::BackendConfig::FIXED
         + u16::from(config.allocatable_gp_dynamic_budget());
-    let loop_mask = nodes.iter().fold(0, |mask, &index| mask | masks[index]);
     let Some(carry) = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
         .map(MachineReg)
         .find(|&reg| {
@@ -291,7 +302,7 @@ fn try_cache_word(
             }
         });
         optimize_block(ctx, &mut blocks[index]);
-        masks[index] = block_register_mask(&blocks[index]);
+        masks[index] = None;
     }
 }
 
