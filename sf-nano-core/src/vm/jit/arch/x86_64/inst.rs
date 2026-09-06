@@ -2586,16 +2586,26 @@ impl<'a> X86_64Backend<'a> {
                 // copies: the scalar move forms merge into the destination's
                 // upper lanes, and that false dependency on the destination's
                 // previous value serializes loop iterations.
-                let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
-                    let scratch = *fp1 as u8;
-                    enc::movaps_rr(&mut self.core.text, scratch, rhs_fp as u8);
-                    scratch
+                let actual_rhs = if result_fp == rhs_fp as u8
+                    && matches!(op, MachineFloatBinaryOp::Add | MachineFloatBinaryOp::Mul)
+                {
+                    // Add and multiply can consume the rhs in place. This
+                    // preserves rounding and signed zero; either operand's
+                    // arithmetic NaN is permitted by Wasm.
+                    lhs_fp as u8
                 } else {
-                    rhs_fp as u8
+                    let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
+                        let scratch = *fp1 as u8;
+                        enc::movaps_rr(&mut self.core.text, scratch, rhs_fp as u8);
+                        scratch
+                    } else {
+                        rhs_fp as u8
+                    };
+                    if result_fp != lhs_fp as u8 {
+                        enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8);
+                    }
+                    actual_rhs
                 };
-                if result_fp != lhs_fp as u8 {
-                    enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8);
-                }
                 match (width, op) {
                     (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
                         enc::addss(&mut self.core.text, result_fp, actual_rhs)
