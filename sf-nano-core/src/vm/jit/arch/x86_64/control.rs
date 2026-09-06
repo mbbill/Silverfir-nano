@@ -15,6 +15,7 @@ use super::{
     backend::{PendingJumpTable, X86_64Backend},
     enc::{self, Cc},
     fusion::map_int_cond,
+    jump_table::{plan_direct_table, IndexSet},
     reg::X86Reg,
 };
 
@@ -828,6 +829,59 @@ impl<'a> X86_64Backend<'a> {
         }
         if entries.len() == 1 {
             let label = self.core.emit_edge(entries[0].target, &entries[0].args)?;
+            self.emit_jmp(label);
+            return Ok(());
+        }
+        if let Some(plan) = plan_direct_table(entries) {
+            if !plan.cases.is_empty() {
+                let index_scratch = self.gp_scratch.scoped_alloc().detach();
+                let range_scratch = self.gp_scratch.scoped_alloc().detach();
+                let index = self.materialize_value(*index_scratch, index)?;
+                // Every membership test has i32 semantics, including range
+                // subtraction. No test reads a stale upper carrier half.
+                for case in plan.cases {
+                    let entry = &entries[case.entry_index];
+                    let label = self.core.emit_edge(entry.target, &entry.args)?;
+                    let cc = match case.set {
+                        IndexSet::Range { first, last } if first == last => {
+                            enc::cmp_ri_32(&mut self.core.text, index, first as i32);
+                            Cc::E
+                        }
+                        IndexSet::Range { first: 0, last } => {
+                            enc::cmp_ri_32(&mut self.core.text, index, last as i32);
+                            Cc::BE
+                        }
+                        IndexSet::Range { first, last } => {
+                            enc::lea_offset(
+                                &mut self.core.text,
+                                false,
+                                *range_scratch,
+                                index,
+                                -(first as i32),
+                            );
+                            enc::cmp_ri_32(
+                                &mut self.core.text,
+                                *range_scratch,
+                                (last - first) as i32,
+                            );
+                            Cc::BE
+                        }
+                        IndexSet::Mask { mask, expected: 0 } => {
+                            enc::test_ri_32(&mut self.core.text, index, mask as i32);
+                            Cc::E
+                        }
+                        IndexSet::Mask { mask, expected } => {
+                            enc::mov_rr_32(&mut self.core.text, *range_scratch, index);
+                            enc::and_ri_32(&mut self.core.text, *range_scratch, mask as i32);
+                            enc::cmp_ri_32(&mut self.core.text, *range_scratch, expected as i32);
+                            Cc::E
+                        }
+                    };
+                    self.emit_jcc(cc, label);
+                }
+            }
+            let entry = &entries[plan.default_index];
+            let label = self.core.emit_edge(entry.target, &entry.args)?;
             self.emit_jmp(label);
             return Ok(());
         }
