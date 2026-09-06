@@ -1249,16 +1249,14 @@ impl<'a> X86_64Backend<'a> {
                         || (width == MachineIntWidth::I32 && imm_val as u32 as i32 == imm)
                     {
                         let lhs_gp = self.materialize_value(*scratch0, lhs)?;
-                        if dst != lhs_gp {
+                        if dst != lhs_gp && width == MachineIntWidth::I64 {
                             // Keep two-operand ADD/SUB when already coalesced.
-                            // Otherwise LEA replaces the copy plus arithmetic.
-                            // i64 SUB must not negate MIN into a signed disp32;
-                            // i32 subtraction may wrap modulo 2^32.
+                            // The i64 form benefits from replacing its copy
+                            // plus arithmetic. Keep i32 immediate ADD/SUB:
+                            // the shorter form regressed native x64 execution.
+                            // SUB must not negate MIN into a signed disp32.
                             let displacement = match op {
                                 MachineIntBinaryOp::Add => Some(imm),
-                                MachineIntBinaryOp::Sub if width == MachineIntWidth::I32 => {
-                                    Some(imm.wrapping_neg())
-                                }
                                 MachineIntBinaryOp::Sub => imm.checked_neg(),
                                 _ => None,
                             };
