@@ -1250,6 +1250,32 @@ impl<'a> X86_64Backend<'a> {
                     {
                         let lhs_gp = self.materialize_value(*scratch0, lhs)?;
                         if dst != lhs_gp {
+                            // Keep two-operand ADD/SUB when already coalesced.
+                            // Otherwise LEA replaces the copy plus arithmetic.
+                            // i64 SUB must not negate MIN into a signed disp32;
+                            // i32 subtraction may wrap modulo 2^32.
+                            let displacement = match op {
+                                MachineIntBinaryOp::Add => Some(imm),
+                                MachineIntBinaryOp::Sub if width == MachineIntWidth::I32 => {
+                                    Some(imm.wrapping_neg())
+                                }
+                                MachineIntBinaryOp::Sub => imm.checked_neg(),
+                                _ => None,
+                            };
+                            if let Some(displacement) = displacement {
+                                enc::lea_offset(
+                                    &mut self.core.text,
+                                    width == MachineIntWidth::I64,
+                                    dst,
+                                    lhs_gp,
+                                    displacement,
+                                );
+                                // LEA does not produce result flags. Its emitted
+                                // bytes invalidate flags32's position stamp.
+                                return Ok(());
+                            }
+                        }
+                        if dst != lhs_gp {
                             self.emit_gp_move_width(width, dst, lhs_gp);
                         }
                         match (width, op) {
@@ -1293,6 +1319,16 @@ impl<'a> X86_64Backend<'a> {
                 }
                 let lhs_gp = self.materialize_value(*scratch0, lhs)?;
                 let rhs_gp = self.materialize_value(*scratch1, rhs)?;
+                if op == MachineIntBinaryOp::Add && dst != lhs_gp && dst != rhs_gp {
+                    enc::lea_sum(
+                        &mut self.core.text,
+                        width == MachineIntWidth::I64,
+                        dst,
+                        lhs_gp,
+                        rhs_gp,
+                    );
+                    return Ok(());
+                }
                 // Handle aliasing: if dst == rhs_gp but dst != lhs_gp,
                 // mov dst, lhs would clobber rhs before the operation.
                 if dst == rhs_gp && dst != lhs_gp {

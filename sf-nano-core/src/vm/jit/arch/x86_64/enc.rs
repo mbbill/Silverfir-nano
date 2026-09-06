@@ -231,6 +231,53 @@ fn alu_ri32(e: &mut TextEmitter, digit: u8, w: bool, dst: X86Reg, imm: i32) {
 }
 
 // ADD
+/// LEA computes a sum without overwriting either input or changing EFLAGS.
+/// A 32-bit destination truncates the effective address and clears its high half.
+pub(crate) fn lea_sum(e: &mut TextEmitter, w64: bool, dst: X86Reg, lhs: X86Reg, rhs: X86Reg) {
+    emit_rex_idx(e, w64, dst.needs_rex_ext(), rhs, lhs);
+    e.emit_u8(0x8D);
+    emit_modrm_mem_idx(e, dst.idx3(), lhs, rhs, 0);
+}
+
+/// LEA dst, [base + signed displacement], with the same width rules as lea_sum.
+pub(crate) fn lea_offset(e: &mut TextEmitter, w64: bool, dst: X86Reg, base: X86Reg, disp: i32) {
+    emit_rex(e, w64, dst, base);
+    e.emit_u8(0x8D);
+    emit_modrm_mem(e, dst, base, disp);
+}
+
+#[cfg(test)]
+mod lea_tests {
+    use super::*;
+
+    #[test]
+    fn sum_encodes_extended_index_and_base_displacement() {
+        let mut text = TextEmitter::new();
+        lea_sum(&mut text, true, X86Reg::R10, X86Reg::R13, X86Reg::R12);
+        // lea r10, [r13 + r12]: REX.WRXB and mandatory disp8=0 for R13.
+        assert_eq!(text.finish().as_slice(), &[0x4F, 0x8D, 0x54, 0x25, 0]);
+
+        let mut text = TextEmitter::new();
+        lea_sum(&mut text, false, X86Reg::RAX, X86Reg::RSI, X86Reg::R8);
+        // lea eax, [rsi + r8]: 32-bit result, 64-bit address inputs.
+        assert_eq!(text.finish().as_slice(), &[0x42, 0x8D, 0x04, 0x06]);
+    }
+
+    #[test]
+    fn offset_encodes_stack_base_and_signed_displacements() {
+        let mut text = TextEmitter::new();
+        lea_offset(&mut text, true, X86Reg::R9, X86Reg::RSP, -1);
+        assert_eq!(text.finish().as_slice(), &[0x4C, 0x8D, 0x4C, 0x24, 0xFF]);
+
+        let mut text = TextEmitter::new();
+        lea_offset(&mut text, false, X86Reg::RDI, X86Reg::RBP, i32::MIN);
+        assert_eq!(
+            text.finish().as_slice(),
+            &[0x8D, 0xBD, 0x00, 0x00, 0x00, 0x80]
+        );
+    }
+}
+
 pub(crate) fn add_rr_64(e: &mut TextEmitter, dst: X86Reg, src: X86Reg) {
     alu_rr(e, 0x03, true, dst, src);
 }
