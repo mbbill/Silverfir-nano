@@ -50,6 +50,7 @@ mod relax_index_extends;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
+mod simplify_demanded_bits;
 
 use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
@@ -68,6 +69,7 @@ struct BlockFeatures {
     has_move: bool,
     has_address_add: bool,
     may_fuse_isel: bool,
+    has_bitwise: bool,
 }
 
 impl BlockFeatures {
@@ -77,6 +79,10 @@ impl BlockFeatures {
             MachineInstKind::Store { .. } => self.has_store = true,
             MachineInstKind::Move { .. } => self.has_move = true,
             MachineInstKind::IntBinary { op, .. } => {
+                self.has_bitwise |= matches!(
+                    op,
+                    MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor
+                );
                 self.has_address_add |= *op == MachineIntBinaryOp::Add;
                 self.may_fuse_isel |= matches!(
                     op,
@@ -121,6 +127,7 @@ pub(crate) struct BlockOptCtx {
     cp_scratch: copy_propagate::CopyPropagateScratch,
     tracked_stores: crate::collections::Vec<TrackedStore>,
     tracked_loads: crate::collections::Vec<TrackedLoad>,
+    bit_scratch: crate::collections::Vec<u64>,
 }
 
 impl BlockOptCtx {
@@ -134,6 +141,7 @@ impl BlockOptCtx {
             cp_scratch: copy_propagate::CopyPropagateScratch::new(total_reg_count),
             tracked_stores: crate::collections::Vec::new(),
             tracked_loads: crate::collections::Vec::new(),
+            bit_scratch: crate::collections::Vec::new(),
         }
     }
 }
@@ -185,6 +193,9 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
             ctx.config.gp_unit_bytes,
         );
     }
+    if features.has_bitwise {
+        simplify_demanded_bits::simplify_demanded_bits(block, ctx.config, &mut ctx.bit_scratch);
+    }
     if ctx.config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
     }
@@ -230,6 +241,11 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
         eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores(
             &mut unconditional_oracle,
             ctx.config.gp_unit_bytes,
+        );
+        simplify_demanded_bits::simplify_demanded_bits(
+            &mut unconditional_oracle,
+            ctx.config,
+            &mut ctx.bit_scratch,
         );
         if ctx.config.is_32bit_gp_target() {
             fuse_smull_sign_ext::fuse_smull_sign_ext(
