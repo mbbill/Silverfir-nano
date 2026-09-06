@@ -44,6 +44,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Audit this repository before adding the separate third-party checkout.
+      - name: Audit lint policy
+        run: python3 -m ci.lint_policy
+
       - name: Checkout pinned wasmi-benchmarks
         uses: actions/checkout@v7
         with:
@@ -90,9 +94,6 @@ jobs:
               newline="\n",
           )
           PY
-
-      - name: Audit lint policy
-        run: python3 -m ci.lint_policy
 
       - name: Verify the patched dependency resolves locally
         working-directory: wasmi-benchmarks
