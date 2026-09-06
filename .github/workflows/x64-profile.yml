@@ -1,5 +1,5 @@
-# Isolated Nano-only integer-result-flags campaign; no main, PR or dev trigger.
-name: x64-nano-i64flags
+# Isolated Nano-only campaign measurement; no main, PR or dev trigger.
+name: x64-nano-coremark
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,21 +12,24 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano wasmi execute / draw ${{ matrix.draw }}
+    name: Nano CoreMark / draw ${{ matrix.draw }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         draw: [1, 2]
-    env:
-      CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@v7
-      - name: Audit and test the measurement tools
+      - name: Audit and test the measurement tool
         run: |
           python3 -m ci.lint_policy
-          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_wasmi_performance ci.test_x64_warning_audit
+          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare ci.test_x64_warning_audit
+      - uses: actions/checkout@v7
+        with:
+          ref: f73219f56a70b77028f0d79730c7efca29ba3439
+          path: source-main
+          persist-credentials: false
       - uses: actions/checkout@v7
         with:
           ref: 20b01c3dba8b209228bc8ce9a64c92305847ab13
@@ -34,93 +37,102 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 7fbd1a02c09da19155d3ddc7a4f2030d8448c745
-          path: source-i64flags
+          ref: 6b223c9e963b7beb1d5c9d373b2c38112fc956cc
+          path: source-entryalign
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
           repository: wasmi-labs/wasmi-benchmarks
           ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
           path: wasmi-benchmarks
-          submodules: recursive
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-        id: rust-toolchain
-      - name: Install benchmark system dependency
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install --no-install-recommends -y libfontconfig1-dev
-      - uses: actions/cache@v6
-        id: cargo-criterion-cache
-        with:
-          path: ~/.cargo/bin/cargo-criterion
-          key: cargo-criterion-1.1.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rust-toolchain.outputs.cachekey }}
-      - name: Install pinned cargo-criterion
-        if: steps.cargo-criterion-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked --version 1.1.0 cargo-criterion
       - uses: Swatinem/rust-cache@v2.9.1
         with:
-          shared-key: wasmi-x64-linux-jit
-          workspaces: ". -> wasmi-target"
-      - name: Save source and CPU identities
+          shared-key: x64-nano-probes
+      - name: Prepare identical probe manifests
         run: |
-          mkdir i64flags-out
-          lscpu > i64flags-out/cpu.txt
-          rustc --version > i64flags-out/rustc.txt
-          for name in parent i64flags; do
+          python3 - <<'PYCODE'
+          import json, os, shutil
+          from pathlib import Path
+          Path('coremark-out').mkdir()
+          for name in ['main', 'parent', 'entryalign']:
+              dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
+              shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
+              manifest = dest / 'Cargo.toml'
+              source = Path('source-' + name).resolve() / 'sf-nano-core'
+              manifest.write_text(manifest.read_text().replace('"../../sf-nano-core"', json.dumps(str(source))))
+          PYCODE
+      - name: Save and audit the source variants
+        run: |
+          for name in main parent entryalign; do
             (cd "source-$name" && python3 -m ci.lint_policy)
-            git -C "source-$name" rev-parse HEAD > "i64flags-out/$name-source.txt"
           done
-          cargo criterion --version | tee i64flags-out/cargo-criterion.txt
-          python3 - <<'PY'
-          from pathlib import Path
-          if '1.1.0' not in Path('i64flags-out/cargo-criterion.txt').read_text():
-              raise SystemExit('cargo-criterion version does not match the pinned measurement tool')
-          PY
-      - name: Validate the candidate and inherited BMI2 path before timing
-        working-directory: source-i64flags
+      - name: Validate candidate on the native CPU before timing
+        working-directory: source-entryalign
+        env:
+          CARGO_TERM_COLOR: never
         run: |
-          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../i64flags-out/correctness-core.log
-          python3 - <<'PY'
-          from pathlib import Path
-          log = Path('../i64flags-out/correctness-core.log').read_text()
-          if 'BMI2 execution check skipped' in log:
-              raise SystemExit('runner lacks BMI2: native instruction checks did not execute')
-          PY
-          cargo test --locked -p sf-nano-core --no-default-features --features jit,interp \
-            --test integer_sums --test memory_length --test call_status --test integer_division \
-            2>&1 | tee ../i64flags-out/correctness-unguarded.log
-          cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
-            2>&1 | tee ../i64flags-out/correctness-spec-build.log
-          target/release/sf-nano-spectest --backend jit --log-level info \
-            2>&1 | tee ../i64flags-out/correctness-spec.log
-          (cd .. && python3 -m ci.x64_warning_audit i64flags-out/correctness-*.log)
-      - name: Compare the complete pinned execution corpus
-        run: |
-          status=0
-          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
-            --suite wasmi-benchmarks \
-            --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
-            --baseline-source source-parent --candidate-source source-i64flags \
-            --baseline-sha 20b01c3dba8b209228bc8ce9a64c92305847ab13 \
-            --candidate-sha 7fbd1a02c09da19155d3ddc7a4f2030d8448c745 \
-            --platform x64-linux --engine jit --category execute \
-            --pilot-probability 80 --regression-probability 99.99 \
-            --improvement-probability 99.99 --minimum-effect-percent 1.0 \
-            --placement-metric execute/fibonacci-tail \
-            --placement-metric execute/tiny_keccak \
-            --placement-metric execute/json_parse \
-            --placement-metric execute/mandelbrot \
-            --family-jobs 2 --family-metric-count 20 --max-confirmation-runs 2 \
-            --target-root wasmi-target --out-dir i64flags-out/execute || status=$?
-          if [[ -f i64flags-out/execute/summary.md ]]; then
-            cat i64flags-out/execute/summary.md >> "$GITHUB_STEP_SUMMARY"
+          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../coremark-out/correctness-core.log
+          if grep -q "BMI2 execution check skipped" ../coremark-out/correctness-core.log; then
+            echo "Native BMI2 execution validation was skipped" >&2
+            exit 1
           fi
-          exit "$status"
+          cargo test --locked -p sf-nano-core --no-default-features --features jit,interp \
+            --test memory_length --test call_status --test integer_division --test jump_table_membership 2>&1 | tee ../coremark-out/correctness-unguarded-memory.log
+          cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
+            2>&1 | tee ../coremark-out/correctness-spec-build.log
+          target/release/sf-nano-spectest --backend jit --log-level info \
+            2>&1 | tee ../coremark-out/correctness-spec.log
+          (cd .. && python3 -m ci.x64_warning_audit coremark-out/correctness-*.log)
+      - name: Build every Nano revision before measuring
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          for name in main parent entryalign; do
+            cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
+              --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
+            python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
+            cp probe-target/release/sf-x64-probe "coremark-out/$name"
+            git -C "source-$name" rev-parse HEAD > "coremark-out/$name-source.txt"
+          done
+      - name: Compare the exact CoreMark module
+        run: |
+          lscpu > coremark-out/cpu.txt
+          rustc --version > coremark-out/rustc.txt
+          sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
+          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
+            --variant main="$PWD/coremark-out/main" \
+            --variant parent="$PWD/coremark-out/parent" \
+            --variant entryalign="$PWD/coremark-out/entryalign" \
+            --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
+      - name: Capture the native code of every revision
+        run: |
+          for name in main parent entryalign; do
+            SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
+              "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
+          done
+      - name: Sample parent and candidate CoreMark machine-code hotspots
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common linux-tools-generic
+          PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          for name in parent entryalign; do
+            taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
+              --perf "$PERF_BIN" --out-dir "profile-out/$name" -- \
+              "$PWD/coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark
+          done
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-wasmi-i64flags-${{ matrix.draw }}
-          path: i64flags-out/
+          name: nano-coremark-entryalign-${{ matrix.draw }}
+          path: |
+            coremark-out/*.log
+            coremark-out/*.json
+            coremark-out/*.txt
+            coremark-out/*.md
+            native-out/
+            profile-out/
           if-no-files-found: error
           retention-days: 30
