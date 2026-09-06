@@ -420,6 +420,7 @@ class CoveragePlanTests(unittest.TestCase):
                 "performance-regression.yml",
                 "wasmi-startup-ranking.yml",
                 "x64-standings.yml",
+                "x64-profile.yml",
             },
         )
 

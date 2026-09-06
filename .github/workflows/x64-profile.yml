@@ -1,0 +1,78 @@
+# Temporary profiling instrument; never triggered by PRs, main or dev optimization pushes.
+name: x64-profile
+
+on:
+  push:
+    branches:
+      - "codex/x64-profiling"
+    paths:
+      - ".github/workflows/x64-profile.yml"
+      - "ci/x64_profile_capture.py"
+  workflow_dispatch:
+
+# No concurrency group: profile captures are independent and
+# self-contained, and GitHub's one-pending-slot rule silently cancels
+# batched dispatches if they share a group.
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: x64 JIT targeted hotpaths
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: x64-profile
+
+      - name: Build sf-nano-cli with the jit-debug exporters
+        run: |
+          python3 -m ci.lint_policy
+          cargo build --release --locked -p sf-nano-cli \
+            --features sf-nano-core/jit-debug
+
+      - name: Install perf and open perf events
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common linux-tools-generic
+          # The versioned wrapper refuses on kernel mismatch; use the
+          # tools binary directly.
+          PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
+          "$PERF_BIN" --version
+          echo "PERF_BIN=$PERF_BIN" >> "$GITHUB_ENV"
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          sudo sysctl -w kernel.kptr_restrict=0
+
+      - name: Record runner CPU
+        run: |
+          uname -a
+          lscpu | grep -iE "model name|vendor" || true
+
+      - name: Capture targeted JIT profiles
+        run: |
+          for workload in funcref/funcref.wasm lz4/lz4.wasm lua/sunfish c-ray/c-ray.wasm; do
+            label="${workload//\//-}"
+            taskset -c 1 setarch "$(uname -m)" -R \
+              python3 ci/x64_profile_capture.py \
+              --workload "$workload" --engine jit --time 15 \
+              --cli target/release/sf-nano-cli --perf "$PERF_BIN" \
+              --out-dir "profile-out/$label"
+            cat "profile-out/$label/report.txt" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: x64-profile-${{ github.run_id }}
+          path: profile-out/
+          if-no-files-found: error
+          retention-days: 30
