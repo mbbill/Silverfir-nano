@@ -3,7 +3,7 @@ name: x64-nano-coremark
 on:
   push:
     branches: ["codex/x64-profiling"]
-    paths: [".github/workflows/x64-profile.yml", "ci/x64_coremark_compare.py"]
+    paths: ["ci/x64_warning_audit.py", "ci/test_x64_warning_audit.py", ".github/workflows/x64-profile.yml", "ci/x64_coremark_compare.py"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
       - name: Audit and test the measurement tool
         run: |
           python3 -m ci.lint_policy
-          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare
+          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare ci.test_x64_warning_audit
       - uses: actions/checkout@v7
         with:
           ref: f73219f56a70b77028f0d79730c7efca29ba3439
@@ -78,10 +78,7 @@ jobs:
             2>&1 | tee ../coremark-out/correctness-spec-build.log
           target/release/sf-nano-spectest --backend jit --log-level info \
             2>&1 | tee ../coremark-out/correctness-spec.log
-          if rg '^warning(\[[^]]+\])?:' ../coremark-out/correctness-*.log; then
-            echo '::error::ACTION REQUIRED: compiler warning'
-            exit 1
-          fi
+          PYTHONPATH=.. python3 -m ci.x64_warning_audit ../coremark-out/correctness-*.log
       - name: Build every Nano revision before measuring
         env:
           CARGO_TERM_COLOR: never
@@ -89,10 +86,7 @@ jobs:
           for name in main bits bextr; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
-            if rg '^warning(\[[^]]+\])?:' "coremark-out/build-$name.log"; then
-              echo '::error::ACTION REQUIRED: compiler warning'
-              exit 1
-            fi
+            python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
             cp probe-target/release/sf-x64-probe "coremark-out/$name"
             git -C "source-$name" rev-parse HEAD > "coremark-out/$name-source.txt"
           done

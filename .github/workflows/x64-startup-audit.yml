@@ -3,7 +3,7 @@ name: x64-startup-audit
 on:
   push:
     branches: ["codex/x64-profiling"]
-    paths: [".github/workflows/x64-startup-audit.yml", "ci/x64_startup_compare.py"]
+    paths: ["ci/x64_warning_audit.py", "ci/test_x64_warning_audit.py", ".github/workflows/x64-startup-audit.yml", "ci/x64_startup_compare.py"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
         run: |
           python3 -m ci.lint_policy
           python3 -m py_compile ci/x64_startup_compare.py
-          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare
+          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare ci.test_x64_warning_audit
       - uses: actions/checkout@v7
         with:
           ref: f73219f56a70b77028f0d79730c7efca29ba3439
@@ -78,10 +78,7 @@ jobs:
           for name in main bextr scratch; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
               --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
-            if rg '^warning(\[[^]]+\])?:' "startup-out/build-$name.log"; then
-              echo '::error::ACTION REQUIRED: compiler warning'
-              exit 1
-            fi
+            python3 -m ci.x64_warning_audit "startup-out/build-$name.log"
             cp startup-target/release/sf-x64-probe "startup-out/$name"
             git -C "source-$name" rev-parse HEAD > "startup-out/$name-source.txt"
           done
