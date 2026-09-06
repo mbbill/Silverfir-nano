@@ -966,6 +966,62 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
+    pub(super) fn lower_memory_update(
+        &mut self,
+        update: &super::fusion::MemoryUpdateFusion,
+    ) -> Result<(), WasmError> {
+        use super::fusion::LoadAluMem;
+        // Flags describe memory now, not any physical result register.
+        self.flags32 = None;
+        match update.mem {
+            LoadAluMem::Base(addr) => {
+                let base = self.map_gp_reg(addr.base)?;
+                enc::alu_mi(
+                    &mut self.core.text,
+                    update.op,
+                    !update.w32,
+                    base,
+                    None,
+                    addr.offset,
+                    update.immediate,
+                );
+            }
+            LoadAluMem::Indexed {
+                base,
+                index,
+                extend,
+                offset,
+            } => {
+                let base = self.map_gp_reg(base)?;
+                let index = self.map_gp_reg(index)?;
+                let scratch0 = self.gp_scratch.scoped_alloc().detach();
+                let scratch1 = self.gp_scratch.scoped_alloc().detach();
+                let index = match extend {
+                    MachineIndexExtend::None => index,
+                    MachineIndexExtend::ZeroExtend32 => {
+                        let scratch = if base == *scratch0 {
+                            *scratch1
+                        } else {
+                            *scratch0
+                        };
+                        enc::mov_rr_32(&mut self.core.text, scratch, index);
+                        scratch
+                    }
+                };
+                enc::alu_mi(
+                    &mut self.core.text,
+                    update.op,
+                    !update.w32,
+                    base,
+                    Some(index),
+                    offset,
+                    update.immediate,
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Load from [base + index + disp]; the indexed twin of
     /// [`Self::lower_load_from`].
     fn lower_load_from_idx(
