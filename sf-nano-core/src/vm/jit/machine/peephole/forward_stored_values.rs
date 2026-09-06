@@ -123,7 +123,7 @@ pub(super) fn forward_stored_values(
             _ => {}
         }
 
-        if keep_inst {
+        if keep_inst && !tracked.is_empty() {
             inst.kind.for_each_defined_reg(|dst| {
                 kill_tracked_stores_by_reg(tracked, dst);
             });

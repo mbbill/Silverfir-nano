@@ -112,11 +112,14 @@ pub(super) fn deduplicate_constants(
             _ => {}
         }
 
-        // Invalidate tracking for any register redefined by this instruction.
-        inst.kind.for_each_defined_reg(|def| {
-            gp_consts.retain(|(_, r)| *r != def);
-            fp_consts.retain(|(_, _, r)| *r != def);
-        });
+        // Most instructions precede any tracked nonzero literal. Avoid the
+        // instruction-definition walk when there are no facts to invalidate.
+        if !gp_consts.is_empty() || !fp_consts.is_empty() {
+            inst.kind.for_each_defined_reg(|def| {
+                gp_consts.retain(|(_, r)| *r != def);
+                fp_consts.retain(|(_, _, r)| *r != def);
+            });
+        }
 
         if let Some(e) = new_gp {
             gp_consts.push(e);
