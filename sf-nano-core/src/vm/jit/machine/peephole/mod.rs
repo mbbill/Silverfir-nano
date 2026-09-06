@@ -194,8 +194,11 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
         fuse_isel::fuse_isel(block, ctx.config);
     }
     // Earlier local passes can remove stores or rewrite their addresses,
-    // but cannot introduce a second store. One store cannot be overwritten.
-    if features.store_count > 1 {
+    // but cannot introduce a store. One store can only die at a register return.
+    if features.store_count > 1
+        || (features.store_count != 0
+            && eliminate_overwritten_frame_stores::has_gp_register_return(block))
+    {
         eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores(
             block,
             ctx.config.gp_unit_bytes,

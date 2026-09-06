@@ -2,15 +2,28 @@
 //!
 //! Only exact native-word stores in one block participate. Every memory
 //! access other than the next candidate store, possible trap, call and opaque
-//! instruction ends the proof. The final published value is always retained.
+//! instruction ends the proof. A final store can also die when a register-only
+//! scalar return discards the frame without any intervening observer.
 
 use crate::collections;
 use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineInstKind, MachineIntBinaryOp, MachineMemWidth,
-    MachineStorageType, MACHINE_FP_REG,
+    MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator, MACHINE_FP_REG,
 };
 
 use super::helpers::inst_defines;
+
+pub(super) fn has_gp_register_return(block: &MachineBlock) -> bool {
+    matches!(
+        block.terminator,
+        MachineTerminator::ReturnScalar {
+            value: MachineReturnValue::ScalarGp {
+                src: MachineResultSrc::Reg(_),
+                ..
+            }
+        }
+    )
+}
 
 pub(super) fn eliminate_overwritten_frame_stores(block: &mut MachineBlock, gp_bytes: u8) {
     let mut pending: Option<(MachineAddr, MachineMemWidth, usize)> = None;
@@ -66,6 +79,14 @@ pub(super) fn eliminate_overwritten_frame_stores(block: &mut MachineBlock, gp_by
             _ => pending = None,
         }
     }
+    // Scalar GP results travel in return lanes. The caller does not read
+    // this callee's local frame after a successful register-only return.
+    // Keep frame-fallback returns and every possibly observing suffix intact.
+    if has_gp_register_return(block) {
+        if let Some((_, _, index)) = pending {
+            removed.push(index);
+        }
+    }
     if removed.is_empty() {
         return;
     }
@@ -88,7 +109,7 @@ mod tests {
     use crate::vm::jit::machine::machine_ir::{
         MachineBlockId, MachineBranchCond, MachineCallRuntime, MachineConstId, MachineInst,
         MachineIntWidth, MachineLoadExtension, MachineReg, MachineRegOwner, MachineShiftOp,
-        MachineTerminator, MachineTrapKind, MachineValue, MACHINE_MEM0_BASE_REG,
+        MachineTrapKind, MachineValue, MACHINE_MEM0_BASE_REG,
     };
 
     fn stores(bytes: u8) -> MachineBlock {
@@ -224,5 +245,113 @@ mod tests {
         let expected = guest.clone();
         eliminate_overwritten_frame_stores(&mut guest, 8);
         assert_eq!(guest, expected);
+    }
+
+    #[test]
+    fn drops_the_unobserved_final_store_only_for_gp_register_returns() {
+        use crate::vm::jit::middle::frame::FrameSlot;
+
+        for bytes in [4, 8] {
+            for src in [
+                MachineResultSrc::Reg(MachineReg(4)),
+                MachineResultSrc::FrameSlot(FrameSlot(3)),
+                MachineResultSrc::FrameSlotOffset {
+                    slot: FrameSlot(3),
+                    byte_offset: 0,
+                },
+            ] {
+                let mut block = stores(bytes);
+                block.ops.truncate(2);
+                block.terminator = MachineTerminator::ReturnScalar {
+                    value: MachineReturnValue::ScalarGp {
+                        src,
+                        ty: MachineStorageType::GpWord,
+                    },
+                };
+                let expected = if matches!(src, MachineResultSrc::Reg(_)) {
+                    collections::vec![block.ops[1].clone()]
+                } else {
+                    block.ops.clone()
+                };
+                eliminate_overwritten_frame_stores(&mut block, bytes);
+                assert_eq!(block.ops, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn retains_final_frame_stores_before_observers_even_with_a_register_return() {
+        for barrier in [
+            MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: MachineReg(4),
+                addr: MachineAddr {
+                    base: MACHINE_FP_REG,
+                    offset: 24,
+                },
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+            MachineInstKind::CallRuntime(MachineCallRuntime {
+                metadata: MachineConstId(0),
+            }),
+            MachineInstKind::TrapIf {
+                cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(5))),
+                kind: MachineTrapKind::Unreachable,
+            },
+            MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32,
+                op: MachineIntBinaryOp::DivU,
+                dst: MachineReg(4),
+                lhs: MachineValue::Reg(MachineReg(4)),
+                rhs: MachineValue::Reg(MachineReg(5)),
+            },
+            MachineInstKind::Move {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: MACHINE_FP_REG,
+                src: MachineValue::Reg(MachineReg(5)),
+            },
+        ] {
+            let mut block = stores(8);
+            block.ops.truncate(2);
+            block.ops[1].kind = barrier;
+            block.terminator = MachineTerminator::ReturnScalar {
+                value: MachineReturnValue::ScalarGp {
+                    src: MachineResultSrc::Reg(MachineReg(4)),
+                    ty: MachineStorageType::GpWord,
+                },
+            };
+            let expected = block.clone();
+            eliminate_overwritten_frame_stores(&mut block, 8);
+            assert_eq!(block, expected);
+        }
+    }
+
+    #[test]
+    fn final_store_proof_does_not_remove_guest_partial_or_misaligned_stores() {
+        for case in 0..4 {
+            let mut block = stores(8);
+            block.ops.truncate(2);
+            if let MachineInstKind::Store { addr, width, .. } = &mut block.ops[0].kind {
+                match case {
+                    0 => addr.base = MACHINE_MEM0_BASE_REG,
+                    1 => addr.offset = -8,
+                    2 => addr.offset = 25,
+                    3 => *width = MachineMemWidth::U32,
+                    _ => unreachable!(),
+                }
+            }
+            block.terminator = MachineTerminator::ReturnScalar {
+                value: MachineReturnValue::ScalarGp {
+                    src: MachineResultSrc::Reg(MachineReg(4)),
+                    ty: MachineStorageType::GpWord,
+                },
+            };
+            let expected = block.clone();
+            eliminate_overwritten_frame_stores(&mut block, 8);
+            assert_eq!(block, expected);
+        }
     }
 }
