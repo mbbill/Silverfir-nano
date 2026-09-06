@@ -921,10 +921,24 @@ impl<'a> X86_64Backend<'a> {
             }
         }
 
-        // Clamp index to (entries.len() - 1) using 32-bit unsigned compare.
-        self.materialize_u64(*table_scratch, (entries.len() - 1) as u64);
-        enc::cmp_rr_32(&mut self.core.text, *index_scratch, *table_scratch);
-        enc::cmovcc_rr_32(&mut self.core.text, Cc::A, *index_scratch, *table_scratch);
+        // A complete reaching-definition proof can make the unsigned clamp
+        // redundant. Keep the r32 copy above: this proof concerns only the
+        // Wasm index's low 32 bits, not its carrier's upper half.
+        let in_bounds = self.core.current_block.is_some_and(|block| {
+            self.core.mir_function().is_ok_and(|function| {
+                super::table_index_bounds::index_is_in_bounds(
+                    &function.program,
+                    block,
+                    index,
+                    entries.len(),
+                )
+            })
+        });
+        if !in_bounds {
+            self.materialize_u64(*table_scratch, (entries.len() - 1) as u64);
+            enc::cmp_rr_32(&mut self.core.text, *index_scratch, *table_scratch);
+            enc::cmovcc_rr_32(&mut self.core.text, Cc::A, *index_scratch, *table_scratch);
+        }
 
         // Load table base address (absolute, patched later), then dispatch
         // through one scaled memory-indirect jump: the SIB scale replaces

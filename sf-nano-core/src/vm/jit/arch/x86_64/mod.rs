@@ -14,4 +14,5 @@ mod narrow_equality;
 mod preserved;
 mod reg;
 mod simd;
+mod table_index_bounds;
 mod template;
