@@ -1,0 +1,226 @@
+{
+  "mode": "coremark",
+  "input": 0,
+  "seconds": 3,
+  "expected_output_f64": null,
+  "scores": {
+    "main": [
+      19609.125,
+      19604.0,
+      19607.844,
+      19607.844
+    ],
+    "float": [
+      20196.58,
+      20168.066,
+      20134.229,
+      20214.271
+    ],
+    "dse": [
+      20172.135,
+      20149.104,
+      20184.35,
+      20197.94
+    ],
+    "nocache": [
+      20008.004,
+      20119.375,
+      20138.283,
+      20109.934
+    ]
+  },
+  "schedule": [
+    {
+      "round": 0,
+      "variant": "main",
+      "score": 19609.125
+    },
+    {
+      "round": 0,
+      "variant": "float",
+      "score": 20196.58
+    },
+    {
+      "round": 0,
+      "variant": "dse",
+      "score": 20172.135
+    },
+    {
+      "round": 0,
+      "variant": "nocache",
+      "score": 20008.004
+    },
+    {
+      "round": 1,
+      "variant": "nocache",
+      "score": 20119.375
+    },
+    {
+      "round": 1,
+      "variant": "dse",
+      "score": 20149.104
+    },
+    {
+      "round": 1,
+      "variant": "float",
+      "score": 20168.066
+    },
+    {
+      "round": 1,
+      "variant": "main",
+      "score": 19604.0
+    },
+    {
+      "round": 2,
+      "variant": "main",
+      "score": 19607.844
+    },
+    {
+      "round": 2,
+      "variant": "float",
+      "score": 20134.229
+    },
+    {
+      "round": 2,
+      "variant": "dse",
+      "score": 20184.35
+    },
+    {
+      "round": 2,
+      "variant": "nocache",
+      "score": 20138.283
+    },
+    {
+      "round": 3,
+      "variant": "nocache",
+      "score": 20109.934
+    },
+    {
+      "round": 3,
+      "variant": "dse",
+      "score": 20197.94
+    },
+    {
+      "round": 3,
+      "variant": "float",
+      "score": 20214.271
+    },
+    {
+      "round": 3,
+      "variant": "main",
+      "score": 19607.844
+    }
+  ],
+  "comparisons": {
+    "float/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        0.02951826402147061,
+        0.02836683534387137,
+        0.026491611780309822,
+        0.03045914985470947
+      ],
+      "mean_log_ratio": 0.02870896525009032,
+      "log_ratio_stddev": 0.0017080027258253563,
+      "standard_error": 0.0008540013629126782,
+      "probability_regression": 2.8932241668246846e-05,
+      "probability_improvement": 0.9999710677583318,
+      "delta_percent": 2.912503973826023,
+      "volatility_percent": 0.1709462193287589,
+      "pair_deltas_percent": [
+        2.995824647963641,
+        2.8773005509079796,
+        2.6845633818792125,
+        3.0927775639177923
+      ]
+    },
+    "dse/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        0.028307177516098642,
+        0.02742619385548606,
+        0.02897786139829921,
+        0.029650928750994978
+      ],
+      "mean_log_ratio": 0.02859054038021972,
+      "log_ratio_stddev": 0.0009505153707934439,
+      "standard_error": 0.00047525768539672194,
+      "probability_regression": 5.059752301022326e-06,
+      "probability_improvement": 0.999994940247699,
+      "delta_percent": 2.9003172955520022,
+      "volatility_percent": 0.09509672536910396,
+      "pair_deltas_percent": [
+        2.8711632976994084,
+        2.780575392776985,
+        2.940180470632048,
+        3.00948946758246
+      ]
+    },
+    "nocache/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        0.02013737437437083,
+        0.025949654083462982,
+        0.026692940170934775,
+        0.025284231572085834
+      ],
+      "mean_log_ratio": 0.024516050050213605,
+      "log_ratio_stddev": 0.0029752856807711446,
+      "standard_error": 0.0014876428403855723,
+      "probability_regression": 0.00024314101263966397,
+      "probability_improvement": 0.9997568589873603,
+      "delta_percent": 2.481903937224232,
+      "volatility_percent": 0.29797162361785856,
+      "pair_deltas_percent": [
+        2.034149917449146,
+        2.6289277698428926,
+        2.7052387809694878,
+        2.560658887331013
+      ]
+    },
+    "dse/float": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.0012110865053721108,
+        -0.0009406414883853061,
+        0.002486249617989469,
+        -0.0008082211037145216
+      ],
+      "mean_log_ratio": -0.00011842486987061741,
+      "log_ratio_stddev": 0.0017445245435736892,
+      "standard_error": 0.0008722622717868446,
+      "probability_regression": 0.5496984153723732,
+      "probability_improvement": 0.4503015846276268,
+      "delta_percent": -0.011841785792251456,
+      "volatility_percent": 0.1746047111772389,
+      "pair_deltas_percent": [
+        -0.12103534360770052,
+        -0.0940199223862126,
+        0.24893428995964584,
+        -0.08078945810117144
+      ]
+    },
+    "nocache/dse": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.008169803141727727,
+        -0.0014765397720231175,
+        -0.0022849212273644264,
+        -0.004366697178909049
+      ],
+      "mean_log_ratio": -0.00407449033000608,
+      "log_ratio_stddev": 0.0029893631731664244,
+      "standard_error": 0.0014946815865832122,
+      "probability_regression": 0.963908053148787,
+      "probability_improvement": 0.036091946851212975,
+      "delta_percent": -0.40662008565628865,
+      "volatility_percent": 0.2993835774890137,
+      "pair_deltas_percent": [
+        -0.8136520997901187,
+        -0.14754502234938238,
+        -0.22823127819324718,
+        -0.43571770190423686
+      ]
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "platform": "x64-windows",
+  "engine": "jit",
+  "target": "",
+  "builds": {
+    "baseline": {
+      "revision": "9a8208289a883c08f0c93e1340ed837f8da74eab",
+      "sha256": "e5b4bceee2233311070c8213368a623df22fcf55e4f32d5b054b9f2bd0b48e43",
+      "size": 2436608,
+      "virtual_source_root": "/workspace",
+      "image_base": "0x0000000140000000",
+      "dynamic_base": false
+    },
+    "candidate": {
+      "revision": "431b2062b9260d67b0eadfcd9e00f9a0959f050b;remove_loop_cache=false",
+      "sha256": "fd545b12c5502c6e1d95fc46f2620f9c9173c861064ba5cecba14f227fa949b0",
+      "size": 2437632,
+      "virtual_source_root": "/workspace",
+      "image_base": "0x0000000140000000",
+      "dynamic_base": false
+    }
+  },
+  "identical_binaries": false
+}

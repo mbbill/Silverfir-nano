@@ -1,0 +1,646 @@
+   Compiling sf-nano-core v0.1.0 (/Users/mbbill/dev/Silverfir-nano/sf-nano-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.23s
+     Running unittests src/lib.rs (target/x86_64-apple-darwin/debug/deps/sf_nano_core-6df4ba93ea8de8a4)
+
+running 531 tests
+test config::tests::a_zeroed_budget_is_rejected_by_name ... ok
+test config::tests::builder_is_chainable_and_readable ... ok
+test config::tests::configs_are_independent_values ... ok
+test module::parser::tests::parse_memory64_limits_rejects_raw_min_larger_than_max_before_clamp ... ok
+test module::type_context::tests::larger_recursive_group_is_not_equivalent_to_standalone_function ... ok
+test module::type_context::tests::cross_context_recursive_types_require_matching_group_shape ... ok
+test module::type_context::tests::isorecursive_groups_match_only_at_corresponding_offsets ... ok
+test module::type_context::tests::recursive_group_members_must_keep_internal_reference_shape ... ok
+test module::type_context::tests::singleton_function_types_remain_structurally_equivalent ... ok
+test module::type_defs::tests::test_function_type ... ok
+test module::type_defs::tests::test_struct_size ... ok
+test vm::engine::tests::engines_carry_their_own_configuration ... ok
+test vm::engine::tests::single_engine_build_makes_the_tier_a_zst ... ok
+test vm::engine::tests::parses_only_the_names_this_build_has ... ok
+test op_decoder::tests::simd_prefix_v128_const_decodes ... ok
+test op_decoder::tests::v128_block_type_reports_invalid_instead_of_panicking ... ok
+test module::tests::parser_rejects_simd_value_types ... ok
+test module::parser::tests::function_bodies_are_ranges_in_one_code_section_arena ... ok
+test vm::instance::tests::runtime_world_refuses_a_second_tier ... ok
+test vm::instance::tests::runtime_world_invokes_and_frees_by_generation_checked_id ... ok
+test vm::instance::tests::runtime_world_keeps_failed_instantiation_occupied ... ok
+test vm::instance::tests::linked_function_in_an_imported_global_carries_the_absolute_form ... ok
+test vm::instance::tests::uncaught_exception_payload_is_readable_by_the_embedder ... ok
+test vm::instance::tests::runtime_world_registers_only_escapable_functions ... ok
+test vm::interpreter::engine::tests::delayed_linker_matches_reference_on_acc_edge_cases ... ok
+test vm::instance::tests::world_handle_rejects_a_freed_generation_after_slot_reuse ... ok
+test vm::interpreter::engine::tests::gated_call_fixups_preserve_every_recorded_field_and_slow_condition ... ok
+test vm::interpreter::engine::tests::dynamic_native_slow_payloads_round_trip ... ok
+test vm::instance::tests::runtime_world_invokes_across_instances_mid_execution ... ok
+test vm::interpreter::engine::tests::instruction_arena_transfer_keeps_one_owner_and_allocation ... ok
+test vm::instance::tests::runtime_world_reference_type_answers_match_between_engines ... ok
+test vm::interpreter::exec::tests::add_params ... ok
+test vm::interpreter::exec::tests::br_table_loop_backedge_and_exit_preserve_values ... ok
+test vm::interpreter::exec::tests::br_if_to_function_label_falls_through ... ok
+test vm::interpreter::exec::tests::br_table_loop_parameter_alias_does_not_mutate_its_source_local ... ok
+test vm::instance::tests::world_handle_reenters_from_a_host_callback ... ok
+test vm::interpreter::exec::tests::call_indirect_dispatch ... ok
+test vm::interpreter::exec::tests::call_stacks_materialize_on_first_guest_call_and_are_reused ... ok
+test vm::interpreter::exec::tests::br_table_switch ... ok
+test vm::interpreter::exec::tests::const_expression_cannot_read_a_later_global ... ok
+test vm::interpreter::exec::tests::catch_all_rejects_a_forged_exception_handle ... ok
+test vm::interpreter::exec::tests::deep_recursion_exhausts ... ok
+test vm::interpreter::exec::tests::div_traps ... ok
+test vm::interpreter::exec::tests::duplicate_loop_parameter_locals_remain_independent ... ok
+test vm::interpreter::exec::tests::exported_imported_tag_preserves_the_provided_handle ... ok
+test vm::interpreter::exec::tests::exported_table_call_indirect_guard_uses_native_payload_fast_path ... ok
+test vm::interpreter::exec::tests::exception_edges_keep_canonical_loop_parameter_layout ... ok
+test vm::interpreter::exec::tests::byte_memory_bounds_cover_empty_last_end_and_large_offset ... ok
+test vm::interpreter::exec::tests::extended_const_expressions ... ok
+test vm::interpreter::exec::tests::exception_unwind_crosses_native_descendants_and_reuses_the_instance ... ok
+test vm::interpreter::exec::tests::float_kernel ... ok
+test vm::interpreter::exec::tests::extended_const_reaches_a_data_offset ... ok
+test vm::interpreter::exec::tests::float_min_nan_and_signed_zero ... ok
+test vm::interpreter::exec::tests::fused_i64_eqz_branch_tests_all_64_bits ... ok
+test vm::interpreter::exec::tests::fused_dynamic_decrement_handles_an_accumulator_rhs_with_slot_destination ... ok
+test vm::interpreter::exec::tests::fused_i64_constant_add_branch_preserves_wrapping ... ok
+test vm::interpreter::exec::tests::globals_counter ... ok
+test vm::interpreter::exec::tests::fused_i64_eqz_move_guard_preserves_taken_and_fallthrough_values ... ok
+test vm::interpreter::exec::tests::fused_constant_add_branch_preserves_i32_wrapping ... ok
+test vm::interpreter::exec::tests::guest_trap_returns_owner_stacks_for_the_next_call ... ok
+test vm::interpreter::exec::tests::host_throw_rejects_null_for_a_non_null_reference_payload ... ok
+test vm::interpreter::exec::tests::i64_mix ... ok
+test vm::interpreter::exec::tests::imported_return_call_preserves_native_caller_routes ... ok
+test vm::interpreter::exec::tests::host_throw_is_validated_and_enters_the_same_unwind_path ... ok
+test vm::interpreter::exec::tests::i64_sub_branch_accepts_an_accumulator_rhs_and_aliasing ... ok
+test vm::interpreter::exec::tests::i64_sub_branch_tests_the_full_result_and_wraps ... ok
+test vm::interpreter::exec::tests::iterative_fibonacci_dispatch_count_tracks_three_hot_cells ... ok
+test vm::interpreter::exec::tests::import_only_start_skips_native_state_and_owner_stacks ... ok
+test vm::interpreter::exec::tests::iterative_fibonacci_uses_the_generic_i64_sub_branch ... ok
+test vm::interpreter::exec::tests::local_overwrite_materializes_pending_loop_parameter ... ok
+test vm::interpreter::exec::tests::loop_parameter_alias_does_not_mutate_its_source_local ... ok
+test vm::interpreter::exec::tests::loop_parameter_back_edges_do_not_swap_their_source_locals ... ok
+test vm::interpreter::exec::tests::imported_tags_match_by_runtime_identity_not_signature ... ok
+test vm::interpreter::exec::tests::loop_sum_1_to_100 ... ok
+test vm::interpreter::exec::tests::local_calls_zero_fresh_locals_for_every_short_loop_shape ... ok
+test vm::interpreter::exec::tests::nested_branch_depth_reaches_loop_parameter ... ok
+test vm::interpreter::exec::tests::memory_bulk_fill_copy ... ok
+test vm::interpreter::engine::tests::delayed_linker_matches_reference_on_generated_streams ... ok
+test vm::interpreter::exec::tests::oob_load_traps ... ok
+test vm::interpreter::exec::tests::module_link_plan_owns_contiguous_cells_and_branch_tables ... ok
+test vm::interpreter::exec::tests::memory_roundtrip_and_data_segment ... ok
+test vm::interpreter::exec::tests::ordered_copy_pair_forwards_an_unpinned_full_width_second_value ... ok
+test vm::interpreter::exec::tests::reference_slot_encoding_round_trips_function_range_endpoints ... ok
+test vm::interpreter::exec::tests::ordered_copy_pair_forwards_only_its_second_destination ... ok
+test vm::interpreter::exec::tests::same_instance_guest_reentry_keeps_the_outer_stacks_owned ... ok
+test vm::interpreter::exec::tests::ordered_copy_pair_writes_l1_then_l0_without_slow_exit ... ok
+test vm::interpreter::exec::tests::ordered_local_copy_pair_preserves_old_value_and_pinned_write_through ... ok
+test vm::interpreter::exec::tests::recursive_fib ... ok
+test vm::interpreter::exec::tests::select_picks_by_condition ... ok
+test vm::interpreter::exec::tests::self_return_call_resets_non_parameter_locals ... ok
+test vm::interpreter::exec::tests::start_function_materializes_and_returns_the_owner_stacks ... ok
+test vm::interpreter::exec::tests::special_funcref_in_private_table_takes_slow_path ... ok
+test vm::interpreter::exec::tests::trunc_traps_and_sat_saturates ... ok
+test vm::interpreter::exec::tests::throw_ref_reuses_the_caught_exception_object ... ok
+test vm::interpreter::exec::tests::try_table_catches_in_the_same_function ... ok
+test vm::interpreter::exec::tests::subword_load_store_sign ... ok
+test vm::interpreter::exec::tests::typed_loop_parameter_add_counter_has_one_hot_dispatch_per_iteration ... ok
+test vm::interpreter::exec::tests::untaken_loop_branch_does_not_write_aliased_local ... ok
+test vm::interpreter::exec::tests::typed_loop_parameter_counter_has_one_hot_dispatch_per_iteration ... ok
+test vm::interpreter::exec::tests::variable_rhs_add_branch_remains_correct_when_unfused ... ok
+test vm::interpreter::fmath::tests::rounding_ops_quiet_signalling_nan ... ok
+test vm::interpreter::exec::tests::static_call_indirect_keeps_generic_slow_restore ... ok
+test vm::interpreter::layout::tests::mov_pair_classifies_every_ordered_pinned_destination_state ... ok
+test vm::interpreter::fmath::tests::rounding_ops_match_libstd ... ok
+test vm::interpreter::layout::tests::packed_memory_guard_matches_the_structural_derivation ... ok
+test vm::interpreter::layout::tests::packed_bc_shape_matches_the_structural_derivation ... ok
+test vm::interpreter::predecode::tests::br_table_does_not_materialize_values_discarded_by_every_target ... ok
+test vm::interpreter::predecode::tests::br_table_keeps_a_common_exact_loop_alias_direct ... ok
+test vm::interpreter::exec::tests::world_funcrefs_use_one_identity_and_drive_foreign_calls ... ok
+test vm::interpreter::predecode::tests::br_table_repeated_transfer_plan_shares_one_landing_pad ... ok
+test vm::interpreter::predecode::tests::catchless_try_table_branch_to_own_label_revives_its_end ... ok
+test vm::interpreter::fmath::tests::sqrt_matches_libstd ... ok
+test vm::interpreter::predecode::tests::catch_ref_metadata_forwards_the_exception_reference ... ok
+test vm::interpreter::predecode::tests::folds_const_operand_inline ... ok
+test vm::interpreter::predecode::tests::common_byte_fast_lane_matches_generic_decoder ... ok
+test vm::interpreter::predecode::tests::fibonacci_i64_countdown_uses_the_generic_sub_branch ... ok
+test vm::interpreter::predecode::tests::folds_get_get_add_set_to_one_instruction ... ok
+test vm::interpreter::predecode::tests::direct_self_tail_call_becomes_a_native_loop ... ok
+test vm::interpreter::predecode::tests::fused_sub_branch_keeps_safe_accumulator_rhs ... ok
+test vm::interpreter::predecode::tests::function_catch_ref_reserves_space_for_the_forwarded_reference ... ok
+test vm::interpreter::predecode::tests::fuses_adjacent_fill_and_copy_on_the_same_memory ... ok
+test vm::interpreter::predecode::tests::handler_chain_is_inner_first_and_tail_calls_have_no_site ... ok
+test vm::interpreter::predecode::tests::hazard_flush_blocks_dst_folding ... ok
+test vm::interpreter::predecode::tests::i64_constant_add_negates_rhs_with_i64_wrapping ... ok
+test vm::interpreter::predecode::tests::i64_eqz_br_if_uses_full_width_compare_with_constant_zero ... ok
+test vm::interpreter::predecode::tests::i64_eqz_br_if_move_guard_uses_inverted_full_width_compare ... ok
+test vm::interpreter::predecode::tests::i64_sub_branch_keeps_a_safe_accumulator_rhs ... ok
+test vm::interpreter::predecode::tests::i64_sub_nonzero_branch_removes_the_zero_comparison ... ok
+test vm::interpreter::predecode::tests::i64_sub_branch_rejects_other_comparisons_and_branch_moves ... ok
+test vm::interpreter::predecode::tests::i64_variable_rhs_add_stays_unfused ... ok
+test vm::interpreter::predecode::tests::if_else_produces_guard_and_join ... ok
+test vm::interpreter::predecode::tests::linked_publication_keeps_metadata_in_per_function_rcs ... ok
+test vm::interpreter::predecode::tests::malformed_fast_immediate_is_a_non_consuming_miss ... ok
+test vm::interpreter::predecode::tests::loop_back_edge_targets_header ... ok
+test vm::interpreter::predecode::tests::mov_pair_accumulator_belongs_only_to_second_destination ... ok
+test vm::interpreter::predecode::tests::module_predecode_has_one_instruction_backing_for_many_functions ... ok
+test vm::interpreter::predecode::tests::rejects_unsupported_opcodes_cleanly ... ok
+test vm::interpreter::predecode::tests::module_arena_rollback_preserves_neighboring_functions ... ok
+test vm::interpreter::predecode::tests::shared_scratch_matches_fresh_scratch_for_complex_side_metadata ... ok
+test vm::interpreter::predecode::tests::predecode_caches_every_memory_guard_failure ... ok
+test vm::interpreter::predecode::tests::throw_keeps_runtime_handler_metadata_and_payload_layout ... ok
+test vm::interpreter::exec::tests::return_call_runs_at_constant_depth ... ok
+test vm::interpreter::predecode::tests::throw_ref_is_materialized_and_function_catches_use_a_return_landing ... ok
+test vm::interpreter::predecode::tests::slow_tail_boundaries_reserve_their_result_staging_area ... ok
+test vm::interpreter::predecode::tests::typed_loop_constant_add_one_reuses_sub_branch_handler ... ok
+test vm::interpreter::predecode::tests::typed_loop_counter_reuses_local_and_fuses_decrement_branch ... ok
+test vm::interpreter::predecode::tests::typed_loop_variable_rhs_add_stays_unfused ... ok
+test vm::interpreter::predecode::tests::typed_loop_constant_add_negates_rhs_with_i32_wrapping ... ok
+test vm::jit::arch::common::scratch_pool::tests::alloc_exhaustion_panics - should panic ... ok
+test vm::interpreter::predecode::tests::unrelated_try_table_opcode_byte_does_not_disable_loop_aliases ... ok
+test vm::jit::arch::common::scratch_pool::tests::alloc_returns_different_regs_on_consecutive_alloc_free ... ok
+test vm::jit::arch::common::scratch_pool::tests::alloc_two_simultaneously ... ok
+test vm::jit::arch::common::scratch_pool::tests::detached_guard_keeps_slot_reserved_until_drop ... ok
+test vm::jit::arch::common::scratch_pool::tests::dropping_guard_frees_slot ... ok
+test vm::jit::arch::common::scratch_pool::tests::rotation_wraps_around ... ok
+test vm::jit::arch::x86_64::enc::lea_tests::offset_encodes_stack_base_and_signed_displacements ... ok
+test vm::interpreter::predecode::tests::unsafe_loop_home_does_not_deopt_an_independent_safe_loop ... ok
+test vm::jit::arch::x86_64::enc::lea_tests::sum_encodes_extended_index_and_base_displacement ... ok
+test vm::jit::arch::x86_64::jump_table::tests::compresses_complete_bit_sets_and_ranges ... ok
+test vm::jit::arch::x86_64::jump_table::tests::leaves_large_and_many_destination_tables_dense ... ok
+test vm::jit::backend::tests::backend_config_allows_explicit_call_scratch_slots ... ok
+test vm::jit::backend::tests::backend_config_detects_32bit_gp_targets ... ok
+test vm::jit::backend::tests::backend_config_gp32_zero_extending_defs_is_opt_in ... ok
+test vm::jit::backend::tests::backend_config_keeps_explicit_gp_unit_bytes ... ok
+test vm::jit::backend::tests::backend_config_publishes_dynamic_volatility_layout ... ok
+test vm::jit::build::tests::compiles_all_local_functions_once ... ok
+test vm::jit::build::tests::compiles_function_with_f32_local_and_add ... ok
+test vm::jit::build::tests::compiles_f32_kahan_sum_style_loop ... ok
+test vm::jit::build::tests::compiles_function_with_f32_local_in_if ... ok
+test vm::jit::build::tests::compiles_function_with_f64_local ... ok
+test vm::jit::instance::tests::interp::exception_and_other_pooled_handles_do_not_alias ... ok
+test vm::jit::instance::tests::interp::shared_registry_resolves_store_owned_exceptions ... ok
+test vm::jit::instance::tests::interp::store_owned_exception_survives_its_origin_store ... ok
+test vm::jit::instantiate::tests::fixed_private_local_table_enables_local_only_dispatch_mode ... ok
+test vm::jit::instantiate::tests::imported_host_function_accepts_capturing_fn_callback ... ok
+test vm::jit::instantiate::tests::instantiation_rejects_builder_modules_with_simd_types ... ok
+test vm::jit::instantiate::tests::direct_self_tail_call_reuses_function_entry ... ok
+test vm::jit::instantiate::tests::invoke_rejects_unsupported_live_simd_ops_during_lowering ... ok
+test vm::jit::instantiate::tests::invoke_returns_live_v128_const ... ok
+test vm::jit::instantiate::tests::shared_global_import_aliases_mutations ... ok
+test vm::jit::instantiate::tests::shared_memory_import_uses_live_size_and_shared_cap ... ok
+test vm::jit::instantiate::tests::shared_global_import_rejects_same_index_different_concrete_types ... ok
+test vm::jit::instantiate::tests::shared_table_import_uses_live_size_and_shared_cap ... ok
+test vm::jit::instantiate::tests::subtype_module_keeps_dispatch_mode_generic ... ok
+test vm::jit::instantiate::tests::table_mutation_keeps_dispatch_mode_generic ... ok
+test vm::jit::machine::lower_cache_layout::tests::inherited_call_preserved_cache_moves_to_preserved_lane ... ok
+test vm::jit::machine::lower_cache_layout::tests::preferred_singleton_outranks_wider_unpreferred_pair_for_preserved_lanes ... ok
+test vm::jit::machine::lower_cache_layout::tests::reverse_postorder_handles_long_linear_cfg_without_recursion ... ok
+test vm::jit::machine::lower_regalloc::tests::alloc_i64_value_pair_reserves_two_gp_word_linear_value_regs ... ok
+test vm::jit::machine::lower_regalloc::tests::pair_reuse_can_claim_low_half_of_dead_scalar_and_allocate_only_high_half ... ok
+test vm::jit::machine::lower_regalloc::tests::scalar_reuse_can_claim_low_half_of_dead_pair_and_frees_high_half ... ok
+test vm::jit::machine::lower_tests::coalesces_dead_i64_const_directly_into_uncached_store_slot ... ok
+test vm::interpreter::predecode::tests::reused_postpass_pinned_census_matches_incremental_mutation_oracle ... ok
+test vm::jit::machine::lower_tests::direct_local_call_carries_clean_non_ref_cache_in_preserved_reg ... ok
+test vm::jit::machine::lower_tests::direct_local_call_carries_dirty_non_ref_cache_after_publishing_it ... ok
+test vm::jit::machine::lower_tests::direct_local_call_materializes_call_live_register_param_cache_in_preserved_home ... ok
+test vm::jit::machine::lower_tests::direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_available ... ok
+test vm::jit::machine::lower_tests::direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg ... ok
+test vm::jit::machine::lower_tests::does_not_save_clean_carried_cache_before_runtime_call ... ok
+test vm::jit::machine::lower_tests::does_not_zero_unread_cached_cells_at_entry_on_32bit_targets ... ok
+test vm::jit::machine::lower_tests::entry_block_cached_cells_are_loaded_in_prologue_not_passed_as_params ... ok
+test vm::jit::machine::lower_cache_layout::tests::idom_layout_walk_handles_long_linear_tree_without_recursion ... ok
+test vm::jit::machine::lower_tests::f32_block_params_keep_f32_width ... ok
+test vm::jit::machine::lower_tests::f32_cached_cells_use_f32_slot_widths ... ok
+test vm::jit::machine::lower_tests::float_slot_load_routes_to_fp_bank_when_typed ... ok
+test vm::jit::machine::lower_tests::flushes_and_reloads_cached_cells_around_call_runtime ... ok
+test vm::jit::machine::lower_tests::flushes_and_reloads_cached_cells_around_runtime_helpers ... ok
+test vm::jit::machine::lower_tests::flushes_cached_cell_before_second_direct_call ... ok
+test vm::jit::machine::lower_tests::gp32_i64_local_get_set_cache_same_slot_emits_no_self_moves ... ok
+test vm::jit::arch::x86_64::jump_table::tests::every_compressed_small_table_preserves_all_edges_and_default ... ok
+test vm::jit::machine::lower_tests::gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite ... ok
+test vm::jit::machine::lower_tests::gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate ... ok
+test vm::jit::machine::lower_tests::gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate ... ok
+test vm::jit::machine::lower_tests::keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_pages ... ok
+test vm::jit::machine::lower_tests::gp32_mem0_store_does_not_reuse_live_source_as_address_scratch ... ok
+test vm::jit::machine::lower_tests::local_drop_cache_skips_writeback_when_cache_is_clean ... ok
+test vm::jit::machine::lower_tests::local_get_cache_source_aliases_without_move ... ok
+test vm::jit::machine::lower_tests::keeps_shared_cache_lane_when_earlier_local_drops_on_edge ... ok
+test vm::jit::machine::lower_tests::local_reserve_cache_does_not_reload_old_slot_value ... ok
+test vm::jit::machine::lower_tests::local_set_cache_materializes_live_alias_before_overwrite ... ok
+test vm::jit::machine::lower_tests::local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free ... ok
+test vm::jit::machine::lower_tests::local_get_cache_to_set_cache_different_slot_single_move ... ok
+test vm::jit::machine::lower_tests::lowers_32bit_memory_bounds_checks_with_wraparound_traps ... ok
+test vm::jit::machine::lower_tests::lowers_branch_edge_bindings_into_machine_edge_args ... ok
+test vm::jit::machine::lower_tests::lowers_cached_cell_reads_and_writes_through_cache_regs ... ok
+test vm::jit::machine::lower_tests::lowers_call_indirect_live_scalar_result_through_register_continuation ... ok
+test vm::jit::machine::lower_tests::lowers_call_indirect_with_gp_word_width_on_32_bit_target ... ok
+test vm::jit::machine::lower_tests::lowers_call_indirect_with_local_and_runtime_dispatch_paths ... ok
+test vm::jit::machine::lower_tests::lowers_call_ref_range_fallback_with_live_register_args ... ok
+test vm::jit::machine::lower_tests::lowers_call_ref_with_local_and_runtime_dispatch_paths ... ok
+test vm::jit::machine::lower_tests::lowers_call_runtime_through_frame_metadata_without_helper_scratch ... ok
+test vm::jit::machine::lower_tests::lowers_call_indirect_local_path_with_live_register_args ... ok
+test vm::jit::machine::lower_tests::lowers_direct_local_call_to_legal_32bit_machineir ... ok
+test vm::jit::machine::lower_tests::lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_targets ... ok
+test vm::jit::machine::lower_tests::lowers_direct_local_call_with_continuation_block ... ok
+test vm::jit::machine::lower_tests::lowers_direct_tail_call_stack_precheck_with_direct_frame_pointer_compare ... ok
+test vm::jit::machine::lower_tests::lowers_direct_local_call_with_sparse_machine_function_ids ... ok
+test vm::jit::machine::lower_tests::lowers_f32_const_to_fp_machine_const ... ok
+test vm::jit::machine::lower_tests::lowers_global_get_and_set_without_helpers ... ok
+test vm::jit::machine::lower_tests::lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width ... ok
+test vm::jit::machine::lower_tests::lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target ... ok
+test vm::jit::machine::lower_tests::lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets ... ok
+test vm::jit::machine::lower_tests::lowers_i64_global_get_set_directly_to_legal_32bit_machineir ... ok
+test vm::jit::machine::lower_tests::lowers_i32_load_with_inline_trap_if ... ok
+test vm::jit::machine::lower_tests::lowers_i64_memory_load_store_directly_to_legal_32bit_machineir ... ok
+test vm::jit::machine::lower_tests::lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir ... ok
+test vm::jit::machine::lower_tests::lowers_indirect_tail_call_stack_precheck_with_direct_frame_pointer_compare ... ok
+test vm::jit::machine::lower_tests::lowers_memory_size_with_gp_word_width_on_32_bit_target ... ok
+test vm::jit::machine::lower_tests::lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target ... ok
+test vm::jit::machine::lower_tests::lowers_register_only_self_tail_call_to_entry_backedge ... ok
+test vm::jit::machine::lower_tests::lowers_memory_size_without_helper_boundary ... ok
+test vm::jit::machine::lower_tests::lowers_select_with_wasm_operand_order ... ok
+test vm::jit::machine::lower_tests::lowers_simple_slot_and_add_block ... ok
+test vm::jit::machine::lower_tests::lowers_table_get_with_explicit_oob_trap_block ... ok
+test vm::jit::machine::lower_tests::lowers_v128_binary_and_publishes_raw_slot_handle ... ok
+test vm::jit::machine::lower_tests::native_backend_requires_at_least_one_gp_linear_value_register ... ok
+test vm::jit::machine::lower_tests::omits_zero_offset_add_in_bounds_check_setup ... ok
+test vm::jit::machine::lower_tests::lowers_v128_local_get_slot_through_raw_handle_boundary ... ok
+test vm::jit::machine::lower_tests::projects_return_results_and_helper_scratch_from_frame_plan ... ok
+test vm::jit::machine::lower_tests::register_passed_entry_param_cache_stays_dirty_across_edges ... ok
+test vm::jit::machine::lower_tests::preserved_call_keeps_carried_cache_live_across_edge ... ok
+test vm::jit::machine::lower_tests::preserves_cached_cells_across_block_edges ... ok
+test vm::jit::machine::lower_tests::rejects_cache_store_with_incompatible_gp_storage_types ... ok
+test vm::jit::machine::lower_tests::rejects_inconsistent_return_result_spans ... ok
+test vm::jit::machine::lower_tests::rejects_mixed_void_and_value_returns ... ok
+test vm::jit::machine::lower_tests::skips_dead_cached_cell_reload_after_direct_runtime_call ... ok
+test vm::jit::machine::lower_tests::reserved_cache_edge_threads_without_reload_into_target_block ... ok
+test vm::jit::machine::lower_tests::reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg ... ok
+test vm::jit::machine::lower_tests::saves_only_dirty_cached_cells_before_runtime_call ... ok
+test vm::jit::machine::lower_tests::untyped_slot_load_stays_in_gp_bank ... ok
+test vm::jit::machine::lower_tests::threads_live_linear_values_through_split_continuation_params ... ok
+test vm::jit::machine::lower_tests::threads_cached_cells_through_block_edge_params ... ok
+test vm::jit::machine::lower_tests::uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets ... ok
+test vm::jit::machine::optimize::tests::optimization_populates_preserved_clobber_metadata ... ok
+test vm::jit::machine::peephole::cache_loop_frame_words::tests::carries_mutable_frame_word_without_delaying_publication_or_exit_reload ... ok
+test vm::jit::machine::peephole::cache_loop_frame_words::tests::register_summary_matches_exact_mentions_before_and_after_rewriting ... ok
+test vm::jit::machine::peephole::eliminate_dead_params::tests::ignores_uses_after_the_incoming_value_is_redefined ... ok
+test vm::jit::machine::peephole::eliminate_dead_params::tests::keeps_param_used_by_branch_condition ... ok
+test vm::jit::machine::peephole::cache_loop_frame_words::tests::rejects_aliases_calls_live_lanes_and_ambiguous_entries ... ok
+test vm::jit::machine::peephole::eliminate_dead_params::tests::propagates_usefulness_back_through_multiple_edges ... ok
+test vm::jit::machine::peephole::eliminate_dead_params::tests::removes_params_only_carried_around_a_cycle ... ok
+test vm::jit::machine::peephole::eliminate_overwritten_frame_stores::tests::drops_overwritten_native_words_and_keeps_the_final_published_value ... ok
+test vm::jit::machine::peephole::eliminate_overwritten_frame_stores::tests::requires_exact_aligned_native_frame_stores ... ok
+test vm::jit::machine::peephole::eliminate_overwritten_frame_stores::tests::retains_stores_across_reads_traps_calls_and_frame_base_changes ... ok
+test vm::jit::machine::peephole::fold_induction_offsets::tests::does_not_fold_function_entry_loop_from_unreachable_seed ... ok
+test vm::jit::machine::peephole::fold_induction_offsets::tests::folds_bounded_in_place_counter_add_into_displacement ... ok
+test vm::jit::machine::peephole::fold_induction_offsets::tests::no_fold_after_the_increment ... ok
+test vm::jit::machine::peephole::fold_induction_offsets::tests::no_fold_when_the_sum_may_wrap ... ok
+test vm::jit::machine::peephole::fold_induction_offsets::tests::no_fold_when_the_temp_escapes_as_a_store_source ... ok
+test vm::jit::machine::peephole::fold_induction_offsets::tests::no_fold_without_stride_reachability_of_the_bound ... ok
+test vm::jit::machine::peephole::forward_stored_values::tests::keeps_reload_when_early_copy_would_change_an_operand_or_representation ... ok
+test vm::jit::machine::peephole::forward_stored_values::tests::saves_native_frame_word_before_destructive_arithmetic ... ok
+test vm::jit::machine::peephole::helpers::tests::visits_call_sources_once_without_treating_results_as_reads ... ok
+test vm::jit::machine::peephole::hoist_loop_address_bases::tests::acyclic_backward_edge_is_not_a_loop_latch ... ok
+test vm::jit::machine::peephole::hoist_loop_address_bases::tests::does_not_hoist_across_memory_grow ... ok
+test vm::jit::machine::peephole::hoist_loop_address_bases::tests::does_not_hoist_when_backedge_rebinds_the_index_lane ... ok
+test vm::jit::machine::peephole::hoist_loop_address_bases::tests::hoists_reused_invariant_mem0_index_into_loop_parameter ... ok
+test vm::jit::machine::peephole::hoist_loop_address_bases::tests::irreducible_scc_edges_are_not_natural_loop_latches ... ok
+test vm::jit::machine::peephole::promote_self_loop_globals::tests::promotes_exact_global_counter_loop ... ok
+test vm::jit::machine::peephole::promote_self_loop_globals::tests::rejects_entry_as_the_implicit_exit_predecessor ... ok
+test vm::jit::machine::peephole::promote_self_loop_globals::tests::rejects_exit_that_loads_a_different_global_pointer ... ok
+test vm::jit::machine::peephole::promote_self_loop_globals::tests::rejects_entry_header_with_unreachable_preheader ... ok
+test vm::jit::machine::peephole::promote_self_loop_globals::tests::rejects_non_dedicated_exit ... ok
+test vm::jit::machine::peephole::promote_self_loop_globals::tests::rejects_non_store_after_the_seed ... ok
+test vm::jit::machine::peephole::recognize_memmove::tests::leaves_32bit_targets_on_the_original_loop ... ok
+test vm::jit::machine::peephole::recognize_memmove::tests::recognizes_both_step_locations_and_predicates_with_guarded_fallback ... ok
+test vm::jit::machine::peephole::recognize_memmove::tests::rejects_changes_to_copy_semantics_or_step_storage ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::block_budget_keeps_cross_block_extend ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::call_result_is_unknown_but_clean_survivor_propagates ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::cfg_proof_runs_at_op_budget ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::clean_load_result_relaxes_following_index_use ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::cfg_proof_runs_at_block_budget ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::clean_loop_parameter_reaches_greatest_fixed_point ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::clean_regs_keep_inline_boundary_and_overflow_exact ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::cleanliness_survives_unrelated_ops ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::dirty_loop_backedge_removes_tentative_cleanliness ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::entry_block_param_is_unknown_and_does_not_request_cfg ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::entry_self_backedge_does_not_prove_entry_argument ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::high_register_does_not_alias_low_register_fact ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::i32_extend32s_noop_does_not_establish_cleanliness ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::keeps_extend_after_64bit_def ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::keeps_extend_without_in_block_def ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::local_prepass_follows_entry_dependence_through_move_chain ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::local_prepass_keeps_cross_edge_work_for_cfg_analysis ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::local_prepass_reports_when_all_obligations_are_resolved ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::local_prepass_skips_block_without_index_obligations ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::local_prepass_skips_cfg_for_nonparam_unknown_index ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::local_prepass_skips_cfg_after_param_is_overwritten_dirty ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::malformed_or_noncanonical_edge_values_stay_unknown ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::mixed_predecessor_keeps_extend ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::op_budget_keeps_cross_block_extend_and_local_relaxation ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::optimizer_gates_relaxation_on_gp32_zero_extending_config ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::profitable_block_policy_loads_trigger_for_every_width ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::profitable_block_policy_relaxes_all_candidates_in_eligible_block ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::profitable_block_policy_skips_zero_offset_store_only_block ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::profitable_block_policy_relaxes_zero_offset_candidate_across_cfg ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::profitable_block_policy_uses_arm64_store_imm12_boundaries ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::reachable_postorder_pops_entry_first_and_excludes_unreachable_blocks ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::redefinition_invalidates_cleanliness ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::relaxes_after_32bit_def ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::runtime_call_clears_clean_facts ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::relaxes_clean_block_parameter_across_edge ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::rpo_worklist_matches_legacy_order_on_scrambled_diamond_loop ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::unknown_entry_fact_propagates_through_long_chain ... ok
+test vm::jit::machine::peephole::relax_index_extends::tests::unreachable_cycle_cannot_self_prove_cleanliness ... ok
+test vm::jit::machine::peephole::reuse_loop_context_loads::tests::does_not_reuse_context_load_at_function_entry ... ok
+test vm::jit::machine::peephole::reuse_loop_frame_values::tests::carries_preheader_frame_store_through_multiblock_loop ... ok
+test vm::jit::machine::peephole::reuse_loop_frame_values::tests::does_not_add_frame_value_param_to_function_entry_loop ... ok
+test vm::jit::machine::peephole::reuse_loop_frame_values::tests::does_not_add_frame_value_param_to_function_entry_exit ... ok
+test vm::jit::machine::peephole::reuse_loop_frame_values::tests::final_index_relaxation_observes_reused_unknown_frame_value ... ok
+test vm::jit::machine::peephole_tests::carries_invariant_context_load_across_loop_backedge ... ok
+test vm::jit::machine::peephole_tests::copy_propagate_drops_self_move_and_advances ... ok
+test vm::jit::machine::peephole_tests::copy_propagates_linear_copies_of_cached_cell_snapshots ... ok
+test vm::jit::machine::peephole_tests::copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg ... ok
+test vm::jit::machine::peephole_tests::constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_reg ... ok
+test vm::jit::machine::peephole_tests::copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs ... ok
+test vm::jit::machine::peephole_tests::copy_propagates_linear_value_moves_into_ops_and_edges ... ok
+test vm::jit::machine::peephole_tests::deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefines_reg ... ok
+test vm::jit::machine::peephole_tests::does_not_copy_propagate_cached_cell_snapshots_into_integer_uses_or_edges ... ok
+test vm::jit::machine::peephole_tests::does_not_copy_propagate_cached_cell_load_defs ... ok
+test vm::jit::machine::peephole_tests::does_not_copy_propagate_move_from_cached_cell_block_param ... ok
+test vm::jit::machine::peephole_tests::does_not_fold_constant_past_non_adjacent_instruction ... ok
+test vm::jit::machine::peephole_tests::does_not_forward_across_overlapping_store ... ok
+test vm::jit::machine::peephole_tests::does_not_forward_when_i64_pair_instruction_redefines_stored_source_reg ... ok
+test vm::jit::machine::peephole_tests::does_not_forward_u32_store_into_u64_load_same_address ... ok
+test vm::jit::machine::peephole_tests::does_not_forward_when_stored_source_reg_is_redefined ... ok
+test vm::jit::machine::peephole_tests::does_not_fuse_cross_block_sign_ext_fact_unless_all_predecessors_agree ... ok
+test vm::jit::machine::peephole_tests::does_not_fuse_i64_compare_branch_on_32_bit_targets ... ok
+test vm::jit::machine::peephole_tests::does_not_reuse_identical_loads_across_distinct_storage_types ... ok
+test vm::jit::machine::peephole_tests::does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg ... ok
+test vm::jit::machine::peephole_tests::does_not_reuse_load_after_loaded_reg_is_redefined ... ok
+test vm::jit::machine::peephole_tests::forwards_fp_spill_reload_into_gp_move ... ok
+test vm::jit::machine::peephole_tests::does_not_seed_cross_block_sign_ext_fact_from_self_loop_only ... ok
+test vm::jit::machine::peephole_tests::forwards_non_adjacent_u64_store_load_pairs ... ok
+test vm::jit::machine::peephole_tests::forwards_store_reload_exposed_by_copy_propagation ... ok
+test vm::jit::machine::peephole_tests::forwards_u32_pair_self_store_reload_from_gp32_i64_slot ... ok
+test vm::jit::machine::peephole_tests::fuses_compare_branch_for_high_dynamic_result_reg ... ok
+test vm::jit::machine::peephole_tests::fuses_i64_mul_after_pair_extend32s_with_copied_halves ... ok
+test vm::jit::machine::peephole_tests::fuses_i64_mul_from_sign_ext_pair_across_edge ... ok
+test vm::jit::machine::peephole_tests::fuses_i64_mul_with_move_alias_then_sign_ext ... ok
+test vm::jit::machine::peephole_tests::fuses_i64_mul_with_self_spill_reload_sign_ext ... ok
+test vm::jit::machine::peephole_tests::fuses_rotate_then_xor_into_rotated_register_operand ... ok
+test vm::jit::machine::peephole_tests::fuses_shru_and_into_bitfield_extract ... ok
+test vm::jit::machine::peephole_tests::fuses_test_bits_for_high_dynamic_result_reg ... ok
+test vm::jit::machine::peephole_tests::keeps_loop_context_load_when_the_context_slot_is_written ... ok
+test vm::jit::machine::peephole_tests::optimize_preserves_block_ops_allocation ... ok
+test vm::jit::machine::peephole_tests::does_not_fold_constant_used_as_non_replaceable_address_base ... ok
+test vm::jit::machine::peephole_tests::preserves_linear_value_move_live_across_helper_barrier ... ok
+test vm::jit::machine::peephole_tests::preserves_moves_into_fp_cached_cells ... ok
+test vm::jit::machine::peephole_tests::preserves_u32_frame_word_before_stored_reg_is_clobbered ... ok
+test vm::jit::machine::peephole_tests::preserves_linear_value_move_when_linear_source_reg_is_redefined_before_terminator_use ... ok
+test vm::jit::machine::peephole_tests::removes_dead_block_param_carried_only_around_a_loop ... ok
+test vm::jit::machine::peephole_tests::removes_u64_self_reload_after_store ... ok
+test vm::jit::machine::peephole_tests::reuses_frame_loads_after_indexed_memory_fusion ... ok
+test vm::jit::machine::peephole_tests::reuses_identical_loads_when_memory_stays_unchanged ... ok
+test vm::jit::machine::peephole_tests::rewrites_float_uses_of_gp_aliases_back_to_fp_regs ... ok
+test vm::jit::machine::peephole_tests::rewrites_u64_store_of_gp_float_alias_back_to_fp_reg ... ok
+test vm::jit::machine::peephole_tests::skips_i64_pair_sign_ext_analysis_on_64_bit_targets ... ok
+test vm::jit::machine::peephole_tests::u64_store_invalidates_tracked_u32_store_on_overlap ... ok
+test vm::jit::machine::peephole_tests::still_fuses_i32_compare_branch_on_32_bit_targets ... ok
+test vm::jit::machine::validate_tests::accepts_frame_pointer_as_the_exact_stack_guard_lhs ... ok
+test vm::jit::machine::validate_tests::rejects_an_inexact_frame_pointer_stack_guard ... ok
+test vm::jit::machine::validate_tests::rejects_edge_arity_mismatch ... ok
+test vm::jit::machine::validate_tests::rejects_deriving_a_dynamic_value_from_the_frame_pointer ... ok
+test vm::jit::machine::validate_tests::rejects_call_argument_source_before_the_current_frame ... ok
+test vm::jit::machine::validate_tests::rejects_frame_pointer_as_an_ordinary_value ... ok
+test vm::jit::machine::validate_tests::rejects_frame_pointer_redefinition ... ok
+test vm::jit::machine::validate_tests::rejects_negative_frame_address ... ok
+test vm::jit::machine::validate_tests::rejects_out_of_range_register ... ok
+test vm::jit::machine::validate_tests::rejects_return_source_before_the_current_frame ... ok
+test vm::jit::machine::validate_tests::rejects_out_of_range_helper_metadata ... ok
+test vm::jit::machine::validate_tests::rejects_the_frame_pointer_reserved_on_an_edge ... ok
+test vm::jit::middle::cleanup::tests::does_not_merge_unreachable_predecessor_into_entry ... ok
+test vm::jit::middle::cfg::tests::builds_cfg_for_loop_and_marks_backedge_header ... ok
+test vm::jit::middle::cleanup::tests::merges_entire_goto_chain_before_reindexing ... ok
+test vm::jit::middle::cleanup::tests::folds_loop_param_sourced_from_same_cached_cell_on_every_edge ... ok
+test vm::jit::middle::cleanup::tests::merges_goto_successor_with_param_substitution ... ok
+test vm::jit::middle::cleanup::tests::remove_unreachable_blocks_prunes_dead_chain ... ok
+test vm::jit::middle::cleanup::tests::remove_single_block_reindexes_targets_and_entry ... ok
+test vm::jit::middle::cleanup::tests::simplify_cache_run_keeps_required_drop_then_materialization ... ok
+test vm::jit::middle::cleanup::tests::threads_empty_goto_chain_and_composes_bindings ... ok
+test vm::jit::middle::discipline::tests::cache_overwrite_dealiases_snapshots_when_budget_has_room ... ok
+test vm::jit::middle::discipline::tests::cache_overwrite_spills_older_alias_snapshots_when_budget_is_full ... ok
+test vm::jit::middle::discipline::tests::cached_alias_operand_does_not_pay_for_a_new_result_lane ... ok
+test vm::jit::middle::discipline::tests::gp32_i64_cached_get_needs_real_linear_pair ... ok
+test vm::jit::middle::discipline::tests::gp64_and_non_i64_cached_gets_can_source_alias ... ok
+test vm::jit::middle::discipline::tests::identity_cache_set_keeps_same_slot_aliases_live ... ok
+test vm::jit::middle::joint_plan::build::tests::entry_param_footprint_stops_at_frame_only_param_in_suffix ... ok
+test vm::jit::middle::joint_plan::build::tests::entry_param_footprint_uses_backend_suffix_selection_for_gp32_pairs ... ok
+test vm::jit::middle::joint_plan::region_solver::tests::calls_on_statically_trapping_paths_do_not_tax_cache_residency ... ok
+test vm::jit::middle::joint_plan::region_solver::tests::nomination_clamps_to_preserved_capacity_by_descending_relief ... ok
+test vm::jit::middle::joint_plan::region_solver::tests::nomination_never_selects_ref_locals ... ok
+test vm::jit::middle::joint_plan::region_solver::tests::feasible_extraction_backtracks_the_best_capacity_choice ... ok
+test vm::jit::middle::joint_plan::region_solver::tests::nomination_requires_relief_to_amortize_the_lane_overhead ... ok
+test vm::jit::middle::optimize::tests::folds_single_use_const_into_value_operand ... ok
+test vm::jit::middle::optimize::tests::folds_zero_value_operand_into_select ... ok
+test vm::jit::middle::optimize::tests::keeps_const_producer_when_value_is_used_by_call_args ... ok
+test vm::jit::middle::optimize::tests::keeps_const_producer_when_value_is_used_by_terminator ... ok
+test vm::jit::middle::rewrite::function::primitive_index_tests::primitive_hash_index_preserves_pool_ids_across_growth ... ok
+test vm::jit::middle::rewrite::edge::tests::br_table_edges_share_identical_boundary_repair_block ... ok
+test vm::jit::middle::sink_plan::tests::does_not_sink_across_call_barrier ... ok
+test vm::jit::middle::sink_plan::tests::does_not_sink_before_an_older_cache_alias_is_spilled ... ok
+test vm::jit::middle::sink_plan::tests::does_not_sink_when_old_value_is_read_between_producer_and_set ... ok
+test vm::jit::middle::sink_plan::tests::sinks_leaf_op_consuming_cache_value ... ok
+test vm::jit::middle::sink_plan::tests::sinks_scalar_call_result_into_local_set_cache ... ok
+test vm::jit::middle::sink_plan::tests::sinks_single_result_value_into_local_set_cache ... ok
+test vm::jit::middle::sink_plan::tests::sinks_when_different_slot_is_read_between_producer_and_set ... ok
+test vm::jit::middle::ssa_ir::ir::entry_cache_requirement_tests::batched_requirements_match_scalar_first_touch_semantics ... ok
+test vm::jit::middle::tests::boundary::prepared_ssa_keeps_surviving_carried_local_in_branch_entry ... ok
+test vm::jit::middle::tests::boundary::prepared_ssa_trims_carried_local_when_branch_block_never_uses_it_and_pressure_drops_it ... ok
+test vm::jit::middle::tests::boundary::prepared_ssa_trims_multi_carried_entry_down_to_the_hot_survivor ... ok
+test vm::jit::middle::tests::boundary::prepared_ssa_keeps_unused_carried_local_when_branch_block_can_carry_it_through ... ok
+test vm::jit::middle::tests::boundary::prepared_ssa_uses_trimmed_final_entry_for_branch_block ... ok
+test vm::jit::middle::tests::calls::barrier_calls_still_kill_nominated_residents ... ok
+test vm::jit::middle::tests::calls::call_barrier_rebuilds_local_access_after_flush ... ok
+test vm::jit::middle::tests::calls::entry_block_does_not_preload_local_used_only_after_call_barrier ... ok
+test vm::jit::middle::tests::calls::hot_repeated_local_can_stay_public_across_call ... ok
+test vm::jit::middle::tests::calls::nominated_resident_survives_a_direct_local_call_in_the_plan ... ok
+test vm::jit::middle::tests::calls::bounded_counter_reload_is_forwarded ... ok
+test vm::jit::middle::tests::cleanup::prepared_ssa_contains_no_empty_identity_goto_blocks_after_cleanup ... ok
+test vm::jit::middle::tests::cleanup::synthetic_entry_repair_block_is_merged_into_entry_block ... ok
+test vm::jit::middle::tests::const_fold::prepared_ssa_absorbs_single_use_const_into_arithmetic_operand ... ok
+test vm::jit::middle::tests::entry_state::block_open_keeps_structural_entry_stack_even_when_that_leaves_no_room_for_local_cache ... ok
+test vm::jit::middle::tests::entry_state::block_open_prefers_hotter_local_when_only_one_cache_slot_remains_after_entry_stack_pressure ... ok
+test vm::jit::middle::tests::const_fold::prepared_ssa_folds_fully_constant_expression_to_single_const ... ok
+test vm::jit::middle::tests::loops::entry_block_hot_local_preload_uses_one_synthetic_entry_repair ... ok
+test vm::jit::middle::tests::entry_state::block_open_uses_per_bank_budget_so_gp_pressure_does_not_block_hot_fp_local ... ok
+test vm::jit::middle::tests::loops::hot_loop_header_needs_no_cache_repair_when_all_incoming_edges_already_match ... ok
+test vm::jit::middle::tests::loops::hot_loop_body_keeps_hot_local_in_final_entry_with_at_most_one_cold_ensure ... ok
+test vm::jit::middle::tests::loops::local_get_uses_cache_when_local_is_already_resident_and_budget_has_result_room ... ok
+test vm::jit::middle::tests::loops::loop_dispatch_header_keeps_hot_pass_through_locals_across_backedge ... ok
+test vm::jit::middle::tests::loops::hot_loop_header_needs_repair_on_at_most_one_incoming_edge ... ok
+test vm::jit::middle::tests::loops::loop_header_trims_cold_carried_local_so_only_the_cold_edge_needs_repair ... ok
+test vm::jit::middle::tests::loops::region_solver_keeps_higher_value_stable_layout_when_child_capacity_competes ... ok
+test vm::jit::middle::tests::simd::prepare_accepts_v128_locals ... ok
+test vm::jit::middle::tests::loops::write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair ... ok
+test vm::jit::middle::tests::simd::prepare_accepts_v128_primitives ... ok
+test vm::jit::middle::tests::typed_blocks::br_if_value_inside_void_block_keeps_fallthrough_value_live_for_following_unary_op ... ok
+test vm::jit::middle::tests::typed_blocks::structured_branch_target_keeps_exact_transient_entry_at_end_block_open ... ok
+test vm::jit::middle::tests::loops::loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies ... ok
+test vm::jit::middle::tests::typed_blocks::br_on_null_fallthrough_value_prepares_successfully ... ok
+test vm::jit::middle::tests::typed_blocks::br_on_non_null_branch_payload_prepares_successfully ... ok
+test vm::jit::middle::tests::typed_blocks::typed_block_param_identity_preserves_two_live_values_for_following_binary_op ... ok
+test vm::jit::middle::tests::typed_blocks::typed_block_break_inner_sequence_prepares_successfully ... ok
+test vm::jit::middle::tests::typed_blocks::typed_block_passthrough_keeps_all_param_values_live_on_identity_edge ... ok
+test vm::jit::runtime::code_buf::tests::allocates_and_writes_bytes ... ok
+test vm::jit::middle::tests::typed_blocks::typed_loop_block_start_keeps_loop_params_live ... ok
+test vm::jit::middle::tests::typed_blocks::typed_block_sequence_from_block_wast_type_use_prepares_successfully ... ok
+test vm::jit::runtime::code_buf::tests::overflow_is_sticky_and_inert ... ok
+test vm::jit::middle::tests::typed_blocks::typed_loop_br_if_backedge_keeps_loop_payload_live_for_fallthrough_and_reentry ... ok
+test vm::jit::runtime::context::tests::refresh_function_views_canonicalizes_equivalent_host_signatures ... ok
+test vm::jit::runtime::context::tests::refresh_function_views_canonicalizes_equivalent_type_indices ... ok
+test vm::jit::runtime::layout::tests::fixed_call_table_entry_abi_layout_matches_host_offsets ... ok
+test vm::jit::runtime::context::tests::self_absolute_function_views_follow_encoded_order_after_local_prefix ... ok
+test vm::jit::runtime::layout::tests::fixed_call_table_view_abi_layout_matches_host_offsets ... ok
+test vm::jit::runtime::layout::tests::function_view_abi_layout_matches_host_offsets ... ok
+test vm::jit::runtime::layout::tests::host_width_runtime_layout_matches_host_struct_offsets ... ok
+test vm::jit::runtime::layout::tests::pointer_len_abi_layout_matches_host_view_offsets ... ok
+test vm::jit::runtime::layout::tests::sixty_four_bit_local_call_info_layout_matches_record ... ok
+test vm::jit::runtime::layout::tests::thirty_two_bit_local_call_info_layout_matches_record ... ok
+test vm::jit::runtime::layout::tests::thirty_two_bit_runtime_layout_uses_pointer_sized_views ... ok
+test vm::jit::runtime::preserved::ops::tests::memory_grow_success_check_uses_selected_error_sentinel ... ok
+test vm::jit::runtime::preserved::ops::tests::memory_grow_uses_unsigned_delta_for_32_bit_memories ... ok
+test vm::jit::runtime::runtime_call::entry::tests::runtime_call_reads_dynamic_target_slot ... ok
+test vm::jit::runtime::trap_signal::tests::clear_registered_jit_ranges_drops_stale_entries ... ok
+test vm::jit::runtime::trap_signal::tests::reset_debug_state_clears_signal_counter ... ok
+test vm::jit::runtime::runtime_call::entry::tests::runtime_call_marshals_frame_slots ... ok
+test vm::jit::runtime::trap_signal::tests::unregister_jit_ranges_in_drops_only_overlapping_entries ... ok
+test vm::jit::template::tests::template_scan_rejects_memory_without_memory0 ... ok
+test vm::jit::template::tests::template_scan_accepts_valid_i32_memory_access ... ok
+test vm::jit::template::tests::template_scan_rejects_result_type_mismatch ... ok
+test vm::jit::wasm::sir::semantic_ir::tests::accepts_structured_control_result_types ... ok
+test vm::jit::wasm::sir::semantic_ir::tests::rejects_out_of_range_branch_target ... ok
+test vm::jit::wasm::sir::semantic_ir::tests::rejects_mismatched_return_arity ... ok
+test vm::jit::wasm::sir::semantic_ir::tests::rejects_out_of_range_local_access ... ok
+test vm::link::instance_table_tests::abandoning_maximum_generation_retires_slot ... ok
+test vm::link::instance_table_tests::checkout_rejects_generation_mismatch ... ok
+test vm::link::instance_table_tests::free_rejects_checked_out_slot ... ok
+test vm::link::instance_table_tests::maximum_generation_retires_slot ... ok
+test vm::link::instance_table_tests::lease_release_reclaims_after_the_last_checkout ... ok
+test vm::link::instance_table_tests::pending_reservations_are_distinct_and_abandoned_slots_reuse ... ok
+test vm::link::instance_table_tests::miri_instance_table_scopes_materializations ... ok
+test vm::link::tests::shared_registry_owns_exception_payloads ... ok
+test vm::link::instance_table_tests::two_checkout_tokens_can_coexist ... ok
+test vm::value::tests::function_address_range_endpoints_round_trip_at_both_gp_widths ... ok
+test vm::value::tests::default_scalar_values_match_their_types ... ok
+test vm::value::tests::v128_values_report_their_type_and_default ... ok
+test vm::interpreter::engine::tests::caller_call_fixup_gate_matches_the_legacy_match_for_all_ops_and_flags ... ok
+test vm::interpreter::engine::tests::cached_native_guard_matches_uncached_handler_addresses ... ok
+test vm::interpreter::predecode::tests::fourteen_thousand_functions_share_transient_allocation_owners ... ok
+test vm::interpreter::layout::tests::specialized_op_slot_matches_generic_reference ... ok
+
+test result: ok. 531 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.14s
+
+     Running tests/array_ops.rs (target/x86_64-apple-darwin/debug/deps/array_ops-cafb334c4301d83f)
+
+running 8 tests
+test array_get_oob_traps_via_param_ref ... ok
+test array_set_roundtrip ... ok
+test array_get_oob_traps ... ok
+test array_get_s_u_packed ... ok
+test array_get_oob_traps_after_unrelated_call ... ok
+test array_get_oob_traps_via_call ... ok
+test array_len_returns_length ... ok
+test array_get_oob_traps_after_many_allocations ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/bulk_memory.rs (target/x86_64-apple-darwin/debug/deps/bulk_memory-ce12b9574c193b6e)
+
+running 4 tests
+test bulk_memory_bounds_trap_unwinds_helper_frame ... ok
+test bulk_memory_preserves_c_argument_lanes ... ok
+test adjacent_fill_copy_fusion_matches_sequential_effects_and_traps ... ok
+test interpreter_overlapping_copy_matches_memmove_across_block_boundaries ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/byte_copy_loop.rs (target/x86_64-apple-darwin/debug/deps/byte_copy_loop-967d9cd47e924904)
+
+running 1 test
+test copying_matches_byte_loop_including_partial_writes_before_trap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/floating_arithmetic.rs (target/x86_64-apple-darwin/debug/deps/floating_arithmetic-086fe96aef1d02ed)
+
+running 1 test
+test scalar_arithmetic_preserves_live_operands_and_ieee_results ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/integer_sums.rs (target/x86_64-apple-darwin/debug/deps/integer_sums-d52e858f20cb308c)
+
+running 3 tests
+test sum_of_wrapped_i64_inputs_discards_high_halves ... ok
+test sums_preserve_inputs_and_branch_on_wrapped_result ... ok
+test arithmetic_conditions_survive_stores_and_use_the_requested_width ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/interp_diff.rs (target/x86_64-apple-darwin/debug/deps/interp_diff-2925833429ded380)
+
+running 10 tests
+test diff_globals_and_bulk_memory ... ok
+test diff_i64_and_conversions ... ok
+test diff_memory_sieve ... ok
+test diff_duplicate_heavy_br_table_with_edge_values ... ok
+test diff_float_iteration ... ok
+test diff_call_indirect ... ok
+test diff_br_table_machine ... ok
+test diff_multivalue_block ... ok
+test diff_fib_min_wasm_from_disk ... ok
+test diff_recursive_fib ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/interp_wasi.rs (target/x86_64-apple-darwin/debug/deps/interp_wasi-eeaf8ee614680aa1)
+
+running 2 tests
+test interpreter_runs_sha256_benchmark ... ignored, ~5 s under native dispatch but minutes on stage-A-only builds; run explicitly with --ignored
+test interpreter_runs_coremark ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/jump_table_membership.rs (target/x86_64-apple-darwin/debug/deps/jump_table_membership-3b6bef371a5ace95)
+
+running 1 test
+test repeated_table_edges_preserve_indices_with_stale_high_halves ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/smoke.rs (target/x86_64-apple-darwin/debug/deps/smoke-8e771a9cbf857092)
+
+running 6 tests
+test test_add ... ok
+test test_missing_export ... ok
+test test_fibonacci ... ok
+test test_code_arena_exhaustion_is_an_error ... ok
+test test_global_counter_loop_writes_back ... ok
+test test_add_negative ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/struct_new_wide.rs (target/x86_64-apple-darwin/debug/deps/struct_new_wide-cef26099f2689571)
+
+running 2 tests
+test struct_new_five_i32_fields_roundtrip ... ok
+test struct_new_eight_mixed_fields_roundtrip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests sf_nano_core
+
+running 3 tests
+test sf-nano-core/src/vm/entities.rs - vm::entities::Caller<'a>::throw (line 141) ... ignored
+test sf-nano-core/src/vm/instance.rs - vm::instance::RuntimeWorld (line 88) ... ignored
+test sf-nano-core/src/vm/jit/runtime/os/signal/mod.rs - vm::jit::runtime::os::signal (line 8) ... ignored
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

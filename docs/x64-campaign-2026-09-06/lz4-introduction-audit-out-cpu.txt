@@ -1,0 +1,7 @@
+
+
+Name         : AMD EPYC 9V74 80-Core Processor                
+Manufacturer : AuthenticAMD
+
+
+

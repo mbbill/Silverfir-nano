@@ -252,8 +252,9 @@ competitor anchor, so it cannot establish a ranking against V8/Cranelift.
 Windows LZ4 compression is a confirmed regression: primary -12.25%,
 independent confirmation -11.89%. The cross-run verdict step failed.
 The x64 JIT startup primary also flags bz2 -3.24%, spidermonkey -1.60%,
-ffmpeg -2.61%; ARM64 flags bz2 -1.91% and CoreMark -1.67%. Confirmation and
-final-report auditing continue. This run is not a pass.
+ffmpeg -2.61%; ARM64 flags bz2 -1.91% and CoreMark -1.67%. Independent confirmation reproduces x64 ffmpeg at -3.63% and ARM64
+CoreMark at -1.66%; both cross-run verdict steps failed. All 34 jobs are
+finished, with these two failures plus Windows LZ4. This run is not a pass.
 
 ### Pending dead-frame-store elimination (`dc549134`)
 
@@ -268,3 +269,102 @@ Validation: 527 x64 units, 561 ARM64 units, both complete core integration
 suites, all 260 x64 spec files, and CoreMark's own result validation. Native
 measurement is pending, including a separate variant with loop caching off
 to quantify its benefit and its possible role in the CI regressions.
+
+
+### Frame stores and loop caching measured independently
+
+[Run 34035026753](https://github.com/mbbill/Silverfir-nano/actions/runs/34035026753)
+compares main, float conversion (`886d1d57`), dead stores (`dc549134`), and
+that revision with loop caching removed. Both jobs finish without failed
+steps or compiler warnings. Four alternating process pairs:
+
+| Comparison | EPYC 7763 | Xeon 6973P-C |
+|---|---:|---:|
+| float / main | +2.91% | +6.92% |
+| dead stores / main | +2.90% | +8.05% |
+| dead stores / float | -0.01% | +1.06% |
+| no loop cache / dead stores | -0.41% | -5.16% |
+
+Dead-store removal is neutral on AMD and inconclusive on this Intel draw
+(P(improvement) 77.43%). Disabling loop caching loses performance in both
+samples, with P(regression) 96.39% / 97.86%; this remains diagnostic evidence,
+not the stronger full dev gate. Keep the cache pending its faster analysis
+and full-corpus results. Samples, CPU identities and the exact no-cache patch
+are in `dse-{1,2}-*`.
+
+### Windows LZ4 isolation
+
+[Run 34034965927](https://github.com/mbbill/Silverfir-nano/actions/runs/34034965927)
+retains a failed regression step in its introduction job. Measurements use
+the existing paired performance harness and unchanged guest validation:
+
+| Baseline → candidate | CPU | Compression | Decompression |
+|---|---|---:|---:|
+| corrected `35e315c6` → loop `9a820828` | EPYC 9V74 | -17.97% REGRESSION | +10.29% IMPROVEMENT |
+| loop → flags + ALU removal `431b2062` | EPYC 7763 | +14.59% IMPROVEMENT | +0.89% PASS |
+| `431b2062` → same, loop cache removed | EPYC 7763 | +0.12% PASS | +0.77% RECOVERED |
+
+The recovery measures flags and ALU removal together; it does not attribute
+the recovery solely to ALU removal. Different CPU draws cannot be chained
+into a precise recovered percentage. Loop-cache removal alone does not help
+compression here. All metrics, source identities and patches are in
+`lz4-{introduction,recovery,nocache}-*`.
+
+The preceding audit run 34034632719 failed before measurement because the
+root lint scan saw deliberately invalid lint-policy test fixtures inside
+nested source checkouts. The workflow now audits its root before those
+checkouts and audits each source from its own root. No lint exception or
+suppression was added.
+
+### Current unmeasured candidates
+
+`3267e4de` computes register-mention masks once per block during loop-cache
+analysis; high register IDs retain the original exact scan. Masks are updated
+after rewrites. The optimization targets JIT compile-time overhead without
+changing which registers a loop can cache. `39ba77b3` lowers sufficiently
+small, duplicate-heavy jump tables to exact unsigned range/bit-membership
+branches, preserving complete edges and arguments. Both generic forms have
+unit coverage; jump-table integration tests also exercise wrapped 64-bit
+indices and out-of-range values. Full dev run
+[34035799241](https://github.com/mbbill/Silverfir-nano/actions/runs/34035799241)
+is measuring their combined revision with the earlier fixes.
+
+`fca23555` reuses an existing right-hand result lane for scalar float ADD/MUL,
+avoiding two MOVAPS in affected nbody loops. SUB/DIV retain ordered operands.
+The new integration test covers both float widths, either live input, signed
+zeros, subnormals, infinities and quiet/signaling NaNs. Default x64 validation:
+531 unit tests and the full integration suite, without compiler warnings;
+ARM64 passes the new semantic test. The x64 spec runner completes with exit 0.
+The private CoreMark/nbody experiment compares this change to its exact
+parent and captures native samples after timing. No performance win is yet
+claimed for these candidates.
+
+### Existing JIT-only unit-test warnings (left unresolved)
+
+`cargo +1.98.1 test -p sf-nano-core --no-default-features --features
+jit,guard-pages --target x86_64-apple-darwin --lib --no-run` emits two
+dead-code warnings in `op_decoder.rs`: `Decoder::predecode_fast_disabled`
+and `disable_predecode_fast_for_test`. The field and helper serve the
+interpreter predecoder's differential tests. The same warnings reproduce on
+main `f73219f5` in the isolated diagnostic checkout; default features do not
+warn. This configuration is an action-required warning audit despite the
+unit assertions succeeding. It implicates shared-decoder/interpreter test
+ownership; it has not been patched with cfg gates or lint suppressions.
+
+
+### Current full wasmi primary results (`39ba77b3`)
+
+Run 34035799241 finishes the full 20-item execution primary at +22.0269%
+throughput geomean on Intel 8573C and +4.7056% on ARM Neoverse N2, including
+all negative metrics. Intel spectralnorm is +221.98%, sort +42.24%, Argon2
++233.51%, reverse_complement +101.58%, fibonacci-tail +71.09%. Intel
+tiny_keccak remains -6.86% PLACEMENT and bulk-ops -1.86% PASS. These are
+Nano-versus-main results; the older competitor anchor gives a useful
+projection but cannot establish a new same-host ranking.
+
+The x64 JIT startup primary on AMD 7763 flags bz2 -3.89%, pulldown-cmark
+-3.03%, spidermonkey -2.63%, ffmpeg -3.50%. The register-mask change has not
+removed the startup regression. Windows LZ4 primary still flags -5.83%.
+Independent confirmation remains pending; these failures are not waived by
+the execution gains. All execution rows and x64 startup samples are in
+`current-dev-*-comparison.json` with their original summaries.

@@ -1,0 +1,33 @@
+   Compiling leb128fmt v0.1.0
+   Compiling memchr v2.8.0
+   Compiling paste v1.0.15
+   Compiling unicode-width v0.2.2
+   Compiling bumpalo v3.20.2
+   Compiling sf-nano-core v0.1.0 (/private/tmp/sf-x64-diagnostics/sf-nano-core)
+   Compiling sf-nano-tracked-alloc v0.1.0 (/private/tmp/sf-x64-diagnostics/tools/tracked-alloc)
+   Compiling wasm-encoder v0.246.2
+   Compiling wast v246.0.2
+   Compiling wat v1.246.2
+warning: field `predecode_fast_disabled` is never read
+   --> sf-nano-core/src/op_decoder.rs:300:5
+    |
+286 | pub struct Decoder<'a, 'b> {
+    |            ------- field in this struct
+...
+300 |     predecode_fast_disabled: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `disable_predecode_fast_for_test` is never used
+   --> sf-nano-core/src/op_decoder.rs:322:19
+    |
+303 | impl<'a, 'b> Decoder<'a, 'b> {
+    | ---------------------------- method in this implementation
+...
+322 |     pub(crate) fn disable_predecode_fast_for_test(&mut self) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `sf-nano-core` (lib test) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.00s
+  Executable unittests src/lib.rs (target/x86_64-apple-darwin/debug/deps/sf_nano_core-87f8e20eb42e6345)

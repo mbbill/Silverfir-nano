@@ -1,0 +1,14 @@
+[
+  {
+    "name": "lz4-compress",
+    "unit": "MB/s",
+    "value": 580.3690259960506,
+    "range": 15.460000000000036
+  },
+  {
+    "name": "lz4-decompress",
+    "unit": "MB/s",
+    "value": 1247.597819158395,
+    "range": 72.31999999999994
+  }
+]

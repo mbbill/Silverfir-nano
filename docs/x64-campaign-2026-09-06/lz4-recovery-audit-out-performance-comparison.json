@@ -1,0 +1,590 @@
+{
+  "schema_version": 9,
+  "model": "paired-log-student-t-family-corrected-adaptive-confirmation",
+  "created_at": "2026-09-06T13:08:34.438578+00:00",
+  "platform": "x64-windows",
+  "engine": "jit",
+  "baseline_sha": "9a8208289a883c08f0c93e1340ed837f8da74eab",
+  "candidate_sha": "431b2062b9260d67b0eadfcd9e00f9a0959f050b;remove_loop_cache=false",
+  "target_seconds": 2.0,
+  "custom_target_argument_tests": [],
+  "initial_pairs": 4,
+  "minimum_pairs": 6,
+  "maximum_pairs": 16,
+  "pilot_probability": 0.8,
+  "regression_probability": 0.9998999999999999,
+  "improvement_probability": 0.9998999999999999,
+  "effective_regression_probability": 0.9999972222222222,
+  "effective_improvement_probability": 0.9999972222222222,
+  "family_metric_count": 2,
+  "family_job_count": 3,
+  "maximum_confirmation_looks": 6,
+  "identical_binaries": false,
+  "excluded_selectors": [],
+  "tests": {
+    "lz4/lz4.wasm": {
+      "runs": [
+        {
+          "block": 0,
+          "slot": 0,
+          "version": "baseline",
+          "elapsed_seconds": 2.3899999999999864,
+          "metric_text": "lz4 compress: throughput = 507.40 MB/s; lz4 decompress: throughput = 1345.14 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 507.4,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1345.14,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 0,
+          "slot": 1,
+          "version": "candidate",
+          "elapsed_seconds": 2.375,
+          "metric_text": "lz4 compress: throughput = 575.42 MB/s; lz4 decompress: throughput = 1321.15 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 575.42,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1321.15,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 0,
+          "slot": 2,
+          "version": "baseline",
+          "elapsed_seconds": 2.4220000000000255,
+          "metric_text": "lz4 compress: throughput = 501.58 MB/s; lz4 decompress: throughput = 1305.67 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 501.58,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1305.67,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 0,
+          "slot": 3,
+          "version": "candidate",
+          "elapsed_seconds": 2.3909999999999627,
+          "metric_text": "lz4 compress: throughput = 578.65 MB/s; lz4 decompress: throughput = 1333.41 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 578.65,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1333.41,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 1,
+          "slot": 0,
+          "version": "candidate",
+          "elapsed_seconds": 2.3590000000000373,
+          "metric_text": "lz4 compress: throughput = 578.60 MB/s; lz4 decompress: throughput = 1333.21 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 578.6,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1333.21,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 1,
+          "slot": 1,
+          "version": "baseline",
+          "elapsed_seconds": 2.437999999999988,
+          "metric_text": "lz4 compress: throughput = 505.74 MB/s; lz4 decompress: throughput = 1287.13 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 505.74,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1287.13,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 1,
+          "slot": 2,
+          "version": "candidate",
+          "elapsed_seconds": 2.406000000000006,
+          "metric_text": "lz4 compress: throughput = 577.88 MB/s; lz4 decompress: throughput = 1329.52 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 577.88,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1329.52,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 1,
+          "slot": 3,
+          "version": "baseline",
+          "elapsed_seconds": 2.3899999999999864,
+          "metric_text": "lz4 compress: throughput = 509.26 MB/s; lz4 decompress: throughput = 1333.33 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 509.26,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1333.33,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 2,
+          "slot": 0,
+          "version": "baseline",
+          "elapsed_seconds": 2.375,
+          "metric_text": "lz4 compress: throughput = 511.15 MB/s; lz4 decompress: throughput = 1339.68 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 511.15,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1339.68,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 2,
+          "slot": 1,
+          "version": "candidate",
+          "elapsed_seconds": 2.375,
+          "metric_text": "lz4 compress: throughput = 584.29 MB/s; lz4 decompress: throughput = 1330.00 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 584.29,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1330.0,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 2,
+          "slot": 2,
+          "version": "baseline",
+          "elapsed_seconds": 2.3910000000000196,
+          "metric_text": "lz4 compress: throughput = 501.92 MB/s; lz4 decompress: throughput = 1333.52 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 501.92,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1333.52,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 2,
+          "slot": 3,
+          "version": "candidate",
+          "elapsed_seconds": 2.406000000000006,
+          "metric_text": "lz4 compress: throughput = 579.83 MB/s; lz4 decompress: throughput = 1325.71 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 579.83,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1325.71,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 3,
+          "slot": 0,
+          "version": "candidate",
+          "elapsed_seconds": 2.343999999999994,
+          "metric_text": "lz4 compress: throughput = 585.38 MB/s; lz4 decompress: throughput = 1342.72 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 585.38,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1342.72,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 3,
+          "slot": 1,
+          "version": "baseline",
+          "elapsed_seconds": 2.3909999999999627,
+          "metric_text": "lz4 compress: throughput = 507.20 MB/s; lz4 decompress: throughput = 1338.40 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 507.2,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1338.4,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 3,
+          "slot": 2,
+          "version": "candidate",
+          "elapsed_seconds": 2.390000000000043,
+          "metric_text": "lz4 compress: throughput = 584.42 MB/s; lz4 decompress: throughput = 1331.01 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 584.42,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1331.01,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 3,
+          "slot": 3,
+          "version": "baseline",
+          "elapsed_seconds": 2.4219999999999686,
+          "metric_text": "lz4 compress: throughput = 513.28 MB/s; lz4 decompress: throughput = 1333.88 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 513.28,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1333.88,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 4,
+          "slot": 0,
+          "version": "baseline",
+          "elapsed_seconds": 2.375,
+          "metric_text": "lz4 compress: throughput = 511.27 MB/s; lz4 decompress: throughput = 1325.86 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 511.27,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1325.86,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 4,
+          "slot": 1,
+          "version": "candidate",
+          "elapsed_seconds": 2.4220000000000255,
+          "metric_text": "lz4 compress: throughput = 578.76 MB/s; lz4 decompress: throughput = 1317.08 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 578.76,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1317.08,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 4,
+          "slot": 2,
+          "version": "baseline",
+          "elapsed_seconds": 2.5159999999999627,
+          "metric_text": "lz4 compress: throughput = 507.64 MB/s; lz4 decompress: throughput = 1327.81 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111346)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 507.64,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1327.81,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        },
+        {
+          "block": 4,
+          "slot": 3,
+          "version": "candidate",
+          "elapsed_seconds": 2.390000000000043,
+          "metric_text": "lz4 compress: throughput = 585.10 MB/s; lz4 decompress: throughput = 1337.57 MB/s  [x86_64] (func:79, ssa:17238, mir:10557, code:111759)",
+          "metrics": {
+            "lz4-compress": {
+              "value": 585.1,
+              "unit": "MB/s",
+              "direction": "higher"
+            },
+            "lz4-decompress": {
+              "value": 1337.57,
+              "unit": "MB/s",
+              "direction": "higher"
+            }
+          }
+        }
+      ],
+      "initial_blocks": 2,
+      "confirmation_blocks": 3,
+      "confirmation_looks": [
+        6
+      ],
+      "candidate_metrics": [
+        "lz4-compress"
+      ],
+      "metrics": {
+        "lz4-compress": {
+          "unit": "MB/s",
+          "direction": "higher",
+          "baseline_samples": [
+            511.15,
+            501.92,
+            507.2,
+            513.28,
+            511.27,
+            507.64
+          ],
+          "candidate_samples": [
+            584.29,
+            579.83,
+            585.38,
+            584.42,
+            578.76,
+            585.1
+          ],
+          "baseline_geomean": 508.72970830076184,
+          "candidate_geomean": 582.9573494777336,
+          "pair_count": 6,
+          "log_deltas": [
+            0.1337343457149355,
+            0.14429421268661016,
+            0.14335580587741623,
+            0.12979839718769048,
+            0.12399005747262787,
+            0.1420102378522268
+          ],
+          "mean_log_ratio": 0.13619717613191784,
+          "log_ratio_stddev": 0.008326143392557751,
+          "standard_error": 0.003399133806168691,
+          "probability_regression": 9.128106225041179e-08,
+          "probability_improvement": 0.9999999087189377,
+          "delta_percent": 14.590781699166794,
+          "volatility_percent": 0.8360902126216492,
+          "pair_deltas_percent": [
+            14.308911278489678,
+            15.522394007013073,
+            15.414037854889596,
+            13.859881546134664,
+            13.200461595634394,
+            15.258844850681582
+          ],
+          "initial": {
+            "unit": "MB/s",
+            "direction": "higher",
+            "baseline_samples": [
+              507.4,
+              501.58,
+              505.74,
+              509.26
+            ],
+            "candidate_samples": [
+              575.42,
+              578.65,
+              578.6,
+              577.88
+            ],
+            "baseline_geomean": 505.9870315130748,
+            "candidate_geomean": 577.6359986158213,
+            "pair_count": 4,
+            "log_deltas": [
+              0.1258005617771248,
+              0.14293468817859487,
+              0.1345886893045889,
+              0.1264075430263957
+            ],
+            "mean_log_ratio": 0.13243287057167608,
+            "log_ratio_stddev": 0.00806696596068113,
+            "standard_error": 0.004033482980340565,
+            "probability_regression": 3.1048860397389896e-05,
+            "probability_improvement": 0.9999689511396026,
+            "delta_percent": 14.160237840185605,
+            "volatility_percent": 0.8099591601556729,
+            "pair_deltas_percent": [
+              13.405597162002358,
+              15.365445193189519,
+              14.406612093170404,
+              13.474453128068188
+            ]
+          },
+          "candidate_direction": "improvement",
+          "pilot_direction_probability": 0.9999689511396026,
+          "selected": true,
+          "target_pairs": 6,
+          "status": "IMPROVEMENT"
+        },
+        "lz4-decompress": {
+          "unit": "MB/s",
+          "direction": "higher",
+          "baseline_samples": [
+            1345.14,
+            1305.67,
+            1287.13,
+            1333.33
+          ],
+          "candidate_samples": [
+            1321.15,
+            1333.41,
+            1333.21,
+            1329.52
+          ],
+          "baseline_geomean": 1317.620199746832,
+          "candidate_geomean": 1329.313203895489,
+          "pair_count": 4,
+          "log_deltas": [
+            -0.017995527421739085,
+            0.02102325181217871,
+            0.03517463455956903,
+            -0.002861597611525162
+          ],
+          "mean_log_ratio": 0.008835190334620874,
+          "log_ratio_stddev": 0.023797881055802994,
+          "standard_error": 0.011898940527901497,
+          "probability_regression": 0.2558133084959534,
+          "probability_improvement": 0.7441866915040466,
+          "delta_percent": 0.887433582978111,
+          "volatility_percent": 2.4083310333797403,
+          "pair_deltas_percent": [
+            -1.7834574839793675,
+            2.1245797176928427,
+            3.5800579584035708,
+            -0.2857507143767868
+          ],
+          "initial": {
+            "unit": "MB/s",
+            "direction": "higher",
+            "baseline_samples": [
+              1345.14,
+              1305.67,
+              1287.13,
+              1333.33
+            ],
+            "candidate_samples": [
+              1321.15,
+              1333.41,
+              1333.21,
+              1329.52
+            ],
+            "baseline_geomean": 1317.620199746832,
+            "candidate_geomean": 1329.313203895489,
+            "pair_count": 4,
+            "log_deltas": [
+              -0.017995527421739085,
+              0.02102325181217871,
+              0.03517463455956903,
+              -0.002861597611525162
+            ],
+            "mean_log_ratio": 0.008835190334620874,
+            "log_ratio_stddev": 0.023797881055802994,
+            "standard_error": 0.011898940527901497,
+            "probability_regression": 0.2558133084959534,
+            "probability_improvement": 0.7441866915040466,
+            "delta_percent": 0.887433582978111,
+            "volatility_percent": 2.4083310333797403,
+            "pair_deltas_percent": [
+              -1.7834574839793675,
+              2.1245797176928427,
+              3.5800579584035708,
+              -0.2857507143767868
+            ]
+          },
+          "candidate_direction": "improvement",
+          "pilot_direction_probability": 0.7441866915040466,
+          "selected": false,
+          "target_pairs": null,
+          "status": "PASS"
+        }
+      }
+    }
+  }
+}

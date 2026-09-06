@@ -1,0 +1,2563 @@
+{
+  "schema_version": 1,
+  "model": "criterion-samples-paired-log-student-t-family-corrected-adaptive-confirmation",
+  "created_at": "2026-09-06T13:40:53.492101+00:00",
+  "platform": "x64-linux",
+  "engine": "jit",
+  "category": "startup",
+  "baseline_sha": "f73219f56a70b77028f0d79730c7efca29ba3439",
+  "candidate_sha": "39ba77b3166801b397bd997577dd2c24b28a2307",
+  "wasmi_benchmarks_repository": "https://github.com/wasmi-labs/wasmi-benchmarks",
+  "wasmi_benchmarks_revision": "16a3d7c8fdb05506c116a9451175732d1ac77099",
+  "cargo_criterion_version": "cargo-criterion 1.1.0",
+  "criterion_samples_per_run": 10,
+  "pilot_probability": 0.8,
+  "regression_probability": 0.9998999999999999,
+  "improvement_probability": 0.9998999999999999,
+  "effective_regression_probability": 0.999999537037037,
+  "effective_improvement_probability": 0.999999537037037,
+  "shard_metric_count": 7,
+  "family_metric_count": 27,
+  "family_job_count": 4,
+  "maximum_confirmation_looks": 2,
+  "identical_runtime": false,
+  "builds": {
+    "baseline": {
+      "sf_nano_manifest": "/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/sf-nano-core/Cargo.toml",
+      "runtime_adapters": [
+        "rt-silverfir-nano"
+      ],
+      "feature": "silverfir-nano-jit",
+      "local_manifests": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/sf-nano-core/Cargo.toml",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/tools/tracked-alloc/Cargo.toml"
+      ],
+      "target": "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-target/x64-linux/jit/baseline",
+      "elapsed_seconds": 173.645750746,
+      "runtime_fingerprint": "2af333695983f9f2793178be1c9c29b60f4307bf40b440d466980892f9d5a0da",
+      "source_revision": "f73219f56a70b77028f0d79730c7efca29ba3439"
+    },
+    "candidate": {
+      "sf_nano_manifest": "/home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-core/Cargo.toml",
+      "runtime_adapters": [
+        "rt-silverfir-nano"
+      ],
+      "feature": "silverfir-nano-jit",
+      "local_manifests": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-core/Cargo.toml",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/tools/tracked-alloc/Cargo.toml"
+      ],
+      "target": "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-target/x64-linux/jit/candidate",
+      "elapsed_seconds": 172.67672913799998,
+      "runtime_fingerprint": "214c4138c2bb57bdf8010753c668aa19b2fa806c650aae7515fddf604e4615b9",
+      "source_revision": "39ba77b3166801b397bd997577dd2c24b28a2307"
+    }
+  },
+  "pilot_pairs": {
+    "startup/bz2": {
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 7.722449194999967,
+        "benchmark_id": "startup/bz2/silverfir-nano.jit",
+        "iteration_count": [
+          1.0,
+          2.0,
+          3.0,
+          4.0,
+          5.0,
+          6.0,
+          7.0,
+          8.0,
+          9.0,
+          10.0
+        ],
+        "measured_values": [
+          52343189.0,
+          104338764.0,
+          156470885.0,
+          208734895.0,
+          261692781.0,
+          312884302.0,
+          364895826.0,
+          416296621.0,
+          469518564.0,
+          522309556.0
+        ],
+        "normalized_ns": [
+          52343189.0,
+          52169382.0,
+          52156961.666666664,
+          52183723.75,
+          52338556.2,
+          52147383.666666664,
+          52127975.14285714,
+          52037077.625,
+          52168729.333333336,
+          52230955.6
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 52167659.883116886,
+          "lower_bound": 52103725.16623791,
+          "upper_bound": 52223561.82377049,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 7.924170207999964,
+        "benchmark_id": "startup/bz2/silverfir-nano.jit",
+        "iteration_count": [
+          1.0,
+          2.0,
+          3.0,
+          4.0,
+          5.0,
+          6.0,
+          7.0,
+          8.0,
+          9.0,
+          10.0
+        ],
+        "measured_values": [
+          54383903.0,
+          108346633.0,
+          163150095.0,
+          217392932.0,
+          272508413.0,
+          326168433.0,
+          380297686.0,
+          435687743.0,
+          494560055.0,
+          552572389.0
+        ],
+        "normalized_ns": [
+          54383903.0,
+          54173316.5,
+          54383365.0,
+          54348233.0,
+          54501682.6,
+          54361405.5,
+          54328240.85714286,
+          54460967.875,
+          54951117.222222224,
+          55257238.9
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 54737667.47012987,
+          "lower_bound": 54375513.89072847,
+          "upper_bound": 55011613.94567003,
+          "unit": "ns"
+        }
+      }
+    },
+    "startup/pulldown-cmark": {
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 7.409145264000017,
+        "benchmark_id": "startup/pulldown-cmark/silverfir-nano.jit",
+        "iteration_count": [
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0
+        ],
+        "measured_values": [
+          244335283.0,
+          244526766.0,
+          244226268.0,
+          244716945.0,
+          244804040.0,
+          244525493.0,
+          245000671.0,
+          244332466.0,
+          244335337.0,
+          244310851.0
+        ],
+        "normalized_ns": [
+          122167641.5,
+          122263383.0,
+          122113134.0,
+          122358472.5,
+          122402020.0,
+          122262746.5,
+          122500335.5,
+          122166233.0,
+          122167668.5,
+          122155425.5
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 122255706.0,
+          "lower_bound": 122185230.91125001,
+          "upper_bound": 122333178.72875,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 7.533092119000003,
+        "benchmark_id": "startup/pulldown-cmark/silverfir-nano.jit",
+        "iteration_count": [
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0
+        ],
+        "measured_values": [
+          249262639.0,
+          249197297.0,
+          249752512.0,
+          249086758.0,
+          249785835.0,
+          253875914.0,
+          249735450.0,
+          249734428.0,
+          249696416.0,
+          249921800.0
+        ],
+        "normalized_ns": [
+          124631319.5,
+          124598648.5,
+          124876256.0,
+          124543379.0,
+          124892917.5,
+          126937957.0,
+          124867725.0,
+          124867214.0,
+          124848208.0,
+          124960900.0
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 125002452.45,
+          "lower_bound": 124719114.99749999,
+          "upper_bound": 125465568.475,
+          "unit": "ns"
+        }
+      }
+    },
+    "startup/spidermonkey": {
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 32.966246002999924,
+        "benchmark_id": "startup/spidermonkey/silverfir-nano.jit",
+        "iteration_count": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "measured_values": [
+          2706739596.0,
+          2712818959.0,
+          2729269286.0,
+          2719929675.0,
+          2706730396.0,
+          2710310901.0,
+          2711202738.0,
+          2707679244.0,
+          2710070686.0,
+          2705263092.0
+        ],
+        "normalized_ns": [
+          2706739596.0,
+          2712818959.0,
+          2729269286.0,
+          2719929675.0,
+          2706730396.0,
+          2710310901.0,
+          2711202738.0,
+          2707679244.0,
+          2710070686.0,
+          2705263092.0
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 2712001457.3,
+          "lower_bound": 2708254689.4825,
+          "upper_bound": 2716783142.6,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 33.78021970300006,
+        "benchmark_id": "startup/spidermonkey/silverfir-nano.jit",
+        "iteration_count": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "measured_values": [
+          2779456009.0,
+          2795773192.0,
+          2788088654.0,
+          2787439076.0,
+          2777309698.0,
+          2776774684.0,
+          2780488180.0,
+          2783275681.0,
+          2788978273.0,
+          2793713928.0
+        ],
+        "normalized_ns": [
+          2779456009.0,
+          2795773192.0,
+          2788088654.0,
+          2787439076.0,
+          2777309698.0,
+          2776774684.0,
+          2780488180.0,
+          2783275681.0,
+          2788978273.0,
+          2793713928.0
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 2785129737.5,
+          "lower_bound": 2781283016.62,
+          "upper_bound": 2789109222.375,
+          "unit": "ns"
+        }
+      }
+    },
+    "startup/ffmpeg": {
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 106.55414134199998,
+        "benchmark_id": "startup/ffmpeg/silverfir-nano.jit",
+        "iteration_count": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "measured_values": [
+          9400693908.0,
+          9426586427.0,
+          9408274819.0,
+          9382186430.0,
+          9391073068.0,
+          9380350877.0,
+          9386117504.0,
+          9398287671.0,
+          9381994154.0,
+          9381345241.0
+        ],
+        "normalized_ns": [
+          9400693908.0,
+          9426586427.0,
+          9408274819.0,
+          9382186430.0,
+          9391073068.0,
+          9380350877.0,
+          9386117504.0,
+          9398287671.0,
+          9381994154.0,
+          9381345241.0
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 9393691009.9,
+          "lower_bound": 9385716676.2625,
+          "upper_bound": 9403186272.985,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 111.466087958,
+        "benchmark_id": "startup/ffmpeg/silverfir-nano.jit",
+        "iteration_count": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "measured_values": [
+          9837924840.0,
+          9866894004.0,
+          9846794708.0,
+          9902359873.0,
+          9824012414.0,
+          9797893997.0,
+          9872485473.0,
+          9882421161.0,
+          9828118332.0,
+          9791791365.0
+        ],
+        "normalized_ns": [
+          9837924840.0,
+          9866894004.0,
+          9846794708.0,
+          9902359873.0,
+          9824012414.0,
+          9797893997.0,
+          9872485473.0,
+          9882421161.0,
+          9828118332.0,
+          9791791365.0
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 9845069616.7,
+          "lower_bound": 9823848738.7,
+          "upper_bound": 9866154723.67,
+          "unit": "ns"
+        }
+      }
+    },
+    "startup/coremark": {
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 6.892005241999982,
+        "benchmark_id": "startup/coremark/silverfir-nano.jit",
+        "iteration_count": [
+          6.0,
+          12.0,
+          18.0,
+          24.0,
+          30.0,
+          36.0,
+          42.0,
+          48.0,
+          54.0,
+          60.0
+        ],
+        "measured_values": [
+          37536919.0,
+          74998946.0,
+          112912814.0,
+          150339856.0,
+          186789398.0,
+          223427614.0,
+          262368476.0,
+          298679898.0,
+          344255470.0,
+          373172621.0
+        ],
+        "normalized_ns": [
+          6256153.166666667,
+          6249912.166666667,
+          6272934.111111111,
+          6264160.666666667,
+          6226313.266666667,
+          6206322.611111111,
+          6246868.476190476,
+          6222497.875,
+          6375101.296296297,
+          6219543.683333334
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 6258956.40995671,
+          "lower_bound": 6221478.267300813,
+          "upper_bound": 6317435.887341154,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 7.041210052999986,
+        "benchmark_id": "startup/coremark/silverfir-nano.jit",
+        "iteration_count": [
+          6.0,
+          12.0,
+          18.0,
+          24.0,
+          30.0,
+          36.0,
+          42.0,
+          48.0,
+          54.0,
+          60.0
+        ],
+        "measured_values": [
+          38824724.0,
+          79464956.0,
+          116625938.0,
+          155523499.0,
+          194307996.0,
+          233585873.0,
+          272184561.0,
+          312301429.0,
+          360507203.0,
+          402194907.0
+        ],
+        "normalized_ns": [
+          6470787.333333333,
+          6622079.666666667,
+          6479218.777777778,
+          6480145.791666667,
+          6476933.2,
+          6488496.472222222,
+          6480584.785714285,
+          6506279.770833333,
+          6676059.314814814,
+          6703248.45
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 6585713.818181818,
+          "lower_bound": 6487809.676632226,
+          "upper_bound": 6654542.472790575,
+          "unit": "ns"
+        }
+      }
+    },
+    "startup/argon2": {
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 6.591135254000051,
+        "benchmark_id": "startup/argon2/silverfir-nano.jit",
+        "iteration_count": [
+          2.0,
+          4.0,
+          6.0,
+          8.0,
+          10.0,
+          12.0,
+          14.0,
+          16.0,
+          18.0,
+          20.0
+        ],
+        "measured_values": [
+          37927872.0,
+          79184071.0,
+          114721513.0,
+          152838422.0,
+          190801229.0,
+          228849238.0,
+          271216408.0,
+          316956948.0,
+          359243636.0,
+          399323691.0
+        ],
+        "normalized_ns": [
+          18963936.0,
+          19796017.75,
+          19120252.166666668,
+          19104802.75,
+          19080122.9,
+          19070769.833333332,
+          19372600.57142857,
+          19809809.25,
+          19957979.777777776,
+          19966184.55
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 19661708.945454545,
+          "lower_bound": 19271608.733425483,
+          "upper_bound": 19858453.815400843,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 6.694028948999971,
+        "benchmark_id": "startup/argon2/silverfir-nano.jit",
+        "iteration_count": [
+          2.0,
+          4.0,
+          6.0,
+          8.0,
+          10.0,
+          12.0,
+          14.0,
+          16.0,
+          18.0,
+          20.0
+        ],
+        "measured_values": [
+          39264160.0,
+          78662823.0,
+          118490684.0,
+          162104651.0,
+          205919206.0,
+          247395701.0,
+          289256479.0,
+          320932274.0,
+          356397273.0,
+          395342753.0
+        ],
+        "normalized_ns": [
+          19632080.0,
+          19665705.75,
+          19748447.333333332,
+          20263081.375,
+          20591920.6,
+          20616308.416666668,
+          20661177.07142857,
+          20058267.125,
+          19799848.5,
+          19767137.65
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 20087931.467532467,
+          "lower_bound": 19865392.535134636,
+          "upper_bound": 20454749.246662796,
+          "unit": "ns"
+        }
+      }
+    },
+    "startup/erc20": {
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 6.513052997999921,
+        "benchmark_id": "startup/erc20/silverfir-nano.jit",
+        "iteration_count": [
+          8.0,
+          16.0,
+          24.0,
+          32.0,
+          40.0,
+          48.0,
+          56.0,
+          64.0,
+          72.0,
+          80.0
+        ],
+        "measured_values": [
+          36325596.0,
+          74238290.0,
+          116563330.0,
+          155893303.0,
+          194714767.0,
+          222285201.0,
+          266778930.0,
+          311804537.0,
+          350744817.0,
+          387826159.0
+        ],
+        "normalized_ns": [
+          4540699.5,
+          4639893.125,
+          4856805.416666667,
+          4871665.71875,
+          4867869.175,
+          4630941.6875,
+          4763909.464285715,
+          4871945.890625,
+          4871455.791666667,
+          4847826.9875
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 4825390.963636364,
+          "lower_bound": 4757791.485578328,
+          "upper_bound": 4863175.243135012,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 6.6191456909999715,
+        "benchmark_id": "startup/erc20/silverfir-nano.jit",
+        "iteration_count": [
+          8.0,
+          16.0,
+          24.0,
+          32.0,
+          40.0,
+          48.0,
+          56.0,
+          64.0,
+          72.0,
+          80.0
+        ],
+        "measured_values": [
+          37367640.0,
+          74810692.0,
+          116413866.0,
+          158353854.0,
+          197180551.0,
+          236856988.0,
+          277370740.0,
+          316813958.0,
+          355770690.0,
+          395533488.0
+        ],
+        "normalized_ns": [
+          4670955.0,
+          4675668.25,
+          4850577.75,
+          4948557.9375,
+          4929513.775,
+          4934520.583333333,
+          4953048.928571428,
+          4950218.09375,
+          4941259.583333333,
+          4944168.6
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 4938333.978896104,
+          "lower_bound": 4921463.0484104045,
+          "upper_bound": 4945205.347514205,
+          "unit": "ns"
+        }
+      }
+    }
+  },
+  "confirmation_pairs": {
+    "startup/bz2": [
+      {
+        "order": [
+          "candidate",
+          "baseline"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 7.73016381299999,
+          "benchmark_id": "startup/bz2/silverfir-nano.jit",
+          "iteration_count": [
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+            7.0,
+            8.0,
+            9.0,
+            10.0
+          ],
+          "measured_values": [
+            52172145.0,
+            104293464.0,
+            157014202.0,
+            208458337.0,
+            260842201.0,
+            312663095.0,
+            367536184.0,
+            418327991.0,
+            470010855.0,
+            524111291.0
+          ],
+          "normalized_ns": [
+            52172145.0,
+            52146732.0,
+            52338067.333333336,
+            52114584.25,
+            52168440.2,
+            52110515.833333336,
+            52505169.14285714,
+            52290998.875,
+            52223428.333333336,
+            52411129.1
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 52302369.92987013,
+            "lower_bound": 52192882.033444814,
+            "upper_bound": 52388386.49094769,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 7.9008454140000595,
+          "benchmark_id": "startup/bz2/silverfir-nano.jit",
+          "iteration_count": [
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+            7.0,
+            8.0,
+            9.0,
+            10.0
+          ],
+          "measured_values": [
+            54165033.0,
+            108894749.0,
+            162948141.0,
+            217365979.0,
+            272008992.0,
+            325464589.0,
+            380378341.0,
+            434451912.0,
+            492477513.0,
+            543403247.0
+          ],
+          "normalized_ns": [
+            54165033.0,
+            54447374.5,
+            54316047.0,
+            54341494.75,
+            54401798.4,
+            54244098.166666664,
+            54339763.0,
+            54306489.0,
+            54719723.666666664,
+            54340324.7
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 54409582.16623376,
+            "lower_bound": 54305579.88624531,
+            "upper_bound": 54560206.28469751,
+            "unit": "ns"
+          }
+        }
+      }
+    ],
+    "startup/pulldown-cmark": [
+      {
+        "order": [
+          "baseline",
+          "candidate"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 7.407092979000026,
+          "benchmark_id": "startup/pulldown-cmark/silverfir-nano.jit",
+          "iteration_count": [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0
+          ],
+          "measured_values": [
+            243827269.0,
+            243668309.0,
+            242546317.0,
+            242265318.0,
+            241849264.0,
+            242325421.0,
+            242529024.0,
+            242397146.0,
+            242724923.0,
+            242138369.0
+          ],
+          "normalized_ns": [
+            121913634.5,
+            121834154.5,
+            121273158.5,
+            121132659.0,
+            120924632.0,
+            121162710.5,
+            121264512.0,
+            121198573.0,
+            121362461.5,
+            121069184.5
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 121313568.0,
+            "lower_bound": 121143114.4725,
+            "upper_bound": 121514663.1,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 7.528130287999943,
+          "benchmark_id": "startup/pulldown-cmark/silverfir-nano.jit",
+          "iteration_count": [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0
+          ],
+          "measured_values": [
+            249093718.0,
+            249866392.0,
+            250056920.0,
+            250112034.0,
+            249292431.0,
+            249246866.0,
+            249718944.0,
+            251935217.0,
+            251499366.0,
+            251189463.0
+          ],
+          "normalized_ns": [
+            124546859.0,
+            124933196.0,
+            125028460.0,
+            125056017.0,
+            124646215.5,
+            124623433.0,
+            124859472.0,
+            125967608.5,
+            125749683.0,
+            125594731.5
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 125100567.55,
+            "lower_bound": 124824400.2,
+            "upper_bound": 125406132.35,
+            "unit": "ns"
+          }
+        }
+      }
+    ],
+    "startup/spidermonkey": [
+      {
+        "order": [
+          "candidate",
+          "baseline"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 32.991216529999974,
+          "benchmark_id": "startup/spidermonkey/silverfir-nano.jit",
+          "iteration_count": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "measured_values": [
+            2709756146.0,
+            2707626069.0,
+            2715951683.0,
+            2713227946.0,
+            2715038990.0,
+            2714110883.0,
+            2711435933.0,
+            2716038755.0,
+            2715382159.0,
+            2715279825.0
+          ],
+          "normalized_ns": [
+            2709756146.0,
+            2707626069.0,
+            2715951683.0,
+            2713227946.0,
+            2715038990.0,
+            2714110883.0,
+            2711435933.0,
+            2716038755.0,
+            2715382159.0,
+            2715279825.0
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 2713384838.9,
+            "lower_bound": 2711578761.395,
+            "upper_bound": 2714938471.9,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 33.801015348999954,
+          "benchmark_id": "startup/spidermonkey/silverfir-nano.jit",
+          "iteration_count": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "measured_values": [
+            2779928937.0,
+            2788793465.0,
+            2783700058.0,
+            2784272605.0,
+            2794859747.0,
+            2777723375.0,
+            2788183988.0,
+            2800890920.0,
+            2782657332.0,
+            2785606804.0
+          ],
+          "normalized_ns": [
+            2779928937.0,
+            2788793465.0,
+            2783700058.0,
+            2784272605.0,
+            2794859747.0,
+            2777723375.0,
+            2788183988.0,
+            2800890920.0,
+            2782657332.0,
+            2785606804.0
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 2786661723.1,
+            "lower_bound": 2782849872.4,
+            "upper_bound": 2790982041.03,
+            "unit": "ns"
+          }
+        }
+      }
+    ],
+    "startup/ffmpeg": [
+      {
+        "order": [
+          "baseline",
+          "candidate"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 106.86537146199987,
+          "benchmark_id": "startup/ffmpeg/silverfir-nano.jit",
+          "iteration_count": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "measured_values": [
+            9473771665.0,
+            9449789582.0,
+            9485668001.0,
+            9425150603.0,
+            9390666662.0,
+            9398019428.0,
+            9388135328.0,
+            9398698325.0,
+            9397068711.0,
+            9390390450.0
+          ],
+          "normalized_ns": [
+            9473771665.0,
+            9449789582.0,
+            9485668001.0,
+            9425150603.0,
+            9390666662.0,
+            9398019428.0,
+            9388135328.0,
+            9398698325.0,
+            9397068711.0,
+            9390390450.0
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 9419735875.5,
+            "lower_bound": 9399662185.3,
+            "upper_bound": 9442822704.4,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 110.54388119999999,
+          "benchmark_id": "startup/ffmpeg/silverfir-nano.jit",
+          "iteration_count": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "measured_values": [
+            9764088154.0,
+            9798185827.0,
+            9738711834.0,
+            9737304486.0,
+            9757586836.0,
+            9749773933.0,
+            9792716125.0,
+            9782926990.0,
+            9738395865.0,
+            9753267783.0
+          ],
+          "normalized_ns": [
+            9764088154.0,
+            9798185827.0,
+            9738711834.0,
+            9737304486.0,
+            9757586836.0,
+            9749773933.0,
+            9792716125.0,
+            9782926990.0,
+            9738395865.0,
+            9753267783.0
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 9761295783.3,
+            "lower_bound": 9748528617.38,
+            "upper_bound": 9775017615.1,
+            "unit": "ns"
+          }
+        }
+      }
+    ],
+    "startup/coremark": [
+      {
+        "order": [
+          "candidate",
+          "baseline"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 6.954159930999822,
+          "benchmark_id": "startup/coremark/silverfir-nano.jit",
+          "iteration_count": [
+            6.0,
+            12.0,
+            18.0,
+            24.0,
+            30.0,
+            36.0,
+            42.0,
+            48.0,
+            54.0,
+            60.0
+          ],
+          "measured_values": [
+            37222432.0,
+            75767566.0,
+            114087244.0,
+            155925996.0,
+            193285157.0,
+            232166091.0,
+            270269693.0,
+            300301389.0,
+            340993042.0,
+            374893289.0
+          ],
+          "normalized_ns": [
+            6203738.666666667,
+            6313963.833333333,
+            6338180.222222222,
+            6496916.5,
+            6442838.566666666,
+            6449058.083333333,
+            6434992.69047619,
+            6256278.9375,
+            6314685.962962963,
+            6248221.483333333
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 6331738.026839827,
+            "lower_bound": 6280489.231942215,
+            "upper_bound": 6424817.97044995,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 7.04005567199988,
+          "benchmark_id": "startup/coremark/silverfir-nano.jit",
+          "iteration_count": [
+            6.0,
+            12.0,
+            18.0,
+            24.0,
+            30.0,
+            36.0,
+            42.0,
+            48.0,
+            54.0,
+            60.0
+          ],
+          "measured_values": [
+            38903041.0,
+            78044320.0,
+            118140458.0,
+            156393946.0,
+            196086894.0,
+            235271615.0,
+            274048229.0,
+            312818653.0,
+            352096755.0,
+            389386354.0
+          ],
+          "normalized_ns": [
+            6483840.166666667,
+            6503693.333333333,
+            6563358.777777778,
+            6516414.416666667,
+            6536229.8,
+            6535322.638888889,
+            6524957.833333333,
+            6517055.270833333,
+            6520310.277777778,
+            6489772.566666666
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 6515443.35974026,
+            "lower_bound": 6502297.183889228,
+            "upper_bound": 6529817.968587501,
+            "unit": "ns"
+          }
+        }
+      },
+      {
+        "order": [
+          "baseline",
+          "candidate"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 6.917016740000008,
+          "benchmark_id": "startup/coremark/silverfir-nano.jit",
+          "iteration_count": [
+            6.0,
+            12.0,
+            18.0,
+            24.0,
+            30.0,
+            36.0,
+            42.0,
+            48.0,
+            54.0,
+            60.0
+          ],
+          "measured_values": [
+            37527681.0,
+            74835989.0,
+            112230399.0,
+            149858539.0,
+            191372165.0,
+            224434789.0,
+            262807222.0,
+            302745504.0,
+            338968424.0,
+            375272075.0
+          ],
+          "normalized_ns": [
+            6254613.5,
+            6236332.416666667,
+            6235022.166666667,
+            6244105.791666667,
+            6379072.166666667,
+            6234299.694444444,
+            6257314.80952381,
+            6307198.0,
+            6277193.037037037,
+            6254534.583333333
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 6273526.287012987,
+            "lower_bound": 6252264.394623656,
+            "upper_bound": 6300493.094831406,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 7.074200412999971,
+          "benchmark_id": "startup/coremark/silverfir-nano.jit",
+          "iteration_count": [
+            6.0,
+            12.0,
+            18.0,
+            24.0,
+            30.0,
+            36.0,
+            42.0,
+            48.0,
+            54.0,
+            60.0
+          ],
+          "measured_values": [
+            40635517.0,
+            77581227.0,
+            116070794.0,
+            154827984.0,
+            193556140.0,
+            232656156.0,
+            272092385.0,
+            312454286.0,
+            358680076.0,
+            399180585.0
+          ],
+          "normalized_ns": [
+            6772586.166666667,
+            6465102.25,
+            6448377.444444444,
+            6451166.0,
+            6451871.333333333,
+            6462671.0,
+            6478390.119047619,
+            6509464.291666667,
+            6642223.62962963,
+            6653009.75
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 6558981.576623376,
+            "lower_bound": 6471085.386779971,
+            "upper_bound": 6615158.868969431,
+            "unit": "ns"
+          }
+        }
+      }
+    ],
+    "startup/argon2": [
+      {
+        "order": [
+          "baseline",
+          "candidate"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 6.5519605070001035,
+          "benchmark_id": "startup/argon2/silverfir-nano.jit",
+          "iteration_count": [
+            2.0,
+            4.0,
+            6.0,
+            8.0,
+            10.0,
+            12.0,
+            14.0,
+            16.0,
+            18.0,
+            20.0
+          ],
+          "measured_values": [
+            39990041.0,
+            76591475.0,
+            115175079.0,
+            154070130.0,
+            191400105.0,
+            229811585.0,
+            268557885.0,
+            304626535.0,
+            342635779.0,
+            395653863.0
+          ],
+          "normalized_ns": [
+            19995020.5,
+            19147868.75,
+            19195846.5,
+            19258766.25,
+            19140010.5,
+            19150965.416666668,
+            19182706.07142857,
+            19039158.4375,
+            19035321.055555556,
+            19782693.15
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 19283151.816883117,
+            "lower_bound": 19072015.81304348,
+            "upper_bound": 19556874.559210528,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 6.623151712000208,
+          "benchmark_id": "startup/argon2/silverfir-nano.jit",
+          "iteration_count": [
+            2.0,
+            4.0,
+            6.0,
+            8.0,
+            10.0,
+            12.0,
+            14.0,
+            16.0,
+            18.0,
+            20.0
+          ],
+          "measured_values": [
+            39359484.0,
+            78779452.0,
+            118454290.0,
+            157210048.0,
+            196425460.0,
+            236232437.0,
+            275101748.0,
+            314302003.0,
+            353522426.0,
+            393108877.0
+          ],
+          "normalized_ns": [
+            19679742.0,
+            19694863.0,
+            19742381.666666668,
+            19651256.0,
+            19642546.0,
+            19686036.416666668,
+            19650124.85714286,
+            19643875.1875,
+            19640134.777777776,
+            19655443.85
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 19653976.92987013,
+            "lower_bound": 19645550.123981122,
+            "upper_bound": 19668213.90376569,
+            "unit": "ns"
+          }
+        }
+      }
+    ],
+    "startup/erc20": [
+      {
+        "order": [
+          "candidate",
+          "baseline"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 6.488055719000158,
+          "benchmark_id": "startup/erc20/silverfir-nano.jit",
+          "iteration_count": [
+            8.0,
+            16.0,
+            24.0,
+            32.0,
+            40.0,
+            48.0,
+            56.0,
+            64.0,
+            72.0,
+            80.0
+          ],
+          "measured_values": [
+            36486981.0,
+            72809813.0,
+            109052745.0,
+            145698764.0,
+            182156400.0,
+            231281144.0,
+            272252573.0,
+            311198586.0,
+            350074798.0,
+            389098256.0
+          ],
+          "normalized_ns": [
+            4560872.625,
+            4550613.3125,
+            4543864.375,
+            4553086.375,
+            4553910.0,
+            4818357.166666667,
+            4861653.089285715,
+            4862477.90625,
+            4862149.972222222,
+            4863728.2
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 4814136.754220779,
+            "lower_bound": 4717853.402579816,
+            "upper_bound": 4852728.443540434,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 6.467985800999941,
+          "benchmark_id": "startup/erc20/silverfir-nano.jit",
+          "iteration_count": [
+            8.0,
+            16.0,
+            24.0,
+            32.0,
+            40.0,
+            48.0,
+            56.0,
+            64.0,
+            72.0,
+            80.0
+          ],
+          "measured_values": [
+            37040734.0,
+            75101300.0,
+            113053009.0,
+            147211456.0,
+            184981425.0,
+            220799016.0,
+            257473963.0,
+            295577267.0,
+            332605639.0,
+            370161613.0
+          ],
+          "normalized_ns": [
+            4630091.75,
+            4693831.25,
+            4710542.041666667,
+            4600358.0,
+            4624535.625,
+            4599979.5,
+            4597749.339285715,
+            4618394.796875,
+            4619522.763888889,
+            4627020.1625
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 4619140.312987013,
+            "lower_bound": 4609038.182695397,
+            "upper_bound": 4629152.599489796,
+            "unit": "ns"
+          }
+        }
+      }
+    ]
+  },
+  "metrics": {
+    "startup/bz2": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 1,
+      "baseline_samples": [
+        52172145.0,
+        52146732.0,
+        52338067.333333336,
+        52114584.25,
+        52168440.2,
+        52110515.833333336,
+        52505169.14285714,
+        52290998.875,
+        52223428.333333336,
+        52411129.1
+      ],
+      "candidate_samples": [
+        54165033.0,
+        54447374.5,
+        54316047.0,
+        54341494.75,
+        54401798.4,
+        54244098.166666664,
+        54339763.0,
+        54306489.0,
+        54719723.666666664,
+        54340324.7
+      ],
+      "baseline_geomean": 52247965.82408992,
+      "candidate_geomean": 54362034.653998956,
+      "pair_count": 10,
+      "log_deltas": [
+        -0.037486820874112904,
+        -0.043173115572369226,
+        -0.03709573695510531,
+        -0.04184327337112623,
+        -0.04191949396070769,
+        -0.04012742914414843,
+        -0.03434461794597557,
+        -0.03781947194396775,
+        -0.04669301050441372,
+        -0.03614762314023366
+      ],
+      "mean_log_ratio": -0.039665059341216044,
+      "log_ratio_stddev": 0.003759007271045213,
+      "standard_error": 0.001188702471763678,
+      "probability_regression": 0.9999999999519689,
+      "probability_improvement": 4.80311346251483e-11,
+      "delta_percent": -3.888869950075766,
+      "volatility_percent": 0.37660811997496707,
+      "pair_deltas_percent": [
+        -3.6792888135044666,
+        -4.225442495854415,
+        -3.6416119653675527,
+        -4.097992722218969,
+        -4.105302151187695,
+        -3.9332985623206973,
+        -3.376153585989794,
+        -3.7113246724530424,
+        -4.5619662638281655,
+        -3.550209923570813
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          52343189.0,
+          52169382.0,
+          52156961.666666664,
+          52183723.75,
+          52338556.2,
+          52147383.666666664,
+          52127975.14285714,
+          52037077.625,
+          52168729.333333336,
+          52230955.6
+        ],
+        "candidate_samples": [
+          54383903.0,
+          54173316.5,
+          54383365.0,
+          54348233.0,
+          54501682.6,
+          54361405.5,
+          54328240.85714286,
+          54460967.875,
+          54951117.222222224,
+          55257238.9
+        ],
+        "baseline_geomean": 52190318.450043365,
+        "candidate_geomean": 54514051.403644286,
+        "pair_count": 10,
+        "log_deltas": [
+          -0.03824638554927626,
+          -0.03769270064468443,
+          -0.04180065099112831,
+          -0.04064146082759015,
+          -0.040498262886610646,
+          -0.04158043355201992,
+          -0.041342425619068535,
+          -0.045527763560411987,
+          -0.051960751791027174,
+          -0.05632401435055853
+        ],
+        "mean_log_ratio": -0.043561484977237594,
+        "log_ratio_stddev": 0.0060539078111579644,
+        "standard_error": 0.0019144137427943681,
+        "probability_regression": 0.9999999985491648,
+        "probability_improvement": 1.450835229732661e-09,
+        "delta_percent": -4.262631181812481,
+        "volatility_percent": 0.6072269746170657,
+        "pair_deltas_percent": [
+          -3.752422844678871,
+          -3.6991172582169662,
+          -4.093905063309955,
+          -3.9826672009741326,
+          -3.968916732123051,
+          -4.072782542999809,
+          -4.049948387011748,
+          -4.450692568599523,
+          -5.063387296816757,
+          -5.4767182730152575
+        ]
+      },
+      "candidate_direction": "regression",
+      "pilot_direction_probability": 0.9999999985491648,
+      "selected": true,
+      "target_pairs": 10,
+      "status": "REGRESSION"
+    },
+    "startup/pulldown-cmark": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 1,
+      "baseline_samples": [
+        121913634.5,
+        121834154.5,
+        121273158.5,
+        121132659.0,
+        120924632.0,
+        121162710.5,
+        121264512.0,
+        121198573.0,
+        121362461.5,
+        121069184.5
+      ],
+      "candidate_samples": [
+        124546859.0,
+        124933196.0,
+        125028460.0,
+        125056017.0,
+        124646215.5,
+        124623433.0,
+        124859472.0,
+        125967608.5,
+        125749683.0,
+        125594731.5
+      ],
+      "baseline_geomean": 121313190.5764855,
+      "candidate_geomean": 125099669.13090868,
+      "pair_count": 10,
+      "log_deltas": [
+        -0.02136914249311193,
+        -0.025118431861529723,
+        -0.03049588186919047,
+        -0.03187547250935129,
+        -0.030311973002015758,
+        -0.028162297328349833,
+        -0.029214671634811153,
+        -0.03859449886660042,
+        -0.0355116706371415,
+        -0.03669815157399175
+      ],
+      "mean_log_ratio": -0.030735219177609387,
+      "log_ratio_stddev": 0.005269193589556938,
+      "standard_error": 0.0016662653175358337,
+      "probability_regression": 0.9999999907441232,
+      "probability_improvement": 9.255876842750865e-09,
+      "delta_percent": -3.0267694397022495,
+      "volatility_percent": 0.5283100204919547,
+      "pair_deltas_percent": [
+        -2.1142440051418743,
+        -2.480558890048723,
+        -3.0035573500625357,
+        -3.1372804716785385,
+        -2.9857172037445423,
+        -2.7769436426935856,
+        -2.8792048712171447,
+        -3.7859220769440927,
+        -3.4888529301501325,
+        -3.603293662043461
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          122167641.5,
+          122263383.0,
+          122113134.0,
+          122358472.5,
+          122402020.0,
+          122262746.5,
+          122500335.5,
+          122166233.0,
+          122167668.5,
+          122155425.5
+        ],
+        "candidate_samples": [
+          124631319.5,
+          124598648.5,
+          124876256.0,
+          124543379.0,
+          124892917.5,
+          126937957.0,
+          124867725.0,
+          124867214.0,
+          124848208.0,
+          124960900.0
+        ],
+        "baseline_geomean": 122255646.39332871,
+        "candidate_geomean": 125000728.26122035,
+        "pair_count": 10,
+        "log_deltas": [
+          -0.01996572295784907,
+          -0.01892016482910209,
+          -0.022375352076943054,
+          -0.017699045371442217,
+          -0.020145836949408434,
+          -0.037526050762723674,
+          -0.01914120825683967,
+          -0.02186820181756891,
+          -0.021704230228230335,
+          -0.022706674952042143
+        ],
+        "mean_log_ratio": -0.02220524882021496,
+        "log_ratio_stddev": 0.005628445611583139,
+        "standard_error": 0.0017798707818982111,
+        "probability_regression": 0.999999723736386,
+        "probability_improvement": 2.7626361398525034e-07,
+        "delta_percent": -2.196052699912924,
+        "volatility_percent": 0.5644315071077534,
+        "pair_deltas_percent": [
+          -1.9767727806171531,
+          -1.8742302008195488,
+          -2.212688054965384,
+          -1.75433372495859,
+          -1.9944265454444166,
+          -3.683067390158168,
+          -1.89591786027975,
+          -2.163082616706735,
+          -2.1470388265404705,
+          -2.245081861606313
+        ]
+      },
+      "candidate_direction": "regression",
+      "pilot_direction_probability": 0.999999723736386,
+      "selected": true,
+      "target_pairs": 10,
+      "status": "REGRESSION"
+    },
+    "startup/spidermonkey": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 1,
+      "baseline_samples": [
+        2709756146.0,
+        2707626069.0,
+        2715951683.0,
+        2713227946.0,
+        2715038990.0,
+        2714110883.0,
+        2711435933.0,
+        2716038755.0,
+        2715382159.0,
+        2715279825.0
+      ],
+      "candidate_samples": [
+        2779928937.0,
+        2788793465.0,
+        2783700058.0,
+        2784272605.0,
+        2794859747.0,
+        2777723375.0,
+        2788183988.0,
+        2800890920.0,
+        2782657332.0,
+        2785606804.0
+      ],
+      "baseline_geomean": 2713383462.8282633,
+      "candidate_geomean": 2786653956.840971,
+      "pair_count": 10,
+      "log_deltas": [
+        -0.025566717328546523,
+        -0.0295367907892176,
+        -0.02463857910683396,
+        -0.025847606089631735,
+        -0.028975611143360194,
+        -0.023167245829892772,
+        -0.027912124408656556,
+        -0.030763073544655836,
+        -0.024473644105530223,
+        -0.0255707182172753
+      ],
+      "mean_log_ratio": -0.026645211056360068,
+      "log_ratio_stddev": 0.0024976930025779475,
+      "standard_error": 0.0007898398784011125,
+      "probability_regression": 0.9999999999564364,
+      "probability_improvement": 4.356359717405667e-11,
+      "delta_percent": -2.629335940073937,
+      "volatility_percent": 0.2500814836331876,
+      "pair_deltas_percent": [
+        -2.524265640967349,
+        -2.9104843014970294,
+        -2.4337526884514626,
+        -2.5516416342429182,
+        -2.8559843507596216,
+        -2.290094563502021,
+        -2.7526180241445375,
+        -3.0294705300412006,
+        -2.4176592721765977,
+        -2.5246556297541245
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          2706739596.0,
+          2712818959.0,
+          2729269286.0,
+          2719929675.0,
+          2706730396.0,
+          2710310901.0,
+          2711202738.0,
+          2707679244.0,
+          2710070686.0,
+          2705263092.0
+        ],
+        "candidate_samples": [
+          2779456009.0,
+          2795773192.0,
+          2788088654.0,
+          2787439076.0,
+          2777309698.0,
+          2776774684.0,
+          2780488180.0,
+          2783275681.0,
+          2788978273.0,
+          2793713928.0
+        ],
+        "baseline_geomean": 2711992473.6693077,
+        "candidate_geomean": 2785122487.1126857,
+        "pair_count": 10,
+        "log_deltas": [
+          -0.02651041886138681,
+          -0.03012040181518979,
+          -0.021322378251065227,
+          -0.024517255209636737,
+          -0.025741314064304643,
+          -0.024226716627111566,
+          -0.025234165407342815,
+          -0.027536636095170063,
+          -0.028700600421329638,
+          -0.03217269868183109
+        ],
+        "mean_log_ratio": -0.026608258543436836,
+        "log_ratio_stddev": 0.00314769383683499,
+        "standard_error": 0.000995388190127298,
+        "probability_regression": 0.9999999996529547,
+        "probability_improvement": 3.4704528140139246e-10,
+        "delta_percent": -2.625737782871853,
+        "volatility_percent": 0.3152653027052547,
+        "pair_deltas_percent": [
+          -2.6162102499388773,
+          -2.967130282147723,
+          -2.109666344921035,
+          -2.4219148530010726,
+          -2.5412831003624015,
+          -2.393560535644812,
+          -2.4918445076792195,
+          -2.716095912311467,
+          -2.829265030993666,
+          -3.1660663288929247
+        ]
+      },
+      "candidate_direction": "regression",
+      "pilot_direction_probability": 0.9999999996529547,
+      "selected": true,
+      "target_pairs": 10,
+      "status": "REGRESSION"
+    },
+    "startup/ffmpeg": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 1,
+      "baseline_samples": [
+        9473771665.0,
+        9449789582.0,
+        9485668001.0,
+        9425150603.0,
+        9390666662.0,
+        9398019428.0,
+        9388135328.0,
+        9398698325.0,
+        9397068711.0,
+        9390390450.0
+      ],
+      "candidate_samples": [
+        9764088154.0,
+        9798185827.0,
+        9738711834.0,
+        9737304486.0,
+        9757586836.0,
+        9749773933.0,
+        9792716125.0,
+        9782926990.0,
+        9738395865.0,
+        9753267783.0
+      ],
+      "baseline_geomean": 9419670550.284462,
+      "candidate_geomean": 9761272009.461693,
+      "pair_count": 10,
+      "log_deltas": [
+        -0.030184077975177737,
+        -0.03620477404315946,
+        -0.026326825669289317,
+        -0.03258262023117484,
+        -0.03832883172563631,
+        -0.036745130455135694,
+        -0.04219216389363691,
+        -0.040067518878084164,
+        -0.035678607116752914,
+        -0.037915512262551854
+      ],
+      "mean_log_ratio": -0.03562260622505992,
+      "log_ratio_stddev": 0.00474142697267331,
+      "standard_error": 0.0014993708593004597,
+      "probability_regression": 0.999999999010573,
+      "probability_improvement": 9.894269847876558e-10,
+      "delta_percent": -3.4995588571458756,
+      "volatility_percent": 0.47526853240594275,
+      "pair_deltas_percent": [
+        -2.973308765970817,
+        -3.555721958650293,
+        -2.5983296077882523,
+        -3.205752510346216,
+        -3.760357762292943,
+        -3.6078221650803433,
+        -4.131446187510102,
+        -3.927543008270984,
+        -3.5049628165839564,
+        -3.720571823450769
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          9400693908.0,
+          9426586427.0,
+          9408274819.0,
+          9382186430.0,
+          9391073068.0,
+          9380350877.0,
+          9386117504.0,
+          9398287671.0,
+          9381994154.0,
+          9381345241.0
+        ],
+        "candidate_samples": [
+          9837924840.0,
+          9866894004.0,
+          9846794708.0,
+          9902359873.0,
+          9824012414.0,
+          9797893997.0,
+          9872485473.0,
+          9882421161.0,
+          9828118332.0,
+          9791791365.0
+        ],
+        "baseline_geomean": 9393680223.347868,
+        "candidate_geomean": 9845009920.780304,
+        "pair_count": 10,
+        "log_deltas": [
+          -0.045461292028389125,
+          -0.045651073005647386,
+          -0.04555638993836551,
+          -0.05396026900631886,
+          -0.04507007061080656,
+          -0.04355029506913022,
+          -0.050519906351635675,
+          -0.050230028496893175,
+          -0.04645515808149634,
+          -0.04282125024413833
+        ],
+        "mean_log_ratio": -0.04692757328328212,
+        "log_ratio_stddev": 0.0035098408198483188,
+        "standard_error": 0.0011099091215353407,
+        "probability_regression": 0.9999999999942236,
+        "probability_improvement": 5.776379374822227e-12,
+        "delta_percent": -4.584349848950467,
+        "volatility_percent": 0.35160075237443056,
+        "pair_deltas_percent": [
+          -4.444341048655542,
+          -4.462473974297287,
+          -4.453427760037753,
+          -5.2530250331369714,
+          -4.4069503147515015,
+          -4.2615598834591095,
+          -4.926499718132327,
+          -4.89893602096807,
+          -4.539263396406568,
+          -4.191736820160486
+        ]
+      },
+      "candidate_direction": "regression",
+      "pilot_direction_probability": 0.9999999999942236,
+      "selected": true,
+      "target_pairs": 10,
+      "status": "REGRESSION"
+    },
+    "startup/coremark": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 2,
+      "baseline_samples": [
+        6203738.666666667,
+        6313963.833333333,
+        6338180.222222222,
+        6496916.5,
+        6442838.566666666,
+        6449058.083333333,
+        6434992.69047619,
+        6256278.9375,
+        6314685.962962963,
+        6248221.483333333,
+        6254613.5,
+        6236332.416666667,
+        6235022.166666667,
+        6244105.791666667,
+        6379072.166666667,
+        6234299.694444444,
+        6257314.80952381,
+        6307198.0,
+        6277193.037037037,
+        6254534.583333333
+      ],
+      "candidate_samples": [
+        6483840.166666667,
+        6503693.333333333,
+        6563358.777777778,
+        6516414.416666667,
+        6536229.8,
+        6535322.638888889,
+        6524957.833333333,
+        6517055.270833333,
+        6520310.277777778,
+        6489772.566666666,
+        6772586.166666667,
+        6465102.25,
+        6448377.444444444,
+        6451166.0,
+        6451871.333333333,
+        6462671.0,
+        6478390.119047619,
+        6509464.291666667,
+        6642223.62962963,
+        6653009.75
+      ],
+      "baseline_geomean": 6308368.768336389,
+      "candidate_geomean": 6525825.208860095,
+      "pair_count": 20,
+      "log_deltas": [
+        -0.044160832082246124,
+        -0.029606558554817138,
+        -0.034910784679236986,
+        -0.0029966088439492967,
+        -0.014391301831667206,
+        -0.013287630214257254,
+        -0.01388378571717391,
+        -0.040837038892946126,
+        -0.03204393760350128,
+        -0.03793062585904197,
+        -0.0795636664759888,
+        -0.03602657218361098,
+        -0.033646405835722114,
+        -0.03262294422207607,
+        -0.011347559568502525,
+        -0.03597644546200783,
+        -0.0347208921560529,
+        -0.031565641889606436,
+        -0.056523879472403164,
+        -0.06176261225338854
+      ],
+      "mean_log_ratio": -0.03389028618990983,
+      "log_ratio_stddev": 0.018140213169949584,
+      "standard_error": 0.004056274977434421,
+      "probability_regression": 0.9999999562923274,
+      "probability_improvement": 4.3707672592319113e-08,
+      "delta_percent": -3.3322443302413567,
+      "volatility_percent": 1.830574625711261,
+      "pair_deltas_percent": [
+        -4.319993904846664,
+        -2.9172577837823455,
+        -3.4308433102570257,
+        -0.29921234930667673,
+        -1.4288242028047016,
+        -1.319973937357477,
+        -1.37878504589789,
+        -4.001444248914399,
+        -3.1535970844150607,
+        -3.7220269408824724,
+        -7.648077911744055,
+        -3.538533877531991,
+        -3.308666088732004,
+        -3.2096555620074407,
+        -1.1283418857185201,
+        -3.5336984592834186,
+        -3.4125038082194026,
+        -3.1072647856077102,
+        -5.495608292443876,
+        -5.989397004365838
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          6256153.166666667,
+          6249912.166666667,
+          6272934.111111111,
+          6264160.666666667,
+          6226313.266666667,
+          6206322.611111111,
+          6246868.476190476,
+          6222497.875,
+          6375101.296296297,
+          6219543.683333334
+        ],
+        "candidate_samples": [
+          6470787.333333333,
+          6622079.666666667,
+          6479218.777777778,
+          6480145.791666667,
+          6476933.2,
+          6488496.472222222,
+          6480584.785714285,
+          6506279.770833333,
+          6676059.314814814,
+          6703248.45
+        ],
+        "baseline_geomean": 6253818.814298471,
+        "candidate_geomean": 6537812.89530938,
+        "pair_count": 10,
+        "log_deltas": [
+          -0.03373230485365978,
+          -0.05784205934151349,
+          -0.032355738621098605,
+          -0.03389840125308544,
+          -0.039462740097631656,
+          -0.04446228707962082,
+          -0.03673045662697638,
+          -0.04459641534219928,
+          -0.04612791001028777,
+          -0.0748957109302151
+        ],
+        "mean_log_ratio": -0.04441040241562884,
+        "log_ratio_stddev": 0.013191118026418223,
+        "standard_error": 0.004171397784758675,
+        "probability_regression": 0.9999989402859684,
+        "probability_improvement": 1.0597140316370712e-06,
+        "delta_percent": -4.343869816382364,
+        "volatility_percent": 1.3278504643451476,
+        "pair_deltas_percent": [
+          -3.3169714226429448,
+          -5.62010000987102,
+          -3.1837891841864585,
+          -3.333028792002679,
+          -3.869422851749249,
+          -4.348832773803912,
+          -3.6064077124492,
+          -4.36166143831509,
+          -4.508018942412074,
+          -7.215975512091699
+        ]
+      },
+      "candidate_direction": "regression",
+      "pilot_direction_probability": 0.9999989402859684,
+      "selected": true,
+      "target_pairs": 12,
+      "status": "NOISY-FLOOR"
+    },
+    "startup/argon2": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 1,
+      "baseline_samples": [
+        19995020.5,
+        19147868.75,
+        19195846.5,
+        19258766.25,
+        19140010.5,
+        19150965.416666668,
+        19182706.07142857,
+        19039158.4375,
+        19035321.055555556,
+        19782693.15
+      ],
+      "candidate_samples": [
+        19679742.0,
+        19694863.0,
+        19742381.666666668,
+        19651256.0,
+        19642546.0,
+        19686036.416666668,
+        19650124.85714286,
+        19643875.1875,
+        19640134.777777776,
+        19655443.85
+      ],
+      "baseline_geomean": 19290407.904345907,
+      "candidate_geomean": 19668616.313813567,
+      "pair_count": 10,
+      "log_deltas": [
+        0.015893485772493922,
+        -0.028166423313457423,
+        -0.02807375102788185,
+        -0.020174908161825756,
+        -0.025916993311859086,
+        -0.027556445322800095,
+        -0.024074544657765377,
+        -0.03126776576032641,
+        -0.03127890903207957,
+        0.006453131474520408
+      ],
+      "mean_log_ratio": -0.019416312334098122,
+      "log_ratio_stddev": 0.016598189376407533,
+      "standard_error": 0.005248808346425766,
+      "probability_regression": 0.997536611233134,
+      "probability_improvement": 0.002463388766866026,
+      "delta_percent": -1.9229029812434926,
+      "volatility_percent": 1.6736704627956633,
+      "pair_deltas_percent": [
+        1.6020459008049937,
+        -2.777344782748681,
+        -2.76833451958558,
+        -1.9972756448748075,
+        -2.5584030705591787,
+        -2.718023012225035,
+        -2.378706441370926,
+        -3.078398453604514,
+        -3.07947847133182,
+        0.6473997787640684
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          18963936.0,
+          19796017.75,
+          19120252.166666668,
+          19104802.75,
+          19080122.9,
+          19070769.833333332,
+          19372600.57142857,
+          19809809.25,
+          19957979.777777776,
+          19966184.55
+        ],
+        "candidate_samples": [
+          19632080.0,
+          19665705.75,
+          19748447.333333332,
+          20263081.375,
+          20591920.6,
+          20616308.416666668,
+          20661177.07142857,
+          20058267.125,
+          19799848.5,
+          19767137.65
+        ],
+        "baseline_geomean": 19420355.51125101,
+        "candidate_geomean": 20076482.18772097,
+        "pair_count": 10,
+        "log_deltas": [
+          -0.03462589272114063,
+          0.006604499860603469,
+          -0.032326776053493246,
+          -0.058860822492323564,
+          -0.07625168768079554,
+          -0.0779256456873752,
+          -0.0643967094204555,
+          -0.012464162517378323,
+          0.007954766066629447,
+          0.010019225883185752
+        ],
+        "mean_log_ratio": -0.03322732047625433,
+        "log_ratio_stddev": 0.035062359258885366,
+        "standard_error": 0.011087691539717111,
+        "probability_regression": 0.9924826101408764,
+        "probability_improvement": 0.0075173898591236465,
+        "delta_percent": -3.2681356740438816,
+        "volatility_percent": 3.5684291290788295,
+        "pair_deltas_percent": [
+          -3.4033276148018987,
+          0.6626357663263693,
+          -3.1809850975288323,
+          -5.716201813358213,
+          -7.341703230926422,
+          -7.4966795805396895,
+          -6.236704208793197,
+          -1.2386806569662734,
+          0.7986489279338427,
+          1.00695863773681
+        ]
+      },
+      "candidate_direction": "regression",
+      "pilot_direction_probability": 0.9924826101408764,
+      "selected": true,
+      "target_pairs": null,
+      "status": "RECOVERED"
+    },
+    "startup/erc20": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 1,
+      "baseline_samples": [
+        4560872.625,
+        4550613.3125,
+        4543864.375,
+        4553086.375,
+        4553910.0,
+        4818357.166666667,
+        4861653.089285715,
+        4862477.90625,
+        4862149.972222222,
+        4863728.2
+      ],
+      "candidate_samples": [
+        4630091.75,
+        4693831.25,
+        4710542.041666667,
+        4600358.0,
+        4624535.625,
+        4599979.5,
+        4597749.339285715,
+        4618394.796875,
+        4619522.763888889,
+        4627020.1625
+      ],
+      "baseline_geomean": 4700642.050414932,
+      "candidate_geomean": 4632056.475577986,
+      "pair_count": 10,
+      "log_deltas": [
+        -0.015062713966584484,
+        -0.030987128798469144,
+        -0.036025150640811,
+        -0.010328799372888858,
+        -0.01538975591761245,
+        0.04638118620992036,
+        0.05581161221250867,
+        0.05150096707619011,
+        0.05118931930790038,
+        0.04989219567784274
+      ],
+      "mean_log_ratio": 0.014698173178799631,
+      "log_ratio_stddev": 0.03901017306093703,
+      "standard_error": 0.012336099878990349,
+      "probability_regression": 0.1319690268982946,
+      "probability_improvement": 0.8680309731017054,
+      "delta_percent": 1.480672249972622,
+      "volatility_percent": 3.9781061352452243,
+      "pair_deltas_percent": [
+        -1.4949838736996957,
+        -3.051194852818795,
+        -3.538396753331885,
+        -1.0275640504499917,
+        -1.527193879061095,
+        4.747361736430933,
+        5.739846401478665,
+        5.285020447800548,
+        5.252213718481169,
+        5.115777091667262
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          4540699.5,
+          4639893.125,
+          4856805.416666667,
+          4871665.71875,
+          4867869.175,
+          4630941.6875,
+          4763909.464285715,
+          4871945.890625,
+          4871455.791666667,
+          4847826.9875
+        ],
+        "candidate_samples": [
+          4670955.0,
+          4675668.25,
+          4850577.75,
+          4948557.9375,
+          4929513.775,
+          4934520.583333333,
+          4953048.928571428,
+          4950218.09375,
+          4941259.583333333,
+          4944168.6
+        ],
+        "baseline_geomean": 4774785.833960944,
+        "candidate_geomean": 4878652.045014691,
+        "pair_count": 10,
+        "log_deltas": [
+          -0.028282472487388816,
+          -0.007680761134285868,
+          0.001283078542202982,
+          -0.015660293061839466,
+          -0.01258405715239645,
+          -0.06349528628556089,
+          -0.038934684955884924,
+          -0.015938210801082243,
+          -0.014227452131436613,
+          -0.019678260782340792
+        ],
+        "mean_log_ratio": -0.02151984002500131,
+        "log_ratio_stddev": 0.018331359701456145,
+        "standard_error": 0.0057968849264425654,
+        "probability_regression": 0.9975861549580305,
+        "probability_improvement": 0.002413845041969509,
+        "delta_percent": -2.128994035552922,
+        "volatility_percent": 1.8500410472624955,
+        "pair_deltas_percent": [
+          -2.788626736930666,
+          -0.7651339463615736,
+          0.12839020396420153,
+          -1.5538308275086288,
+          -1.2505208994978534,
+          -6.152145698990307,
+          -3.8186472012152306,
+          -1.5811869627284536,
+          -1.4126720219700961,
+          -1.9485907600319208
+        ]
+      },
+      "candidate_direction": "regression",
+      "pilot_direction_probability": 0.9975861549580305,
+      "selected": true,
+      "target_pairs": null,
+      "status": "RECOVERED"
+    }
+  }
+}
