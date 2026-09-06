@@ -37,6 +37,7 @@ mod deduplicate_constants;
 mod eliminate_dead_params;
 mod eliminate_overwritten_frame_stores;
 mod fold_induction_offsets;
+mod forward_frame_values_across_edges;
 mod forward_stored_values;
 mod fuse_compare_branch;
 mod fuse_indexed_memory;
@@ -322,6 +323,14 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         &mut ctx,
     );
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
+    // Compare-branch fusion removes temporary boolean definitions which may
+    // otherwise hide a stored register value that survives the branch.
+    forward_frame_values_across_edges::forward_frame_values_across_edges(
+        &mut program.blocks,
+        &loop_graph,
+        entry,
+        &mut ctx,
+    );
     // After compare-branch fusion: the fold reads loop bounds from
     // `Branch { IntCompare }` latch terminators. The passes since
     // `analyze_loop_graph` rewrite instructions and conditions but never
