@@ -1,5 +1,5 @@
 # Isolated Nano-only campaign measurement; no main, PR or dev trigger.
-name: x64-nano-coremark
+name: x64-nano-call-cost
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,7 +12,7 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano CoreMark / draw ${{ matrix.draw }}
+    name: Nano recursive calls / draw ${{ matrix.draw }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -96,24 +96,18 @@ jobs:
             cp probe-target/release/sf-x64-probe "coremark-out/$name"
             git -C "source-$name" rev-parse HEAD > "coremark-out/$name-source.txt"
           done
-      - name: Compare the exact CoreMark module
+      - name: Compare recursive calls from the fixed execution corpus
         run: |
           lscpu > coremark-out/cpu.txt
           rustc --version > coremark-out/rustc.txt
-          sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
-          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
-            --variant main="$PWD/coremark-out/main" \
-            --variant parent="$PWD/coremark-out/parent" \
-            --variant callflags="$PWD/coremark-out/callflags" \
-            --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
-      - name: Compare recursive calls from the fixed execution corpus
-        run: |
+          sha256sum wasmi-benchmarks/res/wat/fibonacci-rec.wat > coremark-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant main="$PWD/coremark-out/main" \
             --variant parent="$PWD/coremark-out/parent" \
             --variant callflags="$PWD/coremark-out/callflags" \
             --wasm wasmi-benchmarks/res/wat/fibonacci-rec.wat \
-            --mode i64 --input 30 --seconds 2 --rounds 6 --out-dir fib-out
+            --mode i64 --input 30 --expected-output-i64 832040 \
+            --seconds 2 --rounds 6 --out-dir fib-out
       - name: Capture the native code of every revision
         run: |
           for name in main parent callflags; do
@@ -132,7 +126,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-callflags-${{ matrix.draw }}
+          name: nano-recursive-callflags-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
