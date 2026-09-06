@@ -59,9 +59,6 @@ pub(crate) struct BackendConfig {
     /// scaled imm12 form. Eligible blocks still relax every safe access so
     /// mixed-offset instruction fusions remain available.
     pub relax_index_extends_in_profitable_blocks_only: bool,
-    /// Integer ALU instructions normally overwrite one input, so coalescing
-    /// a dead input with the result can avoid a native register copy.
-    pub destructive_gp_binary: bool,
 }
 
 impl BackendConfig {
@@ -126,7 +123,6 @@ impl BackendConfig {
             preserved_lane_save_overhead: 0,
             gp32_defs_zero_extend: false,
             relax_index_extends_in_profitable_blocks_only: false,
-            destructive_gp_binary: false,
         }
     }
 
@@ -138,13 +134,6 @@ impl BackendConfig {
     #[cfg(any(sf_backend_arm64, sf_backend_x64, test))]
     pub(crate) const fn with_gp32_zero_extending_defs(mut self) -> Self {
         self.gp32_defs_zero_extend = true;
-        self
-    }
-
-    #[inline]
-    #[cfg(any(sf_backend_x64, test))]
-    pub(crate) const fn with_destructive_gp_binary(mut self) -> Self {
-        self.destructive_gp_binary = true;
         self
     }
 

@@ -154,7 +154,6 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
     // r32-form instructions clear bits 63:32, so the peephole may drop
     // ZeroExtend32 index obligations whose index was defined by one.
     .with_gp32_zero_extending_defs()
-    .with_destructive_gp_binary()
 }
 
 // ── Scratch pool construction ────────────────────────────────────────────────

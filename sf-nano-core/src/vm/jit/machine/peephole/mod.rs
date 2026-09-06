@@ -32,7 +32,6 @@
 //!    zero-extend (`gp32_defs_zero_extend`).
 
 mod cache_loop_frame_words;
-mod coalesce_destructive_inputs;
 mod copy_propagate;
 mod deduplicate_constants;
 mod eliminate_dead_params;
@@ -71,7 +70,6 @@ struct BlockFeatures {
     has_address_add: bool,
     may_fuse_isel: bool,
     has_bitwise: bool,
-    has_integer_binary: bool,
 }
 
 impl BlockFeatures {
@@ -81,7 +79,6 @@ impl BlockFeatures {
             MachineInstKind::Store { .. } => self.store_count += 1,
             MachineInstKind::Move { .. } => self.has_move = true,
             MachineInstKind::IntBinary { op, .. } => {
-                self.has_integer_binary = true;
                 self.has_bitwise |= matches!(
                     op,
                     MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor
@@ -97,7 +94,6 @@ impl BlockFeatures {
                         | MachineIntBinaryOp::Rotr
                 );
             }
-            MachineInstKind::IntBinaryShifted { .. } => self.has_integer_binary = true,
             _ => {}
         }
     }
@@ -133,7 +129,6 @@ pub(crate) struct BlockOptCtx {
     tracked_stores: crate::collections::Vec<TrackedStore>,
     tracked_loads: crate::collections::Vec<TrackedLoad>,
     bit_scratch: crate::collections::Vec<u64>,
-    coalesce_ownership: Option<super::ownership::DynamicOwnershipTracker>,
 }
 
 impl BlockOptCtx {
@@ -149,9 +144,6 @@ impl BlockOptCtx {
             tracked_stores: crate::collections::Vec::new(),
             tracked_loads: crate::collections::Vec::new(),
             bit_scratch: crate::collections::Vec::new(),
-            coalesce_ownership: config
-                .destructive_gp_binary
-                .then(|| super::ownership::DynamicOwnershipTracker::new(total_reg_count)),
         }
     }
 }
@@ -225,12 +217,6 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
         );
     }
 
-    if features.has_integer_binary {
-        if let Some(ownership) = &mut ctx.coalesce_ownership {
-            coalesce_destructive_inputs::coalesce(block, ctx.config, ownership);
-        }
-    }
-
     // Keep pass scheduling honest as transformation patterns evolve. Release
     // builds pay nothing; debug builds and tests compare against the original
     // unconditional sequence after every block.
@@ -284,9 +270,6 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
                 &mut unconditional_oracle,
                 ctx.config.relax_index_extends_in_profitable_blocks_only,
             );
-        }
-        if let Some(ownership) = &mut ctx.coalesce_ownership {
-            coalesce_destructive_inputs::coalesce(&mut unconditional_oracle, ctx.config, ownership);
         }
         assert_eq!(
             block, &unconditional_oracle,
