@@ -132,53 +132,9 @@ fn try_cache_word(
     masks: &mut [Option<u64>],
     loop_mask: u64,
 ) {
-    let mut in_loop = collections::vec![false; blocks.len()];
-    for &index in nodes {
-        in_loop[index] = true;
-    }
-    let mut preheaders = collections::Vec::new();
-    for &target in nodes {
-        for &source in &graph.predecessors[target] {
-            if in_loop[source] {
-                continue;
-            }
-            // A plain entry jump also makes the new register definition
-            // unobservable along any path which does not enter the loop.
-            if target != header
-                || !matches!(&blocks[source].terminator,
-                    MachineTerminator::Jump(edge) if edge.target == blocks[header].id)
-            {
-                return;
-            }
-            if !preheaders.contains(&source) {
-                preheaders.push(source);
-            }
-        }
-    }
-    if preheaders.is_empty() {
-        return;
-    }
-
     let config = ctx.config;
-    let gp_end =
-        crate::vm::jit::backend::BackendConfig::FIXED + u16::from(config.gp_dynamic_budget);
-    let Some(carry) = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
-        .map(MachineReg)
-        .find(|&reg| {
-            (if reg.0 < 64 {
-                loop_mask & reg_bit(reg) == 0
-            } else {
-                nodes
-                    .iter()
-                    .all(|&index| !block_mentions_reg(&blocks[index], reg))
-            }) && preheaders
-                .iter()
-                .all(|&index| !terminator_uses_reg(&blocks[index].terminator, reg))
-        })
-    else {
-        return;
-    };
-
+    // Most loops do not have a reusable native-frame word. Reject those
+    // before allocating whole-function membership and predecessor scratch.
     let mut candidates: collections::Vec<(FrameWord, usize)> = collections::Vec::new();
     for &index in nodes {
         if matches!(
@@ -226,6 +182,52 @@ fn try_cache_word(
     let Some((word, _)) = candidates
         .into_iter()
         .max_by(|(a, ac), (b, bc)| ac.cmp(bc).then_with(|| b.addr.offset.cmp(&a.addr.offset)))
+    else {
+        return;
+    };
+
+    let mut in_loop = collections::vec![false; blocks.len()];
+    for &index in nodes {
+        in_loop[index] = true;
+    }
+    let mut preheaders = collections::Vec::new();
+    for &target in nodes {
+        for &source in &graph.predecessors[target] {
+            if in_loop[source] {
+                continue;
+            }
+            // A plain entry jump also makes the new register definition
+            // unobservable along any path which does not enter the loop.
+            if target != header
+                || !matches!(&blocks[source].terminator,
+                    MachineTerminator::Jump(edge) if edge.target == blocks[header].id)
+            {
+                return;
+            }
+            if !preheaders.contains(&source) {
+                preheaders.push(source);
+            }
+        }
+    }
+    if preheaders.is_empty() {
+        return;
+    }
+
+    let gp_end =
+        crate::vm::jit::backend::BackendConfig::FIXED + u16::from(config.gp_dynamic_budget);
+    let Some(carry) = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
+        .map(MachineReg)
+        .find(|&reg| {
+            (if reg.0 < 64 {
+                loop_mask & reg_bit(reg) == 0
+            } else {
+                nodes
+                    .iter()
+                    .all(|&index| !block_mentions_reg(&blocks[index], reg))
+            }) && preheaders
+                .iter()
+                .all(|&index| !terminator_uses_reg(&blocks[index].terminator, reg))
+        })
     else {
         return;
     };
