@@ -196,3 +196,65 @@ fn arithmetic_conditions_survive_stores_and_use_the_requested_width() {
         }
     }
 }
+
+#[test]
+fn full_width_and_wrapped_conditions_distinguish_zero_low_halves() {
+    let wasm = wat::parse_str(
+        r#"(module (memory 1)
+        (func (export "full") (param $a i64) (param $b i64) (result i32)
+            (if (i64.eqz (i64.sub (local.get $a) (local.get $b)))
+                (then (i32.store (i32.const 0) (i32.const 17)))
+                (else (i32.store (i32.const 0) (i32.const 29))))
+            (i32.load (i32.const 0)))
+        (func (export "wrapped") (param $a i64) (param $b i64) (result i32)
+            (if (i32.wrap_i64 (i64.sub (local.get $a) (local.get $b)))
+                (then (i32.store (i32.const 0) (i32.const 29)))
+                (else (i32.store (i32.const 0) (i32.const 17))))
+            (i32.load (i32.const 0)))
+        (func (export "shifted") (param $a i64) (param $b i64) (param $count i64) (result i32)
+            (if (i64.eqz (i64.shl (i64.sub (local.get $a) (local.get $b)) (local.get $count)))
+                (then (i32.store (i32.const 0) (i32.const 17)))
+                (else (i32.store (i32.const 0) (i32.const 29))))
+            (i32.load (i32.const 0))))"#,
+    )
+    .unwrap();
+    let engine = Engine::new(Config::new()).unwrap();
+    let mut instance = Instance::new(&engine, &wasm, &[]).unwrap();
+    let inputs = [0, 1, -1, 1i64 << 32, -(1i64 << 32), i64::MIN, i64::MAX];
+    for a in inputs {
+        for b in inputs {
+            let difference = a.wrapping_sub(b);
+            for (name, zero) in [
+                ("full", difference == 0),
+                ("wrapped", difference as u32 == 0),
+            ] {
+                let actual = instance
+                    .invoke(name, &[Value::I64(a), Value::I64(b)])
+                    .unwrap();
+                assert_eq!(
+                    actual.as_slice(),
+                    &[Value::I32(if zero { 17 } else { 29 })],
+                    "{name}({a}, {b})"
+                );
+            }
+            for count in [0, 1, 31, 32, 63, 64, 65, 128, -1] {
+                let expected = if difference.wrapping_shl(count as u32) == 0 {
+                    17
+                } else {
+                    29
+                };
+                let actual = instance
+                    .invoke(
+                        "shifted",
+                        &[Value::I64(a), Value::I64(b), Value::I64(count)],
+                    )
+                    .unwrap();
+                assert_eq!(
+                    actual.as_slice(),
+                    &[Value::I32(expected)],
+                    "shifted({a}, {b}, {count})"
+                );
+            }
+        }
+    }
+}

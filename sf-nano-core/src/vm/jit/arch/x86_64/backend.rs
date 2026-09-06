@@ -88,11 +88,11 @@ pub(crate) struct X86_64Backend<'a> {
     /// its literal pool and loaded RIP-relatively.
     pub(super) fp_literals: collections::Vec<u64>,
     pub(super) fp_literal_fixups: collections::Vec<FpLiteralFixup>,
-    /// Peephole state: EFLAGS still reflects the 32-bit result of this
-    /// register's most recent ALU write, valid only while the text cursor
+    /// Peephole state: EFLAGS reflects this register's most recent ALU result
+    /// at the recorded width, valid only while the text cursor
     /// sits at the recorded position. Emission invalidates the entry unless
     /// a flags-preserving operation explicitly carries the proof forward.
-    pub(super) flags32: Option<(X86Reg, usize)>,
+    pub(super) int_flags: Option<(MachineIntWidth, X86Reg, usize)>,
     /// Jump tables pending emission. Entry words flush after the function
     /// body next to the FP literal pool so table data never sits in the
     /// instruction stream between a dispatch and its handlers.
@@ -193,22 +193,21 @@ impl X86_64Backend<'_> {
         }
     }
 
-    /// Record that EFLAGS now reflects `reg`'s 32-bit result.
-    pub(super) fn note_flags32(&mut self, reg: X86Reg) {
-        self.flags32 = Some((reg, self.core.text.len()));
+    /// Record only ZF for an ALU result, at its exact operand width.
+    pub(super) fn note_int_flags(&mut self, width: MachineIntWidth, reg: X86Reg) {
+        self.int_flags = Some((width, reg, self.core.text.len()));
     }
 
-    /// The register whose 32-bit zero/nonzero result is still in EFLAGS.
-    pub(super) fn current_flags32(&self) -> Option<X86Reg> {
-        self.flags32
-            .filter(|(_, position)| *position == self.core.text.len())
-            .map(|(reg, _)| reg)
+    pub(super) fn current_int_flags(&self) -> Option<(MachineIntWidth, X86Reg)> {
+        self.int_flags
+            .filter(|(_, _, position)| *position == self.core.text.len())
+            .map(|(width, reg, _)| (width, reg))
     }
 
-    /// True when testing `reg` for zero would be redundant. This proof
-    /// covers ZF only; carry and overflow can differ from a comparison.
-    pub(super) fn flags32_current(&self, reg: X86Reg) -> bool {
-        self.current_flags32() == Some(reg)
+    /// Low-word zero and full-width zero are different predicates. This
+    /// proof covers ZF only; ordering comparisons still require CMP.
+    pub(super) fn int_flags_current(&self, width: MachineIntWidth, reg: X86Reg) -> bool {
+        self.current_int_flags() == Some((width, reg))
     }
 
     pub(super) fn intern_fp_literal(&mut self, bits: u64) -> usize {
@@ -244,7 +243,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             fp_scratch: abi::new_fp_scratch_pool(),
             fp_literals: collections::Vec::new(),
             fp_literal_fixups: collections::Vec::new(),
-            flags32: None,
+            int_flags: None,
             pending_jump_tables: collections::Vec::new(),
             pending_op: None,
             narrow_equality: None,
@@ -435,7 +434,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         // A fallthrough edge may emit no bytes, but other predecessors do
         // not promise the same flags. Position stamps only prove reuse
         // within the current block.
-        self.flags32 = None;
+        self.int_flags = None;
         self.core.current_block = Some(block.id);
         self.core.current_edge_target = None;
         self.core.reset_block_fp_state(block)?;
@@ -712,16 +711,22 @@ impl<'a> X86_64Backend<'a> {
     #[inline]
     pub(super) fn emit_gp_move_width(&mut self, width: MachineIntWidth, dst: X86Reg, src: X86Reg) {
         let flags = self
-            .current_flags32()
-            .filter(|&producer| dst != producer || dst == src);
+            .current_int_flags()
+            .filter(|&(produced_width, producer)| {
+                dst != producer
+                    || (dst == src
+                        && (width == MachineIntWidth::I64
+                            || produced_width == MachineIntWidth::I32))
+            });
         match width {
             MachineIntWidth::I32 => enc::mov_rr_32(&mut self.core.text, dst, src),
             MachineIntWidth::I64 => enc::mov_rr_64(&mut self.core.text, dst, src),
         }
-        // MOV preserves flags, but a copy over the producing register would
-        // invalidate the association with that register's current low word.
-        if let Some(producer) = flags {
-            self.note_flags32(producer);
+        // MOV preserves flags, but replacing the producer invalidates the
+        // association. Even a self-copy through r32 can turn a nonzero i64
+        // with a zero low half into zero, so it cannot carry a 64-bit proof.
+        if let Some((produced_width, producer)) = flags {
+            self.note_int_flags(produced_width, producer);
         }
     }
 
@@ -1034,5 +1039,164 @@ impl<'a> X86_64Backend<'a> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod result_flags_tests {
+    use super::*;
+    use crate::vm::jit::{
+        arch::common::core::FunctionBody,
+        backend::BackendConfig,
+        machine::machine_ir::{
+            MachineBranchCond, MachineCompareKind, MachineConstId, MachineEdge, MachineFuncId,
+            MachineFunction, MachineFunctionAbi, MachineIntBinaryOp, MachineSign,
+        },
+        runtime::code::CodegenModuleView,
+    };
+
+    #[derive(Debug)]
+    struct TestModule;
+
+    impl CodegenModuleView for TestModule {
+        fn backend(&self) -> BackendConfig {
+            abi::compile_backend_config()
+        }
+
+        fn runtime_for(&self, _id: MachineFuncId) -> Option<&MachineFunctionAbi> {
+            None
+        }
+
+        fn const_ptr(&self, _id: MachineConstId) -> Option<*const u8> {
+            None
+        }
+    }
+
+    fn function() -> MachineFunction {
+        let mut function = MachineFunction::default();
+        for id in 0..3 {
+            function.program.blocks.push(MachineBlock {
+                id: MachineBlockId(id),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            });
+        }
+        function
+    }
+
+    fn subtract_one(backend: &mut X86_64Backend<'_>, width: MachineIntWidth) {
+        backend
+            .lower_int_binary(
+                width,
+                MachineIntBinaryOp::Sub,
+                MachineReg(4),
+                MachineValue::Reg(MachineReg(4)),
+                MachineValue::Imm64(1),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn zero_branches_omit_compare_only_for_equal_width_eq_and_ne() {
+        let function = function();
+        for produced in [MachineIntWidth::I32, MachineIntWidth::I64] {
+            for compared in [MachineIntWidth::I32, MachineIntWidth::I64] {
+                for kind in [
+                    MachineCompareKind::Eq,
+                    MachineCompareKind::Ne,
+                    MachineCompareKind::Lt,
+                ] {
+                    let core = CompilerCore::new(&TestModule, FunctionBody::Mir(&function));
+                    let mut backend = X86_64Backend::new(core);
+                    subtract_one(&mut backend, produced);
+                    let start = backend.core.text.len();
+                    backend
+                        .lower_terminator_dispatch(
+                            &MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width: compared,
+                                    kind,
+                                    sign: MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(MachineReg(4)),
+                                    rhs: MachineValue::Imm64(0),
+                                },
+                                then_edge: MachineEdge {
+                                    target: MachineBlockId(1),
+                                    args: collections::Vec::new(),
+                                },
+                                else_edge: MachineEdge {
+                                    target: MachineBlockId(2),
+                                    args: collections::Vec::new(),
+                                },
+                            },
+                            Some(MachineBlockId(2)),
+                        )
+                        .unwrap();
+                    let only_jcc = backend.core.text.len() - start == 6;
+                    assert_eq!(
+                        only_jcc,
+                        produced == compared && kind != MachineCompareKind::Lt
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn r32_self_moves_cannot_preserve_full_width_zero_proofs() {
+        let function = function();
+        for produced in [MachineIntWidth::I32, MachineIntWidth::I64] {
+            for copied in [MachineIntWidth::I32, MachineIntWidth::I64] {
+                let core = CompilerCore::new(&TestModule, FunctionBody::Mir(&function));
+                let mut backend = X86_64Backend::new(core);
+                subtract_one(&mut backend, produced);
+                let reg = backend.map_gp_reg(MachineReg(4)).unwrap();
+                backend.emit_gp_move_width(copied, reg, reg);
+                assert_eq!(
+                    backend.int_flags_current(produced, reg),
+                    produced == MachineIntWidth::I32 || copied == MachineIntWidth::I64
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn register_replacement_lea_multiply_and_block_entries_end_the_proof() {
+        let function = function();
+        for case in 0..4 {
+            let core = CompilerCore::new(&TestModule, FunctionBody::Mir(&function));
+            let mut backend = X86_64Backend::new(core);
+            subtract_one(&mut backend, MachineIntWidth::I64);
+            let dst = backend.map_gp_reg(MachineReg(4)).unwrap();
+            let src = backend.map_gp_reg(MachineReg(5)).unwrap();
+            match case {
+                0 => backend.emit_gp_move_width(MachineIntWidth::I64, dst, src),
+                1 => backend
+                    .lower_int_binary(
+                        MachineIntWidth::I64,
+                        MachineIntBinaryOp::Sub,
+                        MachineReg(4),
+                        MachineValue::Reg(MachineReg(5)),
+                        MachineValue::Imm64(1),
+                    )
+                    .unwrap(),
+                2 => backend
+                    .lower_int_binary(
+                        MachineIntWidth::I64,
+                        MachineIntBinaryOp::Mul,
+                        MachineReg(4),
+                        MachineValue::Reg(MachineReg(4)),
+                        MachineValue::Imm64(3),
+                    )
+                    .unwrap(),
+                3 => backend.begin_block(&function.program.blocks[1]).unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(
+                !backend.int_flags_current(MachineIntWidth::I64, dst),
+                "case {case}"
+            );
+        }
     }
 }
