@@ -4,9 +4,9 @@ use crate::{
     error::WasmError,
     vm::jit::machine::machine_ir::{
         MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
-        MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineResultDst,
-        MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator,
-        MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+        MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineIntWidth,
+        MachineResultDst, MachineResultSrc, MachineReturnValue, MachineStorageType,
+        MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
     },
 };
 
@@ -34,6 +34,32 @@ fn scalar_fp_width(ty: MachineStorageType) -> Result<MachineFloatWidth, WasmErro
 }
 
 impl<'a> X86_64Backend<'a> {
+    /// Only equality consumes the same ZF as the i32 producer. Signed and
+    /// unsigned ordering still need CMP, as does every i64 comparison.
+    fn lower_branch_compare(
+        &mut self,
+        width: MachineIntWidth,
+        kind: MachineCompareKind,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    ) -> Result<(), WasmError> {
+        if width == MachineIntWidth::I32
+            && matches!(kind, MachineCompareKind::Eq | MachineCompareKind::Ne)
+        {
+            let reg = match (lhs, rhs) {
+                (MachineValue::Reg(reg), MachineValue::Imm64(0))
+                | (MachineValue::Imm64(0), MachineValue::Reg(reg)) => Some(reg),
+                _ => None,
+            };
+            if let Some(reg) = reg {
+                if self.flags32_current(self.map_gp_reg(reg)?) {
+                    return Ok(());
+                }
+            }
+        }
+        self.lower_cmp_values(width, lhs, rhs)
+    }
+
     // ── Main terminator dispatch ─────────────────────────────────────────────
 
     pub(super) fn lower_terminator_dispatch(
@@ -190,7 +216,7 @@ impl<'a> X86_64Backend<'a> {
                 lhs,
                 rhs,
             } => {
-                self.lower_cmp_values(width, lhs, rhs)?;
+                self.lower_branch_compare(width, kind, lhs, rhs)?;
                 let cc = map_int_cond(kind, sign);
                 if else_fallthrough {
                     if let Some(label) = then_label {
@@ -271,7 +297,7 @@ impl<'a> X86_64Backend<'a> {
                 lhs,
                 rhs,
             } => {
-                self.lower_cmp_values(width, lhs, rhs)?;
+                self.lower_branch_compare(width, kind, lhs, rhs)?;
                 self.emit_jcc(map_int_cond(kind, sign), trap_label);
             }
             MachineBranchCond::TestBits {
@@ -337,7 +363,7 @@ impl<'a> X86_64Backend<'a> {
                 lhs,
                 rhs,
             } => {
-                self.lower_cmp_values(width, lhs, rhs)?;
+                self.lower_branch_compare(width, kind, lhs, rhs)?;
                 let cc = match jump_when {
                     TemplateBranchSense::IfTrue => map_int_cond(kind, sign).invert(),
                     TemplateBranchSense::IfFalse => map_int_cond(kind, sign),

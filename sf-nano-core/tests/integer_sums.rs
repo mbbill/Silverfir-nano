@@ -108,3 +108,91 @@ fn sum_of_wrapped_i64_inputs_discards_high_halves() {
         );
     }
 }
+
+#[test]
+fn arithmetic_conditions_survive_stores_and_use_the_requested_width() {
+    for width in [32, 64] {
+        let ty = format!("i{width}");
+        let mut module = String::from("(module (memory 1)");
+        for op in ["add", "sub", "and", "or", "xor"] {
+            for compare in ["eq", "ne", "lt_s", "lt_u", "gt_s", "gt_u"] {
+                for zero_store in [false, true] {
+                    let name = format!("{op}_{compare}_{zero_store}");
+                    let stored = if zero_store {
+                        format!("({ty}.const 0)")
+                    } else {
+                        "(local.get $c)".to_string()
+                    };
+                    module.push_str(&format!(
+                        r#"(func (export "{name}") (param $a {ty}) (param $b {ty})
+                            (result i32 {ty}) (local $c {ty})
+                            (local.set $c ({ty}.{op} (local.get $a) (local.get $b)))
+                            ({ty}.store (i32.const 0) {stored})
+                            (if ({ty}.{compare} (local.get $c) ({ty}.const 0))
+                                (then (i32.store (i32.const 16) (i32.const 17)))
+                                (else (i32.store (i32.const 16) (i32.const 29))))
+                            (i32.load (i32.const 16)) ({ty}.load (i32.const 0)))"#
+                    ));
+                }
+            }
+        }
+        module.push(')');
+        let wasm = wat::parse_str(module).unwrap();
+        let engine = Engine::new(Config::new()).unwrap();
+        let mut instance = Instance::new(&engine, &wasm, &[]).unwrap();
+        let value = |x: i64| {
+            if width == 32 {
+                Value::I32(x as i32)
+            } else {
+                Value::I64(x)
+            }
+        };
+        let inputs = [
+            0,
+            1,
+            -1,
+            i32::MIN as i64,
+            i32::MAX as i64,
+            i64::MIN,
+            i64::MAX,
+        ];
+        for a in inputs {
+            for b in inputs {
+                for (op, result) in [
+                    ("add", a.wrapping_add(b)),
+                    ("sub", a.wrapping_sub(b)),
+                    ("and", a & b),
+                    ("or", a | b),
+                    ("xor", a ^ b),
+                ] {
+                    let result = if width == 32 {
+                        result as i32 as i64
+                    } else {
+                        result
+                    };
+                    for (compare, condition) in [
+                        ("eq", result == 0),
+                        ("ne", result != 0),
+                        ("lt_s", result < 0),
+                        ("lt_u", false),
+                        ("gt_s", result > 0),
+                        ("gt_u", result != 0),
+                    ] {
+                        for zero_store in [false, true] {
+                            let name = format!("{op}_{compare}_{zero_store}");
+                            let actual = instance.invoke(&name, &[value(a), value(b)]).unwrap();
+                            assert_eq!(
+                                actual.as_slice(),
+                                &[
+                                    Value::I32(if condition { 17 } else { 29 }),
+                                    value(if zero_store { 0 } else { result }),
+                                ],
+                                "{ty} {name}({a}, {b})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

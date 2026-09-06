@@ -1156,12 +1156,19 @@ impl<'a> X86_64Backend<'a> {
         // materialize the source or the base address will be lost.
         let materialize_scratch = if base == scratch0 { scratch1 } else { scratch0 };
         let src_gp = self.materialize_value(materialize_scratch, src)?;
+        // Snapshot after materialization: loading an immediate zero can use
+        // XOR and invalidate the producer's ZF. The MOV store itself changes
+        // neither flags nor any register, including the producer's value.
+        let flags32 = self.current_flags32();
         match width {
             MachineMemWidth::U8 => enc::store_8(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U16 => enc::store_16(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U32 => enc::store_32(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U64 => enc::store_64(&mut self.core.text, base, disp, src_gp),
         };
+        if let Some(reg) = flags32 {
+            self.note_flags32(reg);
+        }
         Ok(())
     }
 

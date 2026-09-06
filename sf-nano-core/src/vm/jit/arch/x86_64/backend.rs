@@ -90,8 +90,8 @@ pub(crate) struct X86_64Backend<'a> {
     pub(super) fp_literal_fixups: collections::Vec<FpLiteralFixup>,
     /// Peephole state: EFLAGS still reflects the 32-bit result of this
     /// register's most recent ALU write, valid only while the text cursor
-    /// sits at the recorded position. Any emission moves the cursor and
-    /// invalidates the entry implicitly; nothing ever needs to clear it.
+    /// sits at the recorded position. Emission invalidates the entry unless
+    /// a flags-preserving operation explicitly carries the proof forward.
     pub(super) flags32: Option<(X86Reg, usize)>,
     /// Jump tables pending emission. Entry words flush after the function
     /// body next to the FP literal pool so table data never sits in the
@@ -196,11 +196,17 @@ impl X86_64Backend<'_> {
         self.flags32 = Some((reg, self.core.text.len()));
     }
 
-    /// True while EFLAGS still reflects `reg`'s 32-bit value — a
-    /// `test reg, reg` here would be redundant and would break
-    /// ALU/branch macro-fusion.
+    /// The register whose 32-bit zero/nonzero result is still in EFLAGS.
+    pub(super) fn current_flags32(&self) -> Option<X86Reg> {
+        self.flags32
+            .filter(|(_, position)| *position == self.core.text.len())
+            .map(|(reg, _)| reg)
+    }
+
+    /// True when testing `reg` for zero would be redundant. This proof
+    /// covers ZF only; carry and overflow can differ from a comparison.
     pub(super) fn flags32_current(&self, reg: X86Reg) -> bool {
-        self.flags32 == Some((reg, self.core.text.len()))
+        self.current_flags32() == Some(reg)
     }
 
     pub(super) fn intern_fp_literal(&mut self, bits: u64) -> usize {
