@@ -1,11 +1,8 @@
 # Same-run diagnostic rankings; paired revision performance CI remains the gate.
 name: x64-standings
 
-# Manual instrument; the audit branch also triggers it on pushes.
+# Manual baseline/final comparison only; iterative changes use dev performance CI.
 on:
-  push:
-    branches: ["codex/x64-release-audit"]
-    paths-ignore: ["docs/**"]
   workflow_dispatch:
     inputs:
       tier:
