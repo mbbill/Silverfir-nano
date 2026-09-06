@@ -421,6 +421,9 @@ class CoveragePlanTests(unittest.TestCase):
                 "wasmi-startup-ranking.yml",
                 "x64-standings.yml",
                 "x64-profile.yml",
+                "x64-startup-audit.yml",
+                "x64-spectral-audit.yml",
+                "x64-lz4-audit.yml",
             },
         )
 
@@ -428,6 +431,25 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertIn("actions/workflows/correctness.yml", readme)
         self.assertIn("actions/workflows/performance-regression.yml", readme)
         self.assertNotIn("actions/workflows/check-", readme)
+
+    def test_campaign_diagnostics_cannot_run_on_normal_pr_or_main_events(self) -> None:
+        for name in (
+            "x64-profile.yml", "x64-startup-audit.yml",
+            "x64-spectral-audit.yml", "x64-lz4-audit.yml",
+        ):
+            with self.subTest(workflow=name):
+                workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+                trigger = re.search(r"^on:\n(.*?)(?=^[^ #\n])", workflow, re.MULTILINE | re.DOTALL)
+                self.assertIsNotNone(trigger)
+                trigger_text = trigger.group(1)
+                events = set(re.findall(r"^  ([a-z_]+):", trigger_text, re.MULTILINE))
+                self.assertIn("workflow_dispatch", events)
+                self.assertLessEqual(events, {"workflow_dispatch", "push"})
+                if "push" in events:
+                    self.assertRegex(trigger_text, re.compile(r'^    branches: \["codex/x64-profiling"\]$', re.MULTILINE))
+                    self.assertNotIn("branches-ignore:", trigger_text)
+                    self.assertNotIn("tags:", trigger_text)
+                    self.assertIn("    paths:", trigger_text)
 
     @mock.patch.object(correctness, "cargo")
     @mock.patch.object(correctness, "require_tools", return_value=True)
