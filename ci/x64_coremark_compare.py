@@ -30,22 +30,33 @@ def throughput_from_output(output: str) -> float:
     return runs * 1e9 / elapsed_ns
 
 
+def validate_i64_result(output: str, expected: int) -> None:
+    results = re.findall(r"result=\[I64\((-?\d+)\)\]", output)
+    if len(results) != 1 or int(results[0]) != expected:
+        raise ValueError(f"expected one I64({expected}) result, got {results}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", action="append", required=True)
     parser.add_argument("--wasm", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--rounds", type=int, default=4)
-    parser.add_argument("--mode", choices=["coremark", "setup"], default="coremark")
+    parser.add_argument("--mode", choices=["coremark", "setup", "i64"], default="coremark")
     parser.add_argument("--input", type=int, default=0)
     parser.add_argument("--seconds", type=float, default=3)
     parser.add_argument("--expected-output-f64", type=float)
+    parser.add_argument("--expected-output-i64", type=int)
     args = parser.parse_args()
     variants = dict(v.split("=", 1) for v in args.variant)
     if len(variants) != len(args.variant) or len(variants) < 2 or args.rounds < 2:
         parser.error("need distinct variants and at least two rounds")
     if not math.isfinite(args.seconds) or not 0 < args.seconds <= 60:
         parser.error("execution duration must be positive and at most 60 seconds")
+    if (args.mode == "i64") != (args.expected_output_i64 is not None):
+        parser.error("i64 execution requires an expected i64 result; other modes cannot use it")
+    if args.expected_output_f64 is not None and args.mode != "setup":
+        parser.error("expected f64 output requires setup mode")
     out = args.out_dir
     out.mkdir(parents=True, exist_ok=True)
     scores = {name: [] for name in variants}
@@ -56,7 +67,7 @@ def main() -> None:
             order.reverse()
         for name in order:
             command = [variants[name], str(args.wasm.resolve()), args.mode]
-            if args.mode == "setup":
+            if args.mode != "coremark":
                 command += [str(args.input), str(args.seconds)]
                 if args.expected_output_f64 is not None:
                     command += [str(args.expected_output_f64)]
@@ -65,6 +76,8 @@ def main() -> None:
             (out / f"round-{round_index}-{name}.log").write_text(output)
             if result.returncode:
                 raise RuntimeError(f"{name} exited {result.returncode}: {output}")
+            if args.mode == "i64":
+                validate_i64_result(output, args.expected_output_i64)
             score = (score_from_output(output) if args.mode == "coremark"
                      else throughput_from_output(output))
             scores[name].append(score)
@@ -80,9 +93,11 @@ def main() -> None:
             b/a for a, b in zip(scores[left], scores[right])])
     doc = {"mode": args.mode, "input": args.input, "seconds": args.seconds,
            "expected_output_f64": args.expected_output_f64,
+           "expected_output_i64": args.expected_output_i64,
            "scores": scores, "schedule": records, "comparisons": comparisons}
     (out / "comparison.json").write_text(json.dumps(doc, indent=2) + "\n")
-    title = "CoreMark" if args.mode == "coremark" else args.wasm.parent.name
+    title = ("CoreMark" if args.mode == "coremark" else
+             args.wasm.stem if args.mode == "i64" else args.wasm.parent.name)
     unit = "score" if args.mode == "coremark" else "runs/second"
     lines = [f"## Nano-only wasmi {title} experiment", "",
              f"{args.rounds} process pairs per comparison, alternating variant order; score ratios.", "",

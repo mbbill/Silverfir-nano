@@ -1,9 +1,6 @@
 # Isolated Nano-only campaign measurement; no main, PR or dev trigger.
 name: x64-spectral-audit
 on:
-  push:
-    branches: ["codex/x64-profiling"]
-    paths: ["ci/x64_warning_audit.py", "ci/test_x64_warning_audit.py", ".github/workflows/x64-spectral-audit.yml", "ci/x64_coremark_compare.py"]
   workflow_dispatch:
 permissions:
   contents: read

@@ -1,7 +1,15 @@
 import unittest
-from ci.x64_coremark_compare import score_from_output, throughput_from_output
+from ci.x64_coremark_compare import score_from_output, throughput_from_output, validate_i64_result
 
 class CoreMarkScoreTest(unittest.TestCase):
+    def test_integer_output_is_required_and_must_be_exact(self):
+        validate_i64_result('runs=1 result=[I64(832040)]', 832040)
+        validate_i64_result('runs=1 result=[I64(-37)]', -37)
+        for output in ['', 'result=[I64(832039)]', 'result=[F64(832040)]',
+                       'result=[I64(832040)] result=[I64(832040)]']:
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                validate_i64_result(output, 832040)
+
     def test_execution_uses_elapsed_work_and_rejects_missing_or_duplicate_results(self):
         self.assertEqual(throughput_from_output('measurement runs=10 elapsed_ns=2000000000\n'), 5)
         for output in ['', 'measurement runs=0 elapsed_ns=2',
