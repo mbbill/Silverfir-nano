@@ -186,3 +186,60 @@ fn memory64_offsets_and_access_ends_cannot_wrap_into_low_memory() {
         );
     }
 }
+
+#[test]
+fn explicit_memory_checks_preserve_live_integer_results_under_pressure() {
+    // The memory operation runs with many independently computed values live.
+    // Check both address widths, then trap and reuse the same instance.
+    for width in [32, 64] {
+        let address_ty = format!("i{width}");
+        let memory_ty = if width == 64 { "i64 " } else { "" };
+        for count in [4, 8, 12, 16] {
+            let mut wat = format!("(module (memory {memory_ty}1) (func (export \"run\")");
+            wat.push_str(&format!(" (param $address {address_ty})"));
+            for index in 0..count {
+                wat.push_str(&format!(" (param $p{index} i64)"));
+            }
+            for _ in 0..=count {
+                wat.push_str(" (result i64)");
+            }
+            // Keep results on the operand stack across the load. Their values
+            // are independent, so no constant folding can replace the set.
+            for index in 0..count {
+                wat.push_str(&format!(
+                    " (i64.rotl (local.get $p{index}) (i64.const {}))",
+                    index + 3
+                ));
+            }
+            wat.push_str(" (i64.load offset=16 (local.get $address))))");
+            let wasm = wat::parse_str(wat).unwrap();
+            let engine = Engine::new(Config::new()).unwrap();
+            let mut instance = Instance::new(&engine, &wasm, &[]).unwrap();
+            for address in [0i64, 65_512, 65_513, -1, -8, -16, 0] {
+                let mut args = vec![if width == 64 {
+                    Value::I64(address)
+                } else {
+                    Value::I32(address as i32)
+                }];
+                let mut expected = Vec::new();
+                for index in 0..count {
+                    let input = 0x1234_5678_9abc_def0u64
+                        .wrapping_mul(index as u64 + 1)
+                        .wrapping_add(address as u64);
+                    args.push(Value::I64(input as i64));
+                    expected.push(Value::I64(input.rotate_left(index as u32 + 3) as i64));
+                }
+                expected.push(Value::I64(0));
+                let result = instance.invoke("run", &args);
+                if (0..=65_512).contains(&address) {
+                    assert_eq!(result.unwrap().as_slice(), expected.as_slice());
+                } else {
+                    assert!(
+                        result.is_err(),
+                        "width={width}, count={count}, address={address}"
+                    );
+                }
+            }
+        }
+    }
+}
