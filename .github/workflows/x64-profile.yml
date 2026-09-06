@@ -32,8 +32,13 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 17f0914913b421c295e5cd514fd334edff9000af
-          path: source-bulk
+          ref: 79809a89fd9bd74ad95ee546cb426c37df77ac7a
+          path: source-flags
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 1f904642bdd9532751056aaa6fb7d02f213eacdf
+          path: source-spill
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -50,21 +55,15 @@ jobs:
           python3 - <<'PYCODE'
           import json, os, shutil
           from pathlib import Path
-          path = Path('sf-nano-core/src/vm/jit/arch/x86_64/inst.rs')
-          original = (Path('source-bulk') / path).read_text()
-          immediate_start = original.index('                        if dst != lhs_gp {\n                            // Keep two-operand ADD/SUB')
-          immediate_end = original.index('                        if dst != lhs_gp {\n                            self.emit_gp_move_width', immediate_start)
-          register_start = original.index('                if op == MachineIntBinaryOp::Add && dst != lhs_gp && dst != rhs_gp {')
-          register_end = original.index('                // Handle aliasing:', register_start)
+          path = Path('source-flags/sf-nano-core/src/vm/jit/arch/x86_64/inst.rs')
+          original = path.read_text()
+          changed = original.replace('if dst != lhs_gp {\n                            // Keep two-operand ADD/SUB', 'if dst != lhs_gp && width == MachineIntWidth::I64 {\n                            // Keep two-operand ADD/SUB')
+          assert changed != original
+          path.write_text(changed)
           import difflib
           Path('coremark-out').mkdir()
-          for name, start, end in [('reg', immediate_start, immediate_end), ('offset', register_start, register_end)]:
-              shutil.copytree('source-bulk', 'source-' + name, ignore=shutil.ignore_patterns('.git', 'target'))
-              changed = original[:start] + original[end:]
-              (Path('source-' + name) / path).write_text(changed)
-              patch = ''.join(difflib.unified_diff(original.splitlines(True), changed.splitlines(True), fromfile='bulk/' + str(path), tofile=name + '/' + str(path)))
-              Path('coremark-out/' + name + '.patch').write_text(patch)
-          for name in ['base', 'bulk', 'reg', 'offset']:
+          Path('coremark-out/flags.patch').write_text(''.join(difflib.unified_diff(original.splitlines(True), changed.splitlines(True), fromfile=str(path), tofile=str(path))))
+          for name in ['base', 'flags', 'spill']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -73,7 +72,7 @@ jobs:
           PYCODE
       - name: Build every Nano revision before measuring
         run: |
-          for name in base bulk reg offset; do
+          for name in base flags spill; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             if rg '^warning(\[[^]]+\])?:' "coremark-out/build-$name.log"; then
@@ -81,9 +80,7 @@ jobs:
               exit 1
             fi
             cp probe-target/release/sf-x64-probe "coremark-out/$name"
-            source_name="$name"
-            if [[ "$name" == reg || "$name" == offset ]]; then source_name=bulk; fi
-            git -C "source-$source_name" rev-parse HEAD > "coremark-out/$name-source.txt"
+            git -C "source-$name" rev-parse HEAD > "coremark-out/$name-source.txt"
           done
       - name: Compare the exact CoreMark module
         run: |
@@ -92,32 +89,18 @@ jobs:
           sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant base="$PWD/coremark-out/base" \
-            --variant bulk="$PWD/coremark-out/bulk" \
-            --variant reg="$PWD/coremark-out/reg" \
-            --variant offset="$PWD/coremark-out/offset" \
+            --variant flags="$PWD/coremark-out/flags" \
+            --variant spill="$PWD/coremark-out/spill" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
-      - name: Profile the base and full LEA revision
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq linux-tools-common linux-tools-generic
-          PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
-          sudo sysctl -w kernel.perf_event_paranoid=1
-          sudo sysctl -w kernel.kptr_restrict=0
-          for name in base bulk; do
-            taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
-              --perf "$PERF_BIN" --out-dir "profile-out/$name" -- \
-              "$PWD/coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark
-          done
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-lea-${{ matrix.draw }}
+          name: nano-coremark-spill-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
             coremark-out/*.txt
             coremark-out/*.md
             coremark-out/*.patch
-            profile-out/
           if-no-files-found: error
           retention-days: 30
