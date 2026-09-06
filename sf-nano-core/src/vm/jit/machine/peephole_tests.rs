@@ -1147,9 +1147,9 @@ fn forwards_u32_pair_self_store_reload_from_gp32_i64_slot() {
 }
 
 /// When the stored register gets clobbered between the store and the matching
-/// load, the load must NOT be forwarded even though addr + width match.
+/// load, preserve the original native-width word before that clobber.
 #[test]
-fn does_not_forward_u32_load_when_stored_reg_was_clobbered() {
+fn preserves_u32_frame_word_before_stored_reg_is_clobbered() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: collections::vec![],
@@ -1201,10 +1201,10 @@ fn does_not_forward_u32_load_when_stored_reg_was_clobbered() {
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
     assert!(matches!(
-        block.ops[2].kind,
-        MachineInstKind::Load {
+        block.ops[1].kind,
+        MachineInstKind::Move {
             dst: MachineReg(5),
-            width: MachineMemWidth::U32,
+            src: MachineValue::Reg(MachineReg(4)),
             ..
         }
     ));
