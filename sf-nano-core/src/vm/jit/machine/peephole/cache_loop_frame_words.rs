@@ -7,10 +7,9 @@
 
 use crate::collections;
 use crate::vm::jit::machine::machine_ir::{
-    MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-    MachineConvertOp, MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth,
-    MachineReg, MachineRegOwner, MachineStorageType, MachineTerminator, MachineValue,
-    MACHINE_FP_REG,
+    MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineConvertOp, MachineInst,
+    MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner,
+    MachineStorageType, MachineTerminator, MachineValue, MACHINE_FP_REG,
 };
 
 use super::helpers::{
@@ -46,38 +45,6 @@ fn loaded_word(kind: &MachineInstKind, gp_bytes: u8) -> Option<FrameWord> {
     .then_some(FrameWord { addr, width })
 }
 
-/// A stored loop value immediately controls whether its next iteration runs.
-/// Keeping that word in a register removes a loop-carried store/load dependency,
-/// even with only one static read. Passive single reads keep the usual threshold.
-fn branch_recurrence_word(block: &MachineBlock, gp_bytes: u8) -> Option<FrameWord> {
-    let MachineTerminator::Branch {
-        cond: MachineBranchCond::Value(MachineValue::Reg(cond)),
-        then_edge,
-        else_edge,
-    } = &block.terminator
-    else {
-        return None;
-    };
-    if (then_edge.target == block.id) == (else_edge.target == block.id) {
-        return None;
-    }
-    let MachineInstKind::Store {
-        ty: MachineStorageType::GpWord,
-        addr,
-        width,
-        src: MachineValue::Reg(src),
-    } = block.ops.last()?.kind
-    else {
-        return None;
-    };
-    (src == *cond
-        && addr.base == MACHINE_FP_REG
-        && addr.offset >= 0
-        && addr.offset % i32::from(gp_bytes) == 0
-        && width.bytes() == u32::from(gp_bytes))
-    .then_some(FrameWord { addr, width })
-}
-
 pub(super) fn cache_loop_frame_words(
     blocks: &mut [MachineBlock],
     graph: &LoopGraph,
@@ -96,21 +63,14 @@ pub(super) fn cache_loop_frame_words(
     // for the low registers; unusually high synthetic/future lanes retain
     // the original membership scan below.
     let mut masks = collections::vec![None; blocks.len()];
+    let gp_end = crate::vm::jit::backend::BackendConfig::FIXED
+        + u16::from(ctx.config.allocatable_gp_dynamic_budget());
+    let available_mask = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
+        .fold(0, |mask, reg| mask | reg_bit(MachineReg(reg)));
     for header in (0..blocks.len()).rev() {
         if graph.latches_by_header[header].is_empty() {
             continue;
         }
-        let recurrence = (graph.latches_by_header[header].as_slice() == [header])
-            .then(|| branch_recurrence_word(&blocks[header], ctx.config.gp_unit_bytes))
-            .flatten();
-        let gp_budget = if recurrence.is_some() {
-            ctx.config.gp_dynamic_budget
-        } else {
-            ctx.config.allocatable_gp_dynamic_budget()
-        };
-        let gp_end = crate::vm::jit::backend::BackendConfig::FIXED + u16::from(gp_budget);
-        let available_mask = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
-            .fold(0, |mask, reg| mask | reg_bit(MachineReg(reg)));
         let header_mask =
             *masks[header].get_or_insert_with(|| block_register_mask(&blocks[header]));
         if gp_end <= 64 && header_mask & available_mask == available_mask {
@@ -169,9 +129,6 @@ fn try_cache_word(
     loop_mask: u64,
 ) {
     let config = ctx.config;
-    let recurrence = (nodes.len() == 1)
-        .then(|| branch_recurrence_word(&blocks[header], config.gp_unit_bytes))
-        .flatten();
     // Reject loops without a reusable native-frame word before allocating
     // whole-function membership and predecessor scratch.
     let mut candidates: collections::Vec<(FrameWord, usize)> = collections::Vec::new();
@@ -195,10 +152,10 @@ fn try_cache_word(
             }
         }
     }
-    // Repeated reads or a branch recurrence justify entry setup and
-    // write-through copies; a lone passive reload does not.
+    // Require repeated static reads as well as a loop. This avoids paying
+    // entry setup and write-through copies for a lone cheap reload.
     candidates.retain(|(word, count)| {
-        (*count >= 2 || Some(*word) == recurrence)
+        *count >= 2
             && nodes.iter().all(|&index| {
                 blocks[index].ops.iter().all(|inst| match inst.kind {
                     MachineInstKind::Store {
@@ -252,14 +209,8 @@ fn try_cache_word(
         return;
     }
 
-    // A one-block recurrence may also use a lowering reserve that the final
-    // loop never mentions. Backend scratch is disjoint from this dynamic bank.
-    let gp_budget = if Some(word) == recurrence {
-        config.gp_dynamic_budget
-    } else {
-        config.allocatable_gp_dynamic_budget()
-    };
-    let gp_end = crate::vm::jit::backend::BackendConfig::FIXED + u16::from(gp_budget);
+    let gp_end = crate::vm::jit::backend::BackendConfig::FIXED
+        + u16::from(config.allocatable_gp_dynamic_budget());
     let Some(carry) = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
         .map(MachineReg)
         .find(|&reg| {
@@ -485,102 +436,6 @@ mod tests {
         let config = BackendConfig::new(8, gp_budget, 0, 0);
         let mut ctx = BlockOptCtx::new(config);
         cache_loop_frame_words(blocks, &graph, entry, &mut ctx);
-    }
-
-    fn recurrence_blocks() -> collections::Vec<MachineBlock> {
-        collections::vec![
-            MachineBlock {
-                id: MachineBlockId(0),
-                params: collections::vec![MachineBlockParam::gp_word(MachineReg(4))],
-                ops: collections::vec![store(4)],
-                terminator: MachineTerminator::Jump(edge(1, &[4])),
-            },
-            MachineBlock {
-                id: MachineBlockId(1),
-                params: collections::vec![MachineBlockParam::gp_word(MachineReg(4))],
-                ops: collections::vec![load(5), add(6, 5, 7), add(5, 5, u64::MAX), store(5)],
-                terminator: MachineTerminator::Branch {
-                    cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(5))),
-                    then_edge: edge(1, &[4]),
-                    else_edge: edge(2, &[6]),
-                },
-            },
-            MachineBlock {
-                id: MachineBlockId(2),
-                params: collections::vec![MachineBlockParam::gp_word(MachineReg(6))],
-                ops: collections::vec![load(4)],
-                terminator: MachineTerminator::Return,
-            },
-        ]
-    }
-
-    #[test]
-    fn carries_one_read_branch_recurrences_without_deferring_the_store() {
-        let mut blocks = recurrence_blocks();
-        let published = blocks[1].ops.last().unwrap().clone();
-        let exit = blocks[2].clone();
-        run(&mut blocks, MachineBlockId(0), 4);
-        let carry = MachineReg(7);
-        assert_eq!(blocks[1].params.last().unwrap().reg, carry);
-        assert!(!blocks[1]
-            .ops
-            .iter()
-            .any(|inst| loaded_word(&inst.kind, 8).is_some()));
-        let stored = blocks[1]
-            .ops
-            .iter()
-            .position(|inst| *inst == published)
-            .unwrap();
-        assert!(
-            matches!(blocks[1].ops[stored + 1].kind, MachineInstKind::Move {
-            owner: MachineRegOwner::CachedCell, dst, src: MachineValue::Reg(MachineReg(5)), ..
-        } if dst == carry)
-        );
-        let MachineTerminator::Branch {
-            cond,
-            then_edge,
-            else_edge,
-        } = &blocks[1].terminator
-        else {
-            panic!("branch must remain")
-        };
-        assert_eq!(
-            *cond,
-            MachineBranchCond::Value(MachineValue::Reg(MachineReg(5)))
-        );
-        assert_eq!(then_edge.args.last(), Some(&MachineValue::Reg(carry)));
-        assert_eq!(*else_edge, edge(2, &[6]));
-        assert_eq!(blocks[2], exit);
-    }
-
-    #[test]
-    fn single_reads_require_the_branch_recurrence_and_a_free_lane() {
-        for case in 0..6 {
-            let mut blocks = recurrence_blocks();
-            match case {
-                0 => blocks[1].ops[3] = store(6),
-                1 => blocks[1].ops.push(add(6, 6, 1)),
-                2 => {
-                    if let MachineInstKind::Store { width, .. } = &mut blocks[1].ops[3].kind {
-                        *width = MachineMemWidth::U32;
-                    }
-                }
-                3 => blocks[1].ops.insert(
-                    1,
-                    MachineInst {
-                        kind: MachineInstKind::CallRuntime(MachineCallRuntime {
-                            metadata: MachineConstId(0),
-                        }),
-                    },
-                ),
-                4 => blocks[1].ops.insert(1, add(7, 4, 1)),
-                5 => blocks[0].terminator = MachineTerminator::Jump(edge(1, &[4, 7])),
-                _ => unreachable!(),
-            }
-            let before = blocks.clone();
-            run(&mut blocks, MachineBlockId(0), 4);
-            assert_eq!(blocks, before, "case {case}");
-        }
     }
 
     #[test]
