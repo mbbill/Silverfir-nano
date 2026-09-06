@@ -31,6 +31,7 @@
 //!    every incoming CFG edge, on backends where those definitions already
 //!    zero-extend (`gp32_defs_zero_extend`).
 
+mod cache_loop_frame_words;
 mod copy_propagate;
 mod deduplicate_constants;
 mod eliminate_dead_params;
@@ -273,6 +274,14 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         config,
     );
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
+    // Dead cached-local parameters can hide otherwise unused physical lanes.
+    // Reuse frame words only after those parameters and edge arguments vanish.
+    cache_loop_frame_words::cache_loop_frame_words(
+        &mut program.blocks,
+        &loop_graph,
+        entry,
+        &mut ctx,
+    );
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
     // After compare-branch fusion: the fold reads loop bounds from
     // `Branch { IntCompare }` latch terminators. The passes since
