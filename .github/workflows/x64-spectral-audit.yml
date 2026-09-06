@@ -1,0 +1,122 @@
+# Isolated Nano-only campaign measurement; no main, PR or dev trigger.
+name: x64-spectral-audit
+on:
+  push:
+    branches: ["codex/x64-profiling"]
+    paths: ["ci/x64_warning_audit.py", "ci/test_x64_warning_audit.py", ".github/workflows/x64-spectral-audit.yml", "ci/x64_coremark_compare.py"]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  compare:
+    name: Nano spectralnorm conversion / draw ${{ matrix.draw }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        draw: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Audit and test the measurement tool
+        run: |
+          python3 -m ci.lint_policy
+          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare ci.test_x64_warning_audit
+      - uses: actions/checkout@v7
+        with:
+          ref: f73219f56a70b77028f0d79730c7efca29ba3439
+          path: source-main
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 1e37ec0409b40b2191e06d417de34ded29c2096f
+          path: source-current
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 98065afd65d5f318151a965931257e49a2f726a5
+          path: source-noclear
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: x64-nano-probes
+      - name: Prepare identical probe manifests
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, shutil
+          from pathlib import Path
+          Path('spectral-out').mkdir()
+          for name in ['main', 'current', 'noclear']:
+              dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
+              shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
+              manifest = dest / 'Cargo.toml'
+              source = Path('source-' + name).resolve() / 'sf-nano-core'
+              manifest.write_text(manifest.read_text().replace('"../../sf-nano-core"', json.dumps(str(source))))
+          PYCODE
+      - name: Save and audit the source variants
+        run: |
+          for name in main current noclear; do
+            (cd "source-$name" && python3 -m ci.lint_policy)
+          done
+      - name: Build every Nano revision before measuring
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          for name in main current noclear; do
+            cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
+              --target-dir probe-target 2>&1 | tee "spectral-out/build-$name.log"
+            python3 -m ci.x64_warning_audit "spectral-out/build-$name.log"
+            cp probe-target/release/sf-x64-probe "spectral-out/$name"
+            git -C "source-$name" rev-parse HEAD > "spectral-out/$name-source.txt"
+          done
+      - name: Compare the exact spectralnorm workload
+        run: |
+          lscpu > spectral-out/cpu.txt
+          rustc --version > spectral-out/rustc.txt
+          sha256sum wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm > spectral-out/wasm-sha256.txt
+          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
+            --variant main="$PWD/spectral-out/main" \
+            --variant current="$PWD/spectral-out/current" \
+            --variant noclear="$PWD/spectral-out/noclear" \
+            --wasm wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm \
+            --mode setup --input 500 --seconds 3 --expected-output-f64 1.2742241159529095 \
+            --rounds 6 --out-dir spectral-out
+      - name: Capture the native code of every revision
+        run: |
+          for name in main current noclear; do
+            SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
+              "spectral-out/$name" wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm coremark-dump
+          done
+      - name: Sample current spectralnorm machine-code hotspots
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common linux-tools-generic
+          PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
+            --perf "$PERF_BIN" --out-dir profile-out/spectralnorm -- \
+            "$PWD/spectral-out/current" wasmi-benchmarks/res/rust/cases/spectralnorm/out.wasm setup 500 10 1.2742241159529095
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nano-spectral-convert-${{ matrix.draw }}
+          path: |
+            spectral-out/*.log
+            spectral-out/*.json
+            spectral-out/*.txt
+            spectral-out/*.md
+            native-out/
+            profile-out/
+          if-no-files-found: error
+          retention-days: 30
