@@ -1,0 +1,12 @@
+[package]
+name = "sf-x64-probe"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+sf-nano-core = { path = "../../sf-nano-core", default-features = false, features = ["jit", "guard-pages", "jit-debug"] }
+wat = "1"
+[profile.release]
+lto = true
+codegen-units = 1
+
+[workspace]

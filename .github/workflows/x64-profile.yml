@@ -8,6 +8,7 @@ on:
     paths:
       - ".github/workflows/x64-profile.yml"
       - "ci/x64_profile_capture.py"
+      - "ci/x64-probe/**"
   workflow_dispatch:
 
 # No concurrency group: profile captures are independent and
@@ -34,11 +35,19 @@ jobs:
         with:
           shared-key: x64-profile
 
-      - name: Build sf-nano-cli with the jit-debug exporters
+      - name: Build Nano-only probe and audit this checkout
         run: |
           python3 -m ci.lint_policy
-          cargo build --release --locked -p sf-nano-cli \
-            --features sf-nano-core/jit-debug
+          cargo build --release --locked --manifest-path ci/x64-probe/Cargo.toml
+
+      - name: Checkout exact wasmi fixtures
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
 
       - name: Install perf and open perf events
         run: |
@@ -57,17 +66,21 @@ jobs:
           uname -a
           lscpu | grep -iE "model name|vendor" || true
 
-      - name: Capture targeted JIT profiles
+      - name: Capture wasmi and CoreMark profiles
         run: |
-          for workload in funcref/funcref.wasm lz4/lz4.wasm lua/sunfish c-ray/c-ray.wasm; do
-            label="${workload//\//-}"
+          probe="$PWD/ci/x64-probe/target/release/sf-x64-probe"
+          capture() {
+            label="$1"
+            shift
             taskset -c 1 setarch "$(uname -m)" -R \
-              python3 ci/x64_profile_capture.py \
-              --workload "$workload" --engine jit --time 15 \
-              --cli target/release/sf-nano-cli --perf "$PERF_BIN" \
-              --out-dir "profile-out/$label"
+              python3 ci/x64_profile_capture.py --perf "$PERF_BIN" \
+              --out-dir "profile-out/$label" -- "$probe" "$@"
             cat "profile-out/$label/report.txt" >> "$GITHUB_STEP_SUMMARY"
-          done
+          }
+          capture fibonacci-tail wasmi-benchmarks/res/wat/fibonacci-tail.wat i64 1000000 8
+          capture argon2 wasmi-benchmarks/res/rust/cases/argon2/out.wasm setup 10000 8
+          capture sort wasmi-benchmarks/res/rust/cases/sort/out.wasm setup 1000000 8
+          capture coremark wasmi-benchmarks/res/wasm/coremark.wasm coremark
 
       - uses: actions/upload-artifact@v7
         if: always()
