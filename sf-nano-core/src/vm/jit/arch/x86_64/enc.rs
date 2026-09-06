@@ -246,6 +246,103 @@ pub(crate) fn lea_offset(e: &mut TextEmitter, w64: bool, dst: X86Reg, base: X86R
     emit_modrm_mem(e, dst, base, disp);
 }
 
+/// BMI1 BEXTR dst, src, control. Uses only GP state, with VEX.L=0.
+pub(crate) fn bextr_rrr(e: &mut TextEmitter, w64: bool, dst: X86Reg, src: X86Reg, control: X86Reg) {
+    e.emit_u8(0xC4);
+    // Three-byte VEX: inverted R/X/B, 0F38 opcode map. No indexed operand.
+    e.emit_u8(
+        (u8::from(!dst.needs_rex_ext()) << 7) | 0x40 | (u8::from(!src.needs_rex_ext()) << 5) | 2,
+    );
+    e.emit_u8((u8::from(w64) << 7) | ((!control.idx() & 15) << 3));
+    e.emit_u8(0xF7);
+    emit_modrm_rr(e, dst, src);
+}
+
+#[cfg(test)]
+mod bextr_tests {
+    use super::*;
+
+    #[test]
+    fn executes_register_extracts_including_zero_and_out_of_range_controls() {
+        use crate::vm::jit::arch::x86_64::abi::{C_ARG0, C_ARG1};
+        use crate::vm::jit::runtime::code_buf::CodeBuffer;
+        use core::arch::x86_64::{__cpuid, __cpuid_count};
+
+        if __cpuid(0).eax < 7 || __cpuid_count(7, 0).ebx & (1 << 3) == 0 {
+            std::eprintln!("BEXTR execution check skipped: host has no BMI1");
+            return;
+        }
+        for wide in [false, true] {
+            let mut text = TextEmitter::new();
+            bextr_rrr(&mut text, wide, X86Reg::RAX, C_ARG0, C_ARG1);
+            ret(&mut text);
+            let bytes = text.finish();
+            let mut code = CodeBuffer::with_capacity(4096).unwrap();
+            code.begin_write();
+            code.emit_bytes(&bytes);
+            code.finish_write(0, bytes.len());
+            // The two GP argument lanes and RAX return lane match the host C
+            // ABI. The leaf function touches no callee-preserved register.
+            let extract: unsafe extern "C" fn(u64, u64) -> u64 = unsafe { code.fn_ptr(0) };
+            for raw in [0, 1, u64::MAX, 0x8000_0000_0000_0000, 0x537a_93b6_dac4_210f] {
+                let input = if wide { raw } else { u64::from(raw as u32) };
+                for start in [0u32, 1, 31, 32, 63, 64, 255] {
+                    for length in [0u32, 1, 7, 31, 32, 63, 64, 255] {
+                        let width = if wide { 64 } else { 32 };
+                        let expected = if start >= width {
+                            0
+                        } else {
+                            let n = length.min(width - start);
+                            let mask = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
+                            (input >> start) & mask
+                        };
+                        let control = 0xa5a5_0000 | u64::from((length << 8) | start);
+                        assert_eq!(unsafe { extract(raw, control) }, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encodes_both_widths_and_all_three_extended_register_fields() {
+        for (wide, dst, src, control, expected) in [
+            (
+                false,
+                X86Reg::RAX,
+                X86Reg::RDI,
+                X86Reg::RCX,
+                [0xC4, 0xE2, 0x70, 0xF7, 0xC7],
+            ),
+            (
+                true,
+                X86Reg::R10,
+                X86Reg::R13,
+                X86Reg::R9,
+                [0xC4, 0x42, 0xB0, 0xF7, 0xD5],
+            ),
+            (
+                false,
+                X86Reg::R8,
+                X86Reg::RSI,
+                X86Reg::R15,
+                [0xC4, 0x62, 0x00, 0xF7, 0xC6],
+            ),
+            (
+                true,
+                X86Reg::RDI,
+                X86Reg::R12,
+                X86Reg::RAX,
+                [0xC4, 0xC2, 0xF8, 0xF7, 0xFC],
+            ),
+        ] {
+            let mut text = TextEmitter::new();
+            bextr_rrr(&mut text, wide, dst, src, control);
+            assert_eq!(text.finish().as_slice(), &expected);
+        }
+    }
+}
+
 #[cfg(test)]
 mod lea_tests {
     use super::*;

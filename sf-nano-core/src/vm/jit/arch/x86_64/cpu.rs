@@ -7,11 +7,11 @@
 //! the running CPU, and is checked here rather than asserted in `build.rs`
 //! against the build target's `target_feature` baseline.
 //!
-//! Scalar lowering stays within the x86_64 SSE2 baseline, so a CPU without
+//! Scalar lowering retains an x86_64 SSE2 fallback, so a CPU without
 //! SSSE3/SSE4.1 still compiles and runs non-SIMD modules; only modules that
 //! reach SIMD lowering are rejected.
 
-use core::arch::x86_64::__cpuid;
+use core::arch::x86_64::{__cpuid, __cpuid_count};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::error::WasmError;
@@ -28,6 +28,29 @@ const PROBE_UNSUPPORTED: u8 = 2;
 /// Cached result of `probe()`. Racing threads may probe concurrently; CPUID is
 /// pure, so every racer computes the same value and the store is idempotent.
 static SIMD_SUPPORT: AtomicU8 = AtomicU8::new(PROBE_PENDING);
+static BEXTR_PREFERENCE: AtomicU8 = AtomicU8::new(PROBE_PENDING);
+
+/// AMD's single-operation BEXTR can shorten a shift-and-mask dependency.
+/// Intel implementations commonly use two operations, so retain their
+/// existing lowering. This is a CPU cost preference, not an ISA requirement.
+/// See Agner Fog's instruction tables, Zen 3 and Skylake BEXTR entries.
+pub(super) fn prefer_bextr() -> bool {
+    let mut state = BEXTR_PREFERENCE.load(Ordering::Relaxed);
+    if state == PROBE_PENDING {
+        let vendor = __cpuid(0);
+        let amd = vendor.ebx == u32::from_le_bytes(*b"Auth")
+            && vendor.edx == u32::from_le_bytes(*b"enti")
+            && vendor.ecx == u32::from_le_bytes(*b"cAMD");
+        let supported = amd && vendor.eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 3) != 0;
+        state = if supported {
+            PROBE_SUPPORTED
+        } else {
+            PROBE_UNSUPPORTED
+        };
+        BEXTR_PREFERENCE.store(state, Ordering::Relaxed);
+    }
+    state == PROBE_SUPPORTED
+}
 
 fn probe() -> u8 {
     // Leaf 1 is architecturally present on every x86_64 CPU, which is why

@@ -1832,6 +1832,21 @@ impl<'a> X86_64Backend<'a> {
         let dst = self.map_gp_reg(dst)?;
         let src = self.map_gp_reg(src)?;
         // dst = (src >> lsb) & ((1 << bits) - 1)
+        if lsb != 0 && super::cpu::prefer_bextr() {
+            let scratch = self.gp_scratch.scoped_alloc().detach();
+            let control = self.materialize_value(
+                *scratch,
+                MachineValue::Imm64((u64::from(bits) << 8) | u64::from(lsb)),
+            )?;
+            enc::bextr_rrr(
+                &mut self.core.text,
+                width == MachineIntWidth::I64,
+                dst,
+                src,
+                control,
+            );
+            return Ok(());
+        }
         if dst != src {
             self.emit_gp_move_width(width, dst, src);
         }
