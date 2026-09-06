@@ -77,6 +77,7 @@ pub(super) struct LoadAluFusion {
     pub mem: LoadAluMem,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum LoadAluMem {
     Base(MachineAddr),
     Indexed {

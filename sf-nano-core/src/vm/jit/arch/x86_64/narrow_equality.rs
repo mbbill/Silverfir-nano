@@ -1,7 +1,8 @@
 //! Compare a zero-extended byte/halfword with a truncated GP value directly.
 //!
-//! Only a closed block suffix is skipped; the narrow load stays at its original
-//! trap point, and every skipped result must be dead on both successor paths.
+//! Only a closed block suffix is skipped. A dead load can become CMP's memory
+//! operand across the pure mask/XOR; every skipped result is dead on both paths.
+use super::fusion::LoadAluMem;
 use crate::vm::jit::machine::machine_ir::{
     MachineBlock, MachineBranchCond, MachineCompareKind, MachineEdge, MachineInstKind,
     MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
@@ -14,6 +15,7 @@ pub(super) struct NarrowEquality {
     pub width: MachineMemWidth,
     pub loaded: MachineReg,
     pub source: MachineReg,
+    pub memory: Option<LoadAluMem>,
 }
 
 fn dynamic_gp(reg: MachineReg) -> bool {
@@ -108,19 +110,34 @@ pub(super) fn narrow_equality(
         | (MachineValue::Imm64(mask), MachineValue::Reg(source)) => (source, mask),
         _ => return None,
     };
-    let (loaded, width) = match block.ops[mask_index.checked_sub(1)?].kind {
+    let load_index = mask_index.checked_sub(1)?;
+    let (loaded, width, memory) = match block.ops[load_index].kind {
         MachineInstKind::Load {
             dst,
+            addr,
             width: width @ (MachineMemWidth::U8 | MachineMemWidth::U16),
             extension: MachineLoadExtension::None | MachineLoadExtension::ZeroExtend,
             ..
-        }
-        | MachineInstKind::IndexedLoad {
+        } => (dst, width, LoadAluMem::Base(addr)),
+        MachineInstKind::IndexedLoad {
             dst,
+            base,
+            index,
+            index_extend,
+            offset,
             width: width @ (MachineMemWidth::U8 | MachineMemWidth::U16),
             extension: MachineLoadExtension::None | MachineLoadExtension::ZeroExtend,
             ..
-        } => (dst, width),
+        } => (
+            dst,
+            width,
+            LoadAluMem::Indexed {
+                base,
+                index,
+                extend: index_extend,
+                offset,
+            },
+        ),
         _ => return None,
     };
     let expected_mask = (1u64 << (width.bytes() * 8)) - 1;
@@ -134,11 +151,19 @@ pub(super) fn narrow_equality(
     {
         return None;
     }
+    // If the load overwrote the compared source, CMP must still read that
+    // loaded value. Likewise retain the load when a successor observes it.
+    let memory = (source != loaded && dead(loaded)).then_some(memory);
     Some(NarrowEquality {
-        first_skipped: mask_index,
+        first_skipped: if memory.is_some() {
+            load_index
+        } else {
+            mask_index
+        },
         width,
         loaded,
         source,
+        memory,
     })
 }
 
@@ -245,7 +270,8 @@ mod tests {
                         }
                     }
                     let plan = narrow_equality(&b[0], &b).unwrap();
-                    assert_eq!(plan.first_skipped, 1);
+                    assert_eq!(plan.first_skipped, 0);
+                    assert!(plan.memory.is_some());
                     assert_eq!(
                         (plan.loaded, plan.source, plan.width),
                         (MachineReg(5), MachineReg(6), width)
@@ -362,5 +388,113 @@ mod tests {
             text.finish(),
             [0x40, 0x3a, 0xf7, 0x45, 0x3a, 0xc1, 0x66, 0x44, 0x3b, 0xc7, 0x66, 0x41, 0x3b, 0xf1]
         );
+    }
+
+    #[test]
+    fn memory_equality_keeps_a_load_that_is_observed_or_overwrites_the_source() {
+        let mut b = blocks(MachineMemWidth::U8, false);
+        if let MachineTerminator::Branch { then_edge, .. } = &mut b[0].terminator {
+            then_edge.args.push(MachineValue::Reg(MachineReg(5)));
+        }
+        b[1].params
+            .push(crate::vm::jit::machine::machine_ir::MachineBlockParam::gp_i64(MachineReg(8)));
+        let plan = narrow_equality(&b[0], &b).unwrap();
+        assert_eq!(plan.first_skipped, 1);
+        assert!(plan.memory.is_none());
+
+        let mut b = blocks(MachineMemWidth::U16, false);
+        if let MachineInstKind::IntBinary { lhs, .. } = &mut b[0].ops[1].kind {
+            *lhs = MachineValue::Reg(MachineReg(5));
+        }
+        let plan = narrow_equality(&b[0], &b).unwrap();
+        assert_eq!(plan.first_skipped, 1);
+        assert!(plan.memory.is_none());
+    }
+
+    #[test]
+    fn narrow_memory_encodings_cover_rex_sib_and_zero_displacement() {
+        use super::super::{enc, reg::X86Reg};
+        use crate::vm::jit::arch::common::text_emitter::TextEmitter;
+        let mut text = TextEmitter::new();
+        enc::cmp_rm_narrow(&mut text, false, X86Reg::RSI, X86Reg::RBP, None, 0);
+        enc::cmp_rm_narrow(
+            &mut text,
+            false,
+            X86Reg::R8,
+            X86Reg::R12,
+            Some(X86Reg::RDI),
+            0,
+        );
+        enc::cmp_rm_narrow(
+            &mut text,
+            true,
+            X86Reg::RDI,
+            X86Reg::R12,
+            Some(X86Reg::R8),
+            2,
+        );
+        assert_eq!(
+            text.finish(),
+            [0x40, 0x3a, 0x75, 0x00, 0x45, 0x3a, 0x04, 0x3c, 0x66, 0x43, 0x3b, 0x7c, 0x04, 0x02]
+        );
+    }
+
+    #[test]
+    fn executes_narrow_memory_equality_with_high_bits_and_both_address_forms() {
+        use super::super::{
+            abi::{C_ARG0, C_ARG1, C_ARG2},
+            enc,
+            reg::X86Reg,
+        };
+        use crate::vm::jit::{
+            arch::common::text_emitter::TextEmitter, runtime::code_buf::CodeBuffer,
+        };
+        let memory: [u8; 64] = core::array::from_fn(|n| ((n * 73) ^ (n >> 2)) as u8);
+        for word in [false, true] {
+            for indexed in [false, true] {
+                for offset in [-15, 0, 17] {
+                    let mut text = TextEmitter::new();
+                    enc::cmp_rm_narrow(
+                        &mut text,
+                        word,
+                        C_ARG1,
+                        C_ARG0,
+                        indexed.then_some(C_ARG2),
+                        offset,
+                    );
+                    enc::setcc(&mut text, enc::Cc::E, X86Reg::RAX);
+                    enc::movzx_r32_r8(&mut text, X86Reg::RAX, X86Reg::RAX);
+                    enc::ret(&mut text);
+                    let bytes = text.finish();
+                    let mut code = CodeBuffer::with_capacity(4096).unwrap();
+                    code.begin_write();
+                    code.emit_bytes(&bytes);
+                    code.finish_write(0, bytes.len());
+                    // This leaf uses only C argument registers and RAX. Every
+                    // tested address (including the full U16 read) is in memory.
+                    let compare: unsafe extern "C" fn(*const u8, u64, usize) -> u32 =
+                        unsafe { code.fn_ptr(0) };
+                    for index in [0, 1, 5] {
+                        let address = (16 + offset) as usize + if indexed { index } else { 0 };
+                        let loaded = if word {
+                            u64::from(u16::from_le_bytes([memory[address], memory[address + 1]]))
+                        } else {
+                            u64::from(memory[address])
+                        };
+                        let mask = if word { 65535 } else { 255 };
+                        for source in [
+                            loaded,
+                            loaded | 0xabcd_0000_0000_0000,
+                            loaded ^ 1,
+                            0,
+                            u64::MAX,
+                        ] {
+                            let actual = unsafe { compare(memory.as_ptr().add(16), source, index) };
+                            assert_eq!(actual, u32::from(loaded == source & mask));
+                        }
+                    }
+                }
+            }
+        }
     }
 }
