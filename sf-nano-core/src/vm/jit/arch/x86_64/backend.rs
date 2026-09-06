@@ -447,14 +447,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             .narrow_equality
             .is_some_and(|plan| index >= plan.first_skipped)
         {
-            // The preceding pointer load or address snapshot may still be
-            // buffered. It remains before the fused memory access.
-            if let Some((prev, prev_index)) = self.pending_op.take() {
-                self.core.current_op_index = Some(prev_index);
-                self.lower_inst(prev)?;
-                self.gp_scratch.assert_all_free();
-                self.fp_scratch.assert_all_free();
-            }
+            debug_assert!(self.pending_op.is_none());
             return Ok(());
         }
         // Try to consume the buffered pair together. On a miss, emit

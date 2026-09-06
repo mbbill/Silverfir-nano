@@ -528,30 +528,6 @@ pub(crate) fn xor_ri_32(e: &mut TextEmitter, dst: X86Reg, imm: i32) {
 }
 
 // CMP
-pub(crate) fn cmp_rm_narrow(
-    e: &mut TextEmitter,
-    word: bool,
-    reg: X86Reg,
-    base: X86Reg,
-    index: Option<X86Reg>,
-    disp: i32,
-) {
-    if word {
-        e.emit_u8(0x66);
-    }
-    let r = reg.needs_rex_ext();
-    let x = index.is_some_and(X86Reg::needs_rex_ext);
-    let b = base.needs_rex_ext();
-    if !word || r || x || b {
-        e.emit_u8(rex(false, r, x, b));
-    }
-    e.emit_u8(if word { 0x3B } else { 0x3A });
-    if let Some(index) = index {
-        emit_modrm_mem_idx(e, reg.idx3(), base, index, disp);
-    } else {
-        emit_modrm_mem(e, reg, base, disp);
-    }
-}
 pub(crate) fn cmp_rr_8(e: &mut TextEmitter, lhs: X86Reg, rhs: X86Reg) {
     // Even a bare REX is required for SIL/DIL/BPL/SPL instead of AH/CH/DH/BH.
     e.emit_u8(rex(false, lhs.needs_rex_ext(), false, rhs.needs_rex_ext()));

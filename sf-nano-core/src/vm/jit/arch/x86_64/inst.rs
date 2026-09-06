@@ -53,58 +53,6 @@ pub(super) fn convert_op_code(op: MachineConvertOp) -> u32 {
 }
 
 impl<'a> X86_64Backend<'a> {
-    pub(super) fn lower_narrow_equality(
-        &mut self,
-        plan: &super::narrow_equality::NarrowEquality,
-    ) -> Result<(), WasmError> {
-        use super::fusion::LoadAluMem;
-        let source = self.map_gp_reg(plan.source)?;
-        let word = match plan.width {
-            MachineMemWidth::U8 => false,
-            MachineMemWidth::U16 => true,
-            _ => unreachable!("validated narrow equality width"),
-        };
-        match plan.memory {
-            None => {
-                let loaded = self.map_gp_reg(plan.loaded)?;
-                if word {
-                    enc::cmp_rr_16(&mut self.core.text, loaded, source);
-                } else {
-                    enc::cmp_rr_8(&mut self.core.text, loaded, source);
-                }
-            }
-            Some(LoadAluMem::Base(addr)) => {
-                let base = self.map_gp_reg(addr.base)?;
-                enc::cmp_rm_narrow(&mut self.core.text, word, source, base, None, addr.offset);
-            }
-            Some(LoadAluMem::Indexed {
-                base,
-                index,
-                extend,
-                offset,
-            }) => {
-                let base = self.map_gp_reg(base)?;
-                let index = self.map_gp_reg(index)?;
-                let scratch0 = self.gp_scratch.scoped_alloc().detach();
-                let scratch1 = self.gp_scratch.scoped_alloc().detach();
-                let index = match extend {
-                    MachineIndexExtend::None => index,
-                    MachineIndexExtend::ZeroExtend32 => {
-                        let scratch = if base == *scratch0 {
-                            *scratch1
-                        } else {
-                            *scratch0
-                        };
-                        enc::mov_rr_32(&mut self.core.text, scratch, index);
-                        scratch
-                    }
-                };
-                enc::cmp_rm_narrow(&mut self.core.text, word, source, base, Some(index), offset);
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
             MachineInstKind::Move {
