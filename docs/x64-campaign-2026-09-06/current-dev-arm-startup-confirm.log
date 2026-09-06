@@ -1,0 +1,1346 @@
+﻿2026-09-06T13:42:19.2212513Z Current runner version: '2.337.0'
+2026-09-06T13:42:19.2244238Z ##[group]Runner Image Provisioner
+2026-09-06T13:42:19.2245351Z Hosted Compute Agent
+2026-09-06T13:42:19.2245991Z Version: 20260828.587
+2026-09-06T13:42:19.2246656Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+2026-09-06T13:42:19.2247513Z Build Date: 2026-08-28T16:44:25Z
+2026-09-06T13:42:19.2248670Z Worker ID: {bb4882f9-a1ed-4d32-8b73-48023c007b92}
+2026-09-06T13:42:19.2249539Z Azure Region: westus2
+2026-09-06T13:42:19.2250179Z ##[endgroup]
+2026-09-06T13:42:19.2253052Z ##[group]Operating System
+2026-09-06T13:42:19.2253909Z Ubuntu
+2026-09-06T13:42:19.2254421Z 24.04.4
+2026-09-06T13:42:19.2254989Z LTS
+2026-09-06T13:42:19.2255561Z ##[endgroup]
+2026-09-06T13:42:19.2256124Z ##[group]Runner Image
+2026-09-06T13:42:19.2256808Z Image: ubuntu-24.04-arm
+2026-09-06T13:42:19.2257409Z Version: 20260831.111.1
+2026-09-06T13:42:19.2259380Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24-arm64/20260831.111/images/ubuntu/Ubuntu2404-Arm64-Readme.md
+2026-09-06T13:42:19.2261052Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24-arm64%2F20260831.111
+2026-09-06T13:42:19.2262113Z ##[endgroup]
+2026-09-06T13:42:19.2263312Z ##[group]GITHUB_TOKEN Permissions
+2026-09-06T13:42:19.2266742Z Contents: read
+2026-09-06T13:42:19.2267359Z Metadata: read
+2026-09-06T13:42:19.2268387Z ##[endgroup]
+2026-09-06T13:42:19.2271520Z Secret source: Actions
+2026-09-06T13:42:19.2273195Z Prepare workflow directory
+2026-09-06T13:42:19.2745796Z Prepare all required actions
+2026-09-06T13:42:19.2801017Z Getting action download info
+2026-09-06T13:42:19.6401150Z Download action repository 'actions/download-artifact@v7' (SHA:37930b1c2abaa49bbe596cd826c3c89aef350131)
+2026-09-06T13:42:19.9261028Z Download action repository 'actions/checkout@v7' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-09-06T13:42:19.9683032Z Download action repository 'dtolnay/rust-toolchain@stable' (SHA:6bed0761d98439e5a578e2877258200ad565ba87)
+2026-09-06T13:42:20.1069120Z Download action repository 'actions/cache@v6' (SHA:55cc8345863c7cc4c66a329aec7e433d2d1c52a9)
+2026-09-06T13:42:20.2047077Z Download action repository 'Swatinem/rust-cache@v2.9.1' (SHA:c19371144df3bb44fab255c43d04cbc2ab54d1c4)
+2026-09-06T13:42:20.4742822Z Download action repository 'actions/upload-artifact@v7' (SHA:043fb46d1a93c77aae656e7c1c64a875d1fc6a0a)
+2026-09-06T13:42:20.7878635Z Complete job name: wasmi-confirm / arm64-linux / jit / startup
+2026-09-06T13:42:20.8787215Z ##[group]Run actions/download-artifact@v7
+2026-09-06T13:42:20.8789128Z with:
+2026-09-06T13:42:20.8790075Z   name: wasmi-performance-arm64-linux-jit-startup
+2026-09-06T13:42:20.8791105Z   path: /home/runner/work/_temp/primary
+2026-09-06T13:42:20.8792003Z   merge-multiple: false
+2026-09-06T13:42:20.8792851Z   repository: mbbill/Silverfir-nano
+2026-09-06T13:42:20.8793687Z   run-id: 34035799241
+2026-09-06T13:42:20.8794789Z ##[endgroup]
+2026-09-06T13:42:21.2038623Z Downloading single artifact
+2026-09-06T13:42:21.4713932Z Preparing to download the following artifacts:
+2026-09-06T13:42:21.4715514Z - wasmi-performance-arm64-linux-jit-startup (ID: 9990441240, Size: 105313, Expected Digest: sha256:461d12a2386c2b6e0f049a5f99396d7efbddb3d8830426270ca3eed2188908db)
+2026-09-06T13:42:21.9667478Z Redirecting to blob download url: https://productionresultssa5.blob.core.windows.net/actions-results/98025c79-a884-43c4-a864-c0b618af3305/workflow-job-run-b386aa80-a63e-5ddc-b943-73d65ab314f5/artifacts/68f03ab36830c10f790d9173c895b77dd9b7ee75b73aca690178c60b1cf3a8b5.zip
+2026-09-06T13:42:21.9669422Z Starting download of artifact to: /home/runner/work/_temp/primary
+2026-09-06T13:42:22.2529814Z (node:2095) [DEP0005] DeprecationWarning: Buffer() is deprecated due to security and usability issues. Please use the Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() methods instead.
+2026-09-06T13:42:22.2531085Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-09-06T13:42:22.4523351Z SHA256 digest of downloaded artifact is 461d12a2386c2b6e0f049a5f99396d7efbddb3d8830426270ca3eed2188908db
+2026-09-06T13:42:22.4525739Z Artifact download completed successfully.
+2026-09-06T13:42:22.4526367Z Total of 1 artifact(s) downloaded
+2026-09-06T13:42:22.4528292Z Download artifact has finished successfully
+2026-09-06T13:42:22.4726118Z ##[group]Run set -euo pipefail
+2026-09-06T13:42:22.4726822Z [36;1mset -euo pipefail[0m
+2026-09-06T13:42:22.4728582Z [36;1mflagged=$(python3 -c "import json, os, pathlib; doc = pathlib.Path(os.environ['PRIMARY_DIR']) / 'comparison.json'; metrics = (json.loads(doc.read_text(encoding='utf-8')).get('metrics') or {}) if doc.is_file() else {}; print(' '.join(sorted(name for name, m in metrics.items() if m.get('status') == 'REGRESSION')))")[0m
+2026-09-06T13:42:22.4730130Z [36;1mif [[ -n "$flagged" ]]; then confirm=true; else confirm=false; fi[0m
+2026-09-06T13:42:22.4730724Z [36;1mecho "confirm=$confirm" >> "$GITHUB_OUTPUT"[0m
+2026-09-06T13:42:22.4731230Z [36;1mecho "flagged=$flagged" >> "$GITHUB_OUTPUT"[0m
+2026-09-06T13:42:22.4731785Z [36;1mecho "primary flagged rows: ${flagged:-none}"[0m
+2026-09-06T13:42:22.4827649Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:22.4828742Z env:
+2026-09-06T13:42:22.4829264Z   PRIMARY_DIR: /home/runner/work/_temp/primary
+2026-09-06T13:42:22.4829755Z ##[endgroup]
+2026-09-06T13:42:22.5174309Z primary flagged rows: startup/argon2 startup/bz2 startup/coremark startup/ffmpeg
+2026-09-06T13:42:22.5353618Z ##[group]Run actions/checkout@v7
+2026-09-06T13:42:22.5354172Z with:
+2026-09-06T13:42:22.5354539Z   ref: 39ba77b3166801b397bd997577dd2c24b28a2307
+2026-09-06T13:42:22.5354971Z   repository: mbbill/Silverfir-nano
+2026-09-06T13:42:22.5358294Z   token: ***
+2026-09-06T13:42:22.5358652Z   ssh-strict: true
+2026-09-06T13:42:22.5358981Z   ssh-user: git
+2026-09-06T13:42:22.5359320Z   persist-credentials: true
+2026-09-06T13:42:22.5359669Z   clean: true
+2026-09-06T13:42:22.5360012Z   sparse-checkout-cone-mode: true
+2026-09-06T13:42:22.5360388Z   fetch-depth: 1
+2026-09-06T13:42:22.5360706Z   fetch-tags: false
+2026-09-06T13:42:22.5361069Z   show-progress: true
+2026-09-06T13:42:22.5361396Z   lfs: false
+2026-09-06T13:42:22.5361703Z   submodules: false
+2026-09-06T13:42:22.5362035Z   set-safe-directory: true
+2026-09-06T13:42:22.5362416Z   allow-unsafe-pr-checkout: false
+2026-09-06T13:42:22.5363042Z ##[endgroup]
+2026-09-06T13:42:22.6156736Z Syncing repository: mbbill/Silverfir-nano
+2026-09-06T13:42:22.6159402Z ##[group]Getting Git version info
+2026-09-06T13:42:22.6160085Z Working directory is '/home/runner/work/Silverfir-nano/Silverfir-nano'
+2026-09-06T13:42:22.6161001Z [command]/usr/bin/git version
+2026-09-06T13:42:22.6170490Z git version 2.55.0
+2026-09-06T13:42:22.6187689Z ##[endgroup]
+2026-09-06T13:42:22.6196779Z Temporarily overriding HOME='/home/runner/work/_temp/8aef0261-fba0-4e4c-bcb1-ff14c98f25cd' before making global git config changes
+2026-09-06T13:42:22.6198377Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-06T13:42:22.6201010Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/Silverfir-nano/Silverfir-nano
+2026-09-06T13:42:22.6231039Z Deleting the contents of '/home/runner/work/Silverfir-nano/Silverfir-nano'
+2026-09-06T13:42:22.6234874Z ##[group]Determining repository object format
+2026-09-06T13:42:22.6236137Z ##[endgroup]
+2026-09-06T13:42:22.6236990Z ##[group]Initializing the repository
+2026-09-06T13:42:22.6240884Z [command]/usr/bin/git init /home/runner/work/Silverfir-nano/Silverfir-nano
+2026-09-06T13:42:22.6320031Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-09-06T13:42:22.6320826Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-09-06T13:42:22.6321522Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-09-06T13:42:22.6322046Z hint: call:
+2026-09-06T13:42:22.6322360Z hint:
+2026-09-06T13:42:22.6322772Z hint: 	git config --global init.defaultBranch <name>
+2026-09-06T13:42:22.6323212Z hint:
+2026-09-06T13:42:22.6323659Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-09-06T13:42:22.6324840Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-09-06T13:42:22.6325364Z hint:
+2026-09-06T13:42:22.6325697Z hint: 	git branch -m <name>
+2026-09-06T13:42:22.6326075Z hint:
+2026-09-06T13:42:22.6326586Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-09-06T13:42:22.6327329Z Initialized empty Git repository in /home/runner/work/Silverfir-nano/Silverfir-nano/.git/
+2026-09-06T13:42:22.6329071Z [command]/usr/bin/git remote add origin https://github.com/mbbill/Silverfir-nano
+2026-09-06T13:42:22.6376381Z ##[endgroup]
+2026-09-06T13:42:22.6396937Z ##[group]Disabling automatic garbage collection
+2026-09-06T13:42:22.6397514Z [command]/usr/bin/git config --local gc.auto 0
+2026-09-06T13:42:22.6399641Z ##[endgroup]
+2026-09-06T13:42:22.6400204Z ##[group]Setting up auth
+2026-09-06T13:42:22.6400613Z Removing SSH command configuration
+2026-09-06T13:42:22.6401527Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-06T13:42:22.6422235Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-06T13:42:22.6680422Z Removing HTTP extra header
+2026-09-06T13:42:22.6686422Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-06T13:42:22.6714973Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-06T13:42:22.6908294Z Removing includeIf entries pointing to credentials config files
+2026-09-06T13:42:22.6913773Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:42:22.6944049Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-06T13:42:22.7140500Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-06T13:42:22.7185284Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/.git.path /home/runner/work/_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config
+2026-09-06T13:42:22.7216301Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config
+2026-09-06T13:42:22.7248645Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config
+2026-09-06T13:42:22.7278552Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config
+2026-09-06T13:42:22.7304665Z ##[endgroup]
+2026-09-06T13:42:22.7305314Z ##[group]Fetching the repository
+2026-09-06T13:42:22.7310621Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 39ba77b3166801b397bd997577dd2c24b28a2307
+2026-09-06T13:42:23.7487237Z From https://github.com/mbbill/Silverfir-nano
+2026-09-06T13:42:23.7487923Z  * branch            39ba77b3166801b397bd997577dd2c24b28a2307 -> FETCH_HEAD
+2026-09-06T13:42:23.7495900Z [command]/usr/bin/git rev-parse --verify --quiet 39ba77b3166801b397bd997577dd2c24b28a2307^{object}
+2026-09-06T13:42:23.7520222Z 39ba77b3166801b397bd997577dd2c24b28a2307
+2026-09-06T13:42:23.7524569Z ##[endgroup]
+2026-09-06T13:42:23.7524988Z ##[group]Determining the checkout info
+2026-09-06T13:42:23.7525626Z ##[endgroup]
+2026-09-06T13:42:23.7529377Z [command]/usr/bin/git sparse-checkout disable
+2026-09-06T13:42:23.7565987Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-09-06T13:42:23.7591647Z ##[group]Checking out the ref
+2026-09-06T13:42:23.7595435Z [command]/usr/bin/git checkout --progress --force 39ba77b3166801b397bd997577dd2c24b28a2307
+2026-09-06T13:42:23.8785299Z Note: switching to '39ba77b3166801b397bd997577dd2c24b28a2307'.
+2026-09-06T13:42:23.8785764Z 
+2026-09-06T13:42:23.8787144Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-09-06T13:42:23.8787693Z changes and commit them, and you can discard any commits you make in this
+2026-09-06T13:42:23.8788383Z state without impacting any branches by switching back to a branch.
+2026-09-06T13:42:23.8788651Z 
+2026-09-06T13:42:23.8788833Z If you want to create a new branch to retain commits you create, you may
+2026-09-06T13:42:23.8789253Z do so (now or later) by using -c with the switch command. Example:
+2026-09-06T13:42:23.8790018Z 
+2026-09-06T13:42:23.8790714Z   git switch -c <new-branch-name>
+2026-09-06T13:42:23.8791265Z 
+2026-09-06T13:42:23.8791406Z Or undo this operation with:
+2026-09-06T13:42:23.8791571Z 
+2026-09-06T13:42:23.8791652Z   git switch -
+2026-09-06T13:42:23.8791772Z 
+2026-09-06T13:42:23.8791978Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-09-06T13:42:23.8792276Z 
+2026-09-06T13:42:23.8792864Z HEAD is now at 39ba77b Lower duplicate-heavy x64 jump tables to direct membership branches
+2026-09-06T13:42:23.8793926Z ##[endgroup]
+2026-09-06T13:42:23.8834843Z [command]/usr/bin/git log -1 --format=%H
+2026-09-06T13:42:23.8859815Z 39ba77b3166801b397bd997577dd2c24b28a2307
+2026-09-06T13:42:23.9029132Z ##[group]Run actions/checkout@v7
+2026-09-06T13:42:23.9029551Z with:
+2026-09-06T13:42:23.9029765Z   ref: f73219f56a70b77028f0d79730c7efca29ba3439
+2026-09-06T13:42:23.9030030Z   path: baseline
+2026-09-06T13:42:23.9030237Z   repository: mbbill/Silverfir-nano
+2026-09-06T13:42:23.9032985Z   token: ***
+2026-09-06T13:42:23.9033184Z   ssh-strict: true
+2026-09-06T13:42:23.9033458Z   ssh-user: git
+2026-09-06T13:42:23.9033794Z   persist-credentials: true
+2026-09-06T13:42:23.9034030Z   clean: true
+2026-09-06T13:42:23.9034227Z   sparse-checkout-cone-mode: true
+2026-09-06T13:42:23.9034457Z   fetch-depth: 1
+2026-09-06T13:42:23.9034637Z   fetch-tags: false
+2026-09-06T13:42:23.9034825Z   show-progress: true
+2026-09-06T13:42:23.9035074Z   lfs: false
+2026-09-06T13:42:23.9035263Z   submodules: false
+2026-09-06T13:42:23.9035463Z   set-safe-directory: true
+2026-09-06T13:42:23.9035697Z   allow-unsafe-pr-checkout: false
+2026-09-06T13:42:23.9035951Z ##[endgroup]
+2026-09-06T13:42:23.9713180Z Syncing repository: mbbill/Silverfir-nano
+2026-09-06T13:42:23.9724538Z ##[group]Getting Git version info
+2026-09-06T13:42:23.9724980Z Working directory is '/home/runner/work/Silverfir-nano/Silverfir-nano/baseline'
+2026-09-06T13:42:23.9759048Z [command]/usr/bin/git version
+2026-09-06T13:42:23.9803513Z git version 2.55.0
+2026-09-06T13:42:23.9821249Z ##[endgroup]
+2026-09-06T13:42:23.9832196Z Temporarily overriding HOME='/home/runner/work/_temp/21a0bc9a-fe5d-487b-8372-c5b57669c199' before making global git config changes
+2026-09-06T13:42:23.9832976Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-06T13:42:23.9836243Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/Silverfir-nano/Silverfir-nano/baseline
+2026-09-06T13:42:23.9866178Z ##[group]Determining repository object format
+2026-09-06T13:42:23.9867978Z ##[endgroup]
+2026-09-06T13:42:23.9868372Z ##[group]Initializing the repository
+2026-09-06T13:42:23.9873541Z [command]/usr/bin/git init /home/runner/work/Silverfir-nano/Silverfir-nano/baseline
+2026-09-06T13:42:23.9906229Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-09-06T13:42:23.9915151Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-09-06T13:42:23.9915653Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-09-06T13:42:23.9916009Z hint: call:
+2026-09-06T13:42:23.9916561Z hint:
+2026-09-06T13:42:23.9916792Z hint: 	git config --global init.defaultBranch <name>
+2026-09-06T13:42:23.9917077Z hint:
+2026-09-06T13:42:23.9917342Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-09-06T13:42:23.9918019Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-09-06T13:42:23.9918388Z hint:
+2026-09-06T13:42:23.9918573Z hint: 	git branch -m <name>
+2026-09-06T13:42:23.9918777Z hint:
+2026-09-06T13:42:23.9919070Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-09-06T13:42:23.9919667Z Initialized empty Git repository in /home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git/
+2026-09-06T13:42:23.9929196Z [command]/usr/bin/git remote add origin https://github.com/mbbill/Silverfir-nano
+2026-09-06T13:42:23.9949454Z ##[endgroup]
+2026-09-06T13:42:23.9950183Z ##[group]Disabling automatic garbage collection
+2026-09-06T13:42:23.9952036Z [command]/usr/bin/git config --local gc.auto 0
+2026-09-06T13:42:23.9978058Z ##[endgroup]
+2026-09-06T13:42:23.9978473Z ##[group]Setting up auth
+2026-09-06T13:42:23.9978756Z Removing SSH command configuration
+2026-09-06T13:42:23.9987198Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-06T13:42:24.0011275Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-06T13:42:24.0196370Z Removing HTTP extra header
+2026-09-06T13:42:24.0201775Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-06T13:42:24.0233160Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-06T13:42:24.0417929Z Removing includeIf entries pointing to credentials config files
+2026-09-06T13:42:24.0422289Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:42:24.0453029Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-06T13:42:24.0659882Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-06T13:42:24.0696872Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git.path /home/runner/work/_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config
+2026-09-06T13:42:24.0726817Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config
+2026-09-06T13:42:24.0756158Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/baseline/.git.path /github/runner_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config
+2026-09-06T13:42:24.0786015Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/baseline/.git/worktrees/*.path /github/runner_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config
+2026-09-06T13:42:24.0813124Z ##[endgroup]
+2026-09-06T13:42:24.0813484Z ##[group]Fetching the repository
+2026-09-06T13:42:24.0819507Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin f73219f56a70b77028f0d79730c7efca29ba3439
+2026-09-06T13:42:25.0464466Z From https://github.com/mbbill/Silverfir-nano
+2026-09-06T13:42:25.0464945Z  * branch            f73219f56a70b77028f0d79730c7efca29ba3439 -> FETCH_HEAD
+2026-09-06T13:42:25.0472960Z [command]/usr/bin/git rev-parse --verify --quiet f73219f56a70b77028f0d79730c7efca29ba3439^{object}
+2026-09-06T13:42:25.0498180Z f73219f56a70b77028f0d79730c7efca29ba3439
+2026-09-06T13:42:25.0501503Z ##[endgroup]
+2026-09-06T13:42:25.0501872Z ##[group]Determining the checkout info
+2026-09-06T13:42:25.0502657Z ##[endgroup]
+2026-09-06T13:42:25.0507185Z [command]/usr/bin/git sparse-checkout disable
+2026-09-06T13:42:25.0543774Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-09-06T13:42:25.0571339Z ##[group]Checking out the ref
+2026-09-06T13:42:25.0574840Z [command]/usr/bin/git checkout --progress --force f73219f56a70b77028f0d79730c7efca29ba3439
+2026-09-06T13:42:25.1686588Z Note: switching to 'f73219f56a70b77028f0d79730c7efca29ba3439'.
+2026-09-06T13:42:25.1687257Z 
+2026-09-06T13:42:25.1687928Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-09-06T13:42:25.1688469Z changes and commit them, and you can discard any commits you make in this
+2026-09-06T13:42:25.1688908Z state without impacting any branches by switching back to a branch.
+2026-09-06T13:42:25.1689171Z 
+2026-09-06T13:42:25.1689342Z If you want to create a new branch to retain commits you create, you may
+2026-09-06T13:42:25.1689772Z do so (now or later) by using -c with the switch command. Example:
+2026-09-06T13:42:25.1690013Z 
+2026-09-06T13:42:25.1690103Z   git switch -c <new-branch-name>
+2026-09-06T13:42:25.1690263Z 
+2026-09-06T13:42:25.1690349Z Or undo this operation with:
+2026-09-06T13:42:25.1690496Z 
+2026-09-06T13:42:25.1690572Z   git switch -
+2026-09-06T13:42:25.1690674Z 
+2026-09-06T13:42:25.1690868Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-09-06T13:42:25.1691151Z 
+2026-09-06T13:42:25.1691240Z HEAD is now at f73219f Updated readme
+2026-09-06T13:42:25.1694886Z ##[endgroup]
+2026-09-06T13:42:25.1733692Z [command]/usr/bin/git log -1 --format=%H
+2026-09-06T13:42:25.1759040Z f73219f56a70b77028f0d79730c7efca29ba3439
+2026-09-06T13:42:25.1905679Z ##[group]Run actions/checkout@v7
+2026-09-06T13:42:25.1905989Z with:
+2026-09-06T13:42:25.1906191Z   repository: wasmi-labs/wasmi-benchmarks
+2026-09-06T13:42:25.1906469Z   ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+2026-09-06T13:42:25.1906756Z   path: wasmi-benchmarks
+2026-09-06T13:42:25.1906967Z   submodules: recursive
+2026-09-06T13:42:25.1907181Z   persist-credentials: false
+2026-09-06T13:42:25.1910169Z   token: ***
+2026-09-06T13:42:25.1910360Z   ssh-strict: true
+2026-09-06T13:42:25.1910542Z   ssh-user: git
+2026-09-06T13:42:25.1910716Z   clean: true
+2026-09-06T13:42:25.1910914Z   sparse-checkout-cone-mode: true
+2026-09-06T13:42:25.1911146Z   fetch-depth: 1
+2026-09-06T13:42:25.1911323Z   fetch-tags: false
+2026-09-06T13:42:25.1911514Z   show-progress: true
+2026-09-06T13:42:25.1911706Z   lfs: false
+2026-09-06T13:42:25.1911881Z   set-safe-directory: true
+2026-09-06T13:42:25.1912118Z   allow-unsafe-pr-checkout: false
+2026-09-06T13:42:25.1912347Z ##[endgroup]
+2026-09-06T13:42:25.2575386Z Syncing repository: wasmi-labs/wasmi-benchmarks
+2026-09-06T13:42:25.2579050Z ##[group]Getting Git version info
+2026-09-06T13:42:25.2580250Z Working directory is '/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks'
+2026-09-06T13:42:25.2609866Z [command]/usr/bin/git version
+2026-09-06T13:42:25.2652304Z git version 2.55.0
+2026-09-06T13:42:25.2668111Z ##[endgroup]
+2026-09-06T13:42:25.2679171Z Temporarily overriding HOME='/home/runner/work/_temp/06b5c872-f3ee-4b67-b970-25a16cdf779a' before making global git config changes
+2026-09-06T13:42:25.2680052Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-06T13:42:25.2682964Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks
+2026-09-06T13:42:25.2714764Z ##[group]Determining repository object format
+2026-09-06T13:42:25.2716289Z ##[endgroup]
+2026-09-06T13:42:25.2716829Z ##[group]Initializing the repository
+2026-09-06T13:42:25.2721168Z [command]/usr/bin/git init /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks
+2026-09-06T13:42:25.2754882Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-09-06T13:42:25.2755505Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-09-06T13:42:25.2756677Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-09-06T13:42:25.2757471Z hint: call:
+2026-09-06T13:42:25.2757704Z hint:
+2026-09-06T13:42:25.2758132Z hint: 	git config --global init.defaultBranch <name>
+2026-09-06T13:42:25.2758426Z hint:
+2026-09-06T13:42:25.2758696Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-09-06T13:42:25.2759157Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-09-06T13:42:25.2759505Z hint:
+2026-09-06T13:42:25.2759675Z hint: 	git branch -m <name>
+2026-09-06T13:42:25.2759874Z hint:
+2026-09-06T13:42:25.2760189Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-09-06T13:42:25.2760775Z Initialized empty Git repository in /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/
+2026-09-06T13:42:25.2768931Z [command]/usr/bin/git remote add origin https://github.com/wasmi-labs/wasmi-benchmarks
+2026-09-06T13:42:25.2801184Z ##[endgroup]
+2026-09-06T13:42:25.2801703Z ##[group]Disabling automatic garbage collection
+2026-09-06T13:42:25.2802233Z [command]/usr/bin/git config --local gc.auto 0
+2026-09-06T13:42:25.2824994Z ##[endgroup]
+2026-09-06T13:42:25.2825529Z ##[group]Setting up auth
+2026-09-06T13:42:25.2825969Z Removing SSH command configuration
+2026-09-06T13:42:25.2830914Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-06T13:42:25.2859626Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-06T13:42:25.3046901Z Removing HTTP extra header
+2026-09-06T13:42:25.3052741Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-06T13:42:25.3097710Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-06T13:42:25.3319504Z Removing includeIf entries pointing to credentials config files
+2026-09-06T13:42:25.3321973Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:42:25.3355397Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-06T13:42:25.3555508Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-06T13:42:25.3601397Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git.path /home/runner/work/_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:25.3631586Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:25.3662300Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/wasmi-benchmarks/.git.path /github/runner_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:25.3691557Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/wasmi-benchmarks/.git/worktrees/*.path /github/runner_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:25.3719673Z ##[endgroup]
+2026-09-06T13:42:25.3720031Z ##[group]Fetching the repository
+2026-09-06T13:42:25.3725712Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 16a3d7c8fdb05506c116a9451175732d1ac77099
+2026-09-06T13:42:27.3018513Z From https://github.com/wasmi-labs/wasmi-benchmarks
+2026-09-06T13:42:27.3018981Z  * branch            16a3d7c8fdb05506c116a9451175732d1ac77099 -> FETCH_HEAD
+2026-09-06T13:42:27.3027562Z [command]/usr/bin/git rev-parse --verify --quiet 16a3d7c8fdb05506c116a9451175732d1ac77099^{object}
+2026-09-06T13:42:27.3052226Z 16a3d7c8fdb05506c116a9451175732d1ac77099
+2026-09-06T13:42:27.3055001Z ##[endgroup]
+2026-09-06T13:42:27.3055344Z ##[group]Determining the checkout info
+2026-09-06T13:42:27.3056622Z ##[endgroup]
+2026-09-06T13:42:27.3060773Z [command]/usr/bin/git sparse-checkout disable
+2026-09-06T13:42:27.3097044Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-09-06T13:42:27.3123504Z ##[group]Checking out the ref
+2026-09-06T13:42:27.3127188Z [command]/usr/bin/git checkout --progress --force 16a3d7c8fdb05506c116a9451175732d1ac77099
+2026-09-06T13:42:27.4010284Z Note: switching to '16a3d7c8fdb05506c116a9451175732d1ac77099'.
+2026-09-06T13:42:27.4010889Z 
+2026-09-06T13:42:27.4011314Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-09-06T13:42:27.4011801Z changes and commit them, and you can discard any commits you make in this
+2026-09-06T13:42:27.4012269Z state without impacting any branches by switching back to a branch.
+2026-09-06T13:42:27.4012528Z 
+2026-09-06T13:42:27.4012696Z If you want to create a new branch to retain commits you create, you may
+2026-09-06T13:42:27.4013116Z do so (now or later) by using -c with the switch command. Example:
+2026-09-06T13:42:27.4013357Z 
+2026-09-06T13:42:27.4013452Z   git switch -c <new-branch-name>
+2026-09-06T13:42:27.4013626Z 
+2026-09-06T13:42:27.4013711Z Or undo this operation with:
+2026-09-06T13:42:27.4013863Z 
+2026-09-06T13:42:27.4013941Z   git switch -
+2026-09-06T13:42:27.4014052Z 
+2026-09-06T13:42:27.4014248Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-09-06T13:42:27.4014853Z 
+2026-09-06T13:42:27.4015040Z HEAD is now at 16a3d7c update wasmer benchmark results
+2026-09-06T13:42:27.4018483Z ##[endgroup]
+2026-09-06T13:42:27.4018854Z ##[group]Setting up auth for fetching submodules
+2026-09-06T13:42:27.4024652Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-06T13:42:27.4065634Z [command]/usr/bin/git config --global include.path /home/runner/work/_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:27.4098378Z [command]/usr/bin/git config --global --unset-all url.https://github.com/.insteadOf
+2026-09-06T13:42:27.4128943Z [command]/usr/bin/git config --global --add url.https://github.com/.insteadOf git@github.com:
+2026-09-06T13:42:27.4161706Z [command]/usr/bin/git config --global --add url.https://github.com/.insteadOf org-841602@github.com:
+2026-09-06T13:42:27.4196214Z ##[endgroup]
+2026-09-06T13:42:27.4196767Z ##[group]Fetching submodules
+2026-09-06T13:42:27.4199735Z [command]/usr/bin/git submodule sync --recursive
+2026-09-06T13:42:27.4411531Z [command]/usr/bin/git -c protocol.version=2 submodule update --init --force --depth=1 --recursive
+2026-09-06T13:42:27.4618813Z Submodule 'res/rust' (https://github.com/wasmi-labs/rust-benchmarks.git) registered for path 'res/rust'
+2026-09-06T13:42:27.4640615Z Cloning into '/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/rust'...
+2026-09-06T13:42:29.3637153Z From https://github.com/wasmi-labs/rust-benchmarks
+2026-09-06T13:42:29.3638831Z  * branch            32e233bd1922425448851ffbd0fdc04e8c6e0f76 -> FETCH_HEAD
+2026-09-06T13:42:29.3780873Z Submodule path 'res/rust': checked out '32e233bd1922425448851ffbd0fdc04e8c6e0f76'
+2026-09-06T13:42:29.3878850Z [command]/usr/bin/git submodule foreach --recursive git config --local gc.auto 0
+2026-09-06T13:42:29.3982842Z Entering 'res/rust'
+2026-09-06T13:42:29.4020447Z ##[endgroup]
+2026-09-06T13:42:29.4058039Z [command]/usr/bin/git log -1 --format=%H
+2026-09-06T13:42:29.4083019Z 16a3d7c8fdb05506c116a9451175732d1ac77099
+2026-09-06T13:42:29.4090958Z ##[group]Removing auth
+2026-09-06T13:42:29.4091344Z Removing SSH command configuration
+2026-09-06T13:42:29.4094657Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-06T13:42:29.4125616Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-06T13:42:29.4308923Z Entering 'res/rust'
+2026-09-06T13:42:29.4351459Z Removing HTTP extra header
+2026-09-06T13:42:29.4356507Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-06T13:42:29.4388541Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-06T13:42:29.4575094Z Entering 'res/rust'
+2026-09-06T13:42:29.4616687Z Removing includeIf entries pointing to credentials config files
+2026-09-06T13:42:29.4619589Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:42:29.4644154Z includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git.path
+2026-09-06T13:42:29.4644812Z includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/worktrees/*.path
+2026-09-06T13:42:29.4645361Z includeif.gitdir:/github/workspace/wasmi-benchmarks/.git.path
+2026-09-06T13:42:29.4645792Z includeif.gitdir:/github/workspace/wasmi-benchmarks/.git/worktrees/*.path
+2026-09-06T13:42:29.4651984Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git.path
+2026-09-06T13:42:29.4674502Z /home/runner/work/_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:29.4684123Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-c6e74030\-6392\-4eea\-93c1\-9125d7ce4e07\.config
+2026-09-06T13:42:29.4715341Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/worktrees/*.path
+2026-09-06T13:42:29.4742985Z /home/runner/work/_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:29.4751890Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-c6e74030\-6392\-4eea\-93c1\-9125d7ce4e07\.config
+2026-09-06T13:42:29.4782119Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/wasmi-benchmarks/.git.path
+2026-09-06T13:42:29.4804951Z /github/runner_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:29.4811740Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/wasmi-benchmarks/.git.path \/github\/runner_temp\/git\-credentials\-c6e74030\-6392\-4eea\-93c1\-9125d7ce4e07\.config
+2026-09-06T13:42:29.4842842Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/wasmi-benchmarks/.git/worktrees/*.path
+2026-09-06T13:42:29.4865535Z /github/runner_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config
+2026-09-06T13:42:29.4871727Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/wasmi-benchmarks/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-c6e74030\-6392\-4eea\-93c1\-9125d7ce4e07\.config
+2026-09-06T13:42:29.4901792Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-06T13:42:29.5078761Z Entering 'res/rust'
+2026-09-06T13:42:29.5092592Z file:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/modules/res/rust/config	remote.origin.url
+2026-09-06T13:42:29.5119661Z [command]/usr/bin/git config --file /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/modules/res/rust/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:42:29.5146286Z Removing credentials config '/home/runner/work/_temp/git-credentials-c6e74030-6392-4eea-93c1-9125d7ce4e07.config'
+2026-09-06T13:42:29.5155104Z ##[endgroup]
+2026-09-06T13:42:29.5359996Z ##[group]Run dtolnay/rust-toolchain@stable
+2026-09-06T13:42:29.5360325Z with:
+2026-09-06T13:42:29.5360500Z   toolchain: stable
+2026-09-06T13:42:29.5360683Z ##[endgroup]
+2026-09-06T13:42:29.5432116Z ##[start-action display=Parse toolchain version;id=rust-toolchain.parse]
+2026-09-06T13:42:29.5458057Z ##[group]Run if [[ -z $toolchain ]]; then
+2026-09-06T13:42:29.5458426Z [36;1mif [[ -z $toolchain ]]; then[0m
+2026-09-06T13:42:29.5458899Z [36;1m  # GitHub does not enforce `required: true` inputs itself. https://github.com/actions/runner/issues/1070[0m
+2026-09-06T13:42:29.5459402Z [36;1m  echo "'toolchain' is a required input" >&2[0m
+2026-09-06T13:42:29.5459670Z [36;1m  exit 1[0m
+2026-09-06T13:42:29.5459970Z [36;1melif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then[0m
+2026-09-06T13:42:29.5460374Z [36;1m  if [[ Linux == macOS ]]; then[0m
+2026-09-06T13:42:29.5460887Z [36;1m    echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:29.5461366Z [36;1m  else[0m
+2026-09-06T13:42:29.5461735Z [36;1m    echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:29.5462171Z [36;1m  fi[0m
+2026-09-06T13:42:29.5462440Z [36;1melif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then[0m
+2026-09-06T13:42:29.5462931Z [36;1m  echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:29.5463373Z [36;1melif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then[0m
+2026-09-06T13:42:29.5463863Z [36;1m  echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:29.5464338Z [36;1melse[0m
+2026-09-06T13:42:29.5464558Z [36;1m  echo "toolchain=$toolchain" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:29.5464837Z [36;1mfi[0m
+2026-09-06T13:42:29.5499678Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:29.5499991Z env:
+2026-09-06T13:42:29.5500162Z   toolchain: stable
+2026-09-06T13:42:29.5500345Z ##[endgroup]
+2026-09-06T13:42:29.5565462Z ##[end-action id=rust-toolchain.parse;outcome=success;conclusion=success;duration_ms=13]
+2026-09-06T13:42:29.5575387Z ##[start-action display=Construct rustup command line;id=rust-toolchain.flags]
+2026-09-06T13:42:29.5590777Z ##[group]Run echo "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT
+2026-09-06T13:42:29.5591385Z [36;1mecho "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:29.5591973Z [36;1mecho "components=$(for c in ${components//,/ }; do echo -n ' --component' $c; done)" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:29.5592448Z [36;1mecho "downgrade=" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:29.5623366Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:29.5623666Z env:
+2026-09-06T13:42:29.5623846Z   targets: 
+2026-09-06T13:42:29.5624012Z   components: 
+2026-09-06T13:42:29.5624183Z ##[endgroup]
+2026-09-06T13:42:29.5688136Z ##[end-action id=rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=11]
+2026-09-06T13:42:29.5690151Z ##[start-action display=Set $CARGO_HOME;id=rust-toolchain.__run]
+2026-09-06T13:42:29.5704241Z ##[group]Run echo CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV
+2026-09-06T13:42:29.5704693Z [36;1mecho CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV[0m
+2026-09-06T13:42:29.5734830Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:29.5735296Z ##[endgroup]
+2026-09-06T13:42:29.5793702Z ##[end-action id=rust-toolchain.__run;outcome=success;conclusion=success;duration_ms=10]
+2026-09-06T13:42:29.5796015Z ##[start-action display=Install rustup if needed;id=rust-toolchain.__run_2]
+2026-09-06T13:42:29.5816471Z ##[group]Run if ! command -v rustup &>/dev/null; then
+2026-09-06T13:42:29.5817097Z [36;1mif ! command -v rustup &>/dev/null; then[0m
+2026-09-06T13:42:29.5818047Z [36;1m  curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y[0m
+2026-09-06T13:42:29.5818756Z [36;1m  echo "$CARGO_HOME/bin" >> $GITHUB_PATH[0m
+2026-09-06T13:42:29.5819013Z [36;1mfi[0m
+2026-09-06T13:42:29.5849989Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:29.5850308Z env:
+2026-09-06T13:42:29.5850489Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:29.5850711Z ##[endgroup]
+2026-09-06T13:42:29.5904070Z ##[end-action id=rust-toolchain.__run_2;outcome=success;conclusion=success;duration_ms=10]
+2026-09-06T13:42:29.5906098Z ##[start-action display=Install rustup if needed on windows;id=rust-toolchain.__run_3]
+2026-09-06T13:42:29.5912051Z ##[end-action id=rust-toolchain.__run_3;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-09-06T13:42:29.5924082Z ##[start-action display=rustup toolchain install stable;id=rust-toolchain.__run_4]
+2026-09-06T13:42:29.5940002Z ##[group]Run rustup toolchain install stable --profile minimal --no-self-update
+2026-09-06T13:42:29.5940529Z [36;1mrustup toolchain install stable --profile minimal --no-self-update[0m
+2026-09-06T13:42:29.5972403Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:29.5972735Z env:
+2026-09-06T13:42:29.5972919Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:29.5973161Z   RUSTUP_PERMIT_COPY_RENAME: 1
+2026-09-06T13:42:29.5973376Z ##[endgroup]
+2026-09-06T13:42:29.7261250Z info: syncing channel updates for stable-aarch64-unknown-linux-gnu
+2026-09-06T13:42:29.8566025Z info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
+2026-09-06T13:42:29.8685953Z info: removing previous version of component clippy
+2026-09-06T13:42:29.8696167Z info: removing previous version of component rustfmt
+2026-09-06T13:42:29.8703485Z info: removing previous version of component cargo
+2026-09-06T13:42:29.8725149Z info: removing previous version of component rust-std
+2026-09-06T13:42:29.8744991Z info: removing previous version of component rustc
+2026-09-06T13:42:29.8769253Z info: downloading 5 components
+2026-09-06T13:42:35.2093237Z 
+2026-09-06T13:42:35.2158028Z   stable-aarch64-unknown-linux-gnu updated - rustc 1.98.1 (48a229cea 2026-09-01) (from rustc 1.98.0 (88d9e12ae 2026-08-18))
+2026-09-06T13:42:35.2158514Z 
+2026-09-06T13:42:35.2317560Z ##[end-action id=rust-toolchain.__run_4;outcome=success;conclusion=success;duration_ms=5639]
+2026-09-06T13:42:35.2322779Z ##[start-action display=rustup default stable;id=rust-toolchain.__run_5]
+2026-09-06T13:42:35.2338054Z ##[group]Run rustup default stable
+2026-09-06T13:42:35.2338344Z [36;1mrustup default stable[0m
+2026-09-06T13:42:35.2371984Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:35.2372320Z env:
+2026-09-06T13:42:35.2372496Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:35.2372716Z ##[endgroup]
+2026-09-06T13:42:35.2466526Z info: using existing install for stable-aarch64-unknown-linux-gnu
+2026-09-06T13:42:35.2474237Z info: default toolchain set to stable-aarch64-unknown-linux-gnu
+2026-09-06T13:42:35.2474497Z 
+2026-09-06T13:42:35.2535990Z   stable-aarch64-unknown-linux-gnu unchanged - rustc 1.98.1 (48a229cea 2026-09-01)
+2026-09-06T13:42:35.2536523Z 
+2026-09-06T13:42:35.2537049Z info: note that the toolchain 'stable-aarch64-unknown-linux-gnu' is currently in use (overridden by '/home/runner/work/Silverfir-nano/Silverfir-nano/rust-toolchain.toml')
+2026-09-06T13:42:35.2549754Z ##[end-action id=rust-toolchain.__run_5;outcome=success;conclusion=success;duration_ms=22]
+2026-09-06T13:42:35.2551725Z ##[start-action display=Create cachekey;id=rust-toolchain.rustc-version]
+2026-09-06T13:42:35.2566111Z ##[group]Run DATE=$(rustc +stable --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')
+2026-09-06T13:42:35.2567422Z [36;1mDATE=$(rustc +stable --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')[0m
+2026-09-06T13:42:35.2568257Z [36;1mHASH=$(rustc +stable --version --verbose | sed -ne 's/^commit-hash: //p')[0m
+2026-09-06T13:42:35.2568717Z [36;1mecho "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT[0m
+2026-09-06T13:42:35.2600213Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:35.2600518Z env:
+2026-09-06T13:42:35.2600700Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:35.2600923Z ##[endgroup]
+2026-09-06T13:42:35.2875374Z ##[end-action id=rust-toolchain.rustc-version;outcome=success;conclusion=success;duration_ms=32]
+2026-09-06T13:42:35.2877530Z ##[start-action display=Disable incremental compilation;id=rust-toolchain.__run_6]
+2026-09-06T13:42:35.2891780Z ##[group]Run if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+2026-09-06T13:42:35.2892166Z [36;1mif [ -z "${CARGO_INCREMENTAL+set}" ]; then[0m
+2026-09-06T13:42:35.2892474Z [36;1m  echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV[0m
+2026-09-06T13:42:35.2892731Z [36;1mfi[0m
+2026-09-06T13:42:35.2924637Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:35.2924943Z env:
+2026-09-06T13:42:35.2925118Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:35.2925349Z ##[endgroup]
+2026-09-06T13:42:35.2980414Z ##[end-action id=rust-toolchain.__run_6;outcome=success;conclusion=success;duration_ms=10]
+2026-09-06T13:42:35.2982356Z ##[start-action display=Enable colors in Cargo output;id=rust-toolchain.__run_7]
+2026-09-06T13:42:35.2995931Z ##[group]Run if [ -z "${CARGO_TERM_COLOR+set}" ]; then
+2026-09-06T13:42:35.2996277Z [36;1mif [ -z "${CARGO_TERM_COLOR+set}" ]; then[0m
+2026-09-06T13:42:35.2996592Z [36;1m  echo CARGO_TERM_COLOR=always >> $GITHUB_ENV[0m
+2026-09-06T13:42:35.2996858Z [36;1mfi[0m
+2026-09-06T13:42:35.3025910Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:35.3026232Z env:
+2026-09-06T13:42:35.3026407Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:35.3026637Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:35.3026829Z ##[endgroup]
+2026-09-06T13:42:35.3079378Z ##[end-action id=rust-toolchain.__run_7;outcome=success;conclusion=success;duration_ms=9]
+2026-09-06T13:42:35.3081256Z ##[start-action display=Enable Cargo sparse registry;id=rust-toolchain.__run_8]
+2026-09-06T13:42:35.3095371Z ##[group]Run # implemented in 1.66, stabilized in 1.68, made default in 1.70
+2026-09-06T13:42:35.3095841Z [36;1m# implemented in 1.66, stabilized in 1.68, made default in 1.70[0m
+2026-09-06T13:42:35.3096491Z [36;1mif [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then[0m
+2026-09-06T13:42:35.3097165Z [36;1m  if rustc +stable --version --verbose | grep -q '^release: 1\.6[89]\.'; then[0m
+2026-09-06T13:42:35.3097697Z [36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+2026-09-06T13:42:35.3098449Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV[0m
+2026-09-06T13:42:35.3098931Z [36;1m  elif rustc +stable --version --verbose | grep -q '^release: 1\.6[67]\.'; then[0m
+2026-09-06T13:42:35.3099470Z [36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+2026-09-06T13:42:35.3099963Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV[0m
+2026-09-06T13:42:35.3100285Z [36;1m  fi[0m
+2026-09-06T13:42:35.3100449Z [36;1mfi[0m
+2026-09-06T13:42:35.3128018Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:35.3128336Z env:
+2026-09-06T13:42:35.3128516Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:35.3128748Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:35.3128944Z   CARGO_TERM_COLOR: always
+2026-09-06T13:42:35.3129142Z ##[endgroup]
+2026-09-06T13:42:35.3381329Z ##[end-action id=rust-toolchain.__run_8;outcome=success;conclusion=success;duration_ms=29]
+2026-09-06T13:42:35.3383799Z ##[start-action display=Work around spurious network errors in curl 8.0;id=rust-toolchain.__run_9]
+2026-09-06T13:42:35.3399547Z ##[group]Run # https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation
+2026-09-06T13:42:35.3400257Z [36;1m# https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation[0m
+2026-09-06T13:42:35.3400823Z [36;1mif rustc +stable --version --verbose | grep -q '^release: 1\.7[01]\.'; then[0m
+2026-09-06T13:42:35.3401248Z [36;1m  echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV[0m
+2026-09-06T13:42:35.3401670Z [36;1mfi[0m
+2026-09-06T13:42:35.3433402Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:35.3433707Z env:
+2026-09-06T13:42:35.3433894Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:35.3434121Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:35.3434318Z   CARGO_TERM_COLOR: always
+2026-09-06T13:42:35.3434520Z ##[endgroup]
+2026-09-06T13:42:35.3589990Z ##[end-action id=rust-toolchain.__run_9;outcome=success;conclusion=success;duration_ms=20]
+2026-09-06T13:42:35.3593175Z ##[start-action display=rustc +stable --version --verbose;id=rust-toolchain.__run_10]
+2026-09-06T13:42:35.3607512Z ##[group]Run rustc +stable --version --verbose
+2026-09-06T13:42:35.3608315Z [36;1mrustc +stable --version --verbose[0m
+2026-09-06T13:42:35.3638897Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:35.3639205Z env:
+2026-09-06T13:42:35.3639513Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:35.3639746Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:35.3639979Z   CARGO_TERM_COLOR: always
+2026-09-06T13:42:35.3640182Z ##[endgroup]
+2026-09-06T13:42:35.3770549Z rustc 1.98.1 (48a229cea 2026-09-01)
+2026-09-06T13:42:35.3770818Z binary: rustc
+2026-09-06T13:42:35.3771049Z commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+2026-09-06T13:42:35.3771338Z commit-date: 2026-09-01
+2026-09-06T13:42:35.3771548Z host: aarch64-unknown-linux-gnu
+2026-09-06T13:42:35.3771799Z release: 1.98.1
+2026-09-06T13:42:35.3771981Z LLVM version: 22.1.8
+2026-09-06T13:42:35.3785153Z ##[end-action id=rust-toolchain.__run_10;outcome=success;conclusion=success;duration_ms=19]
+2026-09-06T13:42:35.3831740Z ##[group]Run sudo apt-get update
+2026-09-06T13:42:35.3832037Z [36;1msudo apt-get update[0m
+2026-09-06T13:42:35.3832378Z [36;1msudo apt-get install --no-install-recommends -y libfontconfig1-dev[0m
+2026-09-06T13:42:35.3863184Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:35.3863496Z env:
+2026-09-06T13:42:35.3863673Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:35.3863906Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:35.3864107Z   CARGO_TERM_COLOR: always
+2026-09-06T13:42:35.3864310Z ##[endgroup]
+2026-09-06T13:42:35.4768397Z Get:1 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
+2026-09-06T13:42:35.5254168Z Get:2 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [394 kB]
+2026-09-06T13:42:35.5381525Z Get:3 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [441 kB]
+2026-09-06T13:42:36.0418539Z Hit:4 http://ports.ubuntu.com/ubuntu-ports noble InRelease
+2026-09-06T13:42:36.1973996Z Get:5 http://ports.ubuntu.com/ubuntu-ports noble-updates InRelease [126 kB]
+2026-09-06T13:42:36.8686071Z Get:6 http://ports.ubuntu.com/ubuntu-ports noble-backports InRelease [126 kB]
+2026-09-06T13:42:37.1883779Z Get:7 http://ports.ubuntu.com/ubuntu-ports noble-security InRelease [126 kB]
+2026-09-06T13:42:37.4028653Z Get:8 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 Packages [1317 kB]
+2026-09-06T13:42:38.1019741Z Get:9 http://ports.ubuntu.com/ubuntu-ports noble-updates/main Translation-en [292 kB]
+2026-09-06T13:42:38.2883200Z Get:10 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 Components [178 kB]
+2026-09-06T13:42:38.4626040Z Get:11 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 Packages [1731 kB]
+2026-09-06T13:42:38.8603227Z Get:12 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe Translation-en [339 kB]
+2026-09-06T13:42:39.0351209Z Get:13 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 Components [387 kB]
+2026-09-06T13:42:39.2126431Z Get:14 http://ports.ubuntu.com/ubuntu-ports noble-updates/restricted arm64 Packages [2320 kB]
+2026-09-06T13:42:39.5517534Z Get:15 http://ports.ubuntu.com/ubuntu-ports noble-updates/restricted Translation-en [352 kB]
+2026-09-06T13:42:39.7166435Z Get:16 http://ports.ubuntu.com/ubuntu-ports noble-backports/main arm64 Components [3580 B]
+2026-09-06T13:42:39.8726466Z Get:17 http://ports.ubuntu.com/ubuntu-ports noble-backports/universe arm64 Components [12.6 kB]
+2026-09-06T13:42:40.2239625Z Get:18 http://ports.ubuntu.com/ubuntu-ports noble-security/main arm64 Packages [1065 kB]
+2026-09-06T13:42:40.4105007Z Get:19 http://ports.ubuntu.com/ubuntu-ports noble-security/main Translation-en [212 kB]
+2026-09-06T13:42:40.5711706Z Get:20 http://ports.ubuntu.com/ubuntu-ports noble-security/main arm64 Components [43.3 kB]
+2026-09-06T13:42:40.7278634Z Get:21 http://ports.ubuntu.com/ubuntu-ports noble-security/universe arm64 Packages [1280 kB]
+2026-09-06T13:42:40.9201413Z Get:22 http://ports.ubuntu.com/ubuntu-ports noble-security/universe Translation-en [241 kB]
+2026-09-06T13:42:41.0821730Z Get:23 http://ports.ubuntu.com/ubuntu-ports noble-security/universe arm64 Components [76.2 kB]
+2026-09-06T13:42:41.2389944Z Get:24 http://ports.ubuntu.com/ubuntu-ports noble-security/restricted arm64 Packages [2210 kB]
+2026-09-06T13:42:41.4591930Z Get:25 http://ports.ubuntu.com/ubuntu-ports noble-security/restricted Translation-en [334 kB]
+2026-09-06T13:42:44.8737618Z Fetched 13.6 MB in 6s (2245 kB/s)
+2026-09-06T13:42:45.7839266Z Reading package lists...
+2026-09-06T13:42:45.8145163Z Reading package lists...
+2026-09-06T13:42:46.0498859Z Building dependency tree...
+2026-09-06T13:42:46.0504389Z Reading state information...
+2026-09-06T13:42:46.2704732Z The following additional packages will be installed:
+2026-09-06T13:42:46.2710883Z   libbrotli-dev libbz2-dev libfontconfig-dev libfreetype-dev libpng-dev
+2026-09-06T13:42:46.2711269Z   uuid-dev
+2026-09-06T13:42:46.2717934Z Suggested packages:
+2026-09-06T13:42:46.2718140Z   freetype2-doc
+2026-09-06T13:42:46.2718963Z Recommended packages:
+2026-09-06T13:42:46.2719209Z   bzip2-doc libpng-tools
+2026-09-06T13:42:46.2899971Z The following NEW packages will be installed:
+2026-09-06T13:42:46.2900344Z   libbrotli-dev libbz2-dev libfontconfig-dev libfontconfig1-dev
+2026-09-06T13:42:46.2905983Z   libfreetype-dev libpng-dev uuid-dev
+2026-09-06T13:42:46.5872447Z 0 upgraded, 7 newly installed, 0 to remove and 37 not upgraded.
+2026-09-06T13:42:46.5872817Z Need to get 1438 kB of archives.
+2026-09-06T13:42:46.5873136Z After this operation, 4774 kB of additional disk space will be used.
+2026-09-06T13:42:46.5873679Z Get:1 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libbrotli-dev arm64 1.1.0-2build2 [360 kB]
+2026-09-06T13:42:47.0249594Z Get:2 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libbz2-dev arm64 1.0.8-5.1ubuntu0.1 [35.8 kB]
+2026-09-06T13:42:47.0997897Z Get:3 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libpng-dev arm64 1.6.43-5ubuntu0.6 [268 kB]
+2026-09-06T13:42:47.2441816Z Get:4 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libfreetype-dev arm64 2.13.2+dfsg-1ubuntu0.1 [574 kB]
+2026-09-06T13:42:47.4110828Z Get:5 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 uuid-dev arm64 2.39.3-9ubuntu6.6 [34.8 kB]
+2026-09-06T13:42:47.4821618Z Get:6 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libfontconfig-dev arm64 2.15.0-1.1ubuntu2 [165 kB]
+2026-09-06T13:42:47.5629276Z Get:7 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libfontconfig1-dev arm64 2.15.0-1.1ubuntu2 [1840 B]
+2026-09-06T13:42:47.8191972Z Fetched 1438 kB in 1s (1139 kB/s)
+2026-09-06T13:42:47.8390740Z Selecting previously unselected package libbrotli-dev:arm64.
+2026-09-06T13:42:47.8522688Z (Reading database ... 
+2026-09-06T13:42:47.8523467Z (Reading database ... 5%
+2026-09-06T13:42:47.8524246Z (Reading database ... 10%
+2026-09-06T13:42:47.8524466Z (Reading database ... 15%
+2026-09-06T13:42:47.8524675Z (Reading database ... 20%
+2026-09-06T13:42:47.8525148Z (Reading database ... 25%
+2026-09-06T13:42:47.8525370Z (Reading database ... 30%
+2026-09-06T13:42:47.8525581Z (Reading database ... 35%
+2026-09-06T13:42:47.8525792Z (Reading database ... 40%
+2026-09-06T13:42:47.8526004Z (Reading database ... 45%
+2026-09-06T13:42:47.8526209Z (Reading database ... 50%
+2026-09-06T13:42:47.8611536Z (Reading database ... 55%
+2026-09-06T13:42:48.0263298Z (Reading database ... 60%
+2026-09-06T13:42:48.2176990Z (Reading database ... 65%
+2026-09-06T13:42:48.3348735Z (Reading database ... 70%
+2026-09-06T13:42:48.3524856Z (Reading database ... 75%
+2026-09-06T13:42:48.4692921Z (Reading database ... 80%
+2026-09-06T13:42:48.6756376Z (Reading database ... 85%
+2026-09-06T13:42:48.8643474Z (Reading database ... 90%
+2026-09-06T13:42:49.0220655Z (Reading database ... 95%
+2026-09-06T13:42:49.0221003Z (Reading database ... 100%
+2026-09-06T13:42:49.0221321Z (Reading database ... 200999 files and directories currently installed.)
+2026-09-06T13:42:49.0265080Z Preparing to unpack .../0-libbrotli-dev_1.1.0-2build2_arm64.deb ...
+2026-09-06T13:42:49.0332878Z Unpacking libbrotli-dev:arm64 (1.1.0-2build2) ...
+2026-09-06T13:42:49.0603021Z Selecting previously unselected package libbz2-dev:arm64.
+2026-09-06T13:42:49.0796630Z Preparing to unpack .../1-libbz2-dev_1.0.8-5.1ubuntu0.1_arm64.deb ...
+2026-09-06T13:42:49.0808421Z Unpacking libbz2-dev:arm64 (1.0.8-5.1ubuntu0.1) ...
+2026-09-06T13:42:49.1008221Z Selecting previously unselected package libpng-dev:arm64.
+2026-09-06T13:42:49.1174031Z Preparing to unpack .../2-libpng-dev_1.6.43-5ubuntu0.6_arm64.deb ...
+2026-09-06T13:42:49.1185954Z Unpacking libpng-dev:arm64 (1.6.43-5ubuntu0.6) ...
+2026-09-06T13:42:49.1472386Z Selecting previously unselected package libfreetype-dev:arm64.
+2026-09-06T13:42:49.1636860Z Preparing to unpack .../3-libfreetype-dev_2.13.2+dfsg-1ubuntu0.1_arm64.deb ...
+2026-09-06T13:42:49.1650841Z Unpacking libfreetype-dev:arm64 (2.13.2+dfsg-1ubuntu0.1) ...
+2026-09-06T13:42:49.1985348Z Selecting previously unselected package uuid-dev:arm64.
+2026-09-06T13:42:49.2147597Z Preparing to unpack .../4-uuid-dev_2.39.3-9ubuntu6.6_arm64.deb ...
+2026-09-06T13:42:49.2159934Z Unpacking uuid-dev:arm64 (2.39.3-9ubuntu6.6) ...
+2026-09-06T13:42:49.2375767Z Selecting previously unselected package libfontconfig-dev:arm64.
+2026-09-06T13:42:49.2538877Z Preparing to unpack .../5-libfontconfig-dev_2.15.0-1.1ubuntu2_arm64.deb ...
+2026-09-06T13:42:49.2549894Z Unpacking libfontconfig-dev:arm64 (2.15.0-1.1ubuntu2) ...
+2026-09-06T13:42:49.2773462Z Selecting previously unselected package libfontconfig1-dev:arm64.
+2026-09-06T13:42:49.2943681Z Preparing to unpack .../6-libfontconfig1-dev_2.15.0-1.1ubuntu2_arm64.deb ...
+2026-09-06T13:42:49.2956337Z Unpacking libfontconfig1-dev:arm64 (2.15.0-1.1ubuntu2) ...
+2026-09-06T13:42:49.3335452Z Setting up libpng-dev:arm64 (1.6.43-5ubuntu0.6) ...
+2026-09-06T13:42:49.3363226Z Setting up uuid-dev:arm64 (2.39.3-9ubuntu6.6) ...
+2026-09-06T13:42:49.3389573Z Setting up libbrotli-dev:arm64 (1.1.0-2build2) ...
+2026-09-06T13:42:49.3414964Z Setting up libbz2-dev:arm64 (1.0.8-5.1ubuntu0.1) ...
+2026-09-06T13:42:49.3439459Z Setting up libfreetype-dev:arm64 (2.13.2+dfsg-1ubuntu0.1) ...
+2026-09-06T13:42:49.3462359Z Setting up libfontconfig-dev:arm64 (2.15.0-1.1ubuntu2) ...
+2026-09-06T13:42:49.3483868Z Setting up libfontconfig1-dev:arm64 (2.15.0-1.1ubuntu2) ...
+2026-09-06T13:42:49.3511948Z Processing triggers for man-db (2.12.0-4build2) ...
+2026-09-06T13:42:49.3535417Z Not building database; man-db/auto-update is not 'true'.
+2026-09-06T13:42:51.5098018Z 
+2026-09-06T13:42:51.5099707Z Running kernel seems to be up-to-date.
+2026-09-06T13:42:51.5099985Z 
+2026-09-06T13:42:51.5100081Z No services need to be restarted.
+2026-09-06T13:42:51.5100239Z 
+2026-09-06T13:42:51.5100350Z No containers need to be restarted.
+2026-09-06T13:42:51.5100517Z 
+2026-09-06T13:42:51.5100626Z No user sessions are running outdated binaries.
+2026-09-06T13:42:51.5101291Z 
+2026-09-06T13:42:51.5101481Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+2026-09-06T13:42:52.6203823Z ##[group]Run actions/cache@v6
+2026-09-06T13:42:52.6204117Z with:
+2026-09-06T13:42:52.6204301Z   path: ~/.cargo/bin/cargo-criterion
+2026-09-06T13:42:52.6204602Z   key: cargo-criterion-1.1.0-Linux-ARM64-rust-2026090148a2
+2026-09-06T13:42:52.6204920Z   enableCrossOsArchive: false
+2026-09-06T13:42:52.6205153Z   fail-on-cache-miss: false
+2026-09-06T13:42:52.6205392Z   lookup-only: false
+2026-09-06T13:42:52.6205581Z   save-always: false
+2026-09-06T13:42:52.6205762Z env:
+2026-09-06T13:42:52.6205935Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:52.6206158Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:52.6206358Z   CARGO_TERM_COLOR: always
+2026-09-06T13:42:52.6206555Z ##[endgroup]
+2026-09-06T13:42:52.9569264Z Cache hit for: cargo-criterion-1.1.0-Linux-ARM64-rust-2026090148a2
+2026-09-06T13:42:54.1702735Z Received 1274940 of 1274940 (100.0%), 1.3 MBs/sec
+2026-09-06T13:42:54.1703473Z Cache Size: ~1 MB (1274940 B)
+2026-09-06T13:42:54.1728699Z [command]/usr/bin/tar -xf /home/runner/work/_temp/c77ddc85-24a7-4b05-a096-d5c45fd619e3/cache.tzst -P -C /home/runner/work/Silverfir-nano/Silverfir-nano --use-compress-program unzstd
+2026-09-06T13:42:54.1828540Z Cache restored successfully
+2026-09-06T13:42:54.1912046Z Cache restored from key: cargo-criterion-1.1.0-Linux-ARM64-rust-2026090148a2
+2026-09-06T13:42:54.2042816Z ##[group]Run Swatinem/rust-cache@v2.9.1
+2026-09-06T13:42:54.2043265Z with:
+2026-09-06T13:42:54.2043506Z   shared-key: wasmi-arm64-linux-jit
+2026-09-06T13:42:54.2043810Z   workspaces: . -> wasmi-target
+2026-09-06T13:42:54.2044164Z   prefix-key: v0-rust
+2026-09-06T13:42:54.2044421Z   add-job-id-key: true
+2026-09-06T13:42:54.2044734Z   add-rust-environment-hash-key: true
+2026-09-06T13:42:54.2045029Z   cache-targets: true
+2026-09-06T13:42:54.2045322Z   cache-all-crates: false
+2026-09-06T13:42:54.2045621Z   cache-workspace-crates: false
+2026-09-06T13:42:54.2045921Z   save-if: true
+2026-09-06T13:42:54.2046195Z   cache-provider: github
+2026-09-06T13:42:54.2046443Z   cache-bin: true
+2026-09-06T13:42:54.2046747Z   lookup-only: false
+2026-09-06T13:42:54.2046982Z   cmd-format: {0}
+2026-09-06T13:42:54.2047193Z env:
+2026-09-06T13:42:54.2047498Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:54.2048106Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:54.2048477Z   CARGO_TERM_COLOR: always
+2026-09-06T13:42:54.2048779Z ##[endgroup]
+2026-09-06T13:42:54.4453861Z (node:3317) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-09-06T13:42:54.4455121Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-09-06T13:42:54.8148398Z ##[group]Cache Configuration
+2026-09-06T13:42:54.8148782Z Cache Provider:
+2026-09-06T13:42:54.8149228Z     github
+2026-09-06T13:42:54.8149444Z Workspaces:
+2026-09-06T13:42:54.8149772Z     /home/runner/work/Silverfir-nano/Silverfir-nano
+2026-09-06T13:42:54.8150173Z Cache Paths:
+2026-09-06T13:42:54.8150402Z     /home/runner/.cargo/bin
+2026-09-06T13:42:54.8150795Z     /home/runner/.cargo/.crates.toml
+2026-09-06T13:42:54.8151086Z     /home/runner/.cargo/.crates2.json
+2026-09-06T13:42:54.8151424Z     /home/runner/.cargo/registry
+2026-09-06T13:42:54.8151715Z     /home/runner/.cargo/git
+2026-09-06T13:42:54.8152074Z     /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-target
+2026-09-06T13:42:54.8152476Z Restore Key:
+2026-09-06T13:42:54.8152778Z     v0-rust-wasmi-arm64-linux-jit-Linux-arm64-a2b4c6bd
+2026-09-06T13:42:54.8153169Z Cache Key:
+2026-09-06T13:42:54.8153495Z     v0-rust-wasmi-arm64-linux-jit-Linux-arm64-a2b4c6bd-80a3913b
+2026-09-06T13:42:54.8153922Z .. Prefix:
+2026-09-06T13:42:54.8154180Z   - v0-rust-wasmi-arm64-linux-jit-Linux-arm64
+2026-09-06T13:42:54.8154547Z .. Environment considered:
+2026-09-06T13:42:54.8154813Z   - Rust Versions:
+2026-09-06T13:42:54.8155171Z     - 1.98.1 aarch64-unknown-linux-gnu 48a229ceaefd4985c50990b14116b6d856af0985
+2026-09-06T13:42:54.8156198Z     - 1.98.1 aarch64-unknown-linux-gnu 48a229ceaefd4985c50990b14116b6d856af0985
+2026-09-06T13:42:54.8156592Z   - CARGO_HOME
+2026-09-06T13:42:54.8156873Z   - CARGO_INCREMENTAL
+2026-09-06T13:42:54.8157118Z   - CARGO_TERM_COLOR
+2026-09-06T13:42:54.8157425Z .. Lockfiles considered:
+2026-09-06T13:42:54.8158087Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/.cargo/config.toml
+2026-09-06T13:42:54.8158643Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.cargo/config.toml
+2026-09-06T13:42:54.8159313Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/baseline/devices/pico2/.cargo/config.toml
+2026-09-06T13:42:54.8160111Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/baseline/devices/pico2/wasm-demo/.cargo/config.toml
+2026-09-06T13:42:54.8160891Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/baseline/devices/Waveshare_ESP32_C6/.cargo/config.toml
+2026-09-06T13:42:54.8161623Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/baseline/devices/Waveshare_ESP32_C6/rust-toolchain.toml
+2026-09-06T13:42:54.8162317Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/baseline/rust-toolchain.toml
+2026-09-06T13:42:54.8162945Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/baseline/sf-nano-bare-smoke/.cargo/config.toml
+2026-09-06T13:42:54.8163519Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/Cargo.lock
+2026-09-06T13:42:54.8164526Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/devices/pico2/.cargo/config.toml
+2026-09-06T13:42:54.8165165Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/devices/pico2/wasm-demo/.cargo/config.toml
+2026-09-06T13:42:54.8165892Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/devices/Waveshare_ESP32_C6/.cargo/config.toml
+2026-09-06T13:42:54.8166593Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/devices/Waveshare_ESP32_C6/rust-toolchain.toml
+2026-09-06T13:42:54.8167227Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/rust-toolchain.toml
+2026-09-06T13:42:54.8167953Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-bare-smoke/.cargo/config.toml
+2026-09-06T13:42:54.8168539Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-cli/Cargo.toml
+2026-09-06T13:42:54.8169118Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-core/Cargo.toml
+2026-09-06T13:42:54.8169669Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-spectest/Cargo.toml
+2026-09-06T13:42:54.8170269Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-wasitest/Cargo.toml
+2026-09-06T13:42:54.8170804Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/tools/foldsim/Cargo.toml
+2026-09-06T13:42:54.8171332Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/tools/memprof-report/Cargo.toml
+2026-09-06T13:42:54.8171966Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/tools/tracked-alloc/Cargo.toml
+2026-09-06T13:42:54.8172568Z   - /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/rust/.cargo/config.toml
+2026-09-06T13:42:54.8173319Z ##[endgroup]
+2026-09-06T13:42:54.8173474Z 
+2026-09-06T13:42:54.8173579Z ... Restoring cache ...
+2026-09-06T13:42:55.0514285Z Cache hit for: v0-rust-wasmi-arm64-linux-jit-Linux-arm64-a2b4c6bd-80a3913b
+2026-09-06T13:42:56.3557652Z Received 1308636 of 18085852 (7.2%), 1.2 MBs/sec
+2026-09-06T13:42:56.6838686Z Received 18085852 of 18085852 (100.0%), 13.0 MBs/sec
+2026-09-06T13:42:56.6839833Z Cache Size: ~17 MB (18085852 B)
+2026-09-06T13:42:56.6863777Z [command]/usr/bin/tar -xf /home/runner/work/_temp/b729443e-8ed5-4f9d-97d5-846557ca39a7/cache.tzst -P -C /home/runner/work/Silverfir-nano/Silverfir-nano --use-compress-program unzstd
+2026-09-06T13:42:56.7270032Z Cache restored successfully
+2026-09-06T13:42:56.7279235Z Restored from cache key "v0-rust-wasmi-arm64-linux-jit-Linux-arm64-a2b4c6bd-80a3913b" full match: true.
+2026-09-06T13:42:56.7413234Z ##[group]Run uname -a || true
+2026-09-06T13:42:56.7413724Z [36;1muname -a || true[0m
+2026-09-06T13:42:56.7414217Z [36;1mlscpu 2>/dev/null | grep -iE "model name|vendor|bios" || true[0m
+2026-09-06T13:42:56.7414686Z [36;1msysctl -n machdep.cpu.brand_string 2>/dev/null || true[0m
+2026-09-06T13:42:56.7449622Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:56.7450130Z env:
+2026-09-06T13:42:56.7450385Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:56.7450760Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:56.7451019Z   CARGO_TERM_COLOR: always
+2026-09-06T13:42:56.7451331Z   CACHE_ON_FAILURE: false
+2026-09-06T13:42:56.7451609Z ##[endgroup]
+2026-09-06T13:42:56.7510337Z Linux runnervmfx5wp 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:12:01 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+2026-09-06T13:42:56.7658216Z Vendor ID:                               ARM
+2026-09-06T13:42:56.7658649Z Model name:                              Neoverse-N2
+2026-09-06T13:42:56.7706519Z ##[group]Run set -euo pipefail
+2026-09-06T13:42:56.7707140Z [36;1mset -euo pipefail[0m
+2026-09-06T13:42:56.7707529Z [36;1m# The rows under test were pre-registered by the primary run, so[0m
+2026-09-06T13:42:56.7708419Z [36;1m# this is a single re-test per row on independent hardware: the[0m
+2026-09-06T13:42:56.7708949Z [36;1m# uncorrected gate probability with the same practical floor.[0m
+2026-09-06T13:42:56.7709466Z [36;1m# Only the flagged rows are re-measured, keeping this job well[0m
+2026-09-06T13:42:56.7709933Z [36;1m# inside the ten-minute budget.[0m
+2026-09-06T13:42:56.7710237Z [36;1monly_args=()[0m
+2026-09-06T13:42:56.7710572Z [36;1mfor group in $FLAGGED; do[0m
+2026-09-06T13:42:56.7710882Z [36;1m  only_args+=(--only "$group")[0m
+2026-09-06T13:42:56.7711242Z [36;1mdone[0m
+2026-09-06T13:42:56.7711570Z [36;1m# Linux-only jobs: the setarch personality is inherited by every[0m
+2026-09-06T13:42:56.7712170Z [36;1m# child, pinning the address layout of the bench processes that[0m
+2026-09-06T13:42:56.7712593Z [36;1m# cargo-criterion spawns.[0m
+2026-09-06T13:42:56.7713074Z [36;1mtaskset -c 1 setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \[0m
+2026-09-06T13:42:56.7713506Z [36;1m  --suite wasmi-benchmarks \[0m
+2026-09-06T13:42:56.7713932Z [36;1m  --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \[0m
+2026-09-06T13:42:56.7714324Z [36;1m  --baseline-source baseline \[0m
+2026-09-06T13:42:56.7714661Z [36;1m  --candidate-source . \[0m
+2026-09-06T13:42:56.7715021Z [36;1m  --baseline-sha "$BASELINE_SHA" \[0m
+2026-09-06T13:42:56.7715361Z [36;1m  --candidate-sha "$CANDIDATE_SHA" \[0m
+2026-09-06T13:42:56.7715737Z [36;1m  --platform "$PLATFORM" \[0m
+2026-09-06T13:42:56.7716054Z [36;1m  --engine "$ENGINE" \[0m
+2026-09-06T13:42:56.7716387Z [36;1m  --category "$CATEGORY" \[0m
+2026-09-06T13:42:56.7716693Z [36;1m  --pilot-probability 80 \[0m
+2026-09-06T13:42:56.7717048Z [36;1m  --regression-probability 99 \[0m
+2026-09-06T13:42:56.7717399Z [36;1m  --improvement-probability 99.99 \[0m
+2026-09-06T13:42:56.7717985Z [36;1m  --minimum-effect-percent 1.0 \[0m
+2026-09-06T13:42:56.7718456Z [36;1m  --placement-metric execute/fibonacci-tail \[0m
+2026-09-06T13:42:56.7718854Z [36;1m  --placement-metric execute/tiny_keccak \[0m
+2026-09-06T13:42:56.7719285Z [36;1m  --placement-metric execute/json_parse \[0m
+2026-09-06T13:42:56.7719676Z [36;1m  --placement-metric execute/mandelbrot \[0m
+2026-09-06T13:42:56.7720055Z [36;1m  --family-jobs 1 \[0m
+2026-09-06T13:42:56.7720341Z [36;1m  --family-metric-count 27 \[0m
+2026-09-06T13:42:56.7720697Z [36;1m  --max-confirmation-runs 2 \[0m
+2026-09-06T13:42:56.7721042Z [36;1m  --target-root wasmi-target \[0m
+2026-09-06T13:42:56.7721346Z [36;1m  "${only_args[@]}" \[0m
+2026-09-06T13:42:56.7721763Z [36;1m  --out-dir "wasmi-output-confirm/${ENGINE}-${CATEGORY}" || true[0m
+2026-09-06T13:42:56.7722294Z [36;1mif [[ -f "wasmi-output-confirm/${ENGINE}-${CATEGORY}/summary.md" ]]; then[0m
+2026-09-06T13:42:56.7722972Z [36;1m  cat "wasmi-output-confirm/${ENGINE}-${CATEGORY}/summary.md" >> "$GITHUB_STEP_SUMMARY"[0m
+2026-09-06T13:42:56.7723464Z [36;1mfi[0m
+2026-09-06T13:42:56.7757273Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:42:56.7758100Z env:
+2026-09-06T13:42:56.7758604Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:42:56.7758946Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:42:56.7759261Z   CARGO_TERM_COLOR: always
+2026-09-06T13:42:56.7759608Z   CACHE_ON_FAILURE: false
+2026-09-06T13:42:56.7759994Z   BASELINE_SHA: f73219f56a70b77028f0d79730c7efca29ba3439
+2026-09-06T13:42:56.7760395Z   CANDIDATE_SHA: 39ba77b3166801b397bd997577dd2c24b28a2307
+2026-09-06T13:42:56.7760806Z   CATEGORY: startup
+2026-09-06T13:42:56.7761082Z   ENGINE: jit
+2026-09-06T13:42:56.7761349Z   PLATFORM: arm64-linux
+2026-09-06T13:42:56.7761722Z   FLAGGED: startup/argon2 startup/bz2 startup/coremark startup/ffmpeg
+2026-09-06T13:42:56.7762137Z ##[endgroup]
+2026-09-06T13:42:56.9054555Z $ cargo +stable criterion --version
+2026-09-06T13:42:56.9183139Z $ git -C /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks rev-parse HEAD
+2026-09-06T13:42:56.9196943Z $ git -C /home/runner/work/Silverfir-nano/Silverfir-nano/baseline rev-parse HEAD
+2026-09-06T13:42:56.9209744Z $ git -C /home/runner/work/Silverfir-nano/Silverfir-nano rev-parse HEAD
+2026-09-06T13:42:56.9536980Z $ cargo +stable metadata --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --format-version 1 --no-default-features --features silverfir-nano-jit
+2026-09-06T13:43:01.4370357Z $ cargo +stable metadata --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --format-version 1 --locked --no-default-features --features silverfir-nano-jit
+2026-09-06T13:43:01.6507372Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --no-run
+2026-09-06T13:43:01.7985244Z    Compiling proc-macro2 v1.0.107
+2026-09-06T13:43:02.0408027Z    Compiling quote v1.0.47
+2026-09-06T13:43:02.1715660Z    Compiling unicode-ident v1.0.24
+2026-09-06T13:43:02.6038216Z    Compiling cfg-if v1.0.4
+2026-09-06T13:43:02.7528417Z    Compiling shlex v2.0.1
+2026-09-06T13:43:02.8330274Z    Compiling find-msvc-tools v0.1.9
+2026-09-06T13:43:02.9496033Z    Compiling cc v1.4.0
+2026-09-06T13:43:03.8318824Z    Compiling pkg-config v0.3.33
+2026-09-06T13:43:04.1288264Z    Compiling libc v0.2.189
+2026-09-06T13:43:04.3136417Z    Compiling semver v1.0.28
+2026-09-06T13:43:04.4770841Z    Compiling simd-adler32 v0.3.10
+2026-09-06T13:43:04.5613923Z    Compiling crc32fast v1.5.0
+2026-09-06T13:43:04.6742912Z    Compiling autocfg v1.5.1
+2026-09-06T13:43:04.8949769Z    Compiling num-traits v0.2.19
+2026-09-06T13:43:04.9844313Z    Compiling rustc_version v0.4.1
+2026-09-06T13:43:05.7474081Z    Compiling syn v3.0.3
+2026-09-06T13:43:08.1810493Z    Compiling adler2 v2.0.1
+2026-09-06T13:43:08.2293258Z    Compiling memchr v2.8.3
+2026-09-06T13:43:08.6334086Z    Compiling serde_core v1.0.229
+2026-09-06T13:43:08.7666545Z    Compiling crossbeam-utils v0.8.22
+2026-09-06T13:43:08.9021002Z    Compiling miniz_oxide v0.8.9
+2026-09-06T13:43:09.5791253Z    Compiling pathfinder_simd v0.5.6
+2026-09-06T13:43:09.7937246Z    Compiling freetype-sys v0.20.1
+2026-09-06T13:43:09.9387135Z    Compiling yeslogic-fontconfig-sys v6.0.1
+2026-09-06T13:43:10.0277564Z    Compiling syn v2.0.119
+2026-09-06T13:43:12.4159117Z    Compiling zerocopy v0.8.55
+2026-09-06T13:43:12.6013527Z    Compiling crossbeam-epoch v0.9.20
+2026-09-06T13:43:12.7120682Z    Compiling zerocopy-derive v0.8.55
+2026-09-06T13:43:14.1942517Z    Compiling flate2 v1.1.9
+2026-09-06T13:43:16.4682937Z    Compiling fdeflate v0.3.7
+2026-09-06T13:43:16.8605758Z    Compiling libloading v0.8.9
+2026-09-06T13:43:16.9551737Z    Compiling serde v1.0.229
+2026-09-06T13:43:17.0854079Z    Compiling zmij v1.0.23
+2026-09-06T13:43:17.2007388Z    Compiling byteorder v1.5.0
+2026-09-06T13:43:17.3412939Z    Compiling option-ext v0.2.0
+2026-09-06T13:43:17.3642625Z    Compiling crossbeam-deque v0.8.7
+2026-09-06T13:43:17.4636697Z    Compiling leb128fmt v0.1.0
+2026-09-06T13:43:17.5325926Z    Compiling bitflags v1.3.2
+2026-09-06T13:43:17.5501699Z    Compiling color_quant v1.1.0
+2026-09-06T13:43:17.6652098Z    Compiling utf8parse v0.2.2
+2026-09-06T13:43:17.6965256Z    Compiling anstyle-parse v1.0.0
+2026-09-06T13:43:17.7852614Z    Compiling png v0.17.16
+2026-09-06T13:43:18.8677985Z    Compiling wasm-encoder v0.254.0
+2026-09-06T13:43:20.1595300Z    Compiling dirs-sys v0.5.0
+2026-09-06T13:43:20.3873044Z    Compiling dlib v0.5.3
+2026-09-06T13:43:23.6135166Z    Compiling serde_derive v1.0.229
+2026-09-06T13:43:25.5206001Z    Compiling anstyle v1.0.14
+2026-09-06T13:43:25.6404610Z    Compiling bumpalo v3.20.3
+2026-09-06T13:43:25.7922870Z    Compiling plotters-backend v0.3.7
+2026-09-06T13:43:25.9577347Z    Compiling anstyle-query v1.1.5
+2026-09-06T13:43:25.9853835Z    Compiling weezl v0.1.12
+2026-09-06T13:43:26.4122805Z    Compiling either v1.17.0
+2026-09-06T13:43:26.5355528Z    Compiling bytemuck v1.25.2
+2026-09-06T13:43:26.6849214Z    Compiling paste v1.0.15
+2026-09-06T13:43:26.7984611Z    Compiling serde_json v1.0.151
+2026-09-06T13:43:26.8749634Z    Compiling is_terminal_polyfill v1.70.2
+2026-09-06T13:43:26.8987211Z    Compiling font-kit v0.14.3
+2026-09-06T13:43:26.9728690Z    Compiling unicode-width v0.2.2
+2026-09-06T13:43:27.1006001Z    Compiling once_cell v1.21.4
+2026-09-06T13:43:27.2153979Z    Compiling anyhow v1.0.104
+2026-09-06T13:43:27.3535671Z    Compiling same-file v1.0.6
+2026-09-06T13:43:27.4079402Z    Compiling colorchoice v1.0.5
+2026-09-06T13:43:27.4395414Z    Compiling rayon-core v1.13.0
+2026-09-06T13:43:27.5094764Z    Compiling jpeg-decoder v0.3.2
+2026-09-06T13:43:28.8098752Z    Compiling log v0.4.33
+2026-09-06T13:43:28.8981421Z    Compiling pathfinder_geometry v0.5.1
+2026-09-06T13:43:29.0232961Z    Compiling image v0.24.9
+2026-09-06T13:43:36.1564247Z    Compiling anstream v1.0.0
+2026-09-06T13:43:36.3659556Z    Compiling walkdir v2.5.0
+2026-09-06T13:43:36.7185358Z    Compiling wast v254.0.0
+2026-09-06T13:43:50.0687326Z    Compiling gif v0.12.0
+2026-09-06T13:43:51.0225842Z    Compiling half v2.7.1
+2026-09-06T13:43:51.4870425Z    Compiling dirs v6.0.0
+2026-09-06T13:43:51.6700916Z    Compiling alloca v0.4.0
+2026-09-06T13:43:51.7885877Z    Compiling ciborium-io v0.2.2
+2026-09-06T13:43:51.8110602Z    Compiling itoa v1.0.18
+2026-09-06T13:43:51.9033515Z    Compiling bitflags v2.13.1
+2026-09-06T13:43:52.0467970Z    Compiling heck v0.5.0
+2026-09-06T13:43:52.1460574Z    Compiling strsim v0.11.1
+2026-09-06T13:43:52.4997537Z    Compiling float-ord v0.3.2
+2026-09-06T13:43:52.5293517Z    Compiling iana-time-zone v0.1.65
+2026-09-06T13:43:52.7443974Z    Compiling clap_lex v1.1.0
+2026-09-06T13:43:52.8916901Z    Compiling regex-syntax v0.8.11
+2026-09-06T13:43:55.5177990Z    Compiling lazy_static v1.5.0
+2026-09-06T13:43:55.5422316Z    Compiling sf-nano-core v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/sf-nano-core)
+2026-09-06T13:43:57.7073774Z    Compiling regex-automata v0.4.16
+2026-09-06T13:44:00.5873194Z    Compiling clap_builder v4.6.2
+2026-09-06T13:44:05.5553082Z    Compiling chrono v0.4.45
+2026-09-06T13:44:07.3230642Z    Compiling clap_derive v4.6.4
+2026-09-06T13:44:09.6461331Z    Compiling ciborium-ll v0.2.2
+2026-09-06T13:44:10.7974964Z    Compiling plotters-bitmap v0.3.7
+2026-09-06T13:44:11.2365545Z    Compiling wat v1.254.0
+2026-09-06T13:44:11.7879870Z    Compiling itertools v0.13.0
+2026-09-06T13:44:12.8981403Z    Compiling plotters-svg v0.3.7
+2026-09-06T13:44:13.0264840Z    Compiling sf-nano-tracked-alloc v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/tools/tracked-alloc)
+2026-09-06T13:44:13.0904505Z    Compiling ttf-parser v0.20.0
+2026-09-06T13:44:15.2783237Z    Compiling cast v0.3.0
+2026-09-06T13:44:15.3566619Z    Compiling criterion-plot v0.8.2
+2026-09-06T13:44:15.7554956Z    Compiling plotters v0.3.7
+2026-09-06T13:44:39.5314667Z    Compiling benchmark-utils v0.0.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/utils)
+2026-09-06T13:44:39.7174509Z    Compiling rayon v1.12.0
+2026-09-06T13:44:41.4319625Z    Compiling ciborium v0.2.2
+2026-09-06T13:44:41.8874659Z    Compiling tinytemplate v1.2.1
+2026-09-06T13:44:42.4863633Z    Compiling clap v4.6.4
+2026-09-06T13:44:42.5047102Z    Compiling regex v1.13.1
+2026-09-06T13:44:43.0098545Z    Compiling page_size v0.6.0
+2026-09-06T13:44:43.0374353Z    Compiling anes v0.1.6
+2026-09-06T13:44:43.1587362Z    Compiling oorandom v11.1.5
+2026-09-06T13:44:43.1965398Z    Compiling criterion v0.8.2
+2026-09-06T13:44:55.0870520Z    Compiling rt-silverfir-nano v0.0.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/runtimes/silverfir-nano)
+2026-09-06T13:44:55.3911107Z    Compiling wasmi-benchmarks v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite)
+2026-09-06T13:46:08.8762231Z     Finished `bench` profile [optimized] target(s) in 3m 07s
+2026-09-06T13:46:08.8928008Z $ cargo +stable build --locked --package sf-nano-core --profile bench --no-default-features --features jit,guard-pages --message-format json-render-diagnostics
+2026-09-06T13:46:33.0758343Z $ cargo +stable metadata --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --format-version 1 --no-default-features --features silverfir-nano-jit
+2026-09-06T13:46:33.3141559Z $ cargo +stable metadata --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --format-version 1 --locked --no-default-features --features silverfir-nano-jit
+2026-09-06T13:46:33.5255376Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --no-run
+2026-09-06T13:46:33.6731843Z    Compiling proc-macro2 v1.0.107
+2026-09-06T13:46:33.8695318Z    Compiling quote v1.0.47
+2026-09-06T13:46:33.9827431Z    Compiling unicode-ident v1.0.24
+2026-09-06T13:46:34.4219624Z    Compiling cfg-if v1.0.4
+2026-09-06T13:46:34.5743712Z    Compiling shlex v2.0.1
+2026-09-06T13:46:34.6565712Z    Compiling find-msvc-tools v0.1.9
+2026-09-06T13:46:34.7780199Z    Compiling cc v1.4.0
+2026-09-06T13:46:35.6519217Z    Compiling pkg-config v0.3.33
+2026-09-06T13:46:35.9482707Z    Compiling libc v0.2.189
+2026-09-06T13:46:36.1393200Z    Compiling semver v1.0.28
+2026-09-06T13:46:36.3037051Z    Compiling crc32fast v1.5.0
+2026-09-06T13:46:36.4157067Z    Compiling simd-adler32 v0.3.10
+2026-09-06T13:46:36.5010988Z    Compiling autocfg v1.5.1
+2026-09-06T13:46:36.7225869Z    Compiling num-traits v0.2.19
+2026-09-06T13:46:36.8160489Z    Compiling rustc_version v0.4.1
+2026-09-06T13:46:37.5745790Z    Compiling syn v3.0.3
+2026-09-06T13:46:39.9865728Z    Compiling serde_core v1.0.229
+2026-09-06T13:46:40.1207991Z    Compiling adler2 v2.0.1
+2026-09-06T13:46:40.1706587Z    Compiling crossbeam-utils v0.8.22
+2026-09-06T13:46:40.2951584Z    Compiling memchr v2.8.3
+2026-09-06T13:46:40.6932363Z    Compiling miniz_oxide v0.8.9
+2026-09-06T13:46:41.3713611Z    Compiling pathfinder_simd v0.5.6
+2026-09-06T13:46:41.5910588Z    Compiling freetype-sys v0.20.1
+2026-09-06T13:46:41.7443151Z    Compiling yeslogic-fontconfig-sys v6.0.1
+2026-09-06T13:46:41.8377149Z    Compiling syn v2.0.119
+2026-09-06T13:46:44.2189981Z    Compiling crossbeam-epoch v0.9.20
+2026-09-06T13:46:44.3182955Z    Compiling zerocopy v0.8.55
+2026-09-06T13:46:44.5184825Z    Compiling zerocopy-derive v0.8.55
+2026-09-06T13:46:46.0116410Z    Compiling flate2 v1.1.9
+2026-09-06T13:46:48.2718780Z    Compiling fdeflate v0.3.7
+2026-09-06T13:46:48.6595664Z    Compiling libloading v0.8.9
+2026-09-06T13:46:48.7555758Z    Compiling utf8parse v0.2.2
+2026-09-06T13:46:48.7883957Z    Compiling leb128fmt v0.1.0
+2026-09-06T13:46:48.8564795Z    Compiling zmij v1.0.23
+2026-09-06T13:46:48.9706393Z    Compiling crossbeam-deque v0.8.7
+2026-09-06T13:46:49.0685049Z    Compiling color_quant v1.1.0
+2026-09-06T13:46:49.1833478Z    Compiling bitflags v1.3.2
+2026-09-06T13:46:49.2016927Z    Compiling byteorder v1.5.0
+2026-09-06T13:46:49.3403564Z    Compiling serde v1.0.229
+2026-09-06T13:46:49.4719145Z    Compiling option-ext v0.2.0
+2026-09-06T13:46:49.4965478Z    Compiling dirs-sys v0.5.0
+2026-09-06T13:46:49.7171981Z    Compiling png v0.17.16
+2026-09-06T13:46:50.7943957Z    Compiling wasm-encoder v0.254.0
+2026-09-06T13:46:52.0749172Z    Compiling anstyle-parse v1.0.0
+2026-09-06T13:46:52.1642690Z    Compiling dlib v0.5.3
+2026-09-06T13:46:55.3808547Z    Compiling serde_derive v1.0.229
+2026-09-06T13:46:57.2585184Z    Compiling bytemuck v1.25.2
+2026-09-06T13:46:57.4076656Z    Compiling once_cell v1.21.4
+2026-09-06T13:46:57.5211335Z    Compiling bumpalo v3.20.3
+2026-09-06T13:46:57.6729482Z    Compiling either v1.17.0
+2026-09-06T13:46:57.7963018Z    Compiling anstyle v1.0.14
+2026-09-06T13:46:57.9175236Z    Compiling log v0.4.33
+2026-09-06T13:46:58.0064472Z    Compiling unicode-width v0.2.2
+2026-09-06T13:46:58.1356560Z    Compiling plotters-backend v0.3.7
+2026-09-06T13:46:58.3036661Z    Compiling rayon-core v1.13.0
+2026-09-06T13:46:58.3759725Z    Compiling weezl v0.1.12
+2026-09-06T13:46:58.8026268Z    Compiling paste v1.0.15
+2026-09-06T13:46:58.9166183Z    Compiling anstyle-query v1.1.5
+2026-09-06T13:46:58.9447394Z    Compiling anyhow v1.0.104
+2026-09-06T13:46:59.0806302Z    Compiling colorchoice v1.0.5
+2026-09-06T13:46:59.1135327Z    Compiling jpeg-decoder v0.3.2
+2026-09-06T13:47:00.3923784Z    Compiling is_terminal_polyfill v1.70.2
+2026-09-06T13:47:00.4178141Z    Compiling serde_json v1.0.151
+2026-09-06T13:47:00.4954712Z    Compiling font-kit v0.14.3
+2026-09-06T13:47:00.5700377Z    Compiling same-file v1.0.6
+2026-09-06T13:47:00.6256813Z    Compiling walkdir v2.5.0
+2026-09-06T13:47:00.9069482Z    Compiling anstream v1.0.0
+2026-09-06T13:47:01.1168532Z    Compiling image v0.24.9
+2026-09-06T13:47:08.1894213Z    Compiling gif v0.12.0
+2026-09-06T13:47:08.7445997Z    Compiling wast v254.0.0
+2026-09-06T13:47:22.1148073Z    Compiling pathfinder_geometry v0.5.1
+2026-09-06T13:47:22.6948710Z    Compiling half v2.7.1
+2026-09-06T13:47:23.1584960Z    Compiling dirs v6.0.0
+2026-09-06T13:47:23.3451892Z    Compiling alloca v0.4.0
+2026-09-06T13:47:23.4683379Z    Compiling itoa v1.0.18
+2026-09-06T13:47:23.5635614Z    Compiling ciborium-io v0.2.2
+2026-09-06T13:47:23.5872289Z    Compiling heck v0.5.0
+2026-09-06T13:47:23.6883895Z    Compiling iana-time-zone v0.1.65
+2026-09-06T13:47:23.9045932Z    Compiling clap_lex v1.1.0
+2026-09-06T13:47:24.0530212Z    Compiling strsim v0.11.1
+2026-09-06T13:47:24.4089019Z    Compiling sf-nano-core v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-core)
+2026-09-06T13:47:25.6273545Z    Compiling lazy_static v1.5.0
+2026-09-06T13:47:25.6530251Z    Compiling regex-syntax v0.8.11
+2026-09-06T13:47:28.2763799Z    Compiling float-ord v0.3.2
+2026-09-06T13:47:28.3080162Z    Compiling bitflags v2.13.1
+2026-09-06T13:47:29.4164445Z    Compiling regex-automata v0.4.16
+2026-09-06T13:47:32.3324530Z    Compiling clap_builder v4.6.2
+2026-09-06T13:47:37.4014981Z    Compiling chrono v0.4.45
+2026-09-06T13:47:39.1918968Z    Compiling clap_derive v4.6.4
+2026-09-06T13:47:40.3226929Z    Compiling ciborium-ll v0.2.2
+2026-09-06T13:47:42.4147962Z    Compiling wat v1.254.0
+2026-09-06T13:47:42.6896783Z    Compiling plotters-bitmap v0.3.7
+2026-09-06T13:47:43.4222526Z    Compiling plotters-svg v0.3.7
+2026-09-06T13:47:43.5537153Z    Compiling itertools v0.13.0
+2026-09-06T13:47:44.6904558Z    Compiling sf-nano-tracked-alloc v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/tools/tracked-alloc)
+2026-09-06T13:47:44.7571934Z    Compiling ttf-parser v0.20.0
+2026-09-06T13:47:46.9983229Z    Compiling cast v0.3.0
+2026-09-06T13:47:47.0788298Z    Compiling criterion-plot v0.8.2
+2026-09-06T13:47:47.4828487Z    Compiling plotters v0.3.7
+2026-09-06T13:48:12.0558282Z    Compiling benchmark-utils v0.0.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/utils)
+2026-09-06T13:48:12.2464693Z    Compiling rayon v1.12.0
+2026-09-06T13:48:14.0120272Z    Compiling tinytemplate v1.2.1
+2026-09-06T13:48:14.6207957Z    Compiling ciborium v0.2.2
+2026-09-06T13:48:15.0964826Z    Compiling clap v4.6.4
+2026-09-06T13:48:15.1185179Z    Compiling regex v1.13.1
+2026-09-06T13:48:15.6580283Z    Compiling page_size v0.6.0
+2026-09-06T13:48:15.6892897Z    Compiling oorandom v11.1.5
+2026-09-06T13:48:15.7300208Z    Compiling anes v0.1.6
+2026-09-06T13:48:15.8576720Z    Compiling criterion v0.8.2
+2026-09-06T13:48:28.2575136Z    Compiling rt-silverfir-nano v0.0.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/runtimes/silverfir-nano)
+2026-09-06T13:48:28.5736669Z    Compiling wasmi-benchmarks v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite)
+2026-09-06T13:49:43.6374651Z     Finished `bench` profile [optimized] target(s) in 3m 10s
+2026-09-06T13:49:43.6575455Z $ cargo +stable build --locked --package sf-nano-core --profile bench --no-default-features --features jit,guard-pages --message-format json-render-diagnostics
+2026-09-06T13:50:08.5832544Z [pilot 1] startup/bz2: baseline
+2026-09-06T13:50:08.5834045Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/bz2
+2026-09-06T13:50:16.3978162Z   baseline: 7.81s, 10 Criterion samples
+2026-09-06T13:50:16.3978620Z [pilot 1] startup/bz2: candidate
+2026-09-06T13:50:16.3981943Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/bz2
+2026-09-06T13:50:24.3036681Z   candidate: 7.90s, 10 Criterion samples
+2026-09-06T13:50:24.3039658Z [pilot 1] startup/ffmpeg: candidate
+2026-09-06T13:50:24.3040963Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/ffmpeg
+2026-09-06T13:52:12.4809004Z   candidate: 108.18s, 10 Criterion samples
+2026-09-06T13:52:12.4810459Z [pilot 1] startup/ffmpeg: baseline
+2026-09-06T13:52:12.4814370Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/ffmpeg
+2026-09-06T13:53:58.6048561Z   baseline: 106.12s, 10 Criterion samples
+2026-09-06T13:53:58.6051888Z [pilot 1] startup/coremark: baseline
+2026-09-06T13:53:58.6053021Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/coremark
+2026-09-06T13:54:05.1948388Z   baseline: 6.59s, 10 Criterion samples
+2026-09-06T13:54:05.1948731Z [pilot 1] startup/coremark: candidate
+2026-09-06T13:54:05.1949847Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/coremark
+2026-09-06T13:54:11.8387127Z   candidate: 6.64s, 10 Criterion samples
+2026-09-06T13:54:11.8389107Z [pilot 1] startup/argon2: candidate
+2026-09-06T13:54:11.8390259Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/argon2
+2026-09-06T13:54:18.8677267Z   candidate: 7.03s, 10 Criterion samples
+2026-09-06T13:54:18.8679243Z [pilot 1] startup/argon2: baseline
+2026-09-06T13:54:18.8680379Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/argon2
+2026-09-06T13:54:25.8396484Z   baseline: 6.97s, 10 Criterion samples
+2026-09-06T13:54:25.8400712Z [confirmation 1] startup/bz2: candidate
+2026-09-06T13:54:25.8402287Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/bz2
+2026-09-06T13:54:33.7475984Z   candidate: 7.91s, 10 Criterion samples
+2026-09-06T13:54:33.7477966Z [confirmation 1] startup/bz2: baseline
+2026-09-06T13:54:33.7479531Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/bz2
+2026-09-06T13:54:41.5697273Z   baseline: 7.82s, 10 Criterion samples
+2026-09-06T13:54:41.5699106Z [confirmation 1] startup/ffmpeg: baseline
+2026-09-06T13:54:41.5700268Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/ffmpeg
+2026-09-06T13:56:27.8148623Z   baseline: 106.24s, 10 Criterion samples
+2026-09-06T13:56:27.8150023Z [confirmation 1] startup/ffmpeg: candidate
+2026-09-06T13:56:27.8151187Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/ffmpeg
+2026-09-06T13:58:15.8729294Z   candidate: 108.06s, 10 Criterion samples
+2026-09-06T13:58:15.8731299Z [confirmation 1] startup/coremark: candidate
+2026-09-06T13:58:15.8732448Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/coremark
+2026-09-06T13:58:22.5415804Z   candidate: 6.67s, 10 Criterion samples
+2026-09-06T13:58:22.5418649Z [confirmation 1] startup/coremark: baseline
+2026-09-06T13:58:22.5419801Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/coremark
+2026-09-06T13:58:29.1548096Z   baseline: 6.61s, 10 Criterion samples
+2026-09-06T13:58:29.1549655Z [confirmation 1] startup/argon2: baseline
+2026-09-06T13:58:29.1551209Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/argon2
+2026-09-06T13:58:36.1327301Z   baseline: 6.98s, 10 Criterion samples
+2026-09-06T13:58:36.1328821Z [confirmation 1] startup/argon2: candidate
+2026-09-06T13:58:36.1330359Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/argon2
+2026-09-06T13:58:43.1896615Z   candidate: 7.06s, 10 Criterion samples
+2026-09-06T13:58:43.1912607Z 
+2026-09-06T13:58:43.1913065Z ## wasmi-benchmarks: arm64-linux / jit / startup
+2026-09-06T13:58:43.1913287Z 
+2026-09-06T13:58:43.1913407Z `f73219f56a70` -> `39ba77b31668`
+2026-09-06T13:58:43.1913562Z 
+2026-09-06T13:58:43.1913719Z - wasmi-benchmarks: `16a3d7c8fdb05506c116a9451175732d1ac77099`
+2026-09-06T13:58:43.1914252Z - corpus: `4` `startup` Criterion benchmarks; dedicated CoreMark score excluded, `startup/coremark` retained
+2026-09-06T13:58:43.1915016Z - schedule: one 10-sample adjacent A/B pilot; selected benchmarks receive up to `2` independent reverse/alternating confirmation pairs
+2026-09-06T13:58:43.1916127Z - requested family confidence: regression `99.000%`, improvement `99.990%`; pilot `80.0%`
+2026-09-06T13:58:43.1916828Z - family correction: `27` metrics x `1` platform/engine groups x `2` looks; effective P(reg) `99.981481%`, P(imp) `99.999815%`
+2026-09-06T13:58:43.1917254Z 
+2026-09-06T13:58:43.1917583Z | Benchmark | Baseline | Candidate | Delta (sample range) | Volatility | P(reg) | P(imp) | Samples | Runs | Pilot P | Gate |
+2026-09-06T13:58:43.1918281Z |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+2026-09-06T13:58:43.1918773Z | startup/bz2 | 53.782ms | 54.777ms | -1.82% (-2.05%..-1.63%) | 0.14% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |
+2026-09-06T13:58:43.1919440Z | startup/ffmpeg | 9.371s | 9.537s | -1.74% (-2.29%..-1.19%) | 0.41% | 99.999987% | 0.000013% | 10 | 1 | >99.999999% | **REGRESSION** |
+2026-09-06T13:58:43.1920122Z | startup/coremark | 5.310ms | 5.391ms | -1.51% (-1.78%..-1.31%) | 0.13% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |
+2026-09-06T13:58:43.1920818Z | startup/argon2 | 16.493ms | 16.783ms | -1.73% (-1.87%..-1.60%) | 0.08% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |
+2026-09-06T13:58:43.1921213Z 
+2026-09-06T13:58:43.1921539Z > Only directions selected by the full-suite pilot can affect the gate. Later changes in other benchmarks are ignored.
+2026-09-06T13:58:43.1921963Z 
+2026-09-06T13:58:43.2083177Z ##[group]Run set -euo pipefail
+2026-09-06T13:58:43.2083490Z [36;1mset -euo pipefail[0m
+2026-09-06T13:58:43.2083712Z [36;1mstatus=0[0m
+2026-09-06T13:58:43.2083915Z [36;1mpython3 -m ci.perf_confirm \[0m
+2026-09-06T13:58:43.2084217Z [36;1m  --primary "${PRIMARY_DIR}/comparison.json" \[0m
+2026-09-06T13:58:43.2084640Z [36;1m  --confirm "wasmi-output-confirm/${ENGINE}-${CATEGORY}/comparison.json" \[0m
+2026-09-06T13:58:43.2085060Z [36;1m  --summary-out verdict.md || status=$?[0m
+2026-09-06T13:58:43.2085343Z [36;1mif [[ -f verdict.md ]]; then[0m
+2026-09-06T13:58:43.2085621Z [36;1m  cat verdict.md >> "$GITHUB_STEP_SUMMARY"[0m
+2026-09-06T13:58:43.2085894Z [36;1mfi[0m
+2026-09-06T13:58:43.2086072Z [36;1mexit "$status"[0m
+2026-09-06T13:58:43.2119526Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:58:43.2119847Z env:
+2026-09-06T13:58:43.2120032Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:58:43.2120296Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:58:43.2120532Z   CARGO_TERM_COLOR: always
+2026-09-06T13:58:43.2120744Z   CACHE_ON_FAILURE: false
+2026-09-06T13:58:43.2120952Z   CATEGORY: startup
+2026-09-06T13:58:43.2121136Z   ENGINE: jit
+2026-09-06T13:58:43.2121347Z   PRIMARY_DIR: /home/runner/work/_temp/primary
+2026-09-06T13:58:43.2121605Z ##[endgroup]
+2026-09-06T13:58:43.2466537Z ## Cross-run confirmation
+2026-09-06T13:58:43.2466765Z 
+2026-09-06T13:58:43.2466994Z The following regressions reproduced on an independent runner and fail the gate:
+2026-09-06T13:58:43.2467456Z - **startup/argon2**: primary -2.21%, confirmation -1.73%
+2026-09-06T13:58:43.2467977Z - **startup/bz2**: primary -1.98%, confirmation -1.82%
+2026-09-06T13:58:43.2468360Z - **startup/coremark**: primary -2.15%, confirmation -1.51%
+2026-09-06T13:58:43.2468717Z - **startup/ffmpeg**: primary -2.00%, confirmation -1.74%
+2026-09-06T13:58:43.2468938Z 
+2026-09-06T13:58:43.2547342Z ##[error]Process completed with exit code 1.
+2026-09-06T13:58:43.2621419Z ##[group]Run actions/upload-artifact@v7
+2026-09-06T13:58:43.2621725Z with:
+2026-09-06T13:58:43.2621984Z   name: wasmi-performance-confirm-arm64-linux-jit-startup
+2026-09-06T13:58:43.2622323Z   path: wasmi-output-confirm/jit-startup/
+2026-09-06T13:58:43.2622590Z   if-no-files-found: warn
+2026-09-06T13:58:43.2622800Z   retention-days: 14
+2026-09-06T13:58:43.2623003Z   compression-level: 6
+2026-09-06T13:58:43.2623204Z   overwrite: false
+2026-09-06T13:58:43.2623411Z   include-hidden-files: false
+2026-09-06T13:58:43.2623636Z   archive: true
+2026-09-06T13:58:43.2623814Z env:
+2026-09-06T13:58:43.2623988Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:58:43.2624226Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:58:43.2624429Z   CARGO_TERM_COLOR: always
+2026-09-06T13:58:43.2624647Z   CACHE_ON_FAILURE: false
+2026-09-06T13:58:43.2624850Z ##[endgroup]
+2026-09-06T13:58:43.4448526Z With the provided path, there will be 84 files uploaded
+2026-09-06T13:58:43.4449013Z Artifact name is valid!
+2026-09-06T13:58:43.4449295Z Root directory input is valid!
+2026-09-06T13:58:43.8162660Z Uploading artifact: wasmi-performance-confirm-arm64-linux-jit-startup.zip
+2026-09-06T13:58:43.8195087Z Beginning upload of artifact content to blob storage
+2026-09-06T13:58:44.3343554Z Uploaded bytes 60970
+2026-09-06T13:58:44.4114501Z Finished uploading artifact content to blob storage!
+2026-09-06T13:58:44.4115487Z SHA256 digest of uploaded artifact is e861d39e68f9a6dd1904e3b72ecb9af9a89c2e1adcca7c8d1afa9c634650f901
+2026-09-06T13:58:44.4115998Z Finalizing artifact upload
+2026-09-06T13:58:44.8258694Z Artifact wasmi-performance-confirm-arm64-linux-jit-startup successfully finalized. Artifact ID 9990692254
+2026-09-06T13:58:44.8259616Z Artifact wasmi-performance-confirm-arm64-linux-jit-startup has been successfully uploaded! Final size is 60970 bytes. Artifact ID is 9990692254
+2026-09-06T13:58:44.8263301Z Artifact download URL: https://github.com/mbbill/Silverfir-nano/actions/runs/34035799241/artifacts/9990692254
+2026-09-06T13:58:44.8378836Z ##[group]Run {
+2026-09-06T13:58:44.8379133Z [36;1m{[0m
+2026-09-06T13:58:44.8379309Z [36;1m  echo[0m
+2026-09-06T13:58:44.8379507Z [36;1m  echo "> [!CAUTION]"[0m
+2026-09-06T13:58:44.8379848Z [36;1m  echo "> **SOFT-FAIL — ACTION REQUIRED.** Email is suppressed for"[0m
+2026-09-06T13:58:44.8380324Z [36;1m  echo "> dev branches, but a preceding step failed. This is not a pass."[0m
+2026-09-06T13:58:44.8380711Z [36;1m} >> "$GITHUB_STEP_SUMMARY"[0m
+2026-09-06T13:58:44.8381147Z [36;1mecho "::warning title=Dev CI soft-fail::Action required; this wasmi-confirm job did not pass."[0m
+2026-09-06T13:58:44.8414621Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-06T13:58:44.8414952Z env:
+2026-09-06T13:58:44.8415143Z   CARGO_HOME: /home/runner/.cargo
+2026-09-06T13:58:44.8415385Z   CARGO_INCREMENTAL: 0
+2026-09-06T13:58:44.8415595Z   CARGO_TERM_COLOR: always
+2026-09-06T13:58:44.8415838Z   CACHE_ON_FAILURE: false
+2026-09-06T13:58:44.8416049Z ##[endgroup]
+2026-09-06T13:58:44.8481134Z ##[warning]Action required; this wasmi-confirm job did not pass.
+2026-09-06T13:58:44.8579198Z Post job cleanup.
+2026-09-06T13:58:44.9288858Z [command]/usr/bin/git version
+2026-09-06T13:58:44.9338687Z git version 2.55.0
+2026-09-06T13:58:44.9365409Z Temporarily overriding HOME='/home/runner/work/_temp/c91ef90a-4ac1-4647-9843-906fa8c130f7' before making global git config changes
+2026-09-06T13:58:44.9366312Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-06T13:58:44.9383721Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks
+2026-09-06T13:58:44.9416385Z Removing SSH command configuration
+2026-09-06T13:58:44.9438821Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-06T13:58:44.9499224Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-06T13:58:44.9648971Z Entering 'res/rust'
+2026-09-06T13:58:44.9695027Z Removing HTTP extra header
+2026-09-06T13:58:44.9700833Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-06T13:58:44.9747071Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-06T13:58:44.9939765Z Entering 'res/rust'
+2026-09-06T13:58:44.9977135Z Removing includeIf entries pointing to credentials config files
+2026-09-06T13:58:44.9983907Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:58:45.0036637Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-06T13:58:45.0230817Z Entering 'res/rust'
+2026-09-06T13:58:45.0246362Z file:/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/modules/res/rust/config	remote.origin.url
+2026-09-06T13:58:45.0278759Z [command]/usr/bin/git config --file /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/.git/modules/res/rust/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:58:45.0449211Z Post job cleanup.
+2026-09-06T13:58:45.1166958Z [command]/usr/bin/git version
+2026-09-06T13:58:45.1207317Z git version 2.55.0
+2026-09-06T13:58:45.1249607Z Temporarily overriding HOME='/home/runner/work/_temp/20a17cb6-1d79-4537-a288-47416c845f2c' before making global git config changes
+2026-09-06T13:58:45.1250331Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-06T13:58:45.1259082Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/Silverfir-nano/Silverfir-nano/baseline
+2026-09-06T13:58:45.1293410Z Removing SSH command configuration
+2026-09-06T13:58:45.1300296Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-06T13:58:45.1325242Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-06T13:58:45.1538066Z Removing HTTP extra header
+2026-09-06T13:58:45.1543798Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-06T13:58:45.1580662Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-06T13:58:45.1802889Z Removing includeIf entries pointing to credentials config files
+2026-09-06T13:58:45.1803584Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:58:45.1820177Z includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git.path
+2026-09-06T13:58:45.1820810Z includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git/worktrees/*.path
+2026-09-06T13:58:45.1821360Z includeif.gitdir:/github/workspace/baseline/.git.path
+2026-09-06T13:58:45.1821766Z includeif.gitdir:/github/workspace/baseline/.git/worktrees/*.path
+2026-09-06T13:58:45.1829344Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git.path
+2026-09-06T13:58:45.1863604Z /home/runner/work/_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config
+2026-09-06T13:58:45.1873998Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-f0392ffe\-ee57\-4956\-8b0d\-8630ab1a84a2\.config
+2026-09-06T13:58:45.1898693Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git/worktrees/*.path
+2026-09-06T13:58:45.1924950Z /home/runner/work/_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config
+2026-09-06T13:58:45.1933381Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-f0392ffe\-ee57\-4956\-8b0d\-8630ab1a84a2\.config
+2026-09-06T13:58:45.1967432Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/baseline/.git.path
+2026-09-06T13:58:45.1991682Z /github/runner_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config
+2026-09-06T13:58:45.1998419Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/baseline/.git.path \/github\/runner_temp\/git\-credentials\-f0392ffe\-ee57\-4956\-8b0d\-8630ab1a84a2\.config
+2026-09-06T13:58:45.2031137Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/baseline/.git/worktrees/*.path
+2026-09-06T13:58:45.2055802Z /github/runner_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config
+2026-09-06T13:58:45.2063216Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/baseline/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-f0392ffe\-ee57\-4956\-8b0d\-8630ab1a84a2\.config
+2026-09-06T13:58:45.2099601Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-06T13:58:45.2299807Z Removing credentials config '/home/runner/work/_temp/git-credentials-f0392ffe-ee57-4956-8b0d-8630ab1a84a2.config'
+2026-09-06T13:58:45.2446732Z Post job cleanup.
+2026-09-06T13:58:45.3141076Z [command]/usr/bin/git version
+2026-09-06T13:58:45.3181351Z git version 2.55.0
+2026-09-06T13:58:45.3220917Z Temporarily overriding HOME='/home/runner/work/_temp/4d44d212-ece0-4131-91f4-b40951a09a22' before making global git config changes
+2026-09-06T13:58:45.3221657Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-06T13:58:45.3226262Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/Silverfir-nano/Silverfir-nano
+2026-09-06T13:58:45.3257055Z Removing SSH command configuration
+2026-09-06T13:58:45.3264286Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-06T13:58:45.3297877Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-06T13:58:45.3508899Z Removing HTTP extra header
+2026-09-06T13:58:45.3513693Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-06T13:58:45.3550965Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-06T13:58:45.3749077Z Removing includeIf entries pointing to credentials config files
+2026-09-06T13:58:45.3754969Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-06T13:58:45.3792343Z includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/.git.path
+2026-09-06T13:58:45.3793062Z includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/.git/worktrees/*.path
+2026-09-06T13:58:45.3793635Z includeif.gitdir:/github/workspace/.git.path
+2026-09-06T13:58:45.3794080Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-06T13:58:45.3800264Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/.git.path
+2026-09-06T13:58:45.3826005Z /home/runner/work/_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config
+2026-09-06T13:58:45.3834968Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/.git.path \/home\/runner\/work\/_temp\/git\-credentials\-2cb26a5c\-3f5e\-4789\-bc16\-defa43c33895\.config
+2026-09-06T13:58:45.3871096Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/.git/worktrees/*.path
+2026-09-06T13:58:45.3896190Z /home/runner/work/_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config
+2026-09-06T13:58:45.3904221Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/Silverfir-nano/Silverfir-nano/.git/worktrees/*.path \/home\/runner\/work\/_temp\/git\-credentials\-2cb26a5c\-3f5e\-4789\-bc16\-defa43c33895\.config
+2026-09-06T13:58:45.3945611Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-09-06T13:58:45.3971004Z /github/runner_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config
+2026-09-06T13:58:45.3978285Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-2cb26a5c\-3f5e\-4789\-bc16\-defa43c33895\.config
+2026-09-06T13:58:45.4010550Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-06T13:58:45.4036291Z /github/runner_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config
+2026-09-06T13:58:45.4043687Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-2cb26a5c\-3f5e\-4789\-bc16\-defa43c33895\.config
+2026-09-06T13:58:45.4080531Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-06T13:58:45.4285926Z Removing credentials config '/home/runner/work/_temp/git-credentials-2cb26a5c-3f5e-4789-bc16-defa43c33895.config'
+2026-09-06T13:58:45.4422688Z Cleaning up orphan processes
+

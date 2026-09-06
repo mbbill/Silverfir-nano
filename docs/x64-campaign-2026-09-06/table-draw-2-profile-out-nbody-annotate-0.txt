@@ -1,0 +1,74 @@
+symbol: jit::main::func4::b10
+
+ Percent |	Source code & Disassembly of jitted-4925-262.so for cpu-clock:u (8147 samples, percent: local period)
+---------------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3   Disassembly of section .text:
+         :
+         : 5   0000000000000080 <jit::main::func4::b10>:
+    0.02 :    80:     mov    0x40(%rbp),%r10
+    0.00 :    84:     mov    %esi,%r14d
+    2.69 :    87:     add    $0x38,%r14d
+    0.01 :    8b:     mov    %r14,0xe8(%rbp)
+    0.02 :    92:     movsd  (%r12,%r14,1),%xmm10
+    1.71 :    98:     movaps %xmm10,%xmm5
+    0.02 :    9c:     subsd  %xmm3,%xmm5
+    1.44 :    a0:     mov    %esi,%r14d
+    0.00 :    a3:     add    $0x68,%r14d
+    0.04 :    a7:     movsd  (%r12,%r14,1),%xmm10
+    0.02 :    ad:     movaps %xmm5,%xmm11
+    0.00 :    b1:     mulsd  %xmm5,%xmm11
+    2.21 :    b6:     mov    %esi,%r14d
+    0.00 :    b9:     sub    $0xffffffc0,%r14d
+    0.01 :    bd:     movsd  (%r12,%r14,1),%xmm12
+    1.71 :    c3:     movaps %xmm12,%xmm7
+    0.04 :    c7:     subsd  %xmm4,%xmm7
+    1.07 :    cb:     movaps %xmm7,%xmm12
+    0.04 :    cf:     mulsd  %xmm7,%xmm12
+    0.04 :    d4:     addsd  %xmm12,%xmm11
+    0.01 :    d9:     mov    %esi,%r14d
+    0.01 :    dc:     add    $0x48,%r14d
+    2.55 :    e0:     movsd  (%r12,%r14,1),%xmm12
+    0.02 :    e6:     movaps %xmm12,%xmm8
+    1.39 :    ea:     subsd  %xmm2,%xmm8
+    0.06 :    ef:     movaps %xmm8,%xmm12
+    1.25 :    f3:     mulsd  %xmm8,%xmm12
+    0.02 :    f8:     addsd  %xmm12,%xmm11
+    0.01 :    fd:     movsd  0x843(%rip),%xmm1        # 948 <jit::main::func4::b10+0x8c8>
+    0.04 :   105:    movaps %xmm11,%xmm6
+    2.44 :   109:    addsd  %xmm1,%xmm6
+    0.02 :   10d:    sqrtsd %xmm6,%xmm11
+    2.38 :   112:    mulsd  %xmm6,%xmm11
+    0.37 :   117:    movsd  0x831(%rip),%xmm0        # 950 <jit::main::func4::b10+0x8d0>
+    1.25 :   11f:    movaps %xmm0,%xmm9
+    0.00 :   123:    divsd  %xmm11,%xmm9
+   30.27 :   128:    movaps %xmm10,%xmm6
+    0.00 :   12c:    mulsd  %xmm9,%xmm6
+   11.57 :   131:    movaps %xmm5,%xmm10
+    0.00 :   135:    mulsd  %xmm6,%xmm10
+   13.17 :   13a:    mov    %r10d,%edx
+    0.00 :   13d:    movsd  (%r12,%rdx,1),%xmm11
+    0.18 :   143:    addsd  %xmm11,%xmm10
+    4.59 :   148:    mov    %r10d,%eax
+    0.00 :   14b:    movsd  %xmm10,(%r12,%rax,1)
+    5.45 :   151:    mov    0x58(%rbp),%r10
+    0.00 :   155:    movaps %xmm7,%xmm10
+    0.06 :   159:    mulsd  %xmm6,%xmm10
+    0.00 :   15e:    mov    %r10d,%ecx
+    0.00 :   161:    movsd  (%r12,%rcx,1),%xmm11
+    0.06 :   167:    addsd  %xmm11,%xmm10
+    0.10 :   16c:    mov    %r10d,%edx
+    0.00 :   16f:    movsd  %xmm10,(%r12,%rdx,1)
+    4.20 :   175:    mov    0xa8(%rbp),%r10
+    0.02 :   17c:    movaps %xmm8,%xmm10
+    1.50 :   180:    mulsd  %xmm6,%xmm10
+    0.00 :   185:    mov    %r10d,%eax
+    0.00 :   188:    movsd  (%r12,%rax,1),%xmm11
+    0.02 :   18e:    addsd  %xmm11,%xmm10
+    0.16 :   193:    mov    %r10d,%ecx
+    0.00 :   196:    movsd  %xmm10,(%r12,%rcx,1)
+    4.31 :   19c:    mov    0x30(%rbp),%r10
+    0.01 :   1a0:    add    %r9d,%r10d
+    1.39 :   1a3:    je     75e <jit::main::func4::b10+0x6de>

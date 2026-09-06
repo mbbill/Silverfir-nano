@@ -1,0 +1,20 @@
+symbol: jit::main::func5::b13
+
+ Percent |	Source code & Disassembly of jitted-4889-368.so for cpu-clock:u (807 samples, percent: local period)
+--------------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3  Disassembly of section .text:
+         :
+         : 5  0000000000000080 <jit::main::func5::b13>:
+    0.12 :   80:     mov    %esi,%edx
+    2.97 :   82:     movswq (%r12,%rdx,1),%r14
+   11.77 :   87:     mov    %edi,%ecx
+    4.34 :   89:     movswq (%r12,%rcx,1),%r15
+    9.05 :   8e:     imul   %r15d,%r14d
+   28.25 :   92:     add    %r14d,%r9d
+   41.26 :   95:     add    $0x2,%edi
+    0.74 :   98:     add    %r10d,%esi
+    0.37 :   9b:     add    $0xffffffff,%r8d
+    1.12 :   9f:     jne    80 <jit::main::func5::b13>

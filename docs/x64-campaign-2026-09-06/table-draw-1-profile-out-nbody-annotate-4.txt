@@ -1,0 +1,12 @@
+symbol: jit::main::func4::b34
+
+ Percent |	Source code & Disassembly of jitted-4932-286.so for cpu-clock:u (220 samples, percent: local period)
+--------------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3  Disassembly of section .text:
+         :
+         : 5  0000000000000080 <jit::main::func4::b34>:
+    0.00 :   80:     mov    %r10,0x10(%rbp)
+  100.00 :   84:     jmp    fffffffffffffaab <jit::main::func4::b34+0xfffffffffffffa2b>

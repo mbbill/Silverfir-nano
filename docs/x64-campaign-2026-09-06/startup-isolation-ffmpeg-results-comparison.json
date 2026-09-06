@@ -1,0 +1,554 @@
+{
+  "mode": "startup",
+  "seconds": 2.0,
+  "scores": {
+    "main": [
+      0.10490717045218274,
+      0.10505426478771329,
+      0.10499837727527882,
+      0.10487923340703312
+    ],
+    "corrected": [
+      0.10457853343578111,
+      0.10432624767045083,
+      0.10442840085441588,
+      0.10383763662870821
+    ],
+    "loop": [
+      0.10245790451522391,
+      0.10201816176753786,
+      0.10209207200547794,
+      0.10259618059108404
+    ],
+    "current": [
+      0.1024130604842746,
+      0.10233458081452351,
+      0.10246912073065303,
+      0.1023342753050897
+    ],
+    "nocache": [
+      0.1039877933637594,
+      0.10393625242408598,
+      0.10375293782046097,
+      0.10351985598368982
+    ],
+    "nodse": [
+      0.10293842498098531,
+      0.10263647771325365,
+      0.10262608357148693,
+      0.10273647643746382
+    ]
+  },
+  "schedule": [
+    {
+      "round": 0,
+      "variant": "main",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/main",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10490717045218274
+    },
+    {
+      "round": 0,
+      "variant": "corrected",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/corrected",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10457853343578111
+    },
+    {
+      "round": 0,
+      "variant": "loop",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/loop",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10245790451522391
+    },
+    {
+      "round": 0,
+      "variant": "current",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/current",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.1024130604842746
+    },
+    {
+      "round": 0,
+      "variant": "nocache",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nocache",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.1039877933637594
+    },
+    {
+      "round": 0,
+      "variant": "nodse",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nodse",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10293842498098531
+    },
+    {
+      "round": 1,
+      "variant": "nodse",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nodse",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10263647771325365
+    },
+    {
+      "round": 1,
+      "variant": "nocache",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nocache",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10393625242408598
+    },
+    {
+      "round": 1,
+      "variant": "current",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/current",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10233458081452351
+    },
+    {
+      "round": 1,
+      "variant": "loop",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/loop",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10201816176753786
+    },
+    {
+      "round": 1,
+      "variant": "corrected",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/corrected",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10432624767045083
+    },
+    {
+      "round": 1,
+      "variant": "main",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/main",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10505426478771329
+    },
+    {
+      "round": 2,
+      "variant": "main",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/main",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10499837727527882
+    },
+    {
+      "round": 2,
+      "variant": "corrected",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/corrected",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10442840085441588
+    },
+    {
+      "round": 2,
+      "variant": "loop",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/loop",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10209207200547794
+    },
+    {
+      "round": 2,
+      "variant": "current",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/current",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10246912073065303
+    },
+    {
+      "round": 2,
+      "variant": "nocache",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nocache",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10375293782046097
+    },
+    {
+      "round": 2,
+      "variant": "nodse",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nodse",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10262608357148693
+    },
+    {
+      "round": 3,
+      "variant": "nodse",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nodse",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10273647643746382
+    },
+    {
+      "round": 3,
+      "variant": "nocache",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nocache",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10351985598368982
+    },
+    {
+      "round": 3,
+      "variant": "current",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/current",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.1023342753050897
+    },
+    {
+      "round": 3,
+      "variant": "loop",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/loop",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10259618059108404
+    },
+    {
+      "round": 3,
+      "variant": "corrected",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/corrected",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10383763662870821
+    },
+    {
+      "round": 3,
+      "variant": "main",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/main",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/ffmpeg.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 0.10487923340703312
+    }
+  ],
+  "comparisons": {
+    "corrected/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.0031375628971559654,
+        -0.006954038296496732,
+        -0.005443218228862031,
+        -0.009981037232086572
+      ],
+      "mean_log_ratio": -0.006378964163650325,
+      "log_ratio_stddev": 0.0028686781667710552,
+      "standard_error": 0.0014343390833855276,
+      "probability_regression": 0.9894257312728107,
+      "probability_improvement": 0.010574268727189251,
+      "delta_percent": -0.6358661764114371,
+      "volatility_percent": 0.28727967613490996,
+      "pair_deltas_percent": [
+        -0.3132645890505992,
+        -0.6929914922859992,
+        -0.5428430759159331,
+        -0.9931391987606397
+      ]
+    },
+    "loop/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.023623841620211236,
+        -0.029326170181976356,
+        -0.028069822670907314,
+        -0.022008824353918325
+      ],
+      "mean_log_ratio": -0.025757164706753308,
+      "log_ratio_stddev": 0.0034970134750289196,
+      "standard_error": 0.0017485067375144598,
+      "probability_regression": 0.9996606950466038,
+      "probability_improvement": 0.00033930495339618005,
+      "delta_percent": -2.5428278713946444,
+      "volatility_percent": 0.350313516044331,
+      "pair_deltas_percent": [
+        -2.3346983112800923,
+        -2.8900330950967,
+        -2.7679525581441045,
+        -2.17683972487539
+      ]
+    },
+    "current/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.024061619922916142,
+        -0.026229374945829026,
+        -0.024383403491105314,
+        -0.024564866377464762
+      ],
+      "mean_log_ratio": -0.02480981618432881,
+      "log_ratio_stddev": 0.0009689810654787103,
+      "standard_error": 0.00048449053273935514,
+      "probability_regression": 0.9999917996933727,
+      "probability_improvement": 8.200306627292875e-06,
+      "delta_percent": -2.450458217159455,
+      "volatility_percent": 0.09694506793013903,
+      "pair_deltas_percent": [
+        -2.3774447038822477,
+        -2.5888372820327965,
+        -2.408852984455867,
+        -2.4265605489949604
+      ]
+    },
+    "nocache/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.008802347436564346,
+        -0.010699270415116062,
+        -0.011932420465246785,
+        -0.013046090631398962
+      ],
+      "mean_log_ratio": -0.011120032237081539,
+      "log_ratio_stddev": 0.001818275640724311,
+      "standard_error": 0.0009091378203621555,
+      "probability_regression": 0.999411618671317,
+      "probability_improvement": 0.0005883813286829964,
+      "delta_percent": -1.1058433217725618,
+      "volatility_percent": 0.1819929706240893,
+      "pair_deltas_percent": [
+        -0.8763720196250935,
+        -1.0642236808629524,
+        -1.1861511455102058,
+        -1.2961359262301242
+      ]
+    },
+    "nodse/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.01894487443906845,
+        -0.02328362134327848,
+        -0.02285276924723892,
+        -0.020642301656143378
+      ],
+      "mean_log_ratio": -0.021430891671432306,
+      "log_ratio_stddev": 0.0020212618970455367,
+      "standard_error": 0.0010106309485227684,
+      "probability_regression": 0.9998852819380207,
+      "probability_improvement": 0.0001147180619792687,
+      "delta_percent": -2.1202881835303806,
+      "volatility_percent": 0.20233060238803108,
+      "pair_deltas_percent": [
+        -1.8766548203631106,
+        -2.3014649422803957,
+        -2.2593622543064074,
+        -2.0430707776565415
+      ]
+    },
+    "loop/corrected": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.020486278723055258,
+        -0.02237213188547953,
+        -0.0226266044420452,
+        -0.012027787121831727
+      ],
+      "mean_log_ratio": -0.01937820054310293,
+      "log_ratio_stddev": 0.0049923998067068105,
+      "standard_error": 0.0024961999033534053,
+      "probability_regression": 0.9977767644965317,
+      "probability_improvement": 0.002223235503468257,
+      "delta_percent": -1.9191650161906795,
+      "volatility_percent": 0.500488259900662,
+      "pair_deltas_percent": [
+        -2.027786057890568,
+        -2.212373160591208,
+        -2.2372542620805014,
+        -1.195574242567976
+      ]
+    },
+    "current/loop": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.00043777830270490026,
+        0.0030967952361472674,
+        0.00368641917980194,
+        -0.002556042023546444
+      ],
+      "mean_log_ratio": 0.0009473485224244658,
+      "log_ratio_stddev": 0.0029616971981467725,
+      "standard_error": 0.0014808485990733863,
+      "probability_regression": 0.28392468263650394,
+      "probability_improvement": 0.7160753173634961,
+      "delta_percent": 0.09477973987721929,
+      "volatility_percent": 0.2966087356330021,
+      "pair_deltas_percent": [
+        -0.04376824917655675,
+        0.3101595260132761,
+        0.36932223802339514,
+        -0.2552778129608968
+      ]
+    },
+    "nocache/current": {
+      "pair_count": 4,
+      "log_deltas": [
+        0.015259272486351668,
+        0.01553010453071305,
+        0.012450983025858562,
+        0.011518775746065954
+      ],
+      "mean_log_ratio": 0.013689783947247309,
+      "log_ratio_stddev": 0.0020081482728073912,
+      "standard_error": 0.0010040741364036956,
+      "probability_regression": 0.00042677706365371976,
+      "probability_improvement": 0.9995732229363463,
+      "delta_percent": 1.3783918107787785,
+      "volatility_percent": 0.20101659529244142,
+      "pair_deltas_percent": [
+        1.5376289625936845,
+        1.565132330453789,
+        1.2528819225281929,
+        1.1585372301367691
+      ]
+    },
+    "nodse/nocache": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.010142527002504158,
+        -0.012584350928162395,
+        -0.010920348781992127,
+        -0.007596211024744495
+      ],
+      "mean_log_ratio": -0.010310859434350794,
+      "log_ratio_stddev": 0.0020766874771063794,
+      "standard_error": 0.0010383437385531897,
+      "probability_regression": 0.9989137065942845,
+      "probability_improvement": 0.0010862934057155327,
+      "delta_percent": -1.0257884751052855,
+      "volatility_percent": 0.20788452859848588,
+      "pair_deltas_percent": [
+        -1.0091265030534036,
+        -1.2505499096974515,
+        -1.0860938231204598,
+        -0.7567432728552315
+      ]
+    },
+    "nodse/current": {
+      "pair_count": 4,
+      "log_deltas": [
+        0.005116745483847573,
+        0.002945753602550596,
+        0.0015306342438663092,
+        0.003922564721321381
+      ],
+      "mean_log_ratio": 0.0033789245128964646,
+      "log_ratio_stddev": 0.0015187034337942318,
+      "standard_error": 0.0007593517168971159,
+      "probability_regression": 0.010558794626828611,
+      "probability_improvement": 0.9894412053731714,
+      "delta_percent": 0.338463951336724,
+      "volatility_percent": 0.1519857247880682,
+      "pair_deltas_percent": [
+        0.5129858381601293,
+        0.2950096598111962,
+        0.15318062623614903,
+        0.39302680472894647
+      ]
+    }
+  }
+}

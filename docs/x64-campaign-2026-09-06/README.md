@@ -365,6 +365,73 @@ projection but cannot establish a new same-host ranking.
 The x64 JIT startup primary on AMD 7763 flags bz2 -3.89%, pulldown-cmark
 -3.03%, spidermonkey -2.63%, ffmpeg -3.50%. The register-mask change has not
 removed the startup regression. Windows LZ4 primary still flags -5.83%.
-Independent confirmation remains pending; these failures are not waived by
-the execution gains. All execution rows and x64 startup samples are in
+Independent confirmation has now completed (see below); these failures are
+not waived by the execution gains. All execution rows and x64 startup samples are in
 `current-dev-*-comparison.json` with their original summaries.
+
+
+### Completed current dev audit and startup attribution
+
+All 34 jobs of run 34035799241 completed. Both startup confirmation verdicts
+failed: AMD 7763 retains bz2 -4.20%, spidermonkey -2.22%, ffmpeg -2.57%
+REGRESSION; pulldown-cmark -1.94% is NEGLIGIBLE. ARM Neoverse N2 retains
+bz2 -1.82%, ffmpeg -1.74%, CoreMark -1.51%, Argon2 -1.73% REGRESSION.
+The original startup and confirmation logs and all final step conclusions
+are preserved in `current-dev-*-startup*.log` and `current-dev-final-jobs.json`.
+Windows LZ4 confirmation reports compression -2.89% NEGLIGIBLE, which does
+not erase the primary -5.83% regression. This dev revision is not a pass.
+
+The separate Nano-only startup isolation
+[run 34037420472](https://github.com/mbbill/Silverfir-nano/actions/runs/34037420472)
+uses identical single-thread, non-debug JIT probes, alternating four rounds
+on AMD 7763. Removing loop caching from `39ba77b3` improves startup throughput
+by 2.61% on CoreMark, 2.34% on bz2, and 1.38% on ffmpeg. Removing only frame
+DSE instead changes them by -0.50%, +1.29%, +0.34%. These diagnostic estimates
+identify loop-cache analysis as the larger contributor; they do not replace
+the failing full startup gate. The exact ablation patches, source revisions,
+all samples and compiler profiles are in `startup-isolation-*`.
+
+### Native duplicate-table and scalar float results
+
+[Run 34036671158](https://github.com/mbbill/Silverfir-nano/actions/runs/34036671158)
+completed both draws without failed steps or compiler warnings. CoreMark
+uses four alternating process rounds and the unchanged official module;
+nbody uses six rounds at the suite's 400-body input. `table-draw-{1,2}-*`
+preserves every sample, source identity and the post-measurement profiles.
+
+| Change | AMD 7763 | AMD 9V74 |
+|---|---:|---:|
+| Direct tables / DSE parent, CoreMark | +1.69% | +0.12% |
+| Float RHS reuse / tables, CoreMark | -0.18% | +0.02% |
+| Float RHS reuse / tables, nbody | +1.70% | +1.62% |
+| Float RHS reuse / main, CoreMark | +4.59% | +3.49% |
+
+The table improvement has P(improvement) 99.94% on 7763 and 93.47% on 9V74;
+the latter is inconclusive. The two nbody improvements have probabilities
+above 99.98%; retain the commutative float change on that evidence.
+CoreMark's -0.18% float result is retained as inconclusive, not hidden.
+These are Nano-only gains; the last competitor anchor still leaves a larger
+CoreMark gap to Cranelift, and no new No. 1 ranking is claimed.
+
+### Next bounded candidates
+
+`167bc37c` extends frame caching to single-read mutable loop recurrences,
+while retaining stores and rejecting partial-slot aliases. `1401981a`
+retains valid x64 zero-flag proofs across plain register MOVs when the
+producing value remains intact. `ef0c12ef` makes loop discovery compact and
+register masks lazy, and rejects register-saturated loops before frame
+analysis. Unit coverage verifies natural-loop membership, duplicate latches,
+word boundaries and stable ascending node order. CoreMark's matrix loop
+now carries its counter in a register and branches directly after its
+store/copy without reloading or repeating TEST. The native experiment
+34038942517 and startup isolation 34038942504 are pending.
+
+`523712c4` forwards or reconstructs a native frame word across a unique
+predecessor using unchanged explicit edge bindings. Only cheap integer
+operations are reconstructed; published stores stay, and calls, unknown
+writes, frame-base changes and ambiguous edges prevent the rewrite. This
+removes a reload dependency in CoreMark's state scanner without any guest
+or function-name check. Default x64 (536 unit tests plus integrations) and
+ARM64 (567 plus integrations), then 260 x64 spec files, pass without compiler
+warnings. A subsequent additional proof test passes as well. Native speed
+and startup cost remain unmeasured, so this is still an experimental candidate.

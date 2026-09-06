@@ -1,0 +1,157 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 9K of event 'cpu-clock:u'
+# Event count (approx.): 9980980971
+#
+# Overhead  Command  Shared Object     Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+# ........  .......  ................  .........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+     5.52%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::optimize_block
+     5.42%  current  current           [.] sf_nano_core::vm::jit::middle::joint_plan::build::build_plan
+     5.25%  current  current           [.] sf_nano_core::vm::jit::machine::lower_module::lower_function
+     4.11%  current  current           [.] sf_nano_core::vm::jit::middle::prepare_function
+     3.37%  current  current           [.] <[usize]>::sort_unstable_by::<sf_nano_core::vm::jit::middle::joint_plan::region_solver::extract_feasible_states::{closure#1}>::{closure#0}
+     3.28%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::optimize
+     2.52%  current  libc.so.6         [.] malloc
+     2.40%  current  current           [.] <sf_nano_core::vm::jit::wasm::decode::DecodeContext>::handle_primitive
+     2.10%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::rewrite_function
+     1.97%  current  libc.so.6         [.] cfree
+     1.70%  current  current           [.] <sf_nano_core::op_decoder::Decoder>::decode_one
+     1.70%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::apply_inline_prefix
+     1.65%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::hoist_loop_address_bases::natural_loop_nodes
+     1.44%  current  current           [.] sf_nano_core::vm::jit::machine::lower_cache_layout::compute_block_entry_cache_params
+     1.38%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::hoist_loop_address_bases::visit_edges_mut::<sf_nano_core::vm::jit::machine::peephole::hoist_loop_address_bases::try_hoist_one_base::{closure#9}>
+     1.34%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::eliminate_dead_params::eliminate_dead_params
+     1.29%  current  current           [.] sf_nano_core::vm::jit::middle::ssa_ir::ir::decode_view
+     1.25%  current  current           [.] sf_nano_core::vm::jit::middle::joint_plan::region_solver::extract_feasible_states
+     1.21%  current  current           [.] <sf_nano_core::vm::jit::wasm::decode::SemanticDecodeHandler as sf_nano_core::op_decoder::OpcodeHandler>::on_stream
+     1.17%  current  current           [.] sf_nano_core::vm::jit::middle::cleanup::cleanup_program
+     1.14%  current  current           [.] <sf_nano_core::vm::jit::wasm::decode::DecodeContext>::dispatch
+     1.12%  current  current           [.] sf_nano_core::vm::jit::middle::ssa_ir::ir::entry_cache_requirements
+     1.03%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::forward_stored_values::forward_stored_values::{closure#0}
+     1.02%  current  current           [.] sf_nano_core::vm::jit::machine::lower_cache_layout::simulate_block_exit_layout
+     1.02%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::reuse_loaded_values::reuse_loaded_values::{closure#0}
+     0.78%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::ensure_state_fits_with_cache
+     0.74%  current  current           [.] sf_nano_core::vm::jit::arch::common::pipeline::compile_function_impl::<sf_nano_core::vm::jit::arch::x86_64::backend::X86_64Backend>
+     0.73%  current  current           [.] <sf_nano_core::vm::jit::middle::discipline::Window>::ensure_capacity::<sf_nano_core::vm::jit::middle::rewrite::state::EmitDriver>
+     0.73%  current  libc.so.6         [.] realloc
+     0.72%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::use_value
+     0.69%  current  current           [.] <alloc::raw_vec::RawVecInner>::finish_grow
+     0.68%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::release_dead_values
+     0.68%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::cache_loop_frame_words::block_register_mask
+     0.67%  current  libc.so.6         [.] __libc_calloc
+     0.60%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::lower_primitive
+     0.58%  current  current           [.] <sf_nano_core::vm::jit::machine::machine_ir::inst::MachineInstKind as core::clone::Clone>::clone
+     0.56%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::alloc_value_in_bank
+     0.55%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::forward_stored_values::forward_stored_values
+     0.54%  current  current           [.] <sf_nano_core::vm::jit::middle::rewrite::state::BlockState>::push_result_with_alias
+     0.53%  current  current           [.] sf_nano_core::vm::jit::middle::discipline::structural_action
+     0.53%  current  libc.so.6         [.] 0x00000000000a9bdb
+     0.52%  current  current           [.] sf_nano_core::vm::jit::machine::optimize::optimize_function
+     0.50%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::alloc_value_in_bank_reusing_dead_inputs
+     0.49%  current  current           [.] sf_nano_core::vm::jit::wasm::sir::primitive_op::constant_stack_effect
+     0.46%  current  current           [.] sf_nano_core::vm::jit::middle::joint_plan::region_solver::solve_bank
+     0.45%  current  current           [.] <sf_nano_core::vm::jit::middle::discipline::Window>::effective_live_units
+     0.45%  current  current           [.] <sf_nano_core::vm::jit::wasm::decode::DecodeContext>::push_op::<sf_nano_core::vm::jit::wasm::sir::semantic_ir::SemanticOpKind>
+     0.45%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::eliminate_dead_params::eliminate_dead_params::{closure#6}
+     0.45%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::collect_local_slot_info
+     0.42%  current  current           [.] sf_nano_core::vm::jit::machine::lower_cache_layout::assign_bank_layouts_from_root
+     0.38%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::lower_edge
+     0.37%  current  current           [.] <sf_nano_core::vm::jit::middle::rewrite::function::ProgramBuilder>::intern_primitive
+     0.37%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::relax_index_extends::advance_clean_state
+     0.37%  current  libc.so.6         [.] 0x00000000000a9bc3
+     0.36%  current  libc.so.6         [.] 0x0000000000188f07
+     0.34%  current  current           [.] sf_nano_core::vm::jit::machine::lower_context::record_explicit_cached_cell
+     0.34%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::edge_to_target
+     0.33%  current  current           [.] core::slice::sort::unstable::quicksort::quicksort::<usize, <[usize]>::sort_unstable_by<sf_nano_core::vm::jit::middle::joint_plan::region_solver::extract_feasible_states::{closure#1}>::{closure#0}>
+     0.32%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::lower_local_get
+     0.32%  current  libc.so.6         [.] 0x00000000000a9ce6
+     0.30%  current  libc.so.6         [.] 0x00000000000ab2dc
+     0.29%  current  libc.so.6         [.] 0x00000000000ac28c
+     0.28%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::eliminate_dead_params::eliminate_dead_params::{closure#8}
+     0.28%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::helpers::inst_defines
+     0.27%  current  current           [.] <sf_nano_core::vm::jit::arch::x86_64::backend::X86_64Backend>::lower_terminator_dispatch
+     0.24%  current  current           [.] <sf_nano_core::utils::payload::Payload>::read_leb128_u32
+     0.24%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::bind_cached_cell_to_regs
+     0.24%  current  current           [.] <sf_nano_core::vm::jit::wasm::sir::primitive_op::PrimitiveOpKind as core::cmp::PartialEq>::eq
+     0.24%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::relax_index_extends::relax_index_extends_locally_with_policy
+     0.23%  current  libc.so.6         [.] 0x00000000000abe04
+     0.22%  current  current           [.] <sf_nano_core::vm::jit::arch::x86_64::backend::X86_64Backend>::lower_int_binary
+     0.22%  current  current           [.] <sf_nano_core::vm::jit::arch::x86_64::backend::X86_64Backend>::materialize_value
+     0.22%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::dynamic_reg_available
+     0.22%  current  libc.so.6         [.] 0x00000000000a9cbd
+     0.21%  current  current           [.] <sf_nano_core::vm::jit::arch::x86_64::backend::X86_64Backend as sf_nano_core::vm::jit::arch::common::backend::ArchBackend>::lower_inst
+     0.21%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::lower_terminator
+     0.21%  current  libc.so.6         [.] 0x00000000000a9be1
+     0.20%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::lower_int_binary
+     0.20%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::set_linear_value_reg
+     0.20%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::reuse_loaded_values::reuse_loaded_values
+     0.20%  current  libc.so.6         [.] 0x00000000000abdf4
+     0.19%  current  current           [.] sf_nano_core::vm::jit::build::finish_native_compile_streaming
+     0.18%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::apply_sink_premap
+     0.18%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::is_linear_value_reg
+     0.18%  current  current           [.] sf_nano_core::vm::jit::wasm::sir::primitive_op::result_type
+     0.18%  current  libc.so.6         [.] 0x00000000000ab264
+     0.17%  current  current           [.] sf_nano_core::vm::jit::arch::x86_64::enc::emit_modrm_mem
+     0.17%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::lower_local_tee
+     0.17%  current  libc.so.6         [.] 0x00000000000ab300
+     0.16%  current  current           [.] <sf_nano_core::vm::jit::middle::discipline::Window>::fill::<sf_nano_core::vm::jit::middle::rewrite::state::EmitDriver>
+     0.16%  current  current           [.] sf_nano_core::vm::jit::middle::cleanup::all_incoming_edge_locations
+     0.16%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::target_expects_canonical_payload
+     0.16%  current  libc.so.6         [.] 0x00000000001896ca
+     0.15%  current  current           [.] <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+     0.15%  current  current           [.] <sf_nano_core::utils::payload::Payload>::read_leb128_i32
+     0.15%  current  current           [.] <sf_nano_core::vm::jit::instantiate::TableMutationScan as sf_nano_core::op_decoder::OpcodeHandler>::on_stream
+     0.15%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::emit_effective_addr
+     0.15%  current  current           [.] sf_nano_core::vm::jit::middle::cleanup::remove_blocks
+     0.15%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::lower_block_terminator
+     0.15%  current  libc.so.6         [.] 0x00000000000aba5a
+     0.14%  current  current           [.] <sf_nano_core::vm::jit::wasm::decode::DecodeContext>::handle_end
+     0.14%  current  current           [.] sf_nano_core::vm::jit::arch::x86_64::enc::emit_modrm_mem_idx_scaled
+     0.14%  current  current           [.] sf_nano_core::vm::jit::machine::lower_cache_layout::choose_hole_start
+     0.14%  current  current           [.] sf_nano_core::vm::jit::middle::cfg::build_semantic_to_block_map
+     0.14%  current  libc.so.6         [.] 0x00000000000ab2e2
+     0.14%  current  libc.so.6         [.] 0x00000000000abcbb
+     0.14%  current  libc.so.6         [.] 0x00000000000abcef
+     0.13%  current  current           [.] <sf_nano_core::vm::jit::build::StreamingCompiledModule as sf_nano_core::vm::jit::runtime::code::CodegenModuleView>::backend
+     0.13%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::materialize_cache_aliases
+     0.13%  current  current           [.] core::ptr::drop_glue::<sf_nano_core::vm::jit::wasm::sir::semantic_ir::SemanticProgram>
+     0.13%  current  current           [.] sf_nano_core::op_decoder::decode_mem_arg
+     0.13%  current  current           [.] sf_nano_core::vm::jit::machine::lower_cache_layout::incoming_edge_layout_cost
+     0.12%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::hoist_loop_address_bases::analyze_loop_graph::{closure#2}
+     0.12%  current  libc.so.6         [.] 0x00000000000ab349
+     0.12%  current  libc.so.6         [.] 0x00000000000ab8b5
+     0.12%  current  libc.so.6         [.] 0x00000000000abdfe
+     0.12%  current  libc.so.6         [.] 0x00000000000ad10f
+     0.11%  current  current           [.] <sf_nano_core::vm::jit::arch::x86_64::backend::X86_64Backend>::lower_store
+     0.11%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::lower_leaf_special
+     0.11%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::lower_memory_store_scalar
+     0.11%  current  current           [.] sf_nano_core::vm::jit::arch::common::pipeline::emit_parallel_moves::<sf_nano_core::vm::jit::arch::x86_64::backend::X86_64Backend>
+     0.11%  current  current           [.] sf_nano_core::vm::jit::machine::peephole::helpers::inst_uses_value
+     0.11%  current  libc.so.6         [.] 0x00000000000a9d41
+     0.11%  current  libc.so.6         [.] 0x00000000000a9d75
+     0.11%  current  libc.so.6         [.] 0x00000000000ab451
+     0.10%  current  current           [.] <alloc::collections::btree::map::BTreeMap<(u16, u32, u8), (usize, sf_nano_core::vm::jit::middle::ssa_ir::ir::SsaOperand, u64)>>::bulk_build_from_sorted_iter::<alloc::vec::Vec<((u16, u32, u8), (usize, sf_nano_core::vm::jit::middle::ssa_ir::ir::SsaOperand, u64))>>
+     0.10%  current  current           [.] <sf_nano_core::vm::jit::arch::x86_64::backend::X86_64Backend>::lower_indexed_store
+     0.10%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::ensure_cached_cell_loaded
+     0.10%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::lower_leaf
+     0.10%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::lower_memory_load_scalar
+     0.10%  current  current           [.] <sf_nano_core::vm::jit::machine::lower_context::BlockLowerContext>::push_value_location
+     0.10%  current  current           [.] core::slice::sort::unstable::quicksort::quicksort::<sf_nano_core::vm::jit::machine::lower_util::UseCount, <[sf_nano_core::vm::jit::machine::lower_util::UseCount]>::sort_unstable_by_key<sf_nano_core::vm::jit::middle::ssa_ir::ir::SsaValue, <sf_nano_core::vm::jit::machine::lower_util::RemainingUses>::from_unsorted::{closure#0}>::{closure#0}>
+     0.10%  current  current           [.] sf_nano_core::vm::jit::arch::x86_64::enc::load_64
+     0.10%  current  current           [.] sf_nano_core::vm::jit::arch::x86_64::enc::store_64
+     0.10%  current  current           [.] sf_nano_core::vm::jit::middle::cleanup::remap_terminator_targets
+     0.10%  current  current           [.] sf_nano_core::vm::jit::middle::rewrite::function::lower_local_set
+     0.10%  current  libc.so.6         [.] 0x00000000000a9cf0
+     0.10%  current  libc.so.6         [.] 0x00000000000a9d05
+     0.10%  current  libc.so.6         [.] 0x00000000000ab115
+     0.10%  current  libc.so.6         [.] 0x00000000000ab2bb
+     0.10%  current  libc.so.6         [.] 0x00000000000ab6f5
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

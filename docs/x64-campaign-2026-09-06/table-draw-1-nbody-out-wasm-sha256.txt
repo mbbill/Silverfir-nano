@@ -1,0 +1,1 @@
+b4e19984161f10528de74ad3ed27f1cdefbceb9daace87ace935a78e4bd08183  wasmi-benchmarks/res/rust/cases/nbody/out.wasm

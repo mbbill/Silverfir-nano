@@ -1,0 +1,53 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 20K of event 'cpu-clock:u'
+# Event count (approx.): 20427427407
+#
+# Overhead  Command  Shared Object       Symbol                                                                                                                               
+# ........  .......  ..................  .....................................................................................................................................
+#
+    12.59%  commute  jitted-4891-520.so  [.] jit::main::func10::b0
+    10.57%  commute  jitted-4891-140.so  [.] jit::main::func2::b3
+    10.20%  commute  jitted-4891-35.so   [.] jit::main::func2::b11
+     8.77%  commute  jitted-4891-28.so   [.] jit::main::func2::b5
+     8.41%  commute  jitted-4891-477.so  [.] jit::main::func8::b25
+     8.36%  commute  jitted-4891-384.so  [.] jit::main::func5::b18
+     4.38%  commute  jitted-4891-368.so  [.] jit::main::func5::b13
+     2.17%  commute  jitted-4891-468.so  [.] jit::main::func8::b27
+     1.64%  commute  jitted-4891-470.so  [.] jit::main::func8::b3
+     1.59%  commute  jitted-4891-375.so  [.] jit::main::func5::b15
+     1.39%  commute  jitted-4891-359.so  [.] jit::main::func5::b10
+     1.39%  commute  jitted-4891-391.so  [.] jit::main::func5::b20
+     1.36%  commute  jitted-4891-347.so  [.] jit::main::func5::b6
+     1.32%  commute  jitted-4891-476.so  [.] jit::main::func8::b28
+     1.32%  commute  jitted-4891-425.so  [.] jit::main::func7::b22
+     1.31%  commute  jitted-4891-474.so  [.] jit::main::func8::b24
+     1.30%  commute  jitted-4891-454.so  [.] jit::main::func7::b23
+     1.26%  commute  jitted-4891-110.so  [.] jit::main::func2::b65
+     0.91%  commute  jitted-4891-136.so  [.] jit::main::func2::b13
+     0.87%  commute  jitted-4891-466.so  [.] jit::main::func8::b32
+     0.77%  commute  jitted-4891-487.so  [.] jit::main::func8::b11
+     0.76%  commute  jitted-4891-467.so  [.] jit::main::func8::b1
+     0.65%  commute  jitted-4891-424.so  [.] jit::main::func7::b0
+     0.64%  commute  jitted-4891-453.so  [.] jit::main::func7::b7
+     0.64%  commute  jitted-4891-465.so  [.] jit::main::func8::body_prelude
+     0.60%  commute  jitted-4891-366.so  [.] jit::main::func5::b12
+     0.59%  commute  jitted-4891-471.so  [.] jit::main::func8::b4
+     0.57%  commute  jitted-4891-491.so  [.] jit::main::func8::b15
+     0.50%  commute  jitted-4891-353.so  [.] jit::main::func5::b8
+     0.50%  commute  jitted-4891-494.so  [.] jit::main::func8::b16
+     0.49%  commute  jitted-4891-492.so  [.] jit::main::func8::b17
+     0.41%  commute  jitted-4891-483.so  [.] jit::main::func8::b31
+     0.40%  commute  jitted-4891-341.so  [.] jit::main::func5::b4
+     0.35%  commute  jitted-4891-385.so  [.] jit::main::func5::b58
+     0.34%  commute  jitted-4891-40.so   [.] jit::main::func2::b16
+     0.33%  commute  jitted-4891-7.so    [.] jit::main::func1::b0
+     0.32%  commute  jitted-4891-382.so  [.] jit::main::func5::b17
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

@@ -1,0 +1,554 @@
+{
+  "mode": "startup",
+  "seconds": 2.0,
+  "scores": {
+    "main": [
+      18.779782272927218,
+      18.75430175871214,
+      18.810880114053337,
+      18.847927055506627
+    ],
+    "corrected": [
+      18.62469950058236,
+      18.58806612119292,
+      18.442736216961777,
+      18.6933787611166
+    ],
+    "loop": [
+      18.141283414048097,
+      18.078700057346175,
+      18.084315983458406,
+      18.075361082194185
+    ],
+    "current": [
+      18.251854151724327,
+      17.870508898620898,
+      18.049435154024817,
+      17.91854172695665
+    ],
+    "nocache": [
+      18.23353890066561,
+      18.4692137968066,
+      18.51442554023882,
+      18.558064786883005
+    ],
+    "nodse": [
+      18.068742993716715,
+      18.32908275134128,
+      18.292292011987648,
+      18.327594390585926
+    ]
+  },
+  "schedule": [
+    {
+      "round": 0,
+      "variant": "main",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/main",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.779782272927218
+    },
+    {
+      "round": 0,
+      "variant": "corrected",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/corrected",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.62469950058236
+    },
+    {
+      "round": 0,
+      "variant": "loop",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/loop",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.141283414048097
+    },
+    {
+      "round": 0,
+      "variant": "current",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/current",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.251854151724327
+    },
+    {
+      "round": 0,
+      "variant": "nocache",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nocache",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.23353890066561
+    },
+    {
+      "round": 0,
+      "variant": "nodse",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nodse",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.068742993716715
+    },
+    {
+      "round": 1,
+      "variant": "nodse",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nodse",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.32908275134128
+    },
+    {
+      "round": 1,
+      "variant": "nocache",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nocache",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.4692137968066
+    },
+    {
+      "round": 1,
+      "variant": "current",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/current",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 17.870508898620898
+    },
+    {
+      "round": 1,
+      "variant": "loop",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/loop",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.078700057346175
+    },
+    {
+      "round": 1,
+      "variant": "corrected",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/corrected",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.58806612119292
+    },
+    {
+      "round": 1,
+      "variant": "main",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/main",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.75430175871214
+    },
+    {
+      "round": 2,
+      "variant": "main",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/main",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.810880114053337
+    },
+    {
+      "round": 2,
+      "variant": "corrected",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/corrected",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.442736216961777
+    },
+    {
+      "round": 2,
+      "variant": "loop",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/loop",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.084315983458406
+    },
+    {
+      "round": 2,
+      "variant": "current",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/current",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.049435154024817
+    },
+    {
+      "round": 2,
+      "variant": "nocache",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nocache",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.51442554023882
+    },
+    {
+      "round": 2,
+      "variant": "nodse",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nodse",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.292292011987648
+    },
+    {
+      "round": 3,
+      "variant": "nodse",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nodse",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.327594390585926
+    },
+    {
+      "round": 3,
+      "variant": "nocache",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/nocache",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.558064786883005
+    },
+    {
+      "round": 3,
+      "variant": "current",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/current",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 17.91854172695665
+    },
+    {
+      "round": 3,
+      "variant": "loop",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/loop",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.075361082194185
+    },
+    {
+      "round": 3,
+      "variant": "corrected",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/corrected",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.6933787611166
+    },
+    {
+      "round": 3,
+      "variant": "main",
+      "command": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/startup-out/main",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-benchmarks/res/wasm/bz2.wasm",
+        "startup",
+        "0",
+        "2.0"
+      ],
+      "instantiations_per_second": 18.847927055506627
+    }
+  ],
+  "comparisons": {
+    "corrected/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.00829225021351465,
+        -0.008903384819137787,
+        -0.019764839919230774,
+        -0.00823355310180336
+      ],
+      "mean_log_ratio": -0.011298507013421643,
+      "log_ratio_stddev": 0.00565234245320377,
+      "standard_error": 0.002826171226601885,
+      "probability_regression": 0.9859757228178716,
+      "probability_improvement": 0.014024277182128397,
+      "delta_percent": -1.1234918593108099,
+      "volatility_percent": 0.56683470811449,
+      "pair_deltas_percent": [
+        -0.8257964341174762,
+        -0.8863867056100649,
+        -1.9570795989312884,
+        -0.8199750239635817
+      ]
+    },
+    "loop/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.03459068746897534,
+        -0.03668870033728117,
+        -0.039390389532336374,
+        -0.04185319258649334
+      ],
+      "mean_log_ratio": -0.03813074248127156,
+      "log_ratio_stddev": 0.0031651656362266358,
+      "standard_error": 0.0015825828181133179,
+      "probability_regression": 0.9999216520496581,
+      "probability_improvement": 7.83479503418949e-05,
+      "delta_percent": -3.741291835969017,
+      "volatility_percent": 0.3170180062079407,
+      "pair_deltas_percent": [
+        -3.3999268447301167,
+        -3.6023825896483674,
+        -3.8624674985415774,
+        -4.098943990165371
+      ]
+    },
+    "current/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.028514207929463534,
+        -0.048271346648762266,
+        -0.04132104102409446,
+        -0.05056690992509277
+      ],
+      "mean_log_ratio": -0.04216837638185326,
+      "log_ratio_stddev": 0.00991523919850042,
+      "standard_error": 0.00495761959925021,
+      "probability_regression": 0.9982935211473668,
+      "probability_improvement": 0.0017064788526331975,
+      "delta_percent": -4.1291656860329855,
+      "volatility_percent": 0.9964558050647622,
+      "pair_deltas_percent": [
+        -2.8111514475007926,
+        -4.712480749546877,
+        -4.047896512081084,
+        -4.930968407363645
+      ]
+    },
+    "nocache/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.029518185196248214,
+        -0.015317926424849677,
+        -0.015885244745451967,
+        -0.015498483343005113
+      ],
+      "mean_log_ratio": -0.019054959927388742,
+      "log_ratio_stddev": 0.006979496697610515,
+      "standard_error": 0.0034897483488052577,
+      "probability_regression": 0.9939647406493073,
+      "probability_improvement": 0.006035259350692712,
+      "delta_percent": -1.8874561821853277,
+      "volatility_percent": 0.7003910149505045,
+      "pair_deltas_percent": [
+        -2.908677876681598,
+        -1.5201203733063773,
+        -1.5759739683473994,
+        -1.5378999917072367
+      ]
+    },
+    "nodse/main": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.0385973411265602,
+        -0.02293413347718177,
+        -0.027955662321143795,
+        -0.027995122998203732
+      ],
+      "mean_log_ratio": -0.029370564980772375,
+      "log_ratio_stddev": 0.006594311658000635,
+      "standard_error": 0.0032971558290003176,
+      "probability_regression": 0.998508024533262,
+      "probability_improvement": 0.0014919754667379603,
+      "delta_percent": -2.89434417684302,
+      "volatility_percent": 0.6616102002229932,
+      "pair_deltas_percent": [
+        -3.7861955419767113,
+        -2.2673145225112323,
+        -2.756851879983324,
+        -2.760689084737733
+      ]
+    },
+    "loop/corrected": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.026298437255460733,
+        -0.027785315518143415,
+        -0.01962554961310553,
+        -0.033619639484690045
+      ],
+      "mean_log_ratio": -0.026832235467849932,
+      "log_ratio_stddev": 0.005750318148027628,
+      "standard_error": 0.002875159074013814,
+      "probability_regression": 0.9986974643001819,
+      "probability_improvement": 0.001302535699818086,
+      "delta_percent": -2.6475449284003827,
+      "volatility_percent": 0.5766882963194467,
+      "pair_deltas_percent": [
+        -2.595564489613089,
+        -2.7402854096048146,
+        -1.9434222193870032,
+        -3.306077979909816
+      ]
+    },
+    "current/loop": {
+      "pair_count": 4,
+      "log_deltas": [
+        0.006076479539511891,
+        -0.011582646311481091,
+        -0.0019306514917581468,
+        -0.008713717338599441
+      ],
+      "mean_log_ratio": -0.004037633900581697,
+      "log_ratio_stddev": 0.007864003097449867,
+      "standard_error": 0.003932001548724934,
+      "probability_regression": 0.8099788726406645,
+      "probability_improvement": 0.19002112735933552,
+      "delta_percent": -0.4029493616338651,
+      "volatility_percent": 0.7895005584407228,
+      "pair_deltas_percent": [
+        0.6094978792438033,
+        -1.1515825699020876,
+        -0.19287889829781024,
+        -0.8675862934324208
+      ]
+    },
+    "nocache/current": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.0010039772667846572,
+        0.032953420223912636,
+        0.02543579627864247,
+        0.03506842658208774
+      ],
+      "mean_log_ratio": 0.023113416454464547,
+      "log_ratio_stddev": 0.01660110507654862,
+      "standard_error": 0.00830055253827431,
+      "probability_regression": 0.03436449675029076,
+      "probability_improvement": 0.9656355032497093,
+      "delta_percent": 2.338260139164216,
+      "volatility_percent": 1.6739669131631563,
+      "pair_deltas_percent": [
+        -0.10034734502294418,
+        3.3502397809829887,
+        2.5762046415636064,
+        3.5690575141182235
+      ]
+    },
+    "nodse/nocache": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.009079155930312001,
+        -0.007616207052332128,
+        -0.01207041757569185,
+        -0.012496639655198595
+      ],
+      "mean_log_ratio": -0.010315605053383643,
+      "log_ratio_stddev": 0.00235597360800083,
+      "standard_error": 0.001177986804000415,
+      "probability_regression": 0.998431962331955,
+      "probability_improvement": 0.0015680376680450303,
+      "delta_percent": -1.0262581678927671,
+      "volatility_percent": 0.235875109462171,
+      "pair_deltas_percent": [
+        -0.9038064845595106,
+        -0.7587277239139989,
+        -1.1997862303012918,
+        -1.241888089861487
+      ]
+    },
+    "nodse/current": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.010083133197096701,
+        0.02533721317158039,
+        0.01336537870295071,
+        0.022571786926889017
+      ],
+      "mean_log_ratio": 0.012797811401080854,
+      "log_ratio_stddev": 0.01608961313692912,
+      "standard_error": 0.00804480656846456,
+      "probability_regression": 0.10494028758032713,
+      "probability_improvement": 0.8950597124196729,
+      "delta_percent": 1.2880053856066906,
+      "volatility_percent": 1.6219747965257576,
+      "pair_deltas_percent": [
+        -1.0032468837710584,
+        2.5660928590330645,
+        1.3455094627084607,
+        2.282845724068583
+      ]
+    }
+  }
+}

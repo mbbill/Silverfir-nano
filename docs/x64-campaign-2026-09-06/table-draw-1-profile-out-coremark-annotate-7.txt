@@ -1,0 +1,16 @@
+symbol: jit::main::func8::b3
+
+ Percent |	Source code & Disassembly of jitted-4889-470.so for cpu-clock:u (554 samples, percent: local period)
+--------------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3  Disassembly of section .text:
+         :
+         : 5  0000000000000080 <jit::main::func8::b3>:
+    0.00 :   80:     mov    %r8d,%ecx
+    2.71 :   83:     mov    $0x8,%edx
+    1.26 :   88:     cmp    %edx,%ecx
+    2.53 :   8a:     cmova  %edx,%ecx
+   91.70 :   8d:     movabs $0x7ffdf3a03c90,%rdx
+    1.81 :   97:     jmp    *(%rdx,%rcx,8)

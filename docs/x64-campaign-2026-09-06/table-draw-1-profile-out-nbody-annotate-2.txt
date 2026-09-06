@@ -1,0 +1,24 @@
+symbol: jit::main::func4::b31
+
+ Percent |	Source code & Disassembly of jitted-4932-263.so for cpu-clock:u (520 samples, percent: local period)
+--------------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3  Disassembly of section .text:
+         :
+         : 5  0000000000000080 <jit::main::func4::b31>:
+    0.00 :   80:     mov    0x10(%rbp),%r10
+    0.00 :   84:     mov    %r10d,%edx
+    0.19 :   87:     movsd  (%r12,%rdx,1),%xmm10
+    0.00 :   8d:     movsd  0x130(%rbp),%xmm11
+    0.00 :   96:     mulsd  %xmm9,%xmm11
+    3.65 :   9b:     movaps %xmm5,%xmm12
+   68.46 :   9f:     movaps %xmm11,%xmm5
+    0.00 :   a3:     mulsd  %xmm5,%xmm12
+    0.00 :   a8:     subsd  %xmm12,%xmm10
+    0.00 :   ad:     mov    %r10d,%ecx
+    0.00 :   b0:     movsd  %xmm10,(%r12,%rcx,1)
+   25.00 :   b6:     mov    0x28(%rbp),%r14
+    0.00 :   ba:     add    %r9d,%r14d
+    2.69 :   bd:     je     5b5 <jit::main::func4::b31+0x535>

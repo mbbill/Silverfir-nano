@@ -1,0 +1,20 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 9K of event 'cpu-clock:u'
+# Event count (approx.): 10003002993
+#
+# Overhead  Command  Shared Object       Symbol                                                                                    
+# ........  .......  ..................  ..........................................................................................
+#
+    81.53%  commute  jitted-4925-262.so  [.] jit::main::func4::b10
+     8.53%  commute  jitted-4925-265.so  [.] jit::main::func4::b12
+     4.96%  commute  jitted-4925-263.so  [.] jit::main::func4::b31
+     4.29%  commute  jitted-4925-264.so  [.] jit::main::func4::b11
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

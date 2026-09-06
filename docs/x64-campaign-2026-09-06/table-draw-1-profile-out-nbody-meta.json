@@ -1,0 +1,9 @@
+{
+  "command": [
+    "/home/runner/work/Silverfir-nano/Silverfir-nano/coremark-out/commute",
+    "wasmi-benchmarks/res/rust/cases/nbody/out.wasm",
+    "setup",
+    "400",
+    "10"
+  ]
+}
