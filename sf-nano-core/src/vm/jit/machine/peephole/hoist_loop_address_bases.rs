@@ -433,8 +433,11 @@ fn try_hoist_one_base(
         .collect();
     let mut loop_ids = loop_ids;
     loop_ids.sort_unstable();
-    for block in blocks.iter_mut() {
-        visit_edges_mut(&mut block.terminator, |edge| {
+    // The entry checks above enumerate every predecessor outside this loop.
+    // Only those blocks and loop members can have an edge to update; walking
+    // the whole function here repeats unrelated CFG work for every hoist.
+    for &source in loop_nodes.iter().chain(entry_predecessors.iter()) {
+        visit_edges_mut(&mut blocks[source].terminator, |edge| {
             if loop_ids.binary_search(&edge.target).is_ok() {
                 edge.args.push(MachineValue::Reg(spare));
             }
