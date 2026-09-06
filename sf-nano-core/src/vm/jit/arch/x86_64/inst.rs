@@ -1426,6 +1426,35 @@ impl<'a> X86_64Backend<'a> {
                 Ok(())
             }
             MachineIntBinaryOp::Mul => {
+                let immediate = match (lhs, rhs) {
+                    (other, MachineValue::Imm64(value)) | (MachineValue::Imm64(value), other) => {
+                        Some((other, value))
+                    }
+                    _ => None,
+                };
+                if let Some((other, value)) = immediate {
+                    let imm = match width {
+                        // Only the low product word is observable for i32.
+                        MachineIntWidth::I32 => Some(value as i32),
+                        // The 64-bit form sign-extends its imm32. Positive
+                        // values such as 0xffff_ffff must use the fallback.
+                        MachineIntWidth::I64 => i32::try_from(value as i64).ok(),
+                    };
+                    if let Some(imm) = imm {
+                        let scratch = self.gp_scratch.scoped_alloc().detach();
+                        let src = self.materialize_value(*scratch, other)?;
+                        enc::imul_rri(
+                            &mut self.core.text,
+                            width == MachineIntWidth::I64,
+                            dst,
+                            src,
+                            imm,
+                        );
+                        // IMUL does not define ZF; emitted bytes invalidate
+                        // any earlier result-flags proof.
+                        return Ok(());
+                    }
+                }
                 let scratch0 = self.gp_scratch.scoped_alloc().detach();
                 let scratch1 = self.gp_scratch.scoped_alloc().detach();
                 let lhs_gp = self.materialize_value(*scratch0, lhs)?;

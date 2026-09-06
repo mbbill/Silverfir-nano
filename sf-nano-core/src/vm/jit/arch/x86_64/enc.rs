@@ -767,6 +767,102 @@ pub(crate) fn imul_rr_32(e: &mut TextEmitter, dst: X86Reg, src: X86Reg) {
     emit_modrm_rr(e, dst, src);
 }
 
+/// Three-operand IMUL. The immediate is sign-extended to the operand width;
+/// the destination receives the low word of the product.
+pub(crate) fn imul_rri(e: &mut TextEmitter, w64: bool, dst: X86Reg, src: X86Reg, imm: i32) {
+    emit_rex(e, w64, dst, src);
+    e.emit_u8(if fits_i8(imm) { 0x6B } else { 0x69 });
+    emit_modrm_rr(e, dst, src);
+    if fits_i8(imm) {
+        e.emit_u8(imm as u8);
+    } else {
+        e.emit_bytes(&imm.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod imul_immediate_tests {
+    use super::*;
+    use crate::vm::jit::{arch::x86_64::abi::C_ARG0, runtime::code_buf::CodeBuffer};
+
+    #[test]
+    fn immediate_multiply_executes_both_widths_and_overlapping_registers() {
+        // These lanes are volatile in both supported x64 C ABIs.
+        let regs = [X86Reg::RAX, C_ARG0, X86Reg::R8, X86Reg::R11];
+        for wide in [false, true] {
+            for dst in regs {
+                for src in regs {
+                    for imm in [i32::MIN, -129, -128, -1, 0, 1, 3, 127, 128, 255, i32::MAX] {
+                        let mut text = TextEmitter::new();
+                        if src != C_ARG0 {
+                            mov_rr_64(&mut text, src, C_ARG0);
+                        }
+                        imul_rri(&mut text, wide, dst, src, imm);
+                        if dst != X86Reg::RAX {
+                            mov_rr_64(&mut text, X86Reg::RAX, dst);
+                        }
+                        ret(&mut text);
+                        let bytes = text.finish();
+                        let mut code = CodeBuffer::with_capacity(4096).unwrap();
+                        code.begin_write();
+                        code.emit_bytes(&bytes);
+                        code.finish_write(0, bytes.len());
+                        // This leaf preserves the C stack and all nonvolatile
+                        // lanes, reads C_ARG0 and returns its product in RAX.
+                        let multiply: unsafe extern "C" fn(u64) -> u64 = unsafe { code.fn_ptr(0) };
+                        let mut inputs = [0u64; 40];
+                        inputs[..8].copy_from_slice(&[
+                            0,
+                            1,
+                            u64::MAX,
+                            1 << 31,
+                            1 << 32,
+                            1 << 63,
+                            0x1234_5678_9abc_def0,
+                            0xffff_ffff_0000_0000,
+                        ]);
+                        let mut state = 0x5a93_07c4_b810_fed2u64;
+                        for input in &mut inputs[8..] {
+                            state ^= state << 13;
+                            state ^= state >> 7;
+                            state ^= state << 17;
+                            *input = state;
+                        }
+                        for raw in inputs {
+                            let expected = if wide {
+                                raw.wrapping_mul(imm as i64 as u64)
+                            } else {
+                                u64::from((raw as u32).wrapping_mul(imm as u32))
+                            };
+                            assert_eq!(
+                                unsafe { multiply(raw) },
+                                expected,
+                                "wide={wide} dst={dst:?} src={src:?} imm={imm} raw={raw:#x}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn immediate_multiply_encodes_signed_byte_boundaries_and_rex_fields() {
+        let mut text = TextEmitter::new();
+        imul_rri(&mut text, false, X86Reg::RAX, X86Reg::RCX, 127);
+        imul_rri(&mut text, true, X86Reg::R8, X86Reg::R9, -128);
+        imul_rri(&mut text, false, X86Reg::R8, X86Reg::RCX, 128);
+        imul_rri(&mut text, true, X86Reg::RAX, X86Reg::R11, -129);
+        assert_eq!(
+            text.finish(),
+            [
+                0x6b, 0xc1, 0x7f, 0x4d, 0x6b, 0xc1, 0x80, 0x44, 0x69, 0xc1, 0x80, 0, 0, 0, 0x49,
+                0x69, 0xc3, 0x7f, 0xff, 0xff, 0xff,
+            ]
+        );
+    }
+}
+
 /// IDIV r/m64 (signed: RDX:RAX / src -> RAX=quot, RDX=rem)
 pub(crate) fn idiv_rm_64(e: &mut TextEmitter, src: X86Reg) {
     emit_rex_b(e, true, src);
