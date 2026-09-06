@@ -1524,6 +1524,30 @@ impl<'a> X86_64Backend<'a> {
         if let MachineValue::Imm64(amount) = rhs {
             let scratch0 = self.gp_scratch.scoped_alloc().detach();
             let lhs_gp = self.materialize_value(*scratch0, lhs)?;
+            if dst != lhs_gp
+                && matches!(op, MachineIntBinaryOp::Rotl | MachineIntBinaryOp::Rotr)
+                && super::cpu::has_bmi2()
+            {
+                let mask = if width == MachineIntWidth::I64 {
+                    63
+                } else {
+                    31
+                };
+                let amount = (amount & mask) as u8;
+                let right = if op == MachineIntBinaryOp::Rotl {
+                    0u8.wrapping_sub(amount) & mask as u8
+                } else {
+                    amount
+                };
+                enc::rorx_rri(
+                    &mut self.core.text,
+                    width == MachineIntWidth::I64,
+                    dst,
+                    lhs_gp,
+                    right,
+                );
+                return Ok(());
+            }
             if dst != lhs_gp {
                 self.emit_gp_move_width(width, dst, lhs_gp);
             }
@@ -1561,6 +1585,27 @@ impl<'a> X86_64Backend<'a> {
                 }
                 _ => unreachable!(),
             };
+            return Ok(());
+        }
+        let bmi2_op = match op {
+            MachineIntBinaryOp::Shl => Some(enc::Bmi2Shift::Left),
+            MachineIntBinaryOp::ShrU => Some(enc::Bmi2Shift::UnsignedRight),
+            MachineIntBinaryOp::ShrS => Some(enc::Bmi2Shift::SignedRight),
+            _ => None,
+        };
+        if let Some(op) = bmi2_op.filter(|_| super::cpu::has_bmi2()) {
+            let scratch0 = self.gp_scratch.scoped_alloc().detach();
+            let scratch1 = self.gp_scratch.scoped_alloc().detach();
+            let lhs = self.materialize_value(*scratch0, lhs)?;
+            let rhs = self.materialize_value(*scratch1, rhs)?;
+            enc::bmi2_shift_rrr(
+                &mut self.core.text,
+                width == MachineIntWidth::I64,
+                op,
+                dst,
+                lhs,
+                rhs,
+            );
             return Ok(());
         }
         // Variable shift: RCX is scratch-only on x86_64, so own it explicitly

@@ -32,6 +32,7 @@ static CPU_TUNING: AtomicU8 = AtomicU8::new(0);
 const TUNING_READY: u8 = 1 << 7;
 const PREFER_BEXTR: u8 = 1 << 0;
 const CLEAR_INT_TO_FLOAT_DST: u8 = 1 << 1;
+const HAS_BMI2: u8 = 1 << 2;
 
 fn tuning() -> u8 {
     let mut state = CPU_TUNING.load(Ordering::Relaxed);
@@ -41,8 +42,16 @@ fn tuning() -> u8 {
             && vendor.edx == u32::from_le_bytes(*b"enti")
             && vendor.ecx == u32::from_le_bytes(*b"cAMD");
         state = TUNING_READY;
+        let leaf7_ebx = if vendor.eax >= 7 {
+            __cpuid_count(7, 0).ebx
+        } else {
+            0
+        };
+        if leaf7_ebx & (1 << 8) != 0 {
+            state |= HAS_BMI2;
+        }
         if amd {
-            if vendor.eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 3) != 0 {
+            if leaf7_ebx & (1 << 3) != 0 {
                 state |= PREFER_BEXTR;
             }
         } else {
@@ -51,6 +60,11 @@ fn tuning() -> u8 {
         CPU_TUNING.store(state, Ordering::Relaxed);
     }
     state
+}
+
+/// BMI2 scalar shifts/rotates use only GP state; CPUID.7.0:EBX[8] suffices.
+pub(super) fn has_bmi2() -> bool {
+    tuning() & HAS_BMI2 != 0
 }
 
 /// AMD's single-operation BEXTR can shorten a shift-and-mask dependency.

@@ -246,6 +246,49 @@ pub(crate) fn lea_offset(e: &mut TextEmitter, w64: bool, dst: X86Reg, base: X86R
     emit_modrm_mem(e, dst, base, disp);
 }
 
+/// Variable scalar shifts with the three-register BMI2 encoding.
+#[derive(Clone, Copy)]
+pub(crate) enum Bmi2Shift {
+    Left,
+    UnsignedRight,
+    SignedRight,
+}
+
+/// BMI2 SHLX/SHRX/SARX with a register count, without RCX or a source copy.
+pub(crate) fn bmi2_shift_rrr(
+    e: &mut TextEmitter,
+    w64: bool,
+    op: Bmi2Shift,
+    dst: X86Reg,
+    src: X86Reg,
+    count: X86Reg,
+) {
+    let prefix = match op {
+        Bmi2Shift::Left => 1,
+        Bmi2Shift::UnsignedRight => 3,
+        Bmi2Shift::SignedRight => 2,
+    };
+    e.emit_u8(0xC4);
+    e.emit_u8(
+        (u8::from(!dst.needs_rex_ext()) << 7) | 0x40 | (u8::from(!src.needs_rex_ext()) << 5) | 2,
+    );
+    e.emit_u8((u8::from(w64) << 7) | ((!count.idx() & 15) << 3) | prefix);
+    e.emit_u8(0xF7);
+    emit_modrm_rr(e, dst, src);
+}
+
+/// BMI2 RORX dst, src, imm8; VEX.vvvv is reserved and encoded as all ones.
+pub(crate) fn rorx_rri(e: &mut TextEmitter, w64: bool, dst: X86Reg, src: X86Reg, count: u8) {
+    e.emit_u8(0xC4);
+    e.emit_u8(
+        (u8::from(!dst.needs_rex_ext()) << 7) | 0x40 | (u8::from(!src.needs_rex_ext()) << 5) | 3,
+    );
+    e.emit_u8((u8::from(w64) << 7) | 0x7B);
+    e.emit_u8(0xF0);
+    emit_modrm_rr(e, dst, src);
+    e.emit_u8(count);
+}
+
 /// BMI1 BEXTR dst, src, control. Uses only GP state, with VEX.L=0.
 pub(crate) fn bextr_rrr(e: &mut TextEmitter, w64: bool, dst: X86Reg, src: X86Reg, control: X86Reg) {
     e.emit_u8(0xC4);
@@ -1877,4 +1920,160 @@ pub(crate) fn sub_rsp_imm32(e: &mut TextEmitter, imm32: u32) {
 pub(crate) fn add_rsp_imm32(e: &mut TextEmitter, imm32: u32) {
     e.emit_bytes(&[0x48, 0x81, 0xC4]);
     e.emit_bytes(&imm32.to_le_bytes());
+}
+
+#[cfg(test)]
+mod bmi2_tests {
+    use super::*;
+    use crate::vm::jit::{
+        arch::x86_64::abi::{C_ARG0, C_ARG1},
+        runtime::code_buf::CodeBuffer,
+    };
+
+    fn supported() -> bool {
+        use core::arch::x86_64::{__cpuid, __cpuid_count};
+        let supported = __cpuid(0).eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 8) != 0;
+        if !supported {
+            std::eprintln!("BMI2 execution check skipped: host has no BMI2");
+        }
+        supported
+    }
+
+    #[test]
+    fn variable_bmi2_shifts_preserve_width_and_input_aliases() {
+        if !supported() {
+            return;
+        }
+        for wide in [false, true] {
+            for op in [
+                Bmi2Shift::Left,
+                Bmi2Shift::UnsignedRight,
+                Bmi2Shift::SignedRight,
+            ] {
+                for dst in [X86Reg::RAX, C_ARG0, C_ARG1] {
+                    let mut text = TextEmitter::new();
+                    bmi2_shift_rrr(&mut text, wide, op, dst, C_ARG0, C_ARG1);
+                    if dst != X86Reg::RAX {
+                        mov_rr_64(&mut text, X86Reg::RAX, dst);
+                    }
+                    ret(&mut text);
+                    let bytes = text.finish();
+                    let mut code = CodeBuffer::with_capacity(4096).unwrap();
+                    code.begin_write();
+                    code.emit_bytes(&bytes);
+                    code.finish_write(0, bytes.len());
+                    // Leaf uses only caller-saved C arguments and RAX.
+                    let shift: unsafe extern "C" fn(u64, u64) -> u64 = unsafe { code.fn_ptr(0) };
+                    for raw in [0, 1, u64::MAX, 1 << 31, 1 << 63, 0x1234_5678_9abc_def0] {
+                        for count in [
+                            0u64,
+                            1,
+                            7,
+                            31,
+                            32,
+                            33,
+                            63,
+                            64,
+                            65,
+                            255,
+                            0x8123_4567_89ab_cde0,
+                        ] {
+                            let amount = count as u32;
+                            let expected = if wide {
+                                match op {
+                                    Bmi2Shift::Left => raw.wrapping_shl(amount),
+                                    Bmi2Shift::UnsignedRight => raw.wrapping_shr(amount),
+                                    Bmi2Shift::SignedRight => {
+                                        (raw as i64).wrapping_shr(amount) as u64
+                                    }
+                                }
+                            } else {
+                                let raw = raw as u32;
+                                u64::from(match op {
+                                    Bmi2Shift::Left => raw.wrapping_shl(amount),
+                                    Bmi2Shift::UnsignedRight => raw.wrapping_shr(amount),
+                                    Bmi2Shift::SignedRight => {
+                                        (raw as i32).wrapping_shr(amount) as u32
+                                    }
+                                })
+                            };
+                            assert_eq!(unsafe { shift(raw, count) }, expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rorx_executes_all_immediate_counts_in_both_widths() {
+        if !supported() {
+            return;
+        }
+        for wide in [false, true] {
+            for dst in [X86Reg::RAX, C_ARG0] {
+                for count in 0..=255u8 {
+                    let mut text = TextEmitter::new();
+                    rorx_rri(&mut text, wide, dst, C_ARG0, count);
+                    if dst != X86Reg::RAX {
+                        mov_rr_64(&mut text, X86Reg::RAX, dst);
+                    }
+                    ret(&mut text);
+                    let bytes = text.finish();
+                    let mut code = CodeBuffer::with_capacity(4096).unwrap();
+                    code.begin_write();
+                    code.emit_bytes(&bytes);
+                    code.finish_write(0, bytes.len());
+                    // Leaf reads its one C argument and returns only in RAX.
+                    let rotate: unsafe extern "C" fn(u64) -> u64 = unsafe { code.fn_ptr(0) };
+                    for raw in [0, 1, u64::MAX, 1 << 31, 1 << 63, 0x1234_5678_9abc_def0] {
+                        let expected = if wide {
+                            raw.rotate_right(u32::from(count))
+                        } else {
+                            u64::from((raw as u32).rotate_right(u32::from(count)))
+                        };
+                        assert_eq!(unsafe { rotate(raw) }, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bmi2_encodings_keep_opcode_maps_prefixes_and_three_register_fields() {
+        let mut text = TextEmitter::new();
+        bmi2_shift_rrr(
+            &mut text,
+            false,
+            Bmi2Shift::Left,
+            X86Reg::R8,
+            X86Reg::R9,
+            X86Reg::R10,
+        );
+        bmi2_shift_rrr(
+            &mut text,
+            true,
+            Bmi2Shift::SignedRight,
+            X86Reg::R9,
+            X86Reg::R10,
+            X86Reg::R11,
+        );
+        bmi2_shift_rrr(
+            &mut text,
+            false,
+            Bmi2Shift::UnsignedRight,
+            X86Reg::RAX,
+            X86Reg::RSI,
+            X86Reg::RDI,
+        );
+        rorx_rri(&mut text, true, X86Reg::R8, X86Reg::R9, 13);
+        rorx_rri(&mut text, false, X86Reg::RAX, X86Reg::RSI, 255);
+        assert_eq!(
+            text.finish(),
+            [
+                0xc4, 0x42, 0x29, 0xf7, 0xc1, 0xc4, 0x42, 0xa2, 0xf7, 0xca, 0xc4, 0xe2, 0x43, 0xf7,
+                0xc6, 0xc4, 0x43, 0xfb, 0xf0, 0xc1, 0x0d, 0xc4, 0xe3, 0x7b, 0xf0, 0xc6, 0xff,
+            ]
+        );
+    }
 }
