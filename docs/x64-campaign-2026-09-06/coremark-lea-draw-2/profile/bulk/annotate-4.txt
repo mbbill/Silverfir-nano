@@ -1,0 +1,17 @@
+symbol: jit::main::func2::b5
+
+ Percent |	Source code & Disassembly of jitted-4271-28.so for cpu-clock:u (1668 samples, percent: local period)
+--------------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3  Disassembly of section .text:
+         :
+         : 5  0000000000000080 <jit::main::func2::b5>:
+    0.00 :   80:     mov    0x4(%r12,%rsi,1),%edi
+    1.62 :   85:     movzbl (%r12,%rdi,1),%edi
+   57.85 :   8a:     mov    %r8d,%r9d
+    0.00 :   8d:     and    $0xff,%r9d
+    0.00 :   94:     xor    %r9d,%edi
+   18.88 :   97:     cmp    $0x0,%edi
+   21.64 :   9a:     je     98c <jit::main::func2::b5+0x90c>

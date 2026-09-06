@@ -1,0 +1,152 @@
+{
+  "scores": {
+    "base": [
+      19491.91,
+      19358.586,
+      19540.154,
+      19521.082
+    ],
+    "bulk": [
+      17883.756,
+      17881.623,
+      17880.559,
+      17864.586
+    ],
+    "flags": [
+      18060.322,
+      18083.184,
+      18099.547,
+      18109.38
+    ]
+  },
+  "schedule": [
+    {
+      "round": 0,
+      "variant": "base",
+      "score": 19491.91
+    },
+    {
+      "round": 0,
+      "variant": "bulk",
+      "score": 17883.756
+    },
+    {
+      "round": 0,
+      "variant": "flags",
+      "score": 18060.322
+    },
+    {
+      "round": 1,
+      "variant": "flags",
+      "score": 18083.184
+    },
+    {
+      "round": 1,
+      "variant": "bulk",
+      "score": 17881.623
+    },
+    {
+      "round": 1,
+      "variant": "base",
+      "score": 19358.586
+    },
+    {
+      "round": 2,
+      "variant": "base",
+      "score": 19540.154
+    },
+    {
+      "round": 2,
+      "variant": "bulk",
+      "score": 17880.559
+    },
+    {
+      "round": 2,
+      "variant": "flags",
+      "score": 18099.547
+    },
+    {
+      "round": 3,
+      "variant": "flags",
+      "score": 18109.38
+    },
+    {
+      "round": 3,
+      "variant": "bulk",
+      "score": 17864.586
+    },
+    {
+      "round": 3,
+      "variant": "base",
+      "score": 19521.082
+    }
+  ],
+  "comparisons": {
+    "bulk/base": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.0861066928932611,
+        -0.07936250455306584,
+        -0.088757494614008,
+        -0.0886746923732815
+      ],
+      "mean_log_ratio": -0.08572534610840411,
+      "log_ratio_stddev": 0.004416776576450386,
+      "standard_error": 0.002208388288225193,
+      "probability_regression": 0.9999811937280128,
+      "probability_improvement": 1.880627198724838e-05,
+      "delta_percent": -8.215371334091936,
+      "volatility_percent": 0.44265449103347376,
+      "pair_deltas_percent": [
+        -8.25036643407444,
+        -7.629498352823905,
+        -8.493254454391696,
+        -8.485677177115491
+      ]
+    },
+    "flags/base": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.07628213040445565,
+        -0.06815359633715772,
+        -0.0765846175184966,
+        -0.07506497369648328
+      ],
+      "mean_log_ratio": -0.07402132948914832,
+      "log_ratio_stddev": 0.003966575007674677,
+      "standard_error": 0.0019832875038373384,
+      "probability_regression": 0.9999788453482739,
+      "probability_improvement": 2.1154651726140727e-05,
+      "delta_percent": -7.13481140402822,
+      "volatility_percent": 0.3974452278138162,
+      "pair_deltas_percent": [
+        -7.344523958914239,
+        -6.5883014389584,
+        -7.372546807972958,
+        -7.231679063691232
+      ]
+    },
+    "flags/bulk": {
+      "pair_count": 4,
+      "log_deltas": [
+        0.009824562488805397,
+        0.011208908215908248,
+        0.012172877095511422,
+        0.013609718676798232
+      ],
+      "mean_log_ratio": 0.011704016619255825,
+      "log_ratio_stddev": 0.0015946797628205846,
+      "standard_error": 0.0007973398814102923,
+      "probability_regression": 0.0003428921271286835,
+      "probability_improvement": 0.9996571078728713,
+      "delta_percent": 1.1772776615972451,
+      "volatility_percent": 0.159595194074248,
+      "pair_deltas_percent": [
+        0.9872981939587966,
+        1.1271963400637741,
+        1.2247268108340315,
+        1.3702752473525148
+      ]
+    }
+  }
+}

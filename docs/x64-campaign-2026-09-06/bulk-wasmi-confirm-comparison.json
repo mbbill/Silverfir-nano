@@ -1,0 +1,632 @@
+{
+  "schema_version": 1,
+  "model": "criterion-samples-paired-log-student-t-family-corrected-adaptive-confirmation",
+  "created_at": "2026-09-06T11:43:02.738240+00:00",
+  "platform": "x64-linux",
+  "engine": "jit",
+  "category": "execute",
+  "baseline_sha": "f73219f56a70b77028f0d79730c7efca29ba3439",
+  "candidate_sha": "17f0914913b421c295e5cd514fd334edff9000af",
+  "wasmi_benchmarks_repository": "https://github.com/wasmi-labs/wasmi-benchmarks",
+  "wasmi_benchmarks_revision": "16a3d7c8fdb05506c116a9451175732d1ac77099",
+  "cargo_criterion_version": "cargo-criterion 1.1.0",
+  "criterion_samples_per_run": 10,
+  "pilot_probability": 0.8,
+  "regression_probability": 0.99,
+  "improvement_probability": 0.9998999999999999,
+  "effective_regression_probability": 0.9998148148148148,
+  "effective_improvement_probability": 0.9999981481481481,
+  "shard_metric_count": 2,
+  "family_metric_count": 27,
+  "family_job_count": 1,
+  "maximum_confirmation_looks": 2,
+  "identical_runtime": false,
+  "builds": {
+    "baseline": {
+      "sf_nano_manifest": "/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/sf-nano-core/Cargo.toml",
+      "runtime_adapters": [
+        "rt-silverfir-nano"
+      ],
+      "feature": "silverfir-nano-jit",
+      "local_manifests": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/sf-nano-core/Cargo.toml",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/baseline/tools/tracked-alloc/Cargo.toml"
+      ],
+      "target": "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-target/x64-linux/jit/baseline",
+      "elapsed_seconds": 159.03556662,
+      "runtime_fingerprint": "2af333695983f9f2793178be1c9c29b60f4307bf40b440d466980892f9d5a0da",
+      "source_revision": "f73219f56a70b77028f0d79730c7efca29ba3439"
+    },
+    "candidate": {
+      "sf_nano_manifest": "/home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-core/Cargo.toml",
+      "runtime_adapters": [
+        "rt-silverfir-nano"
+      ],
+      "feature": "silverfir-nano-jit",
+      "local_manifests": [
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/sf-nano-core/Cargo.toml",
+        "/home/runner/work/Silverfir-nano/Silverfir-nano/tools/tracked-alloc/Cargo.toml"
+      ],
+      "target": "/home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-target/x64-linux/jit/candidate",
+      "elapsed_seconds": 157.56540168699996,
+      "runtime_fingerprint": "0bef80d27f4c985ac076c223e7c2c4693c558c1f14719005b98cfe87797f474b",
+      "source_revision": "17f0914913b421c295e5cd514fd334edff9000af"
+    }
+  },
+  "pilot_pairs": {
+    "execute/fibonacci-iter": {
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 6.332193642999982,
+        "benchmark_id": "execute/fibonacci-iter/silverfir-nano.jit/2000000",
+        "iteration_count": [
+          65.0,
+          130.0,
+          195.0,
+          260.0,
+          325.0,
+          390.0,
+          455.0,
+          520.0,
+          585.0,
+          650.0
+        ],
+        "measured_values": [
+          36572427.0,
+          73371755.0,
+          109784811.0,
+          146430410.0,
+          182898591.0,
+          219541490.0,
+          259110167.0,
+          301716030.0,
+          337095839.0,
+          366177208.0
+        ],
+        "normalized_ns": [
+          562652.723076923,
+          564398.1153846154,
+          562999.0307692308,
+          563193.8846153846,
+          562764.8953846154,
+          562926.8974358974,
+          569472.8945054945,
+          580223.1346153846,
+          576232.2034188034,
+          563349.5507692308
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 569561.1566433567,
+          "lower_bound": 563280.9050337517,
+          "upper_bound": 575003.4533696392,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 6.31878206500005,
+        "benchmark_id": "execute/fibonacci-iter/silverfir-nano.jit/2000000",
+        "iteration_count": [
+          65.0,
+          130.0,
+          195.0,
+          260.0,
+          325.0,
+          390.0,
+          455.0,
+          520.0,
+          585.0,
+          650.0
+        ],
+        "measured_values": [
+          36778083.0,
+          73081161.0,
+          109672031.0,
+          146421399.0,
+          194570549.0,
+          220054478.0,
+          256027928.0,
+          292589710.0,
+          328943987.0,
+          365733987.0
+        ],
+        "normalized_ns": [
+          565816.6615384616,
+          562162.776923077,
+          562420.6717948718,
+          563159.2269230769,
+          598678.6123076923,
+          564242.2512820513,
+          562698.7428571428,
+          562672.5192307692,
+          562297.4136752137,
+          562667.6723076924
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 565097.7277122877,
+          "lower_bound": 562546.0090478524,
+          "upper_bound": 572566.5389659521,
+          "unit": "ns"
+        }
+      }
+    },
+    "execute/regex_redux": {
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "baseline": {
+        "version": "baseline",
+        "elapsed_seconds": 16.175873923999916,
+        "benchmark_id": "execute/regex_redux/silverfir-nano.jit/10245",
+        "iteration_count": [
+          1530.0,
+          3060.0,
+          4590.0,
+          6120.0,
+          7650.0,
+          9180.0,
+          10710.0,
+          12240.0,
+          13770.0,
+          15300.0
+        ],
+        "measured_values": [
+          36598450.0,
+          72945195.0,
+          109177036.0,
+          145997943.0,
+          181820400.0,
+          217799101.0,
+          288266988.0,
+          292027164.0,
+          327964373.0,
+          364085911.0
+        ],
+        "normalized_ns": [
+          23920.555555555555,
+          23838.299019607843,
+          23785.846623093683,
+          23855.873039215687,
+          23767.37254901961,
+          23725.392265795206,
+          26915.685154061626,
+          23858.428431372547,
+          23817.311038489468,
+          23796.46477124183
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 24202.58555470673,
+          "lower_bound": 23784.724068313222,
+          "upper_bound": 25184.49527339391,
+          "unit": "ns"
+        }
+      },
+      "candidate": {
+        "version": "candidate",
+        "elapsed_seconds": 16.146702785000002,
+        "benchmark_id": "execute/regex_redux/silverfir-nano.jit/10245",
+        "iteration_count": [
+          1527.0,
+          3054.0,
+          4581.0,
+          6108.0,
+          7635.0,
+          9162.0,
+          10689.0,
+          12216.0,
+          13743.0,
+          15270.0
+        ],
+        "measured_values": [
+          36263393.0,
+          72524697.0,
+          109000968.0,
+          145528286.0,
+          182283159.0,
+          217953646.0,
+          254010050.0,
+          290915250.0,
+          327016611.0,
+          366499966.0
+        ],
+        "normalized_ns": [
+          23748.12901113294,
+          23747.444990176817,
+          23794.142763588738,
+          23825.84905042567,
+          23874.677013752455,
+          23788.872080331807,
+          23763.686967910937,
+          23814.280451866405,
+          23795.140144073346,
+          24001.307531106744
+        ],
+        "unit": "ns",
+        "typical": {
+          "estimate": 23853.082633803657,
+          "lower_bound": 23787.26014268858,
+          "upper_bound": 23932.36669037116,
+          "unit": "ns"
+        }
+      }
+    }
+  },
+  "confirmation_pairs": {
+    "execute/regex_redux": [
+      {
+        "order": [
+          "baseline",
+          "candidate"
+        ],
+        "baseline": {
+          "version": "baseline",
+          "elapsed_seconds": 16.172522258999948,
+          "benchmark_id": "execute/regex_redux/silverfir-nano.jit/10245",
+          "iteration_count": [
+            1527.0,
+            3054.0,
+            4581.0,
+            6108.0,
+            7635.0,
+            9162.0,
+            10689.0,
+            12216.0,
+            13743.0,
+            15270.0
+          ],
+          "measured_values": [
+            36312448.0,
+            72387350.0,
+            109319161.0,
+            145372205.0,
+            181957386.0,
+            218378844.0,
+            254675566.0,
+            291084834.0,
+            326770378.0,
+            364374159.0
+          ],
+          "normalized_ns": [
+            23780.254092992796,
+            23702.472167648986,
+            23863.602051953723,
+            23800.295514079895,
+            23832.008644400787,
+            23835.28094302554,
+            23825.948732341658,
+            23828.16257367387,
+            23777.223168158336,
+            23862.092927308448
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 23825.13215965436,
+            "lower_bound": 23796.688531284417,
+            "upper_bound": 23848.52997022345,
+            "unit": "ns"
+          }
+        },
+        "candidate": {
+          "version": "candidate",
+          "elapsed_seconds": 16.12381178199996,
+          "benchmark_id": "execute/regex_redux/silverfir-nano.jit/10245",
+          "iteration_count": [
+            1528.0,
+            3056.0,
+            4584.0,
+            6112.0,
+            7640.0,
+            9168.0,
+            10696.0,
+            12224.0,
+            13752.0,
+            15280.0
+          ],
+          "measured_values": [
+            36473759.0,
+            72674840.0,
+            109365053.0,
+            145534451.0,
+            181910632.0,
+            218069708.0,
+            254206715.0,
+            291916424.0,
+            329805210.0,
+            364722279.0
+          ],
+          "normalized_ns": [
+            23870.26112565445,
+            23781.034031413612,
+            23857.995855148343,
+            23811.264888743455,
+            23810.292146596857,
+            23785.962914485164,
+            23766.521596858638,
+            23880.597513089004,
+            23982.345113438045,
+            23869.259096858637
+          ],
+          "unit": "ns",
+          "typical": {
+            "estimate": 23866.6551421092,
+            "lower_bound": 23800.864380423172,
+            "upper_bound": 23920.952872947346,
+            "unit": "ns"
+          }
+        }
+      }
+    ]
+  },
+  "metrics": {
+    "execute/fibonacci-iter": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 1,
+      "baseline_samples": [
+        562652.723076923,
+        564398.1153846154,
+        562999.0307692308,
+        563193.8846153846,
+        562764.8953846154,
+        562926.8974358974,
+        569472.8945054945,
+        580223.1346153846,
+        576232.2034188034,
+        563349.5507692308
+      ],
+      "candidate_samples": [
+        565816.6615384616,
+        562162.776923077,
+        562420.6717948718,
+        563159.2269230769,
+        598678.6123076923,
+        564242.2512820513,
+        562698.7428571428,
+        562672.5192307692,
+        562297.4136752137,
+        562667.6723076924
+      ],
+      "baseline_geomean": 566789.0003628783,
+      "candidate_geomean": 566583.5149098358,
+      "pair_count": 10,
+      "log_deltas": [
+        -0.005607501267222302,
+        0.003968434214959219,
+        0.0010278103785740455,
+        6.153965743720442e-05,
+        -0.06186296538198091,
+        -0.0023339078162755247,
+        0.011966794194737236,
+        0.030714956500608147,
+        0.024479794654417276,
+        0.0012111334194799027
+      ],
+      "mean_log_ratio": 0.00036260885547342923,
+      "log_ratio_stddev": 0.024870221792841443,
+      "standard_error": 0.007864654677893526,
+      "probability_regression": 0.4821162488005445,
+      "probability_improvement": 0.5178837511994555,
+      "delta_percent": 0.036267460601146544,
+      "volatility_percent": 2.518206560031612,
+      "pair_deltas_percent": [
+        -0.5591808577951274,
+        0.3976318876488527,
+        0.10283387566698554,
+        0.006154155104076686,
+        -5.998830789134479,
+        -0.23311863710405722,
+        1.203868274870401,
+        3.1191527548935394,
+        2.478188482588073,
+        0.12118671377401302
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          562652.723076923,
+          564398.1153846154,
+          562999.0307692308,
+          563193.8846153846,
+          562764.8953846154,
+          562926.8974358974,
+          569472.8945054945,
+          580223.1346153846,
+          576232.2034188034,
+          563349.5507692308
+        ],
+        "candidate_samples": [
+          565816.6615384616,
+          562162.776923077,
+          562420.6717948718,
+          563159.2269230769,
+          598678.6123076923,
+          564242.2512820513,
+          562698.7428571428,
+          562672.5192307692,
+          562297.4136752137,
+          562667.6723076924
+        ],
+        "baseline_geomean": 566789.0003628783,
+        "candidate_geomean": 566583.5149098358,
+        "pair_count": 10,
+        "log_deltas": [
+          -0.005607501267222302,
+          0.003968434214959219,
+          0.0010278103785740455,
+          6.153965743720442e-05,
+          -0.06186296538198091,
+          -0.0023339078162755247,
+          0.011966794194737236,
+          0.030714956500608147,
+          0.024479794654417276,
+          0.0012111334194799027
+        ],
+        "mean_log_ratio": 0.00036260885547342923,
+        "log_ratio_stddev": 0.024870221792841443,
+        "standard_error": 0.007864654677893526,
+        "probability_regression": 0.4821162488005445,
+        "probability_improvement": 0.5178837511994555,
+        "delta_percent": 0.036267460601146544,
+        "volatility_percent": 2.518206560031612,
+        "pair_deltas_percent": [
+          -0.5591808577951274,
+          0.3976318876488527,
+          0.10283387566698554,
+          0.006154155104076686,
+          -5.998830789134479,
+          -0.23311863710405722,
+          1.203868274870401,
+          3.1191527548935394,
+          2.478188482588073,
+          0.12118671377401302
+        ]
+      },
+      "candidate_direction": "improvement",
+      "pilot_direction_probability": 0.5178837511994555,
+      "selected": false,
+      "target_pairs": null,
+      "status": "PASS"
+    },
+    "execute/regex_redux": {
+      "unit": "ns/iteration",
+      "direction": "lower",
+      "process_pairs": 1,
+      "baseline_samples": [
+        23780.254092992796,
+        23702.472167648986,
+        23863.602051953723,
+        23800.295514079895,
+        23832.008644400787,
+        23835.28094302554,
+        23825.948732341658,
+        23828.16257367387,
+        23777.223168158336,
+        23862.092927308448
+      ],
+      "candidate_samples": [
+        23870.26112565445,
+        23781.034031413612,
+        23857.995855148343,
+        23811.264888743455,
+        23810.292146596857,
+        23785.962914485164,
+        23766.521596858638,
+        23880.597513089004,
+        23982.345113438045,
+        23869.259096858637
+      ],
+      "baseline_geomean": 23810.690123598117,
+      "candidate_geomean": 23841.4749311044,
+      "pair_count": 10,
+      "log_deltas": [
+        -0.0037778034212424204,
+        -0.0033090199835045784,
+        0.00023495427969875062,
+        -0.00046078619414444995,
+        0.0009116477981720425,
+        0.0020712624105184473,
+        0.0024973348076965957,
+        -0.0021981271545326118,
+        -0.008589826663188095,
+        -0.00030027096657157267
+      ],
+      "mean_log_ratio": -0.0012920635087097891,
+      "log_ratio_stddev": 0.003314272449623499,
+      "standard_error": 0.0010480649727155921,
+      "probability_regression": 0.8755611445210334,
+      "probability_improvement": 0.1244388554789666,
+      "delta_percent": -0.1291229154039615,
+      "volatility_percent": 0.3319770723139461,
+      "pair_deltas_percent": [
+        -0.37706764994255293,
+        -0.33035512106348586,
+        0.023498188361736894,
+        -0.046068004849020294,
+        0.09120634753334578,
+        0.20734089562690627,
+        0.25004557457357635,
+        -0.21957130422047832,
+        -0.8553039509250127,
+        -0.030022588975675557
+      ],
+      "initial": {
+        "unit": "ns/iteration",
+        "direction": "lower",
+        "process_pairs": 1,
+        "baseline_samples": [
+          23920.555555555555,
+          23838.299019607843,
+          23785.846623093683,
+          23855.873039215687,
+          23767.37254901961,
+          23725.392265795206,
+          26915.685154061626,
+          23858.428431372547,
+          23817.311038489468,
+          23796.46477124183
+        ],
+        "candidate_samples": [
+          23748.12901113294,
+          23747.444990176817,
+          23794.142763588738,
+          23825.84905042567,
+          23874.677013752455,
+          23788.872080331807,
+          23763.686967910937,
+          23814.280451866405,
+          23795.140144073346,
+          24001.307531106744
+        ],
+        "baseline_geomean": 24111.30669385561,
+        "candidate_geomean": 23815.24507296599,
+        "pair_count": 10,
+        "log_deltas": [
+          0.007234405480575734,
+          0.003818544470363671,
+          -0.0003487239356740672,
+          0.001259350184611676,
+          -0.004504619224646241,
+          -0.0026720334695029286,
+          0.12455055003210189,
+          0.001852128530586927,
+          0.0009313066421878792,
+          -0.008571278705756918
+        ],
+        "mean_log_ratio": 0.012354963000484762,
+        "log_ratio_stddev": 0.03966555988609223,
+        "standard_error": 0.012543351390586046,
+        "probability_regression": 0.17518537625059316,
+        "probability_improvement": 0.8248146237494068,
+        "delta_percent": 1.2431600849898343,
+        "volatility_percent": 4.046274351946378,
+        "pair_deltas_percent": [
+          0.7260637010258142,
+          0.3825844400044298,
+          -0.034866313854975406,
+          0.1260143499040689,
+          -0.4494488644643635,
+          -0.26684667655632044,
+          13.263927396480856,
+          0.18538447800418023,
+          0.09317404428754728,
+          -0.8534650022688495
+        ]
+      },
+      "candidate_direction": "improvement",
+      "pilot_direction_probability": 0.8248146237494068,
+      "selected": true,
+      "target_pairs": null,
+      "status": "PASS"
+    }
+  }
+}

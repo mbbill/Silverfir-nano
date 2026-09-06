@@ -1,0 +1,33 @@
+symbol: jit::main::func5::b18
+
+ Percent |	Source code & Disassembly of jitted-4069-384.so for cpu-clock:u (1314 samples, percent: local period)
+---------------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3  Disassembly of section .text:
+         :
+         : 5  0000000000000080 <jit::main::func5::b18>:
+    6.62 :   80:     mov    %esi,%edx
+    4.49 :   82:     movzwl (%r12,%rdx,1),%r9d
+    3.35 :   87:     mov    %edi,%ecx
+    2.59 :   89:     movzwl (%r12,%rcx,1),%r10d
+    3.42 :   8e:     imul   %r10d,%r9d
+    3.20 :   92:     mov    %r8,%r10
+    2.21 :   95:     mov    %r9,%r8
+    3.27 :   98:     mov    %r8d,%r9d
+   10.12 :   9b:     shr    $0x2,%r9d
+    6.39 :   9f:     and    $0xf,%r9d
+    7.76 :   a3:     mov    %r8d,%r14d
+    4.57 :   a6:     shr    $0x5,%r14d
+    4.57 :   aa:     and    $0x7f,%r14d
+    4.79 :   ae:     imul   %r14d,%r9d
+   10.50 :   b2:     lea    (%r10,%r9,1),%r8d
+    5.71 :   b6:     add    $0x2,%edi
+    2.97 :   b9:     mov    0x68(%rbp),%r9
+    2.66 :   bd:     add    %r9d,%esi
+    3.73 :   c0:     mov    0x58(%rbp),%r9
+    2.05 :   c4:     add    $0xffffffff,%r9d
+    2.59 :   c8:     mov    %r9,0x58(%rbp)
+    2.44 :   cc:     test   %r9d,%r9d
+    0.00 :   cf:     jne    80 <jit::main::func5::b18>

@@ -1,0 +1,19 @@
+Running Coremark 1.0
+	using silverfir-nano.jit ...
+	score = 25147.742
+
+Running Coremark 1.0
+	using wasmtime.cranelift ...
+	score = 28604.12
+
+Running Coremark 1.0
+	using v8 ...
+	score = 25350.148
+
+Scores Summary (JSON):
+{
+  "silverfir-nano.jit": 25147.7421875,
+  "v8": 25350.1484375,
+  "wasmtime.cranelift": 28604.119140625
+}
+

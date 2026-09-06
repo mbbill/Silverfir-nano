@@ -1,0 +1,54 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 18K of event 'cpu-clock:u'
+# Event count (approx.): 18360360342
+#
+# Overhead  Command  Shared Object       Symbol                                                                                                                
+# ........  .......  ..................  ......................................................................................................................
+#
+    14.73%  base     jitted-4036-520.so  [.] jit::main::func10::b0
+     8.33%  base     jitted-4036-35.so   [.] jit::main::func2::b11
+     7.87%  base     jitted-4036-477.so  [.] jit::main::func8::b25
+     7.11%  base     jitted-4036-384.so  [.] jit::main::func5::b18
+     6.89%  base     jitted-4036-28.so   [.] jit::main::func2::b5
+     6.70%  base     jitted-4036-140.so  [.] jit::main::func2::b3
+     3.09%  base     jitted-4036-470.so  [.] jit::main::func8::b3
+     2.96%  base     jitted-4036-474.so  [.] jit::main::func8::b24
+     2.93%  base     jitted-4036-368.so  [.] jit::main::func5::b13
+     2.33%  base     jitted-4036-136.so  [.] jit::main::func2::b13
+     1.83%  base     jitted-4036-466.so  [.] jit::main::func8::b32
+     1.59%  base     jitted-4036-425.so  [.] jit::main::func7::b22
+     1.52%  base     jitted-4036-454.so  [.] jit::main::func7::b23
+     1.42%  base     jitted-4036-347.so  [.] jit::main::func5::b6
+     1.40%  base     jitted-4036-359.so  [.] jit::main::func5::b10
+     1.34%  base     jitted-4036-375.so  [.] jit::main::func5::b15
+     1.31%  base     jitted-4036-29.so   [.] jit::main::func2::b6
+     1.29%  base     jitted-4036-141.so  [.] jit::main::func2::b4
+     1.25%  base     jitted-4036-391.so  [.] jit::main::func5::b20
+     1.13%  base     jitted-4036-467.so  [.] jit::main::func8::b1
+     1.10%  base     jitted-4036-473.so  [.] jit::main::func8::b8
+     0.99%  base     jitted-4036-476.so  [.] jit::main::func8::b28
+     0.93%  base     jitted-4036-110.so  [.] jit::main::func2::b65
+     0.92%  base     jitted-4036-472.so  [.] jit::main::func8::b5
+     0.90%  base     jitted-4036-492.so  [.] jit::main::func8::b17
+     0.82%  base     jitted-4036-465.so  [.] jit::main::func8::body_prelude
+     0.78%  base     jitted-4036-453.so  [.] jit::main::func7::b7
+     0.69%  base     jitted-4036-424.so  [.] jit::main::func7::b0
+     0.63%  base     jitted-4036-471.so  [.] jit::main::func8::b4
+     0.60%  base     jitted-4036-366.so  [.] jit::main::func5::b12
+     0.53%  base     jitted-4036-488.so  [.] jit::main::func8::b13
+     0.39%  base     jitted-4036-369.so  [.] jit::main::func5::b48
+     0.38%  base     jitted-4036-341.so  [.] jit::main::func5::b4
+     0.36%  base     jitted-4036-382.so  [.] jit::main::func5::b17
+     0.35%  base     jitted-4036-491.so  [.] jit::main::func8::b15
+     0.35%  base     jitted-4036-385.so  [.] jit::main::func5::b58
+     0.33%  base     jitted-4036-478.so  [.] jit::main::func8::b7
+     0.31%  base     jitted-4036-484.so  [.] jit::main::func8::b19
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

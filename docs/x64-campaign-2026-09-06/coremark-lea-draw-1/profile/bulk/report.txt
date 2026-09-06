@@ -1,0 +1,62 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 18K of event 'cpu-clock:u'
+# Event count (approx.): 18739739721
+#
+# Overhead  Command  Shared Object       Symbol                                                                                                 
+# ........  .......  ..................  .......................................................................................................
+#
+    13.89%  bulk     jitted-4069-520.so  [.] jit::main::func10::b0
+     8.27%  bulk     jitted-4069-35.so   [.] jit::main::func2::b11
+     7.15%  bulk     jitted-4069-140.so  [.] jit::main::func2::b3
+     7.02%  bulk     jitted-4069-384.so  [.] jit::main::func5::b18
+     6.43%  bulk     jitted-4069-28.so   [.] jit::main::func2::b5
+     5.16%  bulk     jitted-4069-477.so  [.] jit::main::func8::b25
+     4.49%  bulk     jitted-4069-470.so  [.] jit::main::func8::b3
+     2.94%  bulk     jitted-4069-368.so  [.] jit::main::func5::b13
+     2.77%  bulk     jitted-4069-474.so  [.] jit::main::func8::b24
+     2.29%  bulk     jitted-4069-136.so  [.] jit::main::func2::b13
+     1.83%  bulk     jitted-4069-491.so  [.] jit::main::func8::b15
+     1.76%  bulk     jitted-4069-466.so  [.] jit::main::func8::b32
+     1.73%  bulk     jitted-4069-476.so  [.] jit::main::func8::b28
+     1.60%  bulk     jitted-4069-425.so  [.] jit::main::func7::b22
+     1.58%  bulk     jitted-4069-454.so  [.] jit::main::func7::b23
+     1.50%  bulk     jitted-4069-359.so  [.] jit::main::func5::b10
+     1.43%  bulk     jitted-4069-347.so  [.] jit::main::func5::b6
+     1.32%  bulk     jitted-4069-375.so  [.] jit::main::func5::b15
+     1.32%  bulk     jitted-4069-391.so  [.] jit::main::func5::b20
+     1.30%  bulk     jitted-4069-473.so  [.] jit::main::func8::b8
+     1.22%  bulk     jitted-4069-141.so  [.] jit::main::func2::b4
+     1.18%  bulk     jitted-4069-29.so   [.] jit::main::func2::b6
+     0.90%  bulk     jitted-4069-472.so  [.] jit::main::func8::b5
+     0.84%  bulk     jitted-4069-487.so  [.] jit::main::func8::b11
+     0.77%  bulk     jitted-4069-110.so  [.] jit::main::func2::b65
+     0.76%  bulk     jitted-4069-467.so  [.] jit::main::func8::b1
+     0.71%  bulk     jitted-4069-468.so  [.] jit::main::func8::b27
+     0.71%  bulk     jitted-4069-366.so  [.] jit::main::func5::b12
+     0.68%  bulk     jitted-4069-424.so  [.] jit::main::func7::b0
+     0.66%  bulk     jitted-4069-465.so  [.] jit::main::func8::body_prelude
+     0.65%  bulk     jitted-4069-453.so  [.] jit::main::func7::b7
+     0.58%  bulk     jitted-4069-469.so  [.] jit::main::func8::b2
+     0.57%  bulk     jitted-4069-484.so  [.] jit::main::func8::b19
+     0.53%  bulk     jitted-4069-382.so  [.] jit::main::func5::b17
+     0.48%  bulk     jitted-4069-492.so  [.] jit::main::func8::b17
+     0.46%  bulk     jitted-4069-341.so  [.] jit::main::func5::b4
+     0.43%  bulk     jitted-4069-495.so  [.] jit::main::func8::b29
+     0.41%  bulk     jitted-4069-369.so  [.] jit::main::func5::b48
+     0.37%  bulk     jitted-4069-488.so  [.] jit::main::func8::b13
+     0.36%  bulk     jitted-4069-385.so  [.] jit::main::func5::b58
+     0.35%  bulk     jitted-4069-478.so  [.] jit::main::func8::b7
+     0.35%  bulk     jitted-4069-494.so  [.] jit::main::func8::b16
+     0.33%  bulk     jitted-4069-480.so  [.] jit::main::func8::b9
+     0.32%  bulk     jitted-4069-490.so  [.] jit::main::func8::b12
+     0.31%  bulk     jitted-4069-367.so  [.] jit::main::func5::b47
+     0.30%  bulk     jitted-4069-397.so  [.] jit::main::func5::b22
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

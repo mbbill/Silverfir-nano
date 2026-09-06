@@ -1,0 +1,13 @@
+[1m[92m   Compiling[0m sf-nano-core v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/source-offset/sf-nano-core)
+[1m[92m   Compiling[0m sf-nano-tracked-alloc v0.1.0 (/home/runner/work/Silverfir-nano/Silverfir-nano/source-offset/tools/tracked-alloc)
+[1m[33mwarning[0m[1m: function `lea_sum` is never used[0m
+   [1m[94m--> [0m/home/runner/work/Silverfir-nano/Silverfir-nano/source-offset/sf-nano-core/src/vm/jit/arch/x86_64/enc.rs:236:15
+    [1m[94m|[0m
+[1m[94m236[0m [1m[94m|[0m pub(crate) fn lea_sum(e: &mut TextEmitter, w64: bool, dst: X86Reg, lhs: X86Reg, rhs: X86Reg) {
+    [1m[94m|[0m               [1m[33m^^^^^^^[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m: `sf-nano-core` (lib) generated 1 warning
+[1m[92m   Compiling[0m sf-x64-probe v0.0.0 (/home/runner/work/_temp/probe-offset)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 41.29s

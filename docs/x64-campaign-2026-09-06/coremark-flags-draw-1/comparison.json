@@ -1,0 +1,152 @@
+{
+  "scores": {
+    "base": [
+      19574.58,
+      19560.54,
+      19561.814,
+      19569.47
+    ],
+    "bulk": [
+      18210.514,
+      18214.936,
+      18219.361,
+      18204.988
+    ],
+    "flags": [
+      18442.244,
+      18410.555,
+      18416.207,
+      18417.336
+    ]
+  },
+  "schedule": [
+    {
+      "round": 0,
+      "variant": "base",
+      "score": 19574.58
+    },
+    {
+      "round": 0,
+      "variant": "bulk",
+      "score": 18210.514
+    },
+    {
+      "round": 0,
+      "variant": "flags",
+      "score": 18442.244
+    },
+    {
+      "round": 1,
+      "variant": "flags",
+      "score": 18410.555
+    },
+    {
+      "round": 1,
+      "variant": "bulk",
+      "score": 18214.936
+    },
+    {
+      "round": 1,
+      "variant": "base",
+      "score": 19560.54
+    },
+    {
+      "round": 2,
+      "variant": "base",
+      "score": 19561.814
+    },
+    {
+      "round": 2,
+      "variant": "bulk",
+      "score": 18219.361
+    },
+    {
+      "round": 2,
+      "variant": "flags",
+      "score": 18416.207
+    },
+    {
+      "round": 3,
+      "variant": "flags",
+      "score": 18417.336
+    },
+    {
+      "round": 3,
+      "variant": "bulk",
+      "score": 18204.988
+    },
+    {
+      "round": 3,
+      "variant": "base",
+      "score": 19569.47
+    }
+  ],
+  "comparisons": {
+    "bulk/base": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.07223266611751056,
+        -0.07127235472090619,
+        -0.07109458072622177,
+        -0.07227507630486683
+      ],
+      "mean_log_ratio": -0.07171866946737634,
+      "log_ratio_stddev": 0.0006224855379599811,
+      "standard_error": 0.00031124276897999056,
+      "probability_regression": 0.9999999098818132,
+      "probability_improvement": 9.011818680182415e-08,
+      "delta_percent": -6.9207280608496164,
+      "volatility_percent": 0.06226793222896942,
+      "pair_deltas_percent": [
+        -6.968558201504205,
+        -6.879176137264098,
+        -6.862620204854197,
+        -6.972503598717794
+      ]
+    },
+    "flags/base": {
+      "pair_count": 4,
+      "log_deltas": [
+        -0.05958788300943791,
+        -0.060590130137549034,
+        -0.06034830845060884,
+        -0.060678303811742926
+      ],
+      "mean_log_ratio": -0.06030115635233468,
+      "log_ratio_stddev": 0.0004955563327338931,
+      "standard_error": 0.00024777816636694657,
+      "probability_regression": 0.9999999235061471,
+      "probability_improvement": 7.64938529185244e-08,
+      "delta_percent": -5.851904208499336,
+      "volatility_percent": 0.04956791410586594,
+      "pair_deltas_percent": [
+        -5.7847269264525885,
+        -5.879106609531237,
+        -5.856343384105378,
+        -5.887405228654641
+      ]
+    },
+    "flags/bulk": {
+      "pair_count": 4,
+      "log_deltas": [
+        0.01264478310807279,
+        0.010682224583357327,
+        0.010746272275612877,
+        0.01159677249312385
+      ],
+      "mean_log_ratio": 0.011417513115041711,
+      "log_ratio_stddev": 0.0009182481599525268,
+      "standard_error": 0.0004591240799762634,
+      "probability_regression": 7.128432039413167e-05,
+      "probability_improvement": 0.9999287156796058,
+      "delta_percent": 1.148294169134688,
+      "volatility_percent": 0.09186698788651487,
+      "pair_deltas_percent": [
+        1.2725066409438046,
+        1.0739483246057002,
+        1.0804220850555435,
+        1.1664275746844588
+      ]
+    }
+  }
+}

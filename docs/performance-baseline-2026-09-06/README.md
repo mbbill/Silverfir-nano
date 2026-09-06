@@ -137,3 +137,25 @@ The successful final run is 34026700835, source `fe334819`.
 The scores are a baseline, not a delivered optimization. The next compiler
 experiment should isolate one mechanism and use dev differential CI; the
 competitor builds do not run on ordinary pushes.
+
+## wasmi CoreMark anchor (priority clarified)
+
+The requested execution target is the suite's own `res/wasm/coremark.wasm`,
+separate from the WASI CoreMark row above. The one-time
+[run 34028386243](https://github.com/mbbill/Silverfir-nano/actions/runs/34028386243)
+used runtime `main@f73219f5` (diagnostic checkout `b1f40ae3`), the same pinned
+suite and preserved Cargo lockfile, and one CPU-pinned official-duration run
+per engine on each host. Both jobs and all their steps succeeded; all three
+scores were required to be finite and positive. Source, CPU, Wasm checksum,
+toolchain and raw scores are preserved in `wasmi-coremark-draw-{1,2}/`.
+
+| CPU | Nano score | Cranelift score | V8 score | CL / Nano | V8 / Nano |
+|---|---:|---:|---:|---:|---:|
+| AMD EPYC 9V74 | 25,147.74 | 28,604.12 | 25,350.15 | 1.1374 | 1.0080 |
+| AMD EPYC 7763 | 19,614.25 | 23,297.35 | 21,164.02 | 1.1878 | 1.0790 |
+
+These are same-host anchor point estimates, not independently confirmed
+wins. Engine order was Nano, Cranelift, V8 in both jobs; an Intel draw remains
+unmeasured for this module. Do not apply the WASI CoreMark gap to this module.
+The temporary push trigger exists only on `codex/x64-profiling`; the
+optimization branch retains the manual-only comparison workflow.
