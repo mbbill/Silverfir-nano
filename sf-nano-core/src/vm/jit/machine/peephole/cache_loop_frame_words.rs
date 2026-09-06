@@ -12,7 +12,10 @@ use crate::vm::jit::machine::machine_ir::{
     MachineStorageType, MachineTerminator, MachineValue, MACHINE_FP_REG,
 };
 
-use super::helpers::{inst_defines, store_may_alias, terminator_uses_reg};
+use super::helpers::{
+    inst_defines, store_may_alias, terminator_uses_reg, visit_source_values,
+    visit_terminator_source_regs,
+};
 use super::hoist_loop_address_bases::{
     block_mentions_reg, natural_loop_nodes, visit_edges_mut, LoopGraph,
 };
@@ -48,8 +51,27 @@ pub(super) fn cache_loop_frame_words(
     entry: MachineBlockId,
     ctx: &mut BlockOptCtx,
 ) {
+    if graph
+        .latches_by_header
+        .iter()
+        .all(|latches| latches.is_empty())
+    {
+        return;
+    }
+    // Summarize mentions once instead of re-walking every instruction for
+    // every physical lane and every enclosing loop. These are exact masks
+    // for the low registers; unusually high synthetic/future lanes retain
+    // the original membership scan below.
+    let mut masks: collections::Vec<_> = blocks.iter().map(block_register_mask).collect();
+    let gp_end = crate::vm::jit::backend::BackendConfig::FIXED
+        + u16::from(ctx.config.allocatable_gp_dynamic_budget());
+    let available_mask = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
+        .fold(0, |mask, reg| mask | reg_bit(MachineReg(reg)));
     for header in (0..blocks.len()).rev() {
         if graph.latches_by_header[header].is_empty() {
+            continue;
+        }
+        if gp_end <= 64 && masks[header] & available_mask == available_mask {
             continue;
         }
         let nodes = natural_loop_nodes(
@@ -60,8 +82,30 @@ pub(super) fn cache_loop_frame_words(
         if nodes.iter().any(|&index| blocks[index].id == entry) {
             continue;
         }
-        try_cache_word(blocks, header, &nodes, graph, ctx);
+        try_cache_word(blocks, header, &nodes, graph, ctx, &mut masks);
     }
+}
+
+fn reg_bit(reg: MachineReg) -> u64 {
+    1u64.checked_shl(u32::from(reg.0)).unwrap_or(0)
+}
+
+fn block_register_mask(block: &MachineBlock) -> u64 {
+    let mut mask = 0;
+    let mut note = |reg| mask |= reg_bit(reg);
+    for param in &block.params {
+        note(param.reg);
+    }
+    for inst in &block.ops {
+        inst.kind.for_each_defined_reg(&mut note);
+        visit_source_values(&inst.kind, |value| {
+            if let MachineValue::Reg(reg) = value {
+                note(*reg);
+            }
+        });
+    }
+    visit_terminator_source_regs(&block.terminator, &mut note);
+    mask
 }
 
 fn try_cache_word(
@@ -70,6 +114,7 @@ fn try_cache_word(
     nodes: &[usize],
     graph: &LoopGraph,
     ctx: &mut BlockOptCtx,
+    masks: &mut [u64],
 ) {
     let mut in_loop = collections::vec![false; blocks.len()];
     for &index in nodes {
@@ -101,15 +146,19 @@ fn try_cache_word(
     let config = ctx.config;
     let gp_end = crate::vm::jit::backend::BackendConfig::FIXED
         + u16::from(config.allocatable_gp_dynamic_budget());
+    let loop_mask = nodes.iter().fold(0, |mask, &index| mask | masks[index]);
     let Some(carry) = (crate::vm::jit::backend::BackendConfig::FIXED..gp_end)
         .map(MachineReg)
         .find(|&reg| {
-            nodes
-                .iter()
-                .all(|&index| !block_mentions_reg(&blocks[index], reg))
-                && preheaders
+            (if reg.0 < 64 {
+                loop_mask & reg_bit(reg) == 0
+            } else {
+                nodes
                     .iter()
-                    .all(|&index| !terminator_uses_reg(&blocks[index].terminator, reg))
+                    .all(|&index| !block_mentions_reg(&blocks[index], reg))
+            }) && preheaders
+                .iter()
+                .all(|&index| !terminator_uses_reg(&blocks[index].terminator, reg))
         })
     else {
         return;
@@ -226,6 +275,7 @@ fn try_cache_word(
             }
         });
         optimize_block(ctx, &mut blocks[index]);
+        masks[index] = block_register_mask(&blocks[index]);
     }
 }
 
@@ -359,6 +409,24 @@ mod tests {
         let config = BackendConfig::new(8, gp_budget, 0, 0);
         let mut ctx = BlockOptCtx::new(config);
         cache_loop_frame_words(blocks, &graph, entry, &mut ctx);
+    }
+
+    #[test]
+    fn register_summary_matches_exact_mentions_before_and_after_rewriting() {
+        let mut blocks = loop_blocks();
+        for rewrite in [false, true] {
+            if rewrite {
+                run(&mut blocks, MachineBlockId(0), 6);
+            }
+            for block in &blocks {
+                for reg in (0..64).map(MachineReg) {
+                    assert_eq!(
+                        block_register_mask(block) & reg_bit(reg) != 0,
+                        block_mentions_reg(block, reg),
+                    );
+                }
+            }
+        }
     }
 
     #[test]
