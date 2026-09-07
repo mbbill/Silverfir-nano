@@ -36,6 +36,7 @@ from ci.performance_stats import (
     probability_summary,
     required_pairs_for_direction,
 )
+from ci.runner import parse_log
 
 
 WASMI_BENCHMARKS_REPOSITORY = (
@@ -178,6 +179,14 @@ def runtime_fingerprint(context: CargoContext) -> str:
         capture=True,
     )
     artifacts: list[str] = []
+    # json-render-diagnostics writes rendered compiler diagnostics to stderr;
+    # stdout contains the machine-readable artifact inventory.
+    warnings = 0
+    if result.stderr:
+        print(result.stderr.rstrip(), file=sys.stderr)
+        diagnostic_log = target / "compiler-diagnostics.log"
+        diagnostic_log.write_text(result.stderr, encoding="utf-8")
+        warnings = parse_log(diagnostic_log, result.returncode)[1]
     for line in result.stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -190,6 +199,19 @@ def runtime_fingerprint(context: CargoContext) -> str:
         if "lib" not in message.get("target", {}).get("kind", []):
             continue
         artifacts.extend(message.get("filenames", []))
+    if warnings:
+        audit = (
+            f"\n## Compiler warning audit: {context.version}\n\n"
+            "> [!CAUTION]\n"
+            f"> **ACTION REQUIRED.** Runtime features `{context.core_features}` "
+            f"emitted {warnings} compiler warning(s). Inspect the build log "
+            "and resolve their ownership before release. Performance measurement "
+            "continues; numeric PASS rows do not clear this warning audit.\n"
+        )
+        print(audit, file=sys.stderr)
+        if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(summary_path, "a", encoding="utf-8") as summary:
+                summary.write(audit)
     artifacts = sorted({name for name in artifacts if name.endswith(".rlib")})
     if len(artifacts) != 1:
         raise ValueError(

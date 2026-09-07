@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -280,6 +284,42 @@ class WasmiPerformanceTests(unittest.TestCase):
         self.assertTrue(
             any(flag.endswith("=/workspace/sf-nano") for flag in flags)
         )
+
+    def test_runtime_fingerprint_keeps_warnings_visible_and_action_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "libsf_nano_core.rlib"
+            artifact.write_bytes(b"engine")
+            context = wasmi_performance.CargoContext(
+                version="candidate", source=root, suite=root, config=root / "config",
+                target=root / "target", cargo="cargo", toolchain="stable",
+                feature="silverfir-nano-interp",
+                runtime_id="silverfir-nano.interpreter", core_features="interp",
+            )
+            rendered = (
+                "warning: engine-owned helper is unused\n"
+                "warning: another helper is unused\n"
+                "warning: `sf-nano-core` (lib) generated 2 warnings\n"
+            )
+            output = "\n".join(json.dumps(message) for message in [
+                {"reason": "compiler-artifact", "package_id": "sf-nano-core",
+                 "target": {"kind": ["lib"]}, "filenames": [str(artifact)]},
+            ])
+            result = subprocess.CompletedProcess([], 0, output, rendered)
+            summary = root / "summary.md"
+            log = io.StringIO()
+            with (
+                patch.object(wasmi_performance, "run_process", return_value=result),
+                patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}),
+                contextlib.redirect_stderr(log),
+            ):
+                fingerprint = wasmi_performance.runtime_fingerprint(context)
+            self.assertEqual(fingerprint, hashlib.sha256(b"engine").hexdigest())
+            self.assertIn(rendered.strip(), log.getvalue())
+            self.assertIn("ACTION REQUIRED", summary.read_text())
+            self.assertIn("candidate", summary.read_text())
+            self.assertIn("interp", summary.read_text())
+            self.assertIn("emitted 2 compiler warning(s)", summary.read_text())
 
     def test_runtime_fingerprint_rejects_an_ambiguous_artifact_set(
         self,
