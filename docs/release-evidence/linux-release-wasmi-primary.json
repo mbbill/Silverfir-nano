@@ -183,7 +183,7 @@
       "head": "68412439eb76f1fdf53a6a8aeb7ab04887c2cd99",
       "base": "0983d9e487db6a9c50a34be6f596d6b66bf3e942",
       "run_id": 34151036770,
-      "stage": "All eight primary measurements complete. Four execution primaries report no confirmed execution regression; four independent startup confirmations remain pending. Primary job success is not a performance pass.",
+      "stage": "Terminal: all eight primary tables complete; four execution primaries report no confirmed regression. All four independent startup confirmations fail; their exact rows are in linux-release-startup-confirmation.json. Primary job success is not a performance pass.",
       "precision": "Printed job summary rows; displayed timings are rounded",
       "jobs": [
         {

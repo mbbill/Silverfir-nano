@@ -1411,3 +1411,14 @@ existing confirmation evidence; two JIT startup confirmations remain live.
 A fresh management-UI query reports the Mac locked, so manual unlock is
 requested before configuring the protected API environment. The GitHub
 connector's lack of administration access is unchanged.
+
+
+Run 34151036770 is terminal at 68412439. All four startup confirmation jobs
+fail: seven interpreter cases on each architecture, two JIT cases on x64 and
+four on ARM64. x64 JIT bz2 is NEGLIGIBLE; spidermonkey is 2.734 to 2.785 s and
+ffmpeg 9.446 to 9.654 s. ARM64 JIT confirms bz2, ffmpeg, CoreMark and argon2.
+Exact printed rows are retained, including confidence intervals and severity.
+The four execution primary tables have no confirmed regression. Correctness
+passes all 12 jobs; the API environment gate still fails. These outcomes are
+separate: the branch is not overall green. Bounded scratch reuse is the next
+candidate; none of these hosted numbers measures that local follow-up yet.
