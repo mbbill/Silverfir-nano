@@ -326,6 +326,7 @@ impl TableEntries {
 struct TableState {
     entries: TableEntries,
     max: u64,
+    is64: bool,
 }
 
 /// `max_pages` mirrors `TableState::max`: only `memory.grow` reads it, and
@@ -1539,6 +1540,7 @@ impl InterpInstance {
             tables.push(TableState {
                 entries,
                 max: limits.effective_max() as u64,
+                is64: limits.is64,
             });
         }
         // Every element segment's function indices must name a function the
@@ -4321,7 +4323,6 @@ impl InterpInstance {
             }
             Op::TableGrow => {
                 let init = opa!(ins);
-                let delta = opb!(ins) as u32 as u64;
                 let tidx = (ins.c >> 32) as usize;
                 let dst = (ins.c & 0xffff_ffff) as usize;
                 let t = self
@@ -4329,19 +4330,25 @@ impl InterpInstance {
                     .get(tidx)
                     .ok_or(WasmError::trap("out of bounds table access"))?;
                 let cur = t.entries.len() as u64;
-                if cur + delta > t.max || cur + delta > u32::MAX as u64 {
-                    frame[dst] = u32::MAX as u64;
-                } else if delta > 0 {
+                let (delta, fail, cap) = if t.is64 {
+                    (opb!(ins), u64::MAX, usize::MAX as u64)
+                } else {
+                    (opb!(ins) as u32 as u64, u32::MAX as u64, u32::MAX as u64)
+                };
+                let new_len = cur
+                    .checked_add(delta)
+                    .filter(|&n| n <= t.max && n <= cap && n <= usize::MAX as u64);
+                if delta == 0 {
+                    frame[dst] = cur;
+                } else if let Some(new_len) = new_len {
                     let init = self.table_slot_for_storage(tidx, init);
-                    frame[dst] = match self.tables[tidx]
-                        .entries
-                        .try_resize((cur + delta) as usize, init)
+                    frame[dst] = match self.tables[tidx].entries.try_resize(new_len as usize, init)
                     {
                         Ok(()) => cur,
-                        Err(()) => u32::MAX as u64,
+                        Err(()) => fail,
                     };
                 } else {
-                    frame[dst] = cur;
+                    frame[dst] = fail;
                 }
             }
             Op::TableFill => {
