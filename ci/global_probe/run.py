@@ -13,7 +13,7 @@ backend = Path('sf-nano-core/interp_gen/x86_64.rs')
 generator = Path('sf-nano-core/interp_gen/mod.rs')
 original_backend = (candidate / backend).read_text()
 original_generator = (candidate / generator).read_text()
-variants = ['baseline', 'direct', 'rcx', 'padding5', 'indexed', 'align16', 'align32']
+variants = ['baseline', 'direct', 'indexed', 'align32', 'align64', 'indexed32', 'indexed64', 'indexed_padding2']
 outputs = {}
 for variant in variants:
     checkout = base if variant == 'baseline' else candidate
@@ -22,15 +22,15 @@ for variant in variants:
     if variant == 'rcx':
         asm = asm.replace('a.ins("mov rax, [rbx + 16]"); // storage cell address', 'a.ins("mov rcx, [rbx + 16]"); // storage cell address')
         asm = asm.replace('a.ins(&format!("mov {}, [rax]", q(rd)));', 'a.ins(&format!("mov {}, [rcx]", q(rd)));')
-    if variant == 'indexed':
+    if variant.startswith('indexed'):
         asm = asm.replace('a.ins("mov rax, [rbx + 16]"); // storage cell address', 'a.ins("mov rcx, [rbx + 16]");\n                a.ins("xor eax, eax");')
         asm = asm.replace('a.ins(&format!("mov {}, [rax]", q(rd)));', 'a.ins(&format!("mov {}, [rcx + rax]", q(rd)));')
         asm = asm.replace('a.ins("mov rdx, [rbx + 16]"); // storage cell address', 'a.ins("mov rcx, [rbx + 16]");\n                a.ins("xor edx, edx");')
         asm = asm.replace('a.ins(&format!("mov [rdx], {}", q(ra)));', 'a.ins(&format!("mov [rcx + rdx], {}", q(ra)));')
-    if variant == 'padding5':
-        gen = gen.replace('                isa.emit_handler(&mut a, &st, &v);', '                isa.emit_handler(&mut a, &st, &v);\n                if matches!(op, Op::GlobalGet | Op::GlobalSet) { a.raw(".fill 5, 1, 0x90"); }')
-    if variant.startswith('align'):
-        align = '4' if variant == 'align16' else '5'
+    if variant == 'indexed_padding2':
+        gen = gen.replace('                isa.emit_handler(&mut a, &st, &v);', '                isa.emit_handler(&mut a, &st, &v);\n                if matches!(op, Op::GlobalGet | Op::GlobalSet) { a.raw(".fill 2, 1, 0x90"); }')
+    if variant in ['align32', 'align64', 'indexed32', 'indexed64']:
+        align = '6' if variant.endswith('64') else '5'
         gen = gen.replace('                a.label(&label);', f'                if matches!(op, Op::GlobalGet | Op::GlobalSet) {{ a.align({align}); }}\n                a.label(&label);')
     if variant != 'baseline':
         (candidate / backend).write_text(asm)
