@@ -119,6 +119,32 @@ fn decode_function_semantic(
     module: &ModuleInst,
     store: &JitInstance,
     spec: &FunctionSpec,
+    call_scratch_slots: u16,
+) -> Result<SemanticProgram, WasmError> {
+    let mut semantic = decode_function_semantic_raw(module, store, spec)?;
+    // The bounded-memory template decision is priced from the original body.
+    // Keep that policy's input unchanged when a compilation budget is supplied.
+    if module.config().get_compiler_ram_budget_bytes() == u32::MAX {
+        crate::vm::jit::wasm::inline::inline_small_calls(
+            &mut semantic,
+            call_scratch_slots,
+            |callee| {
+                let spec = module.functions.get(callee as usize)?.spec()?;
+                // Avoid decoding large callees just to reject their expansion.
+                if spec.code().len() > 128 {
+                    return None;
+                }
+                decode_function_semantic_raw(module, store, spec).ok()
+            },
+        );
+    }
+    Ok(semantic)
+}
+
+fn decode_function_semantic_raw(
+    module: &ModuleInst,
+    store: &JitInstance,
+    spec: &FunctionSpec,
 ) -> Result<SemanticProgram, WasmError> {
     let params = spec.func_type().params().len() as u16;
     let local_count = params.saturating_add(spec.locals().len() as u16);
@@ -532,7 +558,7 @@ fn build_static_summaries(
             }
         }
         let sem_scan_function_phase = phase_span_with_function("sem_scan", Some(func_idx as u32));
-        let semantic = decode_function_semantic(module, store, spec)?;
+        let semantic = decode_function_semantic(module, store, spec, backend.call_scratch_slots)?;
         let frame = plan_frame_layout(
             semantic.local_count,
             semantic.max_stack_height,
@@ -825,7 +851,8 @@ fn compile_full_functions_parallel(
             };
             let sem_decode_function_phase =
                 phase_span_with_function("sem_decode", Some(func_idx as u32));
-            let semantic = decode_function_semantic(module, store, spec)?;
+            let semantic =
+                decode_function_semantic(module, store, spec, backend.call_scratch_slots)?;
             drop(sem_decode_function_phase);
 
             job_tx
@@ -892,7 +919,7 @@ fn compile_full_streaming_function(
     #[cfg(sf_has_guard_pages)] use_stack_guard_pages: bool,
 ) -> Result<arch::common::types::FunctionArtifact, WasmError> {
     let sem_decode_function_phase = phase_span_with_function("sem_decode", Some(func_idx as u32));
-    let semantic = decode_function_semantic(module, store, spec)?;
+    let semantic = decode_function_semantic(module, store, spec, backend.call_scratch_slots)?;
     drop(sem_decode_function_phase);
 
     let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
@@ -1467,7 +1494,7 @@ pub(crate) fn ensure_module_compiled(store: &JitInstance) -> Result<(), WasmErro
         };
         let sem_decode_function_phase =
             phase_span_with_function("sem_decode", Some(func_idx as u32));
-        let semantic = decode_function_semantic(module, store, spec)?;
+        let semantic = decode_function_semantic(module, store, spec, backend.call_scratch_slots)?;
         drop(sem_decode_function_phase);
 
         let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
@@ -1589,6 +1616,70 @@ mod tests {
             is_final: true,
             rec_group: None,
         })
+    }
+
+    #[test]
+    fn semantic_call_expansion_precedes_both_frame_plans() {
+        use crate::vm::jit::wasm::semantic_ir::SemanticOpKind;
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("inline-test"),
+            TypeContext::new(collections::vec![func_def(
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I32],
+            )]),
+        );
+        let ty = Rc::new(FunctionType::new(
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+        ));
+        for (index, code) in [
+            &[0x20, 0x00, 0x41, 0x01, 0x6a, 0x0b][..],
+            &[0x20, 0x00, 0x10, 0x00, 0x0b][..],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut spec = FunctionSpec::new(Rc::clone(&ty), index as u32);
+            spec.set_code(code.into());
+            module.functions.push(FunctionInst::Local {
+                spec,
+                type_index: 0,
+            });
+        }
+        let store = test_store(module);
+        let module = store.module();
+        let spec = module.functions[1].spec().unwrap();
+        let raw = super::decode_function_semantic_raw(&module, &store, spec).unwrap();
+        assert!(raw
+            .ops
+            .iter()
+            .any(|op| matches!(op.kind, SemanticOpKind::CallDirect { .. })));
+        let semantic = super::decode_function_semantic(&module, &store, spec, 3).unwrap();
+        assert_eq!(semantic.local_count, 2);
+        assert!(!semantic
+            .ops
+            .iter()
+            .any(|op| matches!(op.kind, SemanticOpKind::CallDirect { .. })));
+        semantic.validate().unwrap();
+        let backend = crate::vm::jit::arch::backend_config();
+        let (abi, facts) = super::build_static_summaries(&module, &store, backend).unwrap();
+        let prepared = crate::vm::jit::middle::prepare_function(
+            crate::vm::jit::middle::PrepareInput {
+                config: backend,
+                function_index: Some(1),
+            },
+            crate::vm::jit::middle::ModuleFacts {
+                is_local_func: &facts,
+            },
+            semantic,
+        )
+        .unwrap();
+        assert_eq!(
+            abi.functions[1].total_frame_slots,
+            prepared.frame.total_slots()
+        );
     }
 
     #[test]
