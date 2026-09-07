@@ -1,5 +1,5 @@
 # Isolated Nano-only campaign measurement; no main, PR or dev trigger.
-name: x64-nano-coremark
+name: x64-nano-recursive
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,7 +12,7 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano CoreMark / draw ${{ matrix.draw }}
+    name: Nano recursive calls / draw ${{ matrix.draw }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -37,8 +37,8 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 7fbc510b0fc6edd06d2bd926c6ba0e49d4b3f4ee
-          path: source-inline
+          ref: 3b88ca70769f6544d58b6e796839ed6f68c6c7bf
+          path: source-structured
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -57,8 +57,8 @@ jobs:
           python3 - <<'PYCODE'
           import json, os, shutil
           from pathlib import Path
-          Path('coremark-out').mkdir()
-          for name in ['main', 'parent', 'inline']:
+          Path('recursive-out').mkdir()
+          for name in ['main', 'parent', 'structured']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -67,73 +67,73 @@ jobs:
           PYCODE
       - name: Save and audit the source variants
         run: |
-          for name in main parent inline; do
+          for name in main parent structured; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-inline
+        working-directory: source-structured
         env:
           CARGO_TERM_COLOR: never
         run: |
-          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../coremark-out/correctness-core.log
-          if grep -q "BMI2 execution check skipped" ../coremark-out/correctness-core.log; then
+          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../recursive-out/correctness-core.log
+          if grep -q "BMI2 execution check skipped" ../recursive-out/correctness-core.log; then
             echo "Native BMI2 execution validation was skipped" >&2
             exit 1
           fi
           cargo test --locked -p sf-nano-core --no-default-features --features jit,interp \
-            --test call_inlining --test memory_length --test call_status --test integer_division --test integer_sums --test jump_table_membership 2>&1 | tee ../coremark-out/correctness-unguarded-memory.log
+            --test call_inlining --test memory_length --test call_status --test integer_division --test integer_sums --test jump_table_membership 2>&1 | tee ../recursive-out/correctness-unguarded-memory.log
           cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
-            2>&1 | tee ../coremark-out/correctness-spec-build.log
+            2>&1 | tee ../recursive-out/correctness-spec-build.log
           target/release/sf-nano-spectest --backend jit --log-level info \
-            2>&1 | tee ../coremark-out/correctness-spec.log
-          (cd .. && python3 -m ci.x64_warning_audit coremark-out/correctness-*.log)
+            2>&1 | tee ../recursive-out/correctness-spec.log
+          (cd .. && python3 -m ci.x64_warning_audit recursive-out/correctness-*.log)
       - name: Build every Nano revision before measuring
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in main parent inline; do
+          for name in main parent structured; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
-              --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
-            python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
-            cp probe-target/release/sf-x64-probe "coremark-out/$name"
-            git -C "source-$name" rev-parse HEAD > "coremark-out/$name-source.txt"
+              --target-dir probe-target 2>&1 | tee "recursive-out/build-$name.log"
+            python3 -m ci.x64_warning_audit "recursive-out/build-$name.log"
+            cp probe-target/release/sf-x64-probe "recursive-out/$name"
+            git -C "source-$name" rev-parse HEAD > "recursive-out/$name-source.txt"
           done
-      - name: Compare the exact CoreMark module
+      - name: Compare the recursive execution workload
         run: |
-          lscpu > coremark-out/cpu.txt
-          rustc --version > coremark-out/rustc.txt
-          sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
+          lscpu > recursive-out/cpu.txt
+          rustc --version > recursive-out/rustc.txt
+          sha256sum wasmi-benchmarks/res/wat/fibonacci-rec.wat > recursive-out/wasm-sha256.txt
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
-            --variant main="$PWD/coremark-out/main" \
-            --variant parent="$PWD/coremark-out/parent" \
-            --variant inline="$PWD/coremark-out/inline" \
-            --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
+            --variant main="$PWD/recursive-out/main" \
+            --variant parent="$PWD/recursive-out/parent" \
+            --variant structured="$PWD/recursive-out/structured" \
+            --wasm wasmi-benchmarks/res/wat/fibonacci-rec.wat --mode i64 --input 35 --expected-output-i64 9227465 --seconds 2 --rounds 6 --out-dir recursive-out
       - name: Capture the native code of every revision
         run: |
-          for name in main parent inline; do
+          for name in main parent structured; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
-              "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
+              "recursive-out/$name" wasmi-benchmarks/res/wat/fibonacci-rec.wat coremark-dump
           done
-      - name: Sample parent and candidate CoreMark machine-code hotspots
+      - name: Sample parent and candidate recursive machine-code hotspots
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq linux-tools-common linux-tools-generic
           PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
           sudo sysctl -w kernel.perf_event_paranoid=1
-          for name in parent inline; do
+          for name in parent structured; do
             taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
               --perf "$PERF_BIN" --out-dir "profile-out/$name" -- \
-              "$PWD/coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark
+              "$PWD/recursive-out/$name" wasmi-benchmarks/res/wat/fibonacci-rec.wat i64 35 10
           done
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-small-call-inline-${{ matrix.draw }}
+          name: nano-recursive-structured-inline-${{ matrix.draw }}
           path: |
-            coremark-out/*.log
-            coremark-out/*.json
-            coremark-out/*.txt
-            coremark-out/*.md
+            recursive-out/*.log
+            recursive-out/*.json
+            recursive-out/*.txt
+            recursive-out/*.md
             native-out/
             profile-out/
           if-no-files-found: error

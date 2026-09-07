@@ -1,5 +1,5 @@
 # Temporary Nano-only compilation-cost isolation. No PR/main/dev trigger.
-name: jit-startup-small-call-inlining
+name: jit-startup-structured-call-inlining
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,7 +12,7 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano JIT startup / small call inlining / ${{ matrix.platform }}
+    name: Nano JIT startup / structured call inlining / ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     strategy:
@@ -44,8 +44,8 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 7fbc510b0fc6edd06d2bd926c6ba0e49d4b3f4ee
-          path: source-inline
+          ref: 3b88ca70769f6544d58b6e796839ed6f68c6c7bf
+          path: source-structured
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -66,7 +66,7 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           import json, os, shutil
-          for name in ['main', 'parent', 'inline']:
+          for name in ['main', 'parent', 'structured']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('startup-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -75,11 +75,11 @@ jobs:
               # Match normal JIT features; debug exporters would add startup work.
               manifest.write_text(code.replace(', "jit-debug"', ''))
           PYCODE
-          for name in main parent inline; do
+          for name in main parent structured; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-inline
+        working-directory: source-structured
         run: |
           cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../startup-out/correctness-core.log
           if [ "$(uname -m)" = x86_64 ] && grep -q "BMI2 execution check skipped" ../startup-out/correctness-core.log; then
@@ -96,12 +96,12 @@ jobs:
       - name: Build identical probes for every source revision
         run: |
           RUSTFLAGS="${RUSTFLAGS:-}"
-          for name in main parent inline; do
+          for name in main parent structured; do
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$PWD/source-$name=/nano-source"
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$RUNNER_TEMP/startup-$name=/nano-probe"
           done
           export RUSTFLAGS
-          for name in main parent inline; do
+          for name in main parent structured; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
               --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
             python3 -m ci.x64_warning_audit "startup-out/build-$name.log"
@@ -122,7 +122,7 @@ jobs:
             taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_startup_compare \
               --variant main="$PWD/startup-out/main" \
               --variant parent="$PWD/startup-out/parent" \
-              --variant inline="$PWD/startup-out/inline" \
+              --variant structured="$PWD/startup-out/structured" \
               --wasm "$wasm" \
               --rounds 6 --seconds 2 --out-dir "startup-out/$workload-results"
             sha256sum "$wasm" > "startup-out/$workload-sha256.txt"
@@ -138,7 +138,7 @@ jobs:
             if [ "$workload" = argon2 ]; then
               wasm="wasmi-benchmarks/res/rust/cases/argon2/out.wasm"
             fi
-            for name in main parent inline; do
+            for name in main parent structured; do
               taskset -c 1 setarch "$(uname -m)" -R "$PERF_BIN" record \
                 -e cpu-clock:u -F 999 -k mono -o "startup-out/$workload-$name-perf.data" -- \
                 "$PWD/startup-out/$name" "$wasm" startup 0 10
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-startup-small-call-inline-${{ matrix.platform }}
+          name: nano-startup-structured-inline-${{ matrix.platform }}
           path: |
             startup-out/**/*.log
             startup-out/**/*.json
