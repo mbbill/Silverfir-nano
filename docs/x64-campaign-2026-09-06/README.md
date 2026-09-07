@@ -124,4 +124,6 @@ dependency warnings and RV32 linker inputs. The later local workspace test
 result is 683 passed / 4 ignored, with no compiler warnings. Historical
 selected-source equality and test results above describe the initial PR;
 subsequent test and CI/toolchain repairs do not change the JIT optimization
-policy. Remote final validation remains pending.
+policy. The user-approved standalone spectest fix from PR #41 also enables
+the shared WAST runner with either engine independently and uses pure interp
+for interpreter spec execution in CI. Remote final validation remains pending.
