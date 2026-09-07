@@ -36,7 +36,7 @@ for variant in variants:
         (candidate / backend).write_text(asm)
         (candidate / generator).write_text(gen)
     subprocess.run(['cargo', 'build', '-p', 'sf-nano-core', '--release', '--no-default-features', '--features', 'interp'], cwd=checkout, env=env, check=True)
-    output = work / variant
+    output = work / ("probe-" + variant)
     subprocess.run(['rustc', '--edition=2021', '-C', 'opt-level=3', '-C', 'lto', str(root / 'ci/global_probe/probe.rs'), '--extern', f'sf_nano_core={target}/release/libsf_nano_core.rlib', '-L', f'{target}/release/deps', '-o', str(output)], check=True)
     outputs[variant] = output
     print('BUILT', variant, flush=True)
