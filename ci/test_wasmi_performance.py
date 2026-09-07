@@ -77,6 +77,34 @@ class WasmiPerformanceTests(unittest.TestCase):
                 wasmi_performance.adapt_runtime_api(suite, source)
             self.assertEqual(adapter.read_text(), "different_api\n")
 
+    def test_adapter_migration_inside_a_parent_checkout_is_not_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "ci").mkdir()
+            (root / "ci/wasmi_adapter.patch").write_text(
+                "diff --git a/adapter.rs b/adapter.rs\n"
+                "--- a/adapter.rs\n+++ b/adapter.rs\n"
+                "@@ -1 +1 @@\n-old_api\n+new_api\n",
+                encoding="utf-8",
+            )
+            # Match CI's copied suite nested below the runtime checkout.
+            # A same-named parent file must not be the patch target either.
+            parent_adapter = root / "adapter.rs"
+            parent_adapter.write_text("old_api\n", encoding="utf-8")
+            suite = root / "wasmi-work/x64-linux/jit/candidate/suite"
+            suite.mkdir(parents=True)
+            adapter = suite / "adapter.rs"
+            adapter.write_text("old_api\n", encoding="utf-8")
+            digest = wasmi_performance.adapt_runtime_api(suite, root)
+            self.assertEqual(adapter.read_text(), "new_api\n")
+            self.assertEqual(parent_adapter.read_text(), "old_api\n")
+            self.assertEqual(wasmi_performance.adapt_runtime_api(suite, root), digest)
+            adapter.write_text("drifted_api\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "command failed"):
+                wasmi_performance.adapt_runtime_api(suite, root)
+            self.assertEqual(adapter.read_text(), "drifted_api\n")
+
     def test_manifest_has_all_criterion_groups_without_score_runner(
         self,
     ) -> None:

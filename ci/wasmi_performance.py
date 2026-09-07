@@ -398,7 +398,11 @@ def adapt_runtime_api(suite: Path, source: Path) -> str | None:
     migration = source.resolve() / "ci" / "wasmi_adapter.patch"
     if not migration.is_file():
         return None
-    env = dict(os.environ)
+    # The copied suite has no .git and lives below the runtime checkout in CI.
+    # Stop discovery before reaching that parent repository: otherwise apply
+    # treats suite-relative patch paths as outside the cwd prefix and silently
+    # skips them while returning success. Apply to this standalone tree only.
+    env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(suite.resolve().parent))
     command = ["git", "apply", "--check", str(migration)]
     check = run_process(command, cwd=suite, env=env, capture=True, check=False)
     if check.returncode:
