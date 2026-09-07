@@ -973,14 +973,14 @@ impl Isa for X86_64 {
                 }
             }
             GlobalGet => {
-                a.ins("mov rax, [rbx + 8]"); // storage cell address
+                a.ins("mov rax, [rbx + 16]"); // storage cell address
                 let rd = self.dst_target(dc);
                 a.ins(&format!("mov {}, [rax]", q(rd)));
                 self.finish(a, dc, rd);
             }
             GlobalSet => {
                 let ra = self.src(a, v.a, 8, RAX);
-                a.ins("mov rdx, [rbx + 24]"); // storage cell address
+                a.ins("mov rdx, [rbx + 16]"); // storage cell address
                 a.ins(&format!("mov [rdx], {}", q(ra)));
             }
             I32_Eqz | I64_Eqz => {

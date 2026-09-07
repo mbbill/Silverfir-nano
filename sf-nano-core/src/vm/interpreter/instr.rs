@@ -438,7 +438,8 @@ pub enum Op {
     DataDrop,
 
     // globals: `a` = global index (get) / source operand (set), `c` = dst
-    // slot (get) / global index (set)
+    // slot (get) / global index (set), `b` = resolved storage cell address.
+    // Keep the semantic index for the Rust executor and reference conversion.
     GlobalGet,
     GlobalSet,
 

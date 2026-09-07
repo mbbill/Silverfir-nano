@@ -1143,7 +1143,7 @@ impl Isa for RiscV {
                 }
             }
             GlobalGet => {
-                a.ins(&format!("{lp} {T1}, 8({PC})"));
+                a.ins(&format!("{lp} {T1}, 16({PC})"));
                 let rd = self.dst_target(v.d);
                 a.ins(&format!("{lp} {rd}, 0({T1})"));
                 if !self.rv64() {
@@ -1153,7 +1153,7 @@ impl Isa for RiscV {
             }
             GlobalSet => {
                 let (x, xh) = self.pair(a, v.a, 8, T1, T2);
-                a.ins(&format!("{lp} {T5}, 24({PC})"));
+                a.ins(&format!("{lp} {T5}, 16({PC})"));
                 a.ins(&format!("{} {x}, 0({T5})", self.sp()));
                 if !self.rv64() {
                     a.ins(&format!("sw {xh}, 4({T5})"));

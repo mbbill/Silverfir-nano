@@ -1145,14 +1145,14 @@ impl Isa for Arm64 {
                 }
             }
             GlobalGet => {
-                a.ins("ldr x10, [x19, #8]"); // a = storage cell address
+                a.ins("ldr x10, [x19, #16]"); // b = storage cell address
                 let rd = self.dst_target(d);
                 a.ins(&format!("ldr {}, [x10]", x(rd)));
                 self.finish(a, d, rd);
             }
             GlobalSet => {
                 let ra = self.src_a(a, v.a, 10);
-                a.ins("ldr x12, [x19, #24]"); // c = storage cell address
+                a.ins("ldr x12, [x19, #16]"); // b = storage cell address
                 a.ins(&format!("str {}, [x12]", x(ra)));
             }
             I32_Eqz | I64_Eqz => {
