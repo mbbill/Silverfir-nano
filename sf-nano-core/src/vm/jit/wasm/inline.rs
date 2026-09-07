@@ -7,7 +7,6 @@
 //! together; no frame, register, or machine-call ABI exists at this stage.
 
 use crate::{collections, value_type::ValueType};
-use tracked_alloc::collections::BTreeMap;
 
 use super::{
     common::SemanticTarget,
@@ -61,7 +60,12 @@ pub(crate) fn inline_small_calls(
     }
     let original_stack = caller.max_stack_height;
     let mut added_ops = 0;
-    let mut bodies = BTreeMap::new();
+    // Rejected candidates need only a key and a negative result, not a tree
+    // node containing a full InlineBody-sized entry for every possible key.
+    let mut keys = [0; MAX_CANDIDATE_BODIES];
+    let mut body_ids = [None::<u8>; MAX_CANDIDATE_BODIES];
+    let mut cached = 0;
+    let mut bodies = collections::Vec::new();
     let mut expansions = collections::Vec::new();
     for (index, op) in caller.ops.iter().enumerate() {
         let SemanticOpKind::CallDirect {
@@ -74,39 +78,24 @@ pub(crate) fn inline_small_calls(
         };
         // Negative candidates consume cache space too. A caller with many
         // distinct calls must not decode and retain an unbounded callee set.
-        if bodies.len() == MAX_CANDIDATE_BODIES && !bodies.contains_key(&callee) {
-            continue;
-        }
-        let body = bodies.entry(callee).or_insert_with(|| {
-            let program = resolve(callee)?;
-            if !within_body_limits(&program) {
-                return None;
+        let body_id = if let Some(slot) = keys[..cached].iter().position(|&key| key == callee) {
+            body_ids[slot]
+        } else {
+            if cached == MAX_CANDIDATE_BODIES {
+                continue;
             }
-            let return_drops = if eligible_straight_line_body(&program) {
-                // Expanding a straight-line wrapper leaves all inner calls
-                // while growing the caller's live locals and frame. Reserve
-                // non-leaf expansion for bodies that expose control flow.
-                if program.ops.iter().any(|op| {
-                    matches!(
-                        op.kind,
-                        SemanticOpKind::CallDirect { .. }
-                            | SemanticOpKind::CallIndirect { .. }
-                            | SemanticOpKind::CallRef { .. }
-                    )
-                }) {
-                    return None;
-                }
-                collections::Vec::new()
-            } else {
-                structured_return_drops(&program)?
-            };
-            Some(InlineBody {
-                program,
-                return_drops,
-            })
-        });
-        let Some(body) = body else { continue };
-        let body = &body.program;
+            let body_id = resolve(callee).and_then(inline_body).map(|body| {
+                let id = bodies.len() as u8;
+                bodies.push(body);
+                id
+            });
+            keys[cached] = callee;
+            body_ids[cached] = body_id;
+            cached += 1;
+            body_id
+        };
+        let Some(body_id) = body_id else { continue };
+        let body = &bodies[usize::from(body_id)].program;
         if body.params != params || body.results != results {
             continue;
         }
@@ -124,7 +113,7 @@ pub(crate) fn inline_small_calls(
         {
             continue;
         }
-        expansions.push((index, callee, caller.local_count));
+        expansions.push((index, body_id, caller.local_count));
         caller.local_count = local_count;
         caller.max_stack_height = stack_height;
         caller.local_types.extend_from_slice(&body.local_types);
@@ -143,9 +132,9 @@ pub(crate) fn inline_small_calls(
     let mut expansion = expansions.iter().peekable();
     for (index, op) in old_ops.into_iter().enumerate() {
         offsets[index] = caller.ops.len();
-        if let Some(&&(site, callee, local_base)) = expansion.peek() {
+        if let Some(&&(site, body_id, local_base)) = expansion.peek() {
             if site == index {
-                let body = bodies[&callee].as_ref().expect("validated inline body");
+                let body = &bodies[usize::from(body_id)];
                 append_body(caller, body, local_base);
                 expansion.next();
                 continue;
@@ -163,6 +152,34 @@ pub(crate) fn inline_small_calls(
     for index in caller_ops {
         relocate_targets(&mut caller.ops[index].kind, &offsets);
     }
+}
+
+fn inline_body(program: SemanticProgram) -> Option<InlineBody> {
+    if !within_body_limits(&program) {
+        return None;
+    }
+    let return_drops = if eligible_straight_line_body(&program) {
+        // Expanding a straight-line wrapper leaves all inner calls while
+        // growing live locals and frame. Reserve non-leaf expansion for
+        // bodies that expose control flow.
+        if program.ops.iter().any(|op| {
+            matches!(
+                op.kind,
+                SemanticOpKind::CallDirect { .. }
+                    | SemanticOpKind::CallIndirect { .. }
+                    | SemanticOpKind::CallRef { .. }
+            )
+        }) {
+            return None;
+        }
+        collections::Vec::new()
+    } else {
+        structured_return_drops(&program)?
+    };
+    Some(InlineBody {
+        program,
+        return_drops,
+    })
 }
 
 fn loop_count(body: &SemanticProgram) -> usize {
@@ -713,7 +730,7 @@ mod tests {
         caller.op_result_types.clear();
         caller.results = 0;
         caller.result_types.clear();
-        for callee in 0..12 {
+        for callee in (0..12).chain(0..2) {
             caller.ops.push(SemanticOp {
                 kind: SemanticOpKind::LocalGet { idx: 0 },
             });
