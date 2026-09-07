@@ -32,13 +32,13 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: c76c3765b33281a2713e7fecf369b6415dcf8c7c
+          ref: 42396c9dba2da406348f4238b4f4dd673af25cd2
           path: source-parent
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 70fdef74fe5539a5b855a9a4035e392945cebaaa
-          path: source-fallthrough
+          ref: 178cc0896f8d0e5d63034518664b78c692336b33
+          path: source-forward
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -47,6 +47,8 @@ jobs:
           path: wasmi-benchmarks
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: x64-nano-probes
@@ -56,7 +58,7 @@ jobs:
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['main', 'parent', 'fallthrough']:
+          for name in ['main', 'parent', 'forward']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -65,11 +67,11 @@ jobs:
           PYCODE
       - name: Save and audit the source variants
         run: |
-          for name in main parent fallthrough; do
+          for name in main parent forward; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-fallthrough
+        working-directory: source-forward
         env:
           CARGO_TERM_COLOR: never
         run: |
@@ -89,7 +91,7 @@ jobs:
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in main parent fallthrough; do
+          for name in main parent forward; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
@@ -104,11 +106,11 @@ jobs:
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant main="$PWD/coremark-out/main" \
             --variant parent="$PWD/coremark-out/parent" \
-            --variant fallthrough="$PWD/coremark-out/fallthrough" \
+            --variant forward="$PWD/coremark-out/forward" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
       - name: Capture the native code of every revision
         run: |
-          for name in main parent fallthrough; do
+          for name in main parent forward; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
@@ -118,7 +120,7 @@ jobs:
           sudo apt-get install -y -qq linux-tools-common linux-tools-generic
           PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
           sudo sysctl -w kernel.perf_event_paranoid=1
-          for name in parent fallthrough; do
+          for name in parent forward; do
             taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
               --perf "$PERF_BIN" --out-dir "profile-out/$name" -- \
               "$PWD/coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark
@@ -126,7 +128,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-fallthrough-${{ matrix.draw }}
+          name: nano-coremark-forward-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
