@@ -61,5 +61,76 @@
         "| startup/spidermonkey | 2.761s | 2.885s | -4.30% (-5.76%..-3.61%) | 0.64% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |"
       ]
     }
+  ],
+  "followup_runs": [
+    {
+      "run_id": 34147924398,
+      "pr_head": "e9abb91d3dc0ef62194dcd6b3e1740fae2d3d271",
+      "baseline": "0983d9e487db6a9c50a34be6f596d6b66bf3e942",
+      "stage": "All four independent startup confirmation jobs fail; x64 interpreter Fibonacci execution pilot regression not reproduced",
+      "jobs": [
+        {
+          "id": 101827918518,
+          "platform": "x64-linux",
+          "engine": "interp",
+          "url": "https://github.com/mbbill/Silverfir-nano/actions/runs/34147924398/job/101827918518",
+          "conclusion": "failure",
+          "rows": [
+            "| startup/bz2 | 1.622ms | 2.767ms | -41.38% (-42.37%..-40.79%) | 0.68% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/spidermonkey | 88.772ms | 146.281ms | -39.31% (-39.73%..-38.91%) | 0.38% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/ffmpeg | 323.026ms | 535.389ms | -39.67% (-40.22%..-38.14%) | 0.98% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/coremark | 158.454us | 272.975us | -41.95% (-42.99%..-41.33%) | 0.83% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/argon2 | 673.398us | 1.147ms | -41.28% (-41.93%..-41.03%) | 0.43% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/erc20 | 145.748us | 243.098us | -40.05% (-40.46%..-39.74%) | 0.37% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |"
+          ]
+        },
+        {
+          "id": 101827918602,
+          "platform": "arm64-linux",
+          "engine": "interp",
+          "url": "https://github.com/mbbill/Silverfir-nano/actions/runs/34147924398/job/101827918602",
+          "conclusion": "failure",
+          "rows": [
+            "| startup/bz2 | 1.305ms | 2.244ms | -41.87% (-42.12%..-41.19%) | 0.46% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/pulldown-cmark | 3.222ms | 5.358ms | -39.88% (-40.07%..-39.26%) | 0.39% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/spidermonkey | 67.633ms | 114.885ms | -41.13% (-41.31%..-40.87%) | 0.22% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/ffmpeg | 282.459ms | 461.411ms | -38.78% (-38.95%..-38.58%) | 0.16% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/coremark | 105.536us | 201.640us | -47.66% (-47.87%..-47.50%) | 0.22% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/argon2 | 514.924us | 901.083us | -42.85% (-43.03%..-42.67%) | 0.19% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/erc20 | 103.840us | 184.166us | -43.62% (-43.92%..-43.36%) | 0.33% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |"
+          ]
+        },
+        {
+          "id": 101827918671,
+          "platform": "x64-linux",
+          "engine": "jit",
+          "url": "https://github.com/mbbill/Silverfir-nano/actions/runs/34147924398/job/101827918671",
+          "conclusion": "failure",
+          "rows": [
+            "| startup/bz2 | 53.749ms | 54.980ms | -2.24% (-3.21%..-1.20%) | 0.75% | 99.999759% | 0.000241% | 10 | 1 | 99.999980% | NEGLIGIBLE |",
+            "| startup/pulldown-cmark | 126.836ms | 130.449ms | -2.77% (-3.40%..-1.11%) | 0.65% | 99.999988% | 0.000012% | 10 | 1 | 99.999999% | **REGRESSION** |",
+            "| startup/spidermonkey | 2.817s | 2.910s | -3.18% (-3.45%..-2.91%) | 0.21% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/ffmpeg | 9.654s | 10.030s | -3.74% (-4.67%..-2.99%) | 0.59% | >99.999999% | <0.000001% | 10 | 1 | 99.999998% | **REGRESSION** |"
+          ]
+        },
+        {
+          "id": 101827918647,
+          "platform": "arm64-linux",
+          "engine": "jit",
+          "url": "https://github.com/mbbill/Silverfir-nano/actions/runs/34147924398/job/101827918647",
+          "conclusion": "failure",
+          "rows": [
+            "| startup/spidermonkey | 2.562s | 2.625s | -2.39% (-2.84%..-2.13%) | 0.23% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+            "| startup/erc20 | 3.777ms | 3.911ms | -3.42% (-3.60%..-3.05%) | 0.17% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |"
+          ]
+        }
+      ],
+      "execution_confirmation": {
+        "job_id": 101827918583,
+        "rows": [
+          "| execute/fibonacci-iter | 4.979ms | 4.978ms | +0.02% (-0.09%..+0.18%) | 0.11% | 29.472401% | 70.527599% | 10 | 1 | 70.527599% | PASS |"
+        ]
+      }
+    }
   ]
 }

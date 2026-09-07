@@ -164,6 +164,8 @@ unsafe fn dispatch_preserved(
             let val = unsafe { *io_ptr.add(io::ARG1) } as u8;
             let len = unsafe { *io_ptr.add(io::ARG2) } as usize;
             let mem = super::ops::memory_mut(ctx, mem_idx)?;
+            let dest = super::ops::normalize_index(dest, mem.limits.is64);
+            let len = super::ops::normalize_index(len, mem.limits.is64);
             let mem_len = mem.memory_len();
             if dest.saturating_add(len) > mem_len {
                 return Err(trap_error("out of bounds memory access"));

@@ -60,8 +60,11 @@ suppressions; hosted final-head validation is still pending.
 The added resource-growth tests exposed old x64 memory64/table64 truncation
 and interpreter table64 growth semantics. Separate fixes preserve full deltas,
 check limits and overflow, and return the correctly typed -1 on failure. Tests
-reproduce the old failures and pass after the fixes on local x64/ARM64. An
-adjacent bulk-memory/table index-width audit remains outstanding.
+reproduce the old failures and pass after the fixes on local x64/ARM64. The adjacent bulk-memory/table audit found additional old truncation defects.
+Those fixes preserve each source/destination index width and check overflow;
+ARM64's memory32 fast path now requires explicit module-type evidence. Local
+x64/ARM64 bulk-index tests pass; final-head execution performance must still
+be measured.
 
 Remote administration also remains unavailable through the current authorized
 tools; the requested authentication choice has not been answered. The exact

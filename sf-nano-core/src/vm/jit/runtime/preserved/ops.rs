@@ -1322,6 +1322,17 @@ fn memory_grow_succeeded(result: u64, error_value: u64) -> bool {
     result != error_value
 }
 
+/// Interpret a raw helper operand using the selected resource's index type.
+/// Backends pass full machine words; memory32/table32 ignore unused high bits.
+#[inline]
+pub(super) fn normalize_index(raw: usize, is64: bool) -> usize {
+    if is64 {
+        raw
+    } else {
+        raw as u32 as usize
+    }
+}
+
 pub(super) fn do_memory_copy(
     ctx: &mut NativeContext,
     dst_mem_idx: u32,
@@ -1340,6 +1351,11 @@ pub(super) fn do_memory_copy(
             "preserved helper referenced invalid memory index",
         ));
     }
+    let dst64 = store.module().memories[di].limits.is64;
+    let src64 = store.module().memories[si].limits.is64;
+    let dest = normalize_index(dest, dst64);
+    let src = normalize_index(src, src64);
+    let len = normalize_index(len, dst64 && src64);
     if di == si {
         let mem = store.memory_mut(di);
         let mem_len = mem.memory_len();
@@ -1391,6 +1407,9 @@ pub(super) fn do_memory_init(
     if di >= module.data.len() {
         return Err(trap_error("out of bounds memory access"));
     }
+    let dest = normalize_index(dest, module.memories[mi].limits.is64);
+    let src = src as u32 as usize;
+    let len = len as u32 as usize;
     let data_bytes = &module.data[di].bytes;
     let data_dropped = module.data[di].is_dropped();
     let mem_len = module.memories[mi].memory_len();
@@ -1477,6 +1496,8 @@ pub(super) fn do_table_fill(
         retag_for_container(store, ref_from_machine(val_raw), reachable)
     };
     let table = table_mut(ctx, table_idx)?;
+    let start = normalize_index(start, table.limits.is64);
+    let len = normalize_index(len, table.limits.is64);
     let mut elements = table.elements_mut();
     if start.saturating_add(len) > elements.len() {
         return Err(trap_error("out of bounds table access"));
@@ -1503,13 +1524,16 @@ pub(super) fn do_table_copy(
             ));
         }
         let table = store.table_mut(di);
+        let dest = normalize_index(dest, table.limits.is64);
+        let src = normalize_index(src, table.limits.is64);
+        let len = normalize_index(len, table.limits.is64);
         let mut elements = table.elements_mut();
         if src.saturating_add(len) > elements.len() || dest.saturating_add(len) > elements.len() {
             return Err(trap_error("out of bounds table access"));
         }
         elements.copy_within(src..src + len, dest);
     } else {
-        let copied = {
+        let (copied, dest) = {
             let store = current_store(ctx)?;
             let module = store.module();
             if di >= module.tables.len() || si >= module.tables.len() {
@@ -1517,6 +1541,11 @@ pub(super) fn do_table_copy(
                     "preserved helper referenced invalid table index",
                 ));
             }
+            let dst64 = module.tables[di].limits.is64;
+            let src64 = module.tables[si].limits.is64;
+            let dest = normalize_index(dest, dst64);
+            let src = normalize_index(src, src64);
+            let len = normalize_index(len, dst64 && src64);
             let src_elements = module.tables[si].elements();
             let dst_elements = module.tables[di].elements();
             if src.saturating_add(len) > src_elements.len()
@@ -1539,11 +1568,11 @@ pub(super) fn do_table_copy(
                         .map(|handle| retag_for_container(store, *handle, destination_reachable)),
                 );
             }
-            copied
+            (copied, dest)
         };
         let store = current_store_mut(ctx)?;
         let mut dst_elements = store.module_mut().tables[di].elements_mut();
-        dst_elements[dest..dest + len].copy_from_slice(&copied);
+        dst_elements[dest..dest + copied.len()].copy_from_slice(&copied);
     }
     Ok(())
 }
@@ -1558,7 +1587,7 @@ pub(super) fn do_table_init(
 ) -> Result<(), WasmError> {
     let ti = table_idx as usize;
     let ei = elem_idx as usize;
-    let copied = {
+    let (copied, dest) = {
         let store = current_store(ctx)?;
         let module = store.module();
         if ti >= module.tables.len() {
@@ -1569,6 +1598,9 @@ pub(super) fn do_table_init(
         if ei >= module.elements.len() {
             return Err(trap_error("out of bounds table access"));
         }
+        let dest = normalize_index(dest, module.tables[ti].limits.is64);
+        let src = src as u32 as usize;
+        let len = len as u32 as usize;
         let elem = &module.elements[ei];
         let table_len = module.tables[ti].size();
         if len == 0 {
@@ -1597,11 +1629,11 @@ pub(super) fn do_table_init(
                     .map(|handle| retag_for_container(store, *handle, false)),
             );
         }
-        copied
+        (copied, dest)
     };
     let store = current_store_mut(ctx)?;
     let mut table_elements = store.module_mut().tables[ti].elements_mut();
-    table_elements[dest..dest + len].copy_from_slice(&copied);
+    table_elements[dest..dest + copied.len()].copy_from_slice(&copied);
     Ok(())
 }
 

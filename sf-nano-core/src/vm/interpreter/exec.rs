@@ -323,6 +323,16 @@ impl TableEntries {
     }
 }
 
+/// Raw slots retain all bits; only a 32-bit resource truncates its indices.
+#[inline]
+fn resource_index(raw: u64, is64: bool) -> u64 {
+    if is64 {
+        raw
+    } else {
+        raw as u32 as u64
+    }
+}
+
 struct TableState {
     entries: TableEntries,
     max: u64,
@@ -4038,12 +4048,13 @@ impl InterpInstance {
             Op::MemoryFill => {
                 let base = ins.a as usize;
                 let (d, val, n) = (frame[base], frame[base + 1], frame[base + 2]);
-                let (d, n) = (d as u32 as u64, n as u32 as u64);
                 let mem = self
                     .memories
                     .get_mut(ins.b as usize)
                     .ok_or(WasmError::trap("out of bounds memory access"))?;
-                if d + n > mem.len() as u64 {
+                let d = resource_index(d, mem.is64);
+                let n = resource_index(n, mem.is64);
+                if d.checked_add(n).is_none_or(|end| end > mem.len() as u64) {
                     return Err(WasmError::trap("out of bounds memory access"));
                 }
                 mem.bytes_mut()[d as usize..(d + n) as usize].fill(val as u8);
@@ -4051,16 +4062,13 @@ impl InterpInstance {
             Op::MemoryCopy => {
                 let base = ins.a as usize;
                 let (d, s0, n) = (frame[base], frame[base + 1], frame[base + 2]);
-                // A 64-bit memory's operands are the whole slots; truncating
-                // a size of -1 to 32 bits turns an out-of-bounds copy into a
-                // merely large one.
-                let (d, s0, n) = if ins.flags & FLAG_ADDR64 != 0 {
-                    (d, s0, n)
-                } else {
-                    (d as u32 as u64, s0 as u32 as u64, n as u32 as u64)
-                };
                 let dm = (ins.b >> 32) as usize;
                 let sm = (ins.b & 0xffff_ffff) as usize;
+                let dst64 = self.memories[dm].is64;
+                let src64 = self.memories[sm].is64;
+                let d = resource_index(d, dst64);
+                let s0 = resource_index(s0, src64);
+                let n = resource_index(n, dst64 && src64);
                 let dlen = self.memories.get(dm).map(|x| x.len()).unwrap_or(0) as u64;
                 let slen = self.memories.get(sm).map(|x| x.len()).unwrap_or(0) as u64;
                 if d.checked_add(n).is_none_or(|e| e > dlen)
@@ -4134,7 +4142,8 @@ impl InterpInstance {
                 let m = (ins.b >> 32) as usize;
                 let seg = (ins.b & 0xffff_ffff) as usize;
                 let (d, s0, n) = (frame[base], frame[base + 1], frame[base + 2]);
-                let (d, s0, n) = (d as u32 as u64, s0 as u32 as u64, n as u32 as u64);
+                let d = resource_index(d, self.memories[m].is64);
+                let (s0, n) = (s0 as u32 as u64, n as u32 as u64);
                 let data = self
                     .module
                     .data()
@@ -4144,12 +4153,8 @@ impl InterpInstance {
                 let dropped = self.dropped_data.get(seg).copied().unwrap_or(true);
                 let src_len = if dropped { 0 } else { data.len() as u64 };
                 let mlen = self.memories.get(m).map(|x| x.len()).unwrap_or(0) as u64;
-                if d + n > mlen || s0 + n > src_len {
-                    // A zero-size init on a dropped segment must succeed
-                    // when both offsets are in bounds.
-                    if !(n == 0 && d <= mlen && s0 <= src_len) {
-                        return Err(WasmError::trap("out of bounds memory access"));
-                    }
+                if d.checked_add(n).is_none_or(|end| end > mlen) || s0 + n > src_len {
+                    return Err(WasmError::trap("out of bounds memory access"));
                 }
                 if n > 0 {
                     let (d, s0, n) = (d as usize, s0 as usize, n as usize);
@@ -4353,19 +4358,17 @@ impl InterpInstance {
             }
             Op::TableFill => {
                 let base = ins.a as usize;
-                let (i, val, n) = (
-                    frame[base] as u32 as u64,
-                    frame[base + 1],
-                    frame[base + 2] as u32 as u64,
-                );
+                let (i, val, n) = (frame[base], frame[base + 1], frame[base + 2]);
                 let table_idx = ins.b as usize;
+                let i = resource_index(i, self.tables[table_idx].is64);
+                let n = resource_index(n, self.tables[table_idx].is64);
                 let len = self
                     .tables
                     .get(table_idx)
                     .ok_or(WasmError::trap("out of bounds table access"))?
                     .entries
                     .len() as u64;
-                if i + n > len {
+                if i.checked_add(n).is_none_or(|end| end > len) {
                     return Err(WasmError::trap("out of bounds table access"));
                 }
                 if n > 0 {
@@ -4377,16 +4380,19 @@ impl InterpInstance {
             }
             Op::TableCopy => {
                 let base = ins.a as usize;
-                let (d, s0, n) = (
-                    frame[base] as u32 as u64,
-                    frame[base + 1] as u32 as u64,
-                    frame[base + 2] as u32 as u64,
-                );
+                let (d, s0, n) = (frame[base], frame[base + 1], frame[base + 2]);
                 let dt = (ins.b >> 32) as usize;
                 let st = (ins.b & 0xffff_ffff) as usize;
+                let dst64 = self.tables[dt].is64;
+                let src64 = self.tables[st].is64;
+                let d = resource_index(d, dst64);
+                let s0 = resource_index(s0, src64);
+                let n = resource_index(n, dst64 && src64);
                 let dlen = self.tables.get(dt).map(|t| t.entries.len()).unwrap_or(0) as u64;
                 let slen = self.tables.get(st).map(|t| t.entries.len()).unwrap_or(0) as u64;
-                if d + n > dlen || s0 + n > slen {
+                if d.checked_add(n).is_none_or(|end| end > dlen)
+                    || s0.checked_add(n).is_none_or(|end| end > slen)
+                {
                     return Err(WasmError::trap("out of bounds table access"));
                 }
                 // Copied through the accessors, and back-to-front when the
@@ -4416,11 +4422,12 @@ impl InterpInstance {
             Op::TableInit => {
                 let base = ins.a as usize;
                 let (d, s0, n) = (
-                    frame[base] as u32 as u64,
+                    frame[base],
                     frame[base + 1] as u32 as u64,
                     frame[base + 2] as u32 as u64,
                 );
                 let tidx = (ins.b >> 32) as usize;
+                let d = resource_index(d, self.tables[tidx].is64);
                 let seg = (ins.b & 0xffff_ffff) as usize;
                 let dropped = self.dropped_elems.get(seg).copied().unwrap_or(true);
                 let seg_len = if dropped {
@@ -4436,10 +4443,8 @@ impl InterpInstance {
                         .unwrap_or(0) as u64
                 };
                 let tlen = self.tables.get(tidx).map(|t| t.entries.len()).unwrap_or(0) as u64;
-                if d + n > tlen || s0 + n > seg_len {
-                    if !(n == 0 && d <= tlen && s0 <= seg_len) {
-                        return Err(WasmError::trap("out of bounds table access"));
-                    }
+                if d.checked_add(n).is_none_or(|end| end > tlen) || s0 + n > seg_len {
+                    return Err(WasmError::trap("out of bounds table access"));
                 }
                 for k in 0..n as usize {
                     let v = self.elem_value(seg, s0 as usize + k)?;

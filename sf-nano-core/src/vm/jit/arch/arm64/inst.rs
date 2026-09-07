@@ -4032,7 +4032,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         val: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
-        if mem_idx == 0 {
+        if mem_idx == 0 && self.core.compiled.memory0_is64() == Some(false) {
             // x0-x2 are ordinary dynamic-register lanes inside JIT code.  A
             // bulk op can therefore receive one of its inputs in the same
             // physical register that the C ABI uses for an earlier argument.
@@ -4087,7 +4087,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         src: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
-        if dst_mem == 0 && src_mem == 0 {
+        if dst_mem == 0 && src_mem == 0 && self.core.compiled.memory0_is64() == Some(false) {
             let dest_stage_idx = self.gp_scratch.alloc();
             let src_stage_idx = self.gp_scratch.alloc();
             let len_stage_idx = self.fp_scratch.alloc();

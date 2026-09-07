@@ -167,6 +167,8 @@ pub(crate) fn lower_module_with_table_dispatch_modes(
         drop(mir_lower_function_phase);
     }
     let abi = MachineModuleAbi {
+        #[cfg(sf_backend_arm64)]
+        memory0_is64: None,
         functions: function_abis,
     };
 
