@@ -1,5 +1,5 @@
 # Temporary Nano-only compilation-cost isolation. No PR/main/dev trigger.
-name: jit-startup-loop-cache-priority
+name: jit-startup-gp-temporary-reuse
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,7 +12,7 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano JIT startup / loop cache priority / ${{ matrix.platform }}
+    name: Nano JIT startup / GP temporary reuse / ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     strategy:
@@ -44,8 +44,8 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 3388ae6786e74306849431b548ca84d9fd350666
-          path: source-priority
+          ref: 8f69395be2f1a2c652b9ade0ba17b5f637e4ed74
+          path: source-reuse
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -66,7 +66,7 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           import json, os, shutil
-          for name in ['main', 'parent', 'priority']:
+          for name in ['main', 'parent', 'reuse']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('startup-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -75,11 +75,11 @@ jobs:
               # Match normal JIT features; debug exporters would add startup work.
               manifest.write_text(code.replace(', "jit-debug"', ''))
           PYCODE
-          for name in main parent priority; do
+          for name in main parent reuse; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-priority
+        working-directory: source-reuse
         run: |
           cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../startup-out/correctness-core.log
           if [ "$(uname -m)" = x86_64 ] && grep -q "BMI2 execution check skipped" ../startup-out/correctness-core.log; then
@@ -96,12 +96,12 @@ jobs:
       - name: Build identical probes for every source revision
         run: |
           RUSTFLAGS="${RUSTFLAGS:-}"
-          for name in main parent priority; do
+          for name in main parent reuse; do
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$PWD/source-$name=/nano-source"
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$RUNNER_TEMP/startup-$name=/nano-probe"
           done
           export RUSTFLAGS
-          for name in main parent priority; do
+          for name in main parent reuse; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
               --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
             python3 -m ci.x64_warning_audit "startup-out/build-$name.log"
@@ -122,7 +122,7 @@ jobs:
             taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_startup_compare \
               --variant main="$PWD/startup-out/main" \
               --variant parent="$PWD/startup-out/parent" \
-              --variant priority="$PWD/startup-out/priority" \
+              --variant reuse="$PWD/startup-out/reuse" \
               --wasm "$wasm" \
               --rounds 6 --seconds 2 --out-dir "startup-out/$workload-results"
             sha256sum "$wasm" > "startup-out/$workload-sha256.txt"
@@ -138,7 +138,7 @@ jobs:
             if [ "$workload" = argon2 ]; then
               wasm="wasmi-benchmarks/res/rust/cases/argon2/out.wasm"
             fi
-            for name in main parent priority; do
+            for name in main parent reuse; do
               taskset -c 1 setarch "$(uname -m)" -R "$PERF_BIN" record \
                 -e cpu-clock:u -F 999 -k mono -o "startup-out/$workload-$name-perf.data" -- \
                 "$PWD/startup-out/$name" "$wasm" startup 0 10
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-startup-loop-priority-${{ matrix.platform }}
+          name: nano-startup-gp-reuse-${{ matrix.platform }}
           path: |
             startup-out/**/*.log
             startup-out/**/*.json
