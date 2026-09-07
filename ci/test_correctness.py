@@ -416,6 +416,7 @@ class CoveragePlanTests(unittest.TestCase):
             {
                 "correctness.yml",
                 "performance-regression.yml",
+                "public-api.yml",
                 "wasmi-startup-ranking.yml",
                 "x64-standings.yml",
             },

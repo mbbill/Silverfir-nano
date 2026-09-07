@@ -44,7 +44,9 @@ pub(crate) unsafe extern "C" fn preserved_entry(
 fn finish_preserved_result(ctx: &mut NativeContext, result: Result<(), WasmError>) -> u32 {
     match result {
         Ok(()) => NativeCallStatus::Ok as u32,
-        Err(WasmError::Exception { .. }) => NativeCallStatus::Thrown as u32,
+        Err(WasmError {
+            repr: crate::error::ErrorRepr::Exception { .. },
+        }) => NativeCallStatus::Thrown as u32,
         Err(err) => {
             set_ctx_error(ctx, err);
             NativeCallStatus::Error as u32

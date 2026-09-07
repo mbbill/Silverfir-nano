@@ -1037,7 +1037,7 @@ fn link_streaming_artifact(
     // turned into pointers inside the arena, which is only sound while
     // every emit above actually landed.
     if executable.exhausted() {
-        return Err(WasmError::code_arena_exhausted());
+        return Err(crate::vm::jit::code_arena_exhausted());
     }
 
     for patch in &local_ptr_patches {
@@ -1284,7 +1284,7 @@ fn finish_native_compile_streaming(
     let function_info_bytes = emit_function_info_bytes(backend, &compiled_view.abi, &emitted);
     executable.emit_bytes(&function_info_bytes);
     if executable.exhausted() {
-        return Err(WasmError::code_arena_exhausted());
+        return Err(crate::vm::jit::code_arena_exhausted());
     }
     let written_len = executable.len();
     executable.finish_write(0, written_len);
@@ -1607,8 +1607,7 @@ mod tests {
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
-            entities::{FunctionInst, MemInst},
-            jit::entities::ModuleInst,
+            jit::entities::FunctionInst, jit::entities::ModuleInst,
             jit::instance::tests::store as test_store,
         },
     };
@@ -1940,7 +1939,7 @@ mod tests {
             type_index: 0,
         });
         module.memories.push(
-            MemInst::new(
+            crate::vm::jit::test_support::heap_memory(
                 &crate::config::Config::new(),
                 Limits::new(1, Some(1)).unwrap(),
             )

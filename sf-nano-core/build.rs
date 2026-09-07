@@ -57,7 +57,6 @@
 //   jit            → sf_jit
 //   interp         → sf_interp
 //   wasi           → sf_wasi_host
-//   validator      → sf_module_validator
 //   call-trace     → sf_call_trace
 //   jit-debug      → sf_ir_dump + sf_jitdump
 //                    (IR dump is also auto-on when PROFILE=debug; both require std)
@@ -117,7 +116,6 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_jit",
     "sf_interp",
     "sf_wasi_host",
-    "sf_module_validator",
     "sf_has_simd",
     "sf_call_trace",
     "sf_fp_dp",
@@ -425,9 +423,6 @@ fn emit_subsystem_cfgs() {
     }
     if env::var_os("CARGO_FEATURE_WASI").is_some() {
         println!("cargo:rustc-cfg=sf_wasi_host");
-    }
-    if env::var_os("CARGO_FEATURE_VALIDATOR").is_some() {
-        println!("cargo:rustc-cfg=sf_module_validator");
     }
     if env::var_os("CARGO_FEATURE_CALL_TRACE").is_some() {
         println!("cargo:rustc-cfg=sf_call_trace");

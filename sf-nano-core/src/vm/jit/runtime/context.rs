@@ -32,7 +32,7 @@ use crate::{
     error::WasmError,
     module::type_defs::CompositeType,
     vm::{
-        entities::FunctionInst,
+        jit::entities::FunctionInst,
         jit::entities::{ModuleInst, TableDispatchMode, TableInstJit},
         jit::instance::JitInstance,
         jit::runtime::{
@@ -61,13 +61,15 @@ pub(crate) enum PendingEscape {
 
 impl PendingEscape {
     #[inline]
-    pub(crate) fn into_error(self) -> Option<WasmError> {
+    pub(crate) fn into_error(self, world: usize) -> Option<WasmError> {
         match self {
             Self::None => None,
-            Self::Throw { exn, tag } => Some(WasmError::Exception {
-                exn,
-                tag,
-                module_tag_name: None,
+            Self::Throw { exn, tag } => Some(WasmError {
+                repr: crate::error::ErrorRepr::Exception {
+                    exn: crate::RefValue::from_vm(exn, world),
+                    tag,
+                    module_tag_name: None,
+                },
             }),
         }
     }
@@ -1095,6 +1097,7 @@ mod tests {
         let mut module = module_with_local();
         let func_type = Rc::new(module.functions[0].func_type().clone());
         module.functions.push(FunctionInst::Host {
+            type_index: u32::MAX,
             func_type: Rc::clone(&func_type),
             callback: crate::vm::entities::HostCallback::new(host_noop),
         });
@@ -1126,6 +1129,7 @@ mod tests {
         // baked self range stays fixed, while the function-view prefix grows.
         let late_host_index = live_store.module().functions.len();
         live_store.module_mut().functions.push(FunctionInst::Host {
+            type_index: u32::MAX,
             func_type,
             callback: crate::vm::entities::HostCallback::new(host_noop),
         });
@@ -1179,6 +1183,7 @@ mod tests {
             types,
         );
         module.functions.push(FunctionInst::Host {
+            type_index: u32::MAX,
             func_type: Rc::new(FunctionType::new(
                 collections::vec![ValueType::I32],
                 collections::vec![ValueType::I64],

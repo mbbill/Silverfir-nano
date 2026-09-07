@@ -12,10 +12,11 @@
 
 use crate::collections;
 use crate::config::Config;
+use crate::vm::jit::entities::FunctionInst;
 use tracked_alloc::rc::Rc;
 use tracked_alloc::string::String;
 
-use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, TableInst};
+use crate::vm::entities::{GlobalInst, MemInst, TableInst};
 use crate::vm::jit::entities::ModuleInst;
 use crate::vm::jit::gc_heap::{GcHeap, GcRef};
 use crate::vm::jit::instantiate::ExportKind;

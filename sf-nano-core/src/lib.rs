@@ -1,10 +1,16 @@
 #![no_std]
+#![doc = include_str!("../README.md")]
 #![warn(unreachable_pub)]
 
 extern crate alloc;
 
 #[cfg(any(sf_has_std, test))]
 extern crate std;
+
+#[cfg(all(test, feature = "memprof"))]
+#[global_allocator]
+static TEST_ALLOCATOR: tracked_alloc::TrackingAllocator<std::alloc::System> =
+    tracked_alloc::TrackingAllocator::new(std::alloc::System);
 
 pub(crate) mod collections;
 // At least one execution engine has to be compiled in; a crate that can parse
@@ -17,69 +23,47 @@ compile_error!(
      the `interp` feature, or both (the default)."
 );
 
-pub mod config;
-pub mod constants;
-pub mod error;
-pub mod module;
-pub mod op_decoder;
-pub mod opcodes;
+mod config;
+pub(crate) mod constants;
+mod error;
+pub(crate) mod module;
+pub(crate) mod op_decoder;
+pub(crate) mod opcodes;
 pub(crate) mod utils;
+mod value;
 pub mod value_type;
-pub mod vm;
+pub(crate) mod vm;
 
 #[cfg(sf_wasi_host)]
 pub mod wasi;
 
 // Public re-exports for ergonomic API
 pub use config::{Config, ConfigError};
+pub use constants::WASM_PAGE_SIZE;
 pub use error::WasmError;
 pub use module::type_defs::FunctionType;
-pub use utils::limits::{Limitable, Limits};
+pub use module::Module;
+pub use utils::limits::Limits;
 pub use vm::engine::{Engine, Tier};
-pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
-pub use vm::instance::{
-    Func, Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
-    InstanceInstantiationError, RuntimeWorld,
-};
-// Each engine publishes one escape hatch for what only it can answer: the
-// interpreter's dispatch statistics here, the JIT's native-code question on
-// `JitInstanceLease`. They are not counterparts in shape -- the JIT hands
-// back a token wrapper and the interpreter lends its body for a closure
-// scope -- and they need not be, because each exposes a handful of methods.
-// Everything else an embedder needs is on `Instance`.
-//
-// The predecoded representation (instructions, opcode enum, operand flags)
-// stays private: it is how the engine stores a function, not something an
-// embedder builds against.
+pub use vm::entities::{Caller, HostFn};
+pub use vm::imports::{Extern, Import};
+pub use vm::instance::{Func, Instance, InstanceInstantiationError, RuntimeWorld};
+// Diagnostics expose owned data, never instance bodies or instruction enums.
 #[cfg(sf_interp)]
-pub use vm::interpreter::{FuncRefHost, InterpInstance};
+pub use vm::interpreter::InterpreterStats;
 #[cfg(sf_jit)]
 pub use vm::jit::arch::active_native_backend_name;
 // Compile statistics belong to the JIT *engine*, so they carry its name.
 // "Native" is this tree's word for the ISA, which is a different axis --
 // see `Engine` versus `active_native_backend_name`.
+pub use value::{RefValue, Value};
 #[cfg(sf_jit)]
 pub use vm::jit::build::{jit_stats_snapshot, JitStatsSnapshot};
-#[cfg(sf_jit)]
-pub use vm::jit::instantiate::JitInstanceLease;
-#[cfg(sf_has_guard_pages)]
-use vm::jit::runtime::trap_signal;
-pub use vm::link::{InstanceId, LinkRegistry, WorldAccess};
+pub use vm::link::{InstanceId, WorldAccess};
+pub use vm::memory::{MemoryView, MemoryViewMut};
 pub use vm::tag::TagIdentity;
-pub use vm::value::{RefValue, Value};
 
 #[inline]
 pub const fn target_has_simd() -> bool {
     cfg!(sf_has_simd)
-}
-
-/// Reset process-global native runtime state that does not track module
-/// lifetimes on its own. Harnesses that repeatedly construct and drop native
-/// modules can call this between independent runs.
-pub fn reset_native_runtime_state() {
-    #[cfg(sf_has_guard_pages)]
-    {
-        trap_signal::reset_debug_state();
-        trap_signal::clear_registered_jit_ranges();
-    }
 }

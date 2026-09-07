@@ -134,7 +134,7 @@ impl HostDispatch {
 /// `HostDispatch`'s signature carries only std types: an embedder has to be
 /// able to construct one without depending on the allocator this crate is
 /// built with.
-pub struct FuncRefHost {
+pub(crate) struct FuncRefHost {
     /// Call whatever absolute world identity `handle` names.
     ///
     /// Funcref-typed argument and result slots are absolute at this boundary.
@@ -447,7 +447,7 @@ pub(super) struct PreparedCall {
 }
 
 impl PreparedCall {
-    fn invoke(&self) -> Result<Vec<u64>, WasmError> {
+    fn invoke(&self, access: &InterpInstanceAccess<'_>) -> Result<Vec<u64>, WasmError> {
         let mut results = vec![0u64; self.result_types.len()];
         match &self.target {
             ExternalCallTarget::Host {
@@ -455,7 +455,7 @@ impl PreparedCall {
                 names,
                 memory,
             } => {
-                let mut caller = Caller::from_shared_memory(memory.clone());
+                let mut caller = Caller::from_shared_memory(memory.clone(), access);
                 dispatch.invoke(
                     names.0.as_str(),
                     names.1.as_str(),
@@ -587,7 +587,7 @@ struct NativeState {
 }
 
 /// A self-contained interpreter instance over a parsed module.
-pub struct InterpInstance {
+pub(crate) struct InterpInstance {
     /// Owned, not borrowed: a predecoded function carries no reference
     /// back into the module, so there is nothing to keep alive separately
     /// and nothing for an embedder to have to outlive.
@@ -768,39 +768,10 @@ impl InterpInstanceLease {
         use_instance(instance)
     }
 
-    #[inline]
-    pub(crate) fn with_instance_mut<R>(
-        &mut self,
-        use_instance: impl for<'instance> FnOnce(&'instance mut InterpInstance) -> R,
-    ) -> R {
-        let instance = self
-            .lease
-            .token_mut()
-            .interp_mut()
-            .expect("interpreter lease must resolve to an InterpInstance");
-        use_instance(instance)
-    }
-
     pub(crate) fn checkout_for_invocation(&self) -> Result<InstanceToken, WasmError> {
         self.lease
             .checkout_again()
             .ok_or_else(|| WasmError::internal("interpreter instance is no longer available"))
-    }
-
-    pub(crate) fn memory(&self) -> Option<&[u8]> {
-        self.lease
-            .token()
-            .interp()
-            .expect("interpreter lease must resolve to an InterpInstance")
-            .memory()
-    }
-
-    pub(crate) fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        self.lease
-            .token_mut()
-            .interp_mut()
-            .expect("interpreter lease must resolve to an InterpInstance")
-            .memory_mut()
     }
 }
 
@@ -941,8 +912,7 @@ fn eval_const(
 /// Invariant for a mutable global -- writes flow both ways -- and covariant
 /// for an immutable one, which is only read. A concrete heap type names an
 /// index in the EXPORTER's type space, so deciding it needs that context;
-/// without one the only honest answer is to accept, since refusing would
-/// reject valid modules.
+/// without one a concrete reference type cannot be linked safely.
 fn global_ref_types_match(
     provided: ValueType,
     declared: ValueType,
@@ -962,10 +932,12 @@ fn global_ref_types_match(
     }
     match (p.heap_type, d.heap_type) {
         (HeapType::Concrete(pi), HeapType::Concrete(di)) => match provided_ctx {
-            Some(ctx) => concrete_type_matches_cross_context(ctx, pi, declared_ctx, di),
-            // Undecidable without the exporter's context; accepting beats
-            // refusing a valid module.
-            None => true,
+            Some(ctx) => {
+                concrete_type_matches_cross_context(ctx, pi, declared_ctx, di)
+                    && (!mutable || concrete_type_matches_cross_context(declared_ctx, di, ctx, pi))
+            }
+            // A concrete type index is meaningful only in its source context.
+            None => false,
         },
         (HeapType::Abstract(pa), HeapType::Abstract(da)) => {
             if mutable {
@@ -1126,17 +1098,21 @@ impl InterpInstance {
                     .iter()
                     .find(|imp| imp.module == *md && imp.name == *name)
                     .ok_or(WasmError::unlinkable("missing memory import"))?;
-                let ImportValue::Memory(provided_limits, _) = &provided.value else {
+                let ImportValue::Memory(provided_limits, shared) = &provided.value else {
                     return Err(WasmError::unlinkable("incompatible import type"));
                 };
-                if !limits_satisfy(m.limits(), provided_limits) {
+                let current_limits = match shared {
+                    Some(memory) => memory.current_limits()?,
+                    None => *provided_limits,
+                };
+                if !limits_satisfy(m.limits(), &current_limits) {
                     return Err(WasmError::unlinkable("incompatible import type"));
                 }
                 // The provider's limits win, as they do for tables: the
                 // importing module may declare a laxer maximum than the
                 // memory it actually receives, and `memory.grow` must refuse
                 // at the real one.
-                import_limits.push(Some(provided_limits.clone()));
+                import_limits.push(Some(current_limits));
             } else {
                 import_limits.push(None);
             }
@@ -1312,7 +1288,7 @@ impl InterpInstance {
             // reading the JIT gives it.
             let inst = match imported_memories.get(i).cloned().flatten() {
                 Some(shared) => shared,
-                None => MemInst::new(&config, limits.clone())?,
+                None => MemInst::new_heap(&config, limits.clone())?,
             };
             memories.push(MemoryState {
                 inst,
@@ -1376,7 +1352,7 @@ impl InterpInstance {
                         // current value is the whole story, so copying it
                         // in is exact.
                         Some((ImportedGlobal::Value(v), _)) => {
-                            let mut raw = value_to_raw_for_interp(&v.value)?;
+                            let mut raw = value_to_raw_for_interp(&v.vm_value())?;
                             if value_type_is_function_ref(&module, *value_type) {
                                 raw = if global_reachable[global_idx] {
                                     absolutize_slot_with(&module, &function_identities, raw)
@@ -1404,7 +1380,8 @@ impl InterpInstance {
                             // The value type is invariant for a mutable global
                             // and covariant for an immutable one; see
                             // `global_ref_types_match`.
-                            let type_ok = st.global.value_type == *value_type
+                            let type_ok = (!matches!(value_type, ValueType::Ref(_))
+                                && st.global.value_type == *value_type)
                                 || global_ref_types_match(
                                     st.global.value_type,
                                     *value_type,
@@ -1490,12 +1467,19 @@ impl InterpInstance {
                     }
                     // A live table from another instance is ALIASED, not
                     // copied: both sides must see each other's `table.set`.
-                    Some((limits, Some(state))) => {
+                    Some((_, Some(state))) => {
+                        let limits = state.table.current_limits()?;
                         // A table is a mutable container, so its element type
                         // is invariant: both sides read AND write it, and a
                         // subtype on either side would let one of them see a
                         // value the other's type forbids.
-                        if state.table.value_type != t.value_type() {
+                        if !global_ref_types_match(
+                            state.table.value_type,
+                            t.value_type(),
+                            state.type_ctx.as_ref(),
+                            module.types(),
+                            true,
+                        ) {
                             return Err(WasmError::unlinkable("incompatible import type"));
                         }
                         if !limits_satisfy(t.spec().limits(), &limits) {
@@ -1927,7 +1911,7 @@ impl InterpInstance {
 
     /// Total native handler dispatches since instantiation (0 when native
     /// dispatch is not active).
-    pub fn dispatch_count(&self) -> u64 {
+    pub(crate) fn dispatch_count(&self) -> u64 {
         {
             return self.native.as_ref().map_or(0, |n| n.dispatches);
         }
@@ -1947,7 +1931,7 @@ impl InterpInstance {
     /// counted only when the first op falls through (no control transfer),
     /// i.e. exactly where a fused handler could replace two dispatches with
     /// one. Descending by count; empty when there are no defined bodies.
-    pub fn bigram_stats(&self) -> Vec<((Op, Op), u64)> {
+    pub(crate) fn bigram_stats(&self) -> Vec<((Op, Op), u64)> {
         let mut map: tracked_alloc::BTreeMap<(u16, u16), u64> = tracked_alloc::BTreeMap::new();
         let Some(native) = self.native.as_ref() else {
             return Vec::new();
@@ -1975,7 +1959,7 @@ impl InterpInstance {
     /// Whether the dispatch counter was compiled into the handlers. When it
     /// was not, the reported dispatch total is meaningless and callers should
     /// say so rather than print it.
-    pub fn dispatch_counting_enabled(&self) -> bool {
+    pub(crate) fn dispatch_counting_enabled(&self) -> bool {
         cfg!(feature = "interp-count")
     }
 
@@ -1983,14 +1967,14 @@ impl InterpInstance {
     /// Worth watching: every added handler family or operand class grows it
     /// against a hard buffer assert, and once emission moves to build time
     /// this becomes binary size.
-    pub fn engine_code_len(&self) -> usize {
+    pub(crate) fn engine_code_len(&self) -> usize {
         if let Some(native) = &self.native {
             return native.engine.code_len();
         }
         0
     }
 
-    pub fn slow_exit_stats(&self) -> Vec<(Op, u64)> {
+    pub(crate) fn slow_exit_stats(&self) -> Vec<(Op, u64)> {
         if let Some(native) = &self.native {
             return op_counts(&native.slow_exits);
         }
@@ -2060,32 +2044,6 @@ impl InterpInstance {
             .tags()
             .get(idx)
             .map(|tag| tag.func_type().params())
-    }
-
-    fn host_value_matches_type(&self, value: &Value, expected: ValueType) -> bool {
-        match (value, expected) {
-            (Value::I32(_), ValueType::I32)
-            | (Value::I64(_), ValueType::I64)
-            | (Value::F32(_), ValueType::F32)
-            | (Value::F64(_), ValueType::F64) => true,
-            #[cfg(sf_has_simd)]
-            (Value::V128(_), ValueType::V128) => true,
-            (Value::Ref(handle, actual), ValueType::Ref(expected)) => {
-                if handle.is_null() {
-                    // A null has no dynamic object to inspect; its annotated
-                    // bottom/concrete family is therefore part of the value.
-                    actual.nullable
-                        && expected.nullable
-                        && actual
-                            .heap_type
-                            .is_subtype_of(&expected.heap_type, self.module.types())
-                } else {
-                    ref_type_matches(*handle, &expected.heap_type, RefTypeOwner::Interp(self))
-                        .unwrap_or(false)
-                }
-            }
-            _ => false,
-        }
     }
 
     #[inline]
@@ -2321,7 +2279,15 @@ impl InterpInstance {
     /// runtime errors remain errors and are never considered by catch_all.
     fn pending_from_error(&mut self, error: WasmError) -> Result<PendingException, WasmError> {
         match error {
-            WasmError::Exception { exn, tag, .. } => {
+            WasmError {
+                repr: crate::error::ErrorRepr::Exception { exn, tag, .. },
+            } => {
+                if exn.world != self.instance_backref().self_id().world() {
+                    return Err(WasmError::trap(
+                        "exception belongs to a different runtime world",
+                    ));
+                }
+                let exn = exn.raw;
                 let resolved = self
                     .link_registry
                     .resolve_exn(exn)
@@ -2331,7 +2297,9 @@ impl InterpInstance {
                 }
                 Ok(PendingException { exn, tag })
             }
-            WasmError::HostThrow { tag, args } => {
+            WasmError {
+                repr: crate::error::ErrorRepr::HostThrow { tag, args },
+            } => {
                 let Some(params) = self
                     .tag_params_for_handle(tag)
                     .map(|params| params.iter().copied().collect::<Vec<_>>())
@@ -2339,10 +2307,9 @@ impl InterpInstance {
                     return Err(WasmError::trap("host threw mistyped exception"));
                 };
                 if args.len() != params.len()
-                    || !args
-                        .iter()
-                        .zip(&params)
-                        .all(|(value, ty)| self.host_value_matches_type(value, *ty))
+                    || !args.iter().zip(&params).all(|(value, ty)| {
+                        crate::vm::link::value_matches_type(value, *ty, RefTypeOwner::Interp(self))
+                    })
                 {
                     return Err(WasmError::trap("host threw mistyped exception"));
                 }
@@ -2355,11 +2322,13 @@ impl InterpInstance {
     }
 
     #[inline]
-    fn uncaught_exception(pending: PendingException) -> WasmError {
-        WasmError::Exception {
-            exn: pending.exn,
-            tag: pending.tag,
-            module_tag_name: None,
+    fn uncaught_exception(pending: PendingException, world: usize) -> WasmError {
+        WasmError {
+            repr: crate::error::ErrorRepr::Exception {
+                exn: crate::RefValue::from_vm(pending.exn, world),
+                tag: pending.tag,
+                module_tag_name: None,
+            },
         }
     }
 
@@ -2397,21 +2366,6 @@ impl InterpInstance {
     #[inline]
     pub(crate) fn link_arenas(&self) -> &LinkArenas {
         &self.link_registry
-    }
-
-    /// The first linear memory's contents, if the module defines one.
-    #[inline]
-    pub(crate) fn memory(&self) -> Option<&[u8]> {
-        {
-            self.memories.first().map(|m| m.bytes())
-        }
-    }
-
-    #[inline]
-    pub(crate) fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        {
-            self.memories.first_mut().map(|m| m.bytes_mut())
-        }
     }
 
     /// Find an exported function's index by name.
@@ -2460,22 +2414,6 @@ impl InterpInstance {
         }
     }
 
-    /// Overwrite a global's raw 64-bit value by index.
-    pub(crate) fn set_global_at(&mut self, idx: usize, raw: u64) -> Result<(), WasmError> {
-        let raw = self.global_slot_for_storage(idx, raw);
-        if let Some(Some(shared)) = self.shared_globals.get_mut(idx) {
-            shared.set_raw(raw);
-            return Ok(());
-        }
-        match self.globals.get(idx) {
-            Some(slot) => {
-                slot.set(raw);
-                Ok(())
-            }
-            None => Err(WasmError::invalid("interp: global index out of range")),
-        }
-    }
-
     /// The index of an exported global, if the module exports one.
     pub(crate) fn find_export_global(&self, name: &str) -> Option<usize> {
         self.module
@@ -2506,6 +2444,17 @@ impl InterpInstance {
         args: &[u64],
         results: &mut [u64],
     ) -> Result<(), WasmError> {
+        let memory_is_borrowed = access.with_instance(|instance| {
+            instance
+                .memories
+                .iter()
+                .any(|memory| memory.inst.host_callback_borrowed())
+        })?;
+        if memory_is_borrowed {
+            return Err(WasmError::trap(
+                "linear memory is borrowed by a host callback",
+            ));
+        }
         let entry =
             access.with_instance(|instance| instance.functions().get(func_index).cloned())?;
         let Some(entry) = entry else {
@@ -2525,7 +2474,10 @@ impl InterpInstance {
                 Err(error) => {
                     let pending = access
                         .with_instance_mut(|instance| instance.pending_from_error(error))??;
-                    return Err(Self::uncaught_exception(pending));
+                    return Err(Self::uncaught_exception(
+                        pending,
+                        access.with_instance(|inst| inst.instance_backref().self_id().world())?,
+                    ));
                 }
             }
             results.copy_from_slice(&frame[..results.len()]);
@@ -2557,16 +2509,6 @@ impl InterpInstance {
         results: &mut [u64],
     ) -> Result<(), WasmError> {
         let (mut stack, mut ret_stack, reentrant) = access.with_instance_mut(|instance| {
-            if instance
-                .memories
-                .iter()
-                .any(|memory| memory.inst.host_callback_borrowed())
-            {
-                return Err(WasmError::trap(
-                    "linear memory is borrowed by a host callback",
-                ));
-            }
-
             // Take the instance's buffers before the first guest step. A
             // re-entry sees `None` and allocates its own pair. The owner of
             // a never-entered instance sees `Some(empty)`, materializes the
@@ -2584,8 +2526,8 @@ impl InterpInstance {
                 stack = vec![0u64; slots];
                 ret_stack = vec![0u64; configured_ret_records(slots) * (RET_RECORD / 8)];
             }
-            Ok((stack, ret_stack, reentrant))
-        })??;
+            (stack, ret_stack, reentrant)
+        })?;
 
         let outcome = Self::drive_on(access, root, args, &mut stack, &mut ret_stack, results);
 
@@ -2839,7 +2781,7 @@ impl InterpInstance {
         access: &InterpInstanceAccess<'_>,
         call: &PreparedCall,
     ) -> Result<Vec<u64>, WasmError> {
-        let mut results = call.invoke()?;
+        let mut results = call.invoke(access)?;
         access.with_instance(|instance| instance.localize_call_results(call, &mut results))?;
         Ok(results)
     }
@@ -2932,7 +2874,10 @@ impl InterpInstance {
             }
 
             let Some(parent) = saved.pop() else {
-                return Err(Self::uncaught_exception(pending));
+                return Err(Self::uncaught_exception(
+                    pending,
+                    self.instance_backref().self_id().world(),
+                ));
             };
             ctx.ret_cursor = parent.ret_cursor;
             *act = parent.activation;
@@ -4800,7 +4745,10 @@ mod tests {
                     "value-import" => vec![Import::global(
                         "env",
                         "g",
-                        raw_to_value_for_interp(0, value_type).expect("value"),
+                        crate::Value::from_vm(
+                            raw_to_value_for_interp(0, value_type).expect("value"),
+                            0,
+                        ),
                         true,
                     )],
                     "shared-import" => vec![Import::global_with_state(
@@ -4832,7 +4780,10 @@ mod tests {
                 // Moving the instance and using the host accessor must not
                 // invalidate the private or shared addresses retained in code.
                 let mut moved = Box::new(inst);
-                moved.set_global_at(0, 0).expect("host store");
+                match moved.shared_globals[0].as_mut() {
+                    Some(global) => global.set_raw(0),
+                    None => moved.globals[0].set(0),
+                }
                 moved
                     .invoke(get, &[], &mut results)
                     .expect("get after move");
@@ -5088,7 +5039,9 @@ mod tests {
         assert!(inst.ret_stack.as_ref().is_some_and(Vec::is_empty));
         assert!(matches!(
             inst.invoke(trap, &[], &mut []),
-            Err(WasmError::Trap("unreachable"))
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap("unreachable")
+            })
         ));
 
         let stack_ptr = inst
@@ -6314,8 +6267,18 @@ mod tests {
             (func (export "store") (result i32)
                 i32.const 0 i32.const 1 i32.store8
                 i32.const 0))"#;
-        assert!(matches!(run1(empty, "load", &[]), Err(WasmError::Trap(_))));
-        assert!(matches!(run1(empty, "store", &[]), Err(WasmError::Trap(_))));
+        assert!(matches!(
+            run1(empty, "load", &[]),
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap(_)
+            })
+        ));
+        assert!(matches!(
+            run1(empty, "store", &[]),
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap(_)
+            })
+        ));
 
         let one_page = r#"(module (memory 1)
             (func (export "last") (result i32)
@@ -6334,7 +6297,12 @@ mod tests {
         assert_eq!(run1(one_page, "last", &[]).unwrap(), 171);
         for export in ["load_end", "store_end", "load_large", "store_large"] {
             assert!(
-                matches!(run1(one_page, export, &[]), Err(WasmError::Trap(_))),
+                matches!(
+                    run1(one_page, export, &[]),
+                    Err(WasmError {
+                        repr: crate::error::ErrorRepr::Trap(_)
+                    })
+                ),
                 "{export} must trap"
             );
         }
@@ -6426,7 +6394,12 @@ mod tests {
         let err = inst
             .invoke(uncaught, &[9], &mut [])
             .expect_err("uncaught throw must surface");
-        assert!(matches!(err, WasmError::Exception { .. }));
+        assert!(matches!(
+            err,
+            WasmError {
+                repr: crate::error::ErrorRepr::Exception { .. }
+            }
+        ));
         inst.invoke(plain, &[10], &mut result)
             .expect("normal call after uncaught exception");
         assert_eq!(result[0], 11);
@@ -6458,10 +6431,13 @@ mod tests {
         let err = inst
             .invoke(go, &[], &mut [])
             .expect_err("throw_ref must rethrow");
-        let WasmError::Exception {
-            exn,
-            tag: actual_tag,
-            ..
+        let WasmError {
+            repr:
+                crate::error::ErrorRepr::Exception {
+                    exn,
+                    tag: actual_tag,
+                    ..
+                },
         } = err
         else {
             panic!("expected exception, got {err:?}");
@@ -6469,7 +6445,7 @@ mod tests {
         assert_eq!(actual_tag, tag);
         let exn_instance = inst
             .link_registry
-            .resolve_exn(exn)
+            .resolve_exn(exn.raw)
             .expect("same exception handle remains resolvable");
         assert_eq!(exn_instance.tag, tag);
         assert!(exn_instance.fields.is_empty());
@@ -6484,12 +6460,12 @@ mod tests {
                 (func $pad)
                 (func $dummy (type $ft))
                 (elem declare func $dummy)
-                (func (export "same") (result i32)
+                (func (export "same") (result funcref funcref)
                     (block $h (result (ref $ft))
                         (try_table (catch $e $h)
                             (throw $e (ref.func $dummy)))
                         unreachable)
-                    (ref.eq (ref.func $dummy)))
+                    (ref.func $dummy))
                 (func (export "escape")
                     (throw $e (ref.func $dummy))))"#,
         )
@@ -6504,15 +6480,17 @@ mod tests {
         .expect("instance");
         let same = inst.find_export("same").expect("same");
         let escape = inst.find_export("escape").expect("escape");
-        let mut result = [0u64; 1];
+        let mut result = [0u64; 2];
 
         inst.invoke(same, &[], &mut result).expect("local catch");
         assert_eq!(
-            result[0], 1,
-            "localizing the shared identity must preserve ref.eq"
+            result[0], result[1],
+            "catching and returning a funcref preserves its identity"
         );
 
-        let WasmError::Exception { exn, .. } = inst
+        let WasmError {
+            repr: crate::error::ErrorRepr::Exception { exn, .. },
+        } = inst
             .invoke(escape, &[], &mut [])
             .expect_err("escape exception")
         else {
@@ -6520,7 +6498,7 @@ mod tests {
         };
         let field = inst
             .link_registry
-            .resolve_exn(exn)
+            .resolve_exn(exn.raw)
             .and_then(|exn| exn.fields.first().copied())
             .expect("exception funcref field");
         let Value::Ref(handle, _) = field else {
@@ -6601,11 +6579,10 @@ mod tests {
                     (call_ref $t (ref.func $f)))
                 (func (export "indirect") (result i32)
                     (call_indirect (type $t) (i32.const 0)))
-                (func (export "round_trip") (result i32)
+                (func (export "round_trip") (result funcref funcref)
                     ref.func $local
                     call $identity
-                    ref.func $local
-                    ref.eq))"#,
+                    ref.func $local))"#,
         )
         .expect("consumer wat");
         let make_imports = || {
@@ -6654,12 +6631,7 @@ mod tests {
             Err((_, error)) => panic!("hooked consumer: {error:?}"),
         };
 
-        for (export, expected) in [
-            ("direct", 13),
-            ("by_ref", 13),
-            ("indirect", 13),
-            ("round_trip", 1),
-        ] {
+        for (export, expected) in [("direct", 13), ("by_ref", 13), ("indirect", 13)] {
             let index = hooked
                 .with_instance(|hooked| hooked.find_export(export))
                 .expect("hooked consumer export");
@@ -6668,6 +6640,16 @@ mod tests {
                 .expect("the installed hook drives the world identity");
             assert_eq!(result[0], expected, "{export}");
         }
+
+        fn check_round_trip(lease: &InterpInstanceLease) {
+            let index = lease
+                .with_instance(|instance| instance.find_export("round_trip"))
+                .expect("round-trip export");
+            let mut results = [0; 2];
+            invoke_lease(lease, index, &mut results).expect("round trip");
+            assert_eq!(results[0], results[1], "foreign calls preserve identity");
+        }
+        check_round_trip(&hooked);
 
         let without_hook = match InterpInstance::new_partial_with_registry(
             &engine,
@@ -6681,12 +6663,7 @@ mod tests {
             Err((_, error)) => panic!("no-hook consumer: {error:?}"),
         };
 
-        for (export, expected) in [
-            ("direct", 7),
-            ("by_ref", 7),
-            ("indirect", 7),
-            ("round_trip", 1),
-        ] {
+        for (export, expected) in [("direct", 7), ("by_ref", 7), ("indirect", 7)] {
             let index = without_hook
                 .with_instance(|without_hook| without_hook.find_export(export))
                 .expect("no-hook consumer export");
@@ -6695,6 +6672,7 @@ mod tests {
                 .expect("the engine-native path drives the world identity");
             assert_eq!(result[0], expected, "{export}");
         }
+        check_round_trip(&without_hook);
     }
 
     #[test]
@@ -6723,9 +6701,11 @@ mod tests {
             func_type,
         );
         let host = InterpInstance::boxed_host(move |_module, _name, _memory, args, _results| {
-            Err(WasmError::HostThrow {
-                tag,
-                args: vec![Value::I32(args[0] as u32 as i32)],
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::HostThrow {
+                    tag,
+                    args: vec![Value::I32(args[0] as u32 as i32)],
+                },
             })
         });
         let mut inst = InterpInstance::new(
@@ -6743,14 +6723,18 @@ mod tests {
         assert_eq!(result[0], 37);
 
         inst.set_host(move |_module, _name, _memory, _args, _results| {
-            Err(WasmError::HostThrow { tag, args: vec![] })
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::HostThrow { tag, args: vec![] },
+            })
         });
         let err = inst
             .invoke(go, &[1], &mut result)
             .expect_err("mistyped host throw must trap");
         assert!(matches!(
             err,
-            WasmError::Trap("host threw mistyped exception")
+            WasmError {
+                repr: crate::error::ErrorRepr::Trap("host threw mistyped exception")
+            }
         ));
     }
 
@@ -6782,9 +6766,11 @@ mod tests {
             func_type,
         );
         let host = InterpInstance::boxed_host(move |_module, _name, _memory, _args, _results| {
-            Err(WasmError::HostThrow {
-                tag,
-                args: vec![Value::Ref(RefValue::null(), RefType::funcref())],
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::HostThrow {
+                    tag,
+                    args: vec![Value::Ref(RefValue::null(), RefType::funcref())],
+                },
             })
         });
         let mut inst = InterpInstance::new(
@@ -6798,7 +6784,9 @@ mod tests {
 
         assert!(matches!(
             inst.invoke(go, &[], &mut [0]),
-            Err(WasmError::Trap("host threw mistyped exception"))
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap("host threw mistyped exception")
+            })
         ));
     }
 
@@ -6827,11 +6815,15 @@ mod tests {
             |_caller, _args, _results| Ok(()),
             func_type,
         );
+        let exception_world = Rc::new(Cell::new(0));
+        let callback_world = Rc::clone(&exception_world);
         let host = InterpInstance::boxed_host(move |_module, _name, _memory, _args, _results| {
-            Err(WasmError::Exception {
-                exn: RefValue::new(1_234_567),
-                tag,
-                module_tag_name: None,
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Exception {
+                    exn: crate::RefValue::from_vm(RefValue::new(1_234_567), callback_world.get()),
+                    tag,
+                    module_tag_name: None,
+                },
             })
         });
         let mut inst = InterpInstance::new(
@@ -6841,11 +6833,14 @@ mod tests {
             &[tag_import, func_import],
         )
         .expect("instance");
+        exception_world.set(inst.instance_backref().self_id().world());
         let go = inst.find_export("go").expect("go");
 
         assert!(matches!(
             inst.invoke(go, &[], &mut [0]),
-            Err(WasmError::Trap("invalid exception reference"))
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap("invalid exception reference")
+            })
         ));
     }
 
@@ -6873,8 +6868,8 @@ mod tests {
 
         let module = Module::new("aliased", &bin).expect("module");
         let tag_type = module.tags()[0].func_type().clone();
-        let (import_a, shared_handle) = Import::tag_typed_with_handle("m", "a", tag_type.clone());
-        let import_b = Import::linked_tag_typed("m", "b", shared_handle, tag_type);
+        let import_a = Import::tag_typed("m", "a", tag_type);
+        let import_b = import_a.alias("m", "b");
         let mut aliased =
             InterpInstance::new(&engine, module, None, &[import_a, import_b]).expect("aliased");
         let go = aliased.find_export("go").expect("go");
@@ -6895,7 +6890,12 @@ mod tests {
             .invoke(go, &[], &mut result)
             .expect_err("same-signature distinct imports must not match");
         assert!(
-            matches!(err, WasmError::Exception { .. }),
+            matches!(
+                err,
+                WasmError {
+                    repr: crate::error::ErrorRepr::Exception { .. }
+                }
+            ),
             "the distinct throw must remain uncaught, got {err:?}"
         );
     }
@@ -7000,7 +7000,7 @@ mod tests {
             "host",
             "ret",
             |_caller, _args, results| {
-                results[0] = Value::I32(40);
+                results[0] = crate::Value::I32(40);
                 Ok(())
             },
             func_type,
@@ -7386,13 +7386,17 @@ mod tests {
 
         assert!(matches!(
             inst.invoke(go, &[0], &mut [0]),
-            Err(WasmError::Trap("indirect call type mismatch"))
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap("indirect call type mismatch")
+            })
         ));
         assert!(matches!(
             inst.invoke(go, &[0], &mut [0]),
-            Err(WasmError::Trap(
-                crate::vm::interpreter::EXTERNAL_FUNCREF_HOST_REQUIRED
-            ))
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap(
+                    crate::vm::interpreter::EXTERNAL_FUNCREF_HOST_REQUIRED
+                )
+            })
         ));
         assert_eq!(
             inst.slow_exit_stats()
@@ -7438,7 +7442,12 @@ mod tests {
             "t",
             &[3e10f32.to_bits() as u64],
         );
-        assert!(matches!(trap, Err(WasmError::Trap(_))));
+        assert!(matches!(
+            trap,
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap(_)
+            })
+        ));
         let sat = run1(
             r#"(module (func (export "s") (param f32) (result i32)
                 local.get 0 i32.trunc_sat_f32_s))"#,
@@ -7452,10 +7461,17 @@ mod tests {
     fn div_traps() {
         let src = r#"(module (func (export "d") (param i32 i32) (result i32)
             local.get 0 local.get 1 i32.div_s))"#;
-        assert!(matches!(run1(src, "d", &[1, 0]), Err(WasmError::Trap(_))));
+        assert!(matches!(
+            run1(src, "d", &[1, 0]),
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap(_)
+            })
+        ));
         assert!(matches!(
             run1(src, "d", &[i32::MIN as u32 as u64, u32::MAX as u64]),
-            Err(WasmError::Trap(_))
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap(_)
+            })
         ));
         // rem_s MIN % -1 must NOT trap and equals 0
         let rem = run1(
@@ -7475,7 +7491,12 @@ mod tests {
             "l",
             &[65534],
         );
-        assert!(matches!(r, Err(WasmError::Trap(_))));
+        assert!(matches!(
+            r,
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap(_)
+            })
+        ));
     }
 
     #[test]
@@ -7486,7 +7507,12 @@ mod tests {
             "f",
             &[0],
         );
-        assert!(matches!(r, Err(WasmError::Trap("call stack exhausted"))));
+        assert!(matches!(
+            r,
+            Err(WasmError {
+                repr: crate::error::ErrorRepr::Trap("call stack exhausted")
+            })
+        ));
     }
 
     #[test]
@@ -7518,5 +7544,20 @@ mod tests {
             i32.const 111 i32.const 222 local.get 0 select))"#;
         assert_eq!(run1(src, "s", &[1]).unwrap(), 111);
         assert_eq!(run1(src, "s", &[0]).unwrap(), 222);
+    }
+}
+
+impl crate::vm::entities::HostValueContext for InterpInstanceAccess<'_> {
+    fn world(&self) -> usize {
+        self.with_instance(|inst| inst.instance_backref().self_id().world())
+            .expect("interpreter host context")
+    }
+    fn import_value(&self, value: crate::Value) -> Result<Value, WasmError> {
+        self.with_instance(|instance| RefTypeOwner::Interp(instance).import_value(value))?
+    }
+    fn validate_results(&self, values: &[Value], types: &[ValueType]) -> Result<(), WasmError> {
+        self.with_instance(|instance| {
+            crate::vm::link::validate_host_results(values, types, RefTypeOwner::Interp(instance))
+        })?
     }
 }

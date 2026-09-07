@@ -676,6 +676,8 @@ fn predecode_function_into(
         exception_sites.clear();
         exception_handlers.clear();
         let mut p = Predecoder {
+            #[cfg(test)]
+            disable_fast: _disable_fast,
             types: module.types(),
             module,
             bindings,
@@ -711,10 +713,6 @@ fn predecode_function_into(
             side_scratch,
         };
         let mut decoder = Decoder::new(spec.code());
-        #[cfg(test)]
-        if _disable_fast {
-            decoder.disable_predecode_fast_for_test();
-        }
         decoder.add_handler(&mut p);
         decoder.decode_function()?;
         drop(decoder);
@@ -976,6 +974,8 @@ impl PredecodeScratch {
 }
 
 struct Predecoder<'m, 'code> {
+    #[cfg(test)]
+    disable_fast: bool,
     types: &'m TypeContext,
     module: &'m Module,
     /// Resolved instance identities and global storage cells.
@@ -3230,6 +3230,24 @@ fn probe_fast(bytes: &[u8], decoded: &mut FastDecoded) -> bool {
     true
 }
 
+impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
+    /// Bytes not yet consumed by the generic decoder.
+    ///
+    /// This narrow crate-internal hook lets the interpreter probe its common
+    /// opcodes without constructing an owning `DecodedOp`. A miss must leave
+    /// the slice untouched and fall back to [`OpStream::next`].
+    #[inline]
+    pub(crate) fn predecode_bytes(&self) -> &'b [u8] {
+        self.decoder.payload.remaining_slice()
+    }
+
+    /// Commit a predecoder probe that already validated `len` input bytes.
+    #[inline]
+    pub(crate) fn consume_predecoded(&mut self, len: usize) {
+        self.decoder.payload.advance_known_valid(len);
+    }
+}
+
 impl OpcodeHandler for Predecoder<'_, '_> {
     fn on_decode_begin(&mut self) -> Result<(), WasmError> {
         Ok(())
@@ -3241,7 +3259,10 @@ impl OpcodeHandler for Predecoder<'_, '_> {
     ) -> Result<(), WasmError> {
         let mut fast = FastDecoded::EMPTY;
         loop {
-            if probe_fast(stream.predecode_bytes(), &mut fast) {
+            let bytes = stream.predecode_bytes();
+            #[cfg(test)]
+            let bytes = if self.disable_fast { &[] } else { bytes };
+            if probe_fast(bytes, &mut fast) {
                 // Probe first, commit second: every miss leaves the generic
                 // decoder at the exact byte where it started.
                 stream.consume_predecoded(fast.consumed);

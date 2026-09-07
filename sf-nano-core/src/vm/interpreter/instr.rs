@@ -231,7 +231,7 @@ const fn compute_operand_is_f32(op: Op, is_b: bool) -> bool {
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
-pub enum Op {
+pub(crate) enum Op {
     // data movement (materialization / unfolded local.set)
     MovSlot,
     MovConst,

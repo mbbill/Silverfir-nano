@@ -70,7 +70,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
         let needed = function_info_table_offset
             .saturating_add(compiled.abi().functions.len() * NATIVE_FUNCTION_INFO64_SIZE);
         if needed > executable.capacity() {
-            return Err(WasmError::code_arena_exhausted());
+            return Err(crate::vm::jit::code_arena_exhausted());
         }
         executable.as_ptr()
     };

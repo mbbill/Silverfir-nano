@@ -83,7 +83,7 @@ fn narrow_read_loops_match_memory_and_preserve_the_last_write_before_trapping() 
                 );
             }
             assert_eq!(
-                instance.memory().unwrap(),
+                &*instance.memory().unwrap(),
                 expected.as_slice(),
                 "{name}({start}, {count})"
             );
@@ -182,7 +182,7 @@ fn narrow_equality_search_preserves_high_bits_branch_direction_and_traps() {
                         if success {
                             assert_eq!(actual.unwrap().as_slice(), vec![Value::I32(p as i32)]);
                         }
-                        assert_eq!(instance.memory().unwrap(), expected.as_slice());
+                        assert_eq!(&*instance.memory().unwrap(), expected.as_slice());
                     }
                 }
             }

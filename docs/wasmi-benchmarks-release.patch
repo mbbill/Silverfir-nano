@@ -1,0 +1,53 @@
+diff --git a/runtimes/silverfir-nano/Cargo.toml b/runtimes/silverfir-nano/Cargo.toml
+index e929600..8c408fd 100644
+--- a/runtimes/silverfir-nano/Cargo.toml
++++ b/runtimes/silverfir-nano/Cargo.toml
+@@ -9,11 +9,8 @@ path = "lib.rs"
+ [dependencies]
+ benchmark-utils = { workspace = true }
+ anyhow = { workspace = true }
+-# Silverfir-nano is not published to crates.io, so it is pulled in as a pinned git
+-# dependency (like `stitch`/`spacewasm`). `sf-nano-core` is pure Rust with no C build
+-# step. Its two execution engines are independent Cargo features, selected below, so
+-# neither configuration pays for the other's code.
+-sf-nano-core = { git = "https://github.com/mbbill/Silverfir-nano", tag = "0.5", default-features = false }
++# The JIT and interpreter remain independent Cargo features.
++sf-nano-core = { version = "0.1.0", default-features = false }
+
+ [features]
+ # The optimizing JIT, with guard-page memory (which implies `jit` upstream), matching
+diff --git a/runtimes/silverfir-nano/lib.rs b/runtimes/silverfir-nano/lib.rs
+index 549db60..e6cee92 100644
+--- a/runtimes/silverfir-nano/lib.rs
++++ b/runtimes/silverfir-nano/lib.rs
+@@ -137,17 +137,17 @@ impl ModuleInstance for SilverfirNanoModule {
+         let memory = self
+             .instance
+             .memory()
+-            .ok_or_else(|| anyhow!("silverfir-nano: module has no memory"))?;
+-        let slice = mem_slice(memory, ptr, buffer.len())?;
++            .map_err(|err| anyhow!("silverfir-nano: cannot borrow memory: {err}"))?;
++        let slice = mem_slice(&memory, ptr, buffer.len())?;
+         buffer.copy_from_slice(slice);
+         Ok(())
+     }
+
+     fn write_memory(&mut self, _name: &str, ptr: u32, buffer: &[u8]) -> anyhow::Result<()> {
+-        let memory = self
++        let mut memory = self
+             .instance
+             .memory_mut()
+-            .ok_or_else(|| anyhow!("silverfir-nano: module has no memory"))?;
++            .map_err(|err| anyhow!("silverfir-nano: cannot borrow memory: {err}"))?;
+         let len = memory.len();
+         let start = ptr as usize;
+         let end = start
+@@ -197,7 +197,7 @@ fn host_value_to_utils(val: Value) -> Result<utils::Val, WasmError> {
+         Value::F32(val) => utils::Val::F32(val),
+         Value::F64(val) => utils::Val::F64(val),
+         _ => {
+-            return Err(WasmError::Trap(
++            return Err(WasmError::trap(
+                 "silverfir-nano: unsupported host function argument type",
+             ));
+         }

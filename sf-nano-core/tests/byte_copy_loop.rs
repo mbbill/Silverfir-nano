@@ -94,7 +94,7 @@ fn copying_matches_byte_loop_including_partial_writes_before_trap() {
             "copy({dst}, {src}, {len}): {result:?}"
         );
         assert_eq!(
-            instance.memory().unwrap(),
+            &*instance.memory().unwrap(),
             expected.as_slice(),
             "copy({dst}, {src}, {len})"
         );

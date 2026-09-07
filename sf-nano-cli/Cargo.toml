@@ -1,5 +1,6 @@
 [package]
 name = "sf-nano-cli"
+publish = false
 version = "0.1.0"
 edition = "2021"
 authors = ["Bill Ming <mbbill@gmail.com>"]

@@ -1,7 +1,5 @@
-//! Public WebAssembly value API.
-//!
-//! This module provides the public interface for WebAssembly values,
-//! used for function arguments, return values, and host API interactions.
+//! Compact internal values and reference-slot encoding.
+//! Embedding values carry separate provenance in `crate::value`.
 
 use crate::value_type::{RefType, ValueType};
 use core::fmt::Display;
@@ -21,7 +19,10 @@ const TARGET32_REF_HOST_PAYLOAD_MASK: u32 = TARGET32_REF_POOL_TAG - 1;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RefValue(pub(crate) usize);
+pub(crate) struct RefValue(pub(crate) usize);
+
+// Public provenance must never widen the engine's table elements or ABI slots.
+const _: () = assert!(core::mem::size_of::<RefValue>() == core::mem::size_of::<usize>());
 
 impl RefValue {
     #[cfg(target_pointer_width = "64")]
@@ -50,41 +51,35 @@ impl RefValue {
         Self::pool_payload_tag() - 1
     }
 
-    pub const fn new(value: usize) -> Self {
+    pub(crate) const fn new(value: usize) -> Self {
         Self(value)
     }
 
-    /// The handle's raw bits, for an embedder storing it in its own slot.
-    #[inline]
-    pub const fn raw(self) -> usize {
-        self.0
-    }
-
-    pub const fn null() -> Self {
+    pub(crate) const fn null() -> Self {
         Self(usize::MAX)
     }
 
-    pub fn is_null(&self) -> bool {
+    pub(crate) fn is_null(&self) -> bool {
         self.0 == usize::MAX
     }
 
-    pub fn hostref(index: usize) -> Self {
+    pub(crate) fn hostref(index: usize) -> Self {
         Self(Self::SPECIAL_TAG | (index & Self::host_payload_mask()))
     }
 
-    pub fn externref(index: usize) -> Self {
+    pub(crate) fn externref(index: usize) -> Self {
         Self(Self::SPECIAL_TAG | Self::EXTERN_TAG | (index & Self::host_payload_mask()))
     }
 
-    pub fn is_host(&self) -> bool {
+    pub(crate) fn is_host(&self) -> bool {
         self.is_special() && !self.is_pooled()
     }
 
-    pub fn is_special(&self) -> bool {
+    pub(crate) fn is_special(&self) -> bool {
         !self.is_null() && (self.0 & Self::SPECIAL_TAG) != 0
     }
 
-    pub fn is_extern(&self) -> bool {
+    pub(crate) fn is_extern(&self) -> bool {
         if self.is_null() {
             false
         } else {
@@ -105,7 +100,7 @@ impl RefValue {
         Self(Self::SPECIAL_TAG | Self::pool_payload_tag() | (index & Self::host_payload_mask()))
     }
 
-    pub fn to_any(self) -> Result<Self, ()> {
+    pub(crate) fn to_any(self) -> Result<Self, ()> {
         if self.is_null() {
             Ok(self)
         } else if self.is_special() && self.is_extern() {
@@ -115,7 +110,7 @@ impl RefValue {
         }
     }
 
-    pub fn to_extern(self) -> Result<Self, ()> {
+    pub(crate) fn to_extern(self) -> Result<Self, ()> {
         if self.is_null() {
             Ok(self)
         } else if self.is_special() {
@@ -126,11 +121,11 @@ impl RefValue {
     }
 
     #[inline]
-    pub const fn encoded(self) -> usize {
+    pub(crate) const fn encoded(self) -> usize {
         self.0
     }
 
-    pub fn payload(&self) -> usize {
+    pub(crate) fn payload(&self) -> usize {
         if self.is_null() {
             return usize::MAX;
         }
@@ -218,7 +213,7 @@ impl Display for RefValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum Value {
+pub(crate) enum Value {
     I32(i32),
     I64(i64),
     F32(f32),
@@ -380,30 +375,7 @@ impl From<Value> for [u8; 16] {
 }
 
 impl Value {
-    #[inline]
-    pub fn from_v128_bytes(_bytes: [u8; 16]) -> Self {
-        #[cfg(sf_has_simd)]
-        {
-            Self::V128(_bytes)
-        }
-        #[cfg(not(sf_has_simd))]
-        {
-            Self::Unknown
-        }
-    }
-
-    #[inline]
-    pub fn as_v128_bytes(&self) -> Option<[u8; 16]> {
-        #[cfg(sf_has_simd)]
-        {
-            if let Self::V128(bytes) = self {
-                return Some(*bytes);
-            }
-        }
-        None
-    }
-
-    pub fn value_type(&self) -> ValueType {
+    pub(crate) fn value_type(&self) -> ValueType {
         match self {
             Value::I32(_) => ValueType::I32,
             Value::I64(_) => ValueType::I64,
@@ -416,7 +388,7 @@ impl Value {
         }
     }
 
-    pub fn default_for_type(value_type: ValueType) -> Self {
+    pub(crate) fn default_for_type(value_type: ValueType) -> Self {
         match value_type {
             ValueType::I32 => Value::I32(0),
             ValueType::I64 => Value::I64(0),
@@ -432,7 +404,7 @@ impl Value {
     }
 
     #[inline]
-    pub fn to_raw(&self) -> u64 {
+    pub(crate) fn to_raw(&self) -> u64 {
         match *self {
             Value::I32(v) => v as u32 as u64,
             Value::I64(v) => v as u64,
@@ -446,7 +418,7 @@ impl Value {
     }
 
     #[inline]
-    pub fn from_raw(raw: u64, ty: ValueType) -> Self {
+    pub(crate) fn from_raw(raw: u64, ty: ValueType) -> Self {
         match ty {
             ValueType::I32 => Value::I32(raw as i32),
             ValueType::I64 => Value::I64(raw as i64),
@@ -474,7 +446,7 @@ mod tests {
             for gp_unit_bytes in [4, 8] {
                 let raw = ref_to_machine_raw(handle, gp_unit_bytes);
                 let decoded = machine_raw_to_ref(raw, gp_unit_bytes);
-                assert_eq!(decoded.raw(), encoded);
+                assert_eq!(decoded.encoded(), encoded);
                 assert!(!decoded.is_special());
             }
         }

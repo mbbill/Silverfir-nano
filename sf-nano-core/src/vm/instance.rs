@@ -11,21 +11,19 @@
 //! engine has a univariant wrapper: no discriminant, and every match here
 //! folds to its single arm. See [`crate::vm::engine`].
 //!
-//! Deep introspection of the JIT's entity model -- the store, shared
-//! entity handles, tag handles, per-index accessors -- has no counterpart
-//! on the interpreter and stays where it lives, reachable through
-//! [`Instance::as_jit`].
+//! Engine diagnostics expose owned snapshots and scalar answers; instance
+//! bodies, leases and instruction representations remain private.
 
 use crate::collections;
 use crate::error::WasmError;
-use crate::module::type_defs::FunctionType;
 use crate::module::Module;
 use crate::vm::engine::{Engine, Tier};
-use crate::vm::entities::{Caller, MemInst};
-use crate::vm::imports::ImportedGlobalState;
+use crate::vm::link::RefTypeOwner;
 use crate::vm::link::{InstanceFreeError, InstanceId, LinkRegistry, WorldAccess};
+use crate::vm::memory::{MemoryView, MemoryViewMut};
 use crate::vm::tag::TagIdentity;
-use crate::vm::value::{RefValue, Value};
+use crate::vm::value::Value as RawValue;
+use crate::{RefValue, Value};
 
 #[cfg(sf_interp)]
 use crate::vm::interpreter::{InterpInstance, InterpInstanceLease};
@@ -35,9 +33,7 @@ use crate::vm::jit::instantiate::JitInstanceLease;
 // One import model for both engines. The interpreter's raw host-dispatch
 // boundary is an implementation detail that `interp_imports` drives from
 // these same declarations.
-pub use crate::vm::imports::{
-    Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState,
-};
+use crate::vm::imports::{Extern, Import};
 
 #[cfg(sf_interp)]
 mod interp_imports;
@@ -49,20 +45,84 @@ enum Inner {
     Interp(InterpInstanceLease),
 }
 
-/// Reject a module the spec says is invalid.
-///
-/// Ahead of the tier split, because validation is not "how code is run":
-/// a module either conforms or it does not, and which engine is about to
-/// run it cannot change that. It used to live inside the JIT's
-/// instantiation, so an interpreter instance accepted modules the spec
-/// requires be rejected.
-#[inline]
-fn validate(module: &Module) -> Result<(), WasmError> {
-    module.ensure_simd_supported()?;
-    #[cfg(sf_module_validator)]
-    {
-        use crate::module::validator::Validator;
-        Validator::new(module).validate()?;
+fn validate_import_world(
+    module: &Module,
+    imports: &[Import],
+    registry: &LinkRegistry,
+) -> Result<(), WasmError> {
+    for tag in module.tags() {
+        let crate::module::entities::TagDef::Import {
+            module: import_module,
+            name,
+            ..
+        } = tag.def()
+        else {
+            continue;
+        };
+        let Some(Import {
+            value: crate::vm::imports::ImportValue::Tag(state),
+            ..
+        }) = imports
+            .iter()
+            .find(|import| import.module == *import_module && import.name == *name)
+        else {
+            continue;
+        };
+        if state.type_ctx.is_none()
+            && state.func_type.params().iter().any(|value| {
+                matches!(
+                    value,
+                    crate::value_type::ValueType::Ref(crate::value_type::RefType {
+                        heap_type: crate::value_type::HeapType::Concrete(_),
+                        ..
+                    })
+                )
+            })
+        {
+            return Err(WasmError::unlinkable(
+                "host tags with concrete types require a typed module export",
+            ));
+        }
+    }
+    for global in module.globals() {
+        if let crate::module::entities::GlobalDef::Import {
+            module: import_module,
+            name,
+            value_type,
+            ..
+        } = global.def()
+        {
+            if let Some(Import {
+                value:
+                    crate::vm::imports::ImportValue::Global(
+                        crate::vm::imports::ImportedGlobal::Value(value),
+                        _,
+                    ),
+                ..
+            }) = imports
+                .iter()
+                .find(|import| import.module == *import_module && import.name == *name)
+            {
+                registry.validate_host_global(*value, *value_type, module.types())?;
+            }
+        }
+    }
+    if imports.iter().any(|import| {
+        import
+            .source
+            .is_some_and(|source| !registry.instance_table().owns(source))
+    }) {
+        return Err(WasmError::unlinkable(
+            "export belongs to a different runtime world",
+        ));
+    }
+    if imports.iter().any(|import| {
+        matches!(&import.value, crate::vm::imports::ImportValue::Memory(_, Some(memory))
+            if memory.host_callback_borrowed())
+    }) {
+        return Err(WasmError::trap(
+            "imported linear memory is borrowed by a host callback",
+        ));
     }
     Ok(())
 }
@@ -145,12 +205,22 @@ impl InstanceInstantiationError {
 /// which writes results into a slice the caller already owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Func {
+    owner: InstanceId,
     index: usize,
     params: usize,
     results: usize,
+    reference: RefValue,
 }
 
 impl Func {
+    /// A world-bound function reference suitable for a Wasm reference argument.
+    pub fn to_value(&self) -> Value {
+        Value::Ref(
+            self.reference,
+            crate::value_type::RefType::funcref().to_non_nullable(),
+        )
+    }
+
     /// How many arguments this function takes, and how many it returns.
     #[inline]
     pub const fn arity(&self) -> (usize, usize) {
@@ -159,14 +229,72 @@ impl Func {
 }
 
 impl Instance {
+    fn lower_args(&self, args: &[Value]) -> Result<crate::value::ValueBuffer<RawValue>, WasmError> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => RefTypeOwner::Jit(inst.store()).import_values(args),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => {
+                inst.with_instance(|inst| RefTypeOwner::Interp(inst).import_values(args))
+            }
+        }
+    }
+
+    fn function_reference(&self, index: usize) -> Option<RefValue> {
+        let raw = match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.function_handle_at(index),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.function_handle_at(index)),
+        }?;
+        Some(RefValue::from_vm(raw, self.instance_id().world()))
+    }
+
+    /// Look up an export with its live identity and private linking metadata.
+    /// Exported objects can be bound into another instance in this RuntimeWorld.
+    pub fn get_export(&self, name: &str) -> Result<Option<Extern>, WasmError> {
+        let value = match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.export_value(name)?,
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.export_value(name))?,
+        };
+        Ok(value.map(|value| Extern {
+            value,
+            source: self.instance_id(),
+        }))
+    }
+
+    /// Collect named exports for linking, preserving aliases and current sizes.
+    /// Functions fail safely if their source instance is later freed. Shared
+    /// memory/global/table storage remains owned by its exported objects.
+    pub fn exports(&self) -> Result<collections::Vec<(alloc::string::String, Extern)>, WasmError> {
+        let names = match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.export_names(),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.export_names()),
+        };
+        names
+            .into_iter()
+            .map(|name| {
+                let value = self
+                    .get_export(&name)?
+                    .ok_or_else(|| WasmError::internal("export disappeared"))?;
+                Ok((name, value))
+            })
+            .collect()
+    }
+
     fn from_module_in_registry(
         engine: &Engine,
         module: Module,
         imports: &[Import],
         registry: &LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
-        validate(&module)?;
-        match engine.tier() {
+        let execution = registry.memory_access().enter()?;
+        validate_import_world(&module, imports, registry)?;
+        let result = match engine.tier() {
             #[cfg(sf_jit)]
             Tier::Jit => JitInstanceLease::from_module_with_registry(
                 engine, module, imports, registry,
@@ -197,7 +325,9 @@ impl Instance {
                     Err((None, error)) => Err(InstanceInstantiationError::Complete(error)),
                 }
             }
-        }
+        };
+        drop(execution);
+        result
     }
 
     /// Instantiate in `engine`, which decides the tier and the budgets.
@@ -205,80 +335,7 @@ impl Instance {
         Self::from_module(engine, Module::new("main", wasm_bytes)?, imports)
     }
 
-    /// Instantiate against a shared link registry, so instances can
-    /// resolve each other's exports.
-    ///
-    /// Both engines use the registry for linked functions and reference
-    /// identities. The interpreter enters registry-known peers directly
-    /// unless an installed [`crate::FuncRefHost`] overrides that routing.
-    pub fn from_module_with_registry(
-        engine: &Engine,
-        module: Module,
-        imports: &[Import],
-        registry: &crate::vm::link::LinkRegistry,
-    ) -> Result<Self, InstanceInstantiationError> {
-        Self::from_module_in_registry(engine, module, imports, registry)
-    }
-
-    /// Instantiate with a hook for cross-instance function references, and
-    /// keep the instance when a data segment traps.
-    #[cfg(sf_interp)]
-    pub fn from_module_with_funcref_host(
-        engine: &Engine,
-        module: Module,
-        imports: &[Import],
-        funcref_host: crate::vm::interpreter::FuncRefHost,
-    ) -> Result<Self, (Option<Self>, WasmError)> {
-        let registry = crate::vm::link::LinkRegistry::new();
-        Self::from_module_with_registry_and_funcref_host(
-            engine,
-            module,
-            imports,
-            &registry,
-            funcref_host,
-        )
-    }
-
-    /// Instantiate with a shared link registry and a hook for cross-instance
-    /// function references, retaining a partial instance when a data segment
-    /// traps.
-    ///
-    /// The hook takes precedence over the interpreter's engine-native path,
-    /// while the registry preserves reference identity and payloads across
-    /// instances.
-    #[cfg(sf_interp)]
-    pub fn from_module_with_registry_and_funcref_host(
-        engine: &Engine,
-        module: Module,
-        imports: &[Import],
-        registry: &crate::vm::link::LinkRegistry,
-        funcref_host: crate::vm::interpreter::FuncRefHost,
-    ) -> Result<Self, (Option<Self>, WasmError)> {
-        validate(&module).map_err(|e| (None, e))?;
-        let dispatch = interp_imports::bind(&module, imports).map_err(|e| (None, e))?;
-        match InterpInstance::new_partial_with_registry(
-            engine,
-            module,
-            Some(InterpInstance::boxed_caller_host(dispatch)),
-            imports,
-            Some(funcref_host),
-            registry,
-        ) {
-            Ok(inst) => Ok(Self {
-                inner: Inner::Interp(inst),
-                registry: registry.clone(),
-            }),
-            Err((partial, error)) => Err((
-                partial.map(|inst| Self {
-                    inner: Inner::Interp(inst),
-                    registry: registry.clone(),
-                }),
-                error,
-            )),
-        }
-    }
-
-    /// Instantiate an already-parsed module in `engine`.
+    /// Instantiate a validated module in `engine` without validating it again.
     pub fn from_module(
         engine: &Engine,
         module: Module,
@@ -334,21 +391,31 @@ impl Instance {
 
     /// Resolve an exported function once for repeated calls.
     pub fn get_func(&self, name: &str) -> Option<Func> {
-        let (index, params, results) = match &self.inner {
+        let index = match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.function_index_of_export(name)?,
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.find_export(name))?,
+        };
+        self.get_func_by_index(index)
+    }
+
+    /// Resolve a referenceable module function index to an instance-owned handle.
+    /// Returns `None` for an invalid index or a function not declared eligible
+    /// to escape the module (through an export, element or `ref.func`).
+    pub fn get_func_by_index(&self, index: usize) -> Option<Func> {
+        let (params, results) = match &self.inner {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => {
-                let index = inst.function_index_of_export(name)?;
                 let ft = inst.function_type_at(index)?;
-                (index, ft.params().len(), ft.results().len())
+                (ft.params().len(), ft.results().len())
             }
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.with_instance(|inst| {
-                let index = inst.find_export(name)?;
-                let (params, results) = inst.func_arity(index)?;
-                Some((index, params, results))
-            })?,
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.func_arity(index))?,
         };
         Some(Func {
+            owner: self.instance_id(),
+            reference: self.function_reference(index)?,
             index,
             params,
             results,
@@ -357,28 +424,43 @@ impl Instance {
 
     /// Call a resolved export, writing results into `results`.
     ///
-    /// No name lookup and no allocation for the return values, so a hot
-    /// call loop pays for neither.
+    /// Avoids name lookup and writes into the caller's result storage.
+    /// Engines may still allocate temporary invocation storage internally.
+    /// A function resolved from a different instance is rejected before dispatch.
     pub fn call(
         &mut self,
         func: &Func,
         args: &[Value],
         results: &mut [Value],
     ) -> Result<(), WasmError> {
+        if func.owner != self.instance_id() {
+            return Err(WasmError::invalid(
+                "function belongs to a different instance",
+            ));
+        }
         if args.len() != func.params || results.len() != func.results {
             return Err(WasmError::invalid("argument/result arity mismatch"));
         }
-        match &mut self.inner {
+        let execution = self.registry.memory_access().enter()?;
+        let args = self.lower_args(args)?;
+        let mut raw_results = crate::value::ValueBuffer::new(results.len(), RawValue::Unknown);
+        let result = match &mut self.inner {
             #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.call_function_index(func.index, args, results),
+            Inner::Jit(inst) => inst.call_function_index(func.index, &args, &mut raw_results),
             #[cfg(sf_interp)]
             Inner::Interp(inst) => interp_imports::call_by_index(
                 inst.checkout_for_invocation()?,
                 func.index,
-                args,
-                results,
+                &args,
+                &mut raw_results,
             ),
+        };
+        drop(execution);
+        result?;
+        for (result, raw) in results.iter_mut().zip(raw_results.iter().copied()) {
+            *result = Value::from_vm(raw, self.instance_id().world());
         }
+        Ok(())
     }
 
     pub fn has_function_export(&self, name: &str) -> bool {
@@ -390,23 +472,31 @@ impl Instance {
         }
     }
 
-    /// The first linear memory's contents, if the module defines one.
-    pub fn memory(&self) -> Option<&[u8]> {
-        match &self.inner {
+    /// Borrow the first linear memory for reading.
+    ///
+    /// Calls and instantiation in this world fail while the returned view lives.
+    /// Returns an error if no memory exists, the world is executing, or a
+    /// mutable view is already held. Host callbacks should use Caller::memory.
+    pub fn memory(&self) -> Result<MemoryView, WasmError> {
+        self.registry.memory_access().read(|| match &self.inner {
             #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.memory(),
+            Inner::Jit(inst) => inst.shared_memory_at(0),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.memory(),
-        }
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.shared_memory_at(0)),
+        })
     }
 
-    pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        match &mut self.inner {
+    /// Exclusively borrow the first linear memory for host mutation.
+    ///
+    /// Drop the returned view before executing or instantiating in this world.
+    /// Other views and views requested during execution return an error.
+    pub fn memory_mut(&mut self) -> Result<MemoryViewMut, WasmError> {
+        self.registry.memory_access().write(|| match &self.inner {
             #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.memory_mut(),
+            Inner::Jit(inst) => inst.shared_memory_at(0),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.memory_mut(),
-        }
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.shared_memory_at(0)),
+        })
     }
 
     // --- The surface the spec runner drives both engines through ---
@@ -422,41 +512,28 @@ impl Instance {
         idx: usize,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
-        match &mut self.inner {
+        let execution = self.registry.memory_access().enter()?;
+        let args = self.lower_args(args)?;
+        let result = match &mut self.inner {
             #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.invoke_function_index(idx, args),
+            Inner::Jit(inst) => inst.invoke_function_index(idx, &args),
             #[cfg(sf_interp)]
             Inner::Interp(inst) => {
-                interp_imports::invoke_by_index(inst.checkout_for_invocation()?, idx, args)
+                interp_imports::invoke_by_index(inst.checkout_for_invocation()?, idx, &args)
             }
-        }
-    }
-
-    /// A global's value by index.
-    pub fn global_at(&self, idx: usize) -> Result<Option<Value>, WasmError> {
-        match &self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.global_at(idx),
-            #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.with_instance(|inst| interp_imports::global_at(inst, idx)),
-        }
-    }
-
-    /// Overwrite a global by index.
-    pub fn replace_global_at(&mut self, idx: usize, value: Value) -> Result<(), WasmError> {
-        match &mut self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.replace_global_at(idx, value),
-            #[cfg(sf_interp)]
-            Inner::Interp(inst) => {
-                inst.with_instance_mut(|inst| interp_imports::replace_global_at(inst, idx, value))
-            }
-        }
+        };
+        drop(execution);
+        result.map(|values| {
+            values
+                .into_iter()
+                .map(|value| Value::from_vm(value, self.instance_id().world()))
+                .collect()
+        })
     }
 
     /// An exported global's value by name.
     pub fn get_global(&self, name: &str) -> Result<Option<Value>, WasmError> {
-        match &self.inner {
+        let value = match &self.inner {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.get_global(name),
             #[cfg(sf_interp)]
@@ -464,26 +541,11 @@ impl Instance {
                 Some(idx) => interp_imports::global_at(inst, idx),
                 None => Ok(None),
             }),
-        }
+        }?;
+        Ok(value.map(|value| Value::from_vm(value, self.instance_id().world())))
     }
 
-    /// The declared type of a function by index.
-    pub fn function_type_at(&self, idx: usize) -> Option<FunctionType> {
-        match &self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.function_type_at(idx),
-            #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.with_instance(|inst| {
-                inst.module()
-                    .functions()
-                    .get(idx)
-                    .map(|f| f.func_type().clone())
-            }),
-        }
-    }
-
-    /// The payload of an exception, by the handle a `WasmError::Exception`
-    /// carried out.
+    /// The payload of an exception, using the handle from [`WasmError::exception`].
     ///
     /// An uncaught exception surfaces with a reference handle, its tag, and
     /// the module's name for that tag. The handle alone is opaque to an
@@ -491,32 +553,17 @@ impl Instance {
     /// Exception objects are registry-owned, so this keeps working after the
     /// instance that threw has been dropped.
     pub fn exception_fields(&self, exn: RefValue) -> Option<collections::Vec<Value>> {
-        self.registry
-            .arenas()
-            .resolve_exn(exn)
-            .map(|instance| instance.fields.clone())
-    }
-
-    /// An absolute reference handle for a function, suitable for crossing
-    /// instance boundaries.
-    pub fn function_handle_at(&self, idx: usize) -> Option<RefValue> {
-        match &self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.function_handle_at(idx),
-            #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.with_instance(|inst| inst.function_handle_at(idx)),
+        if exn.world != self.instance_id().world() {
+            return None;
         }
-    }
-
-    /// The type index of a function, for cross-instance identity checks.
-    pub fn function_type_index_at(&self, idx: usize) -> Option<u32> {
-        match &self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.function_type_index_at(idx),
-            #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst
-                .with_instance(|inst| inst.module().functions().get(idx).map(|f| f.type_index())),
-        }
+        self.registry.arenas().resolve_exn(exn.raw).map(|instance| {
+            instance
+                .fields
+                .iter()
+                .copied()
+                .map(|value| Value::from_vm(value, self.instance_id().world()))
+                .collect()
+        })
     }
 
     /// Page count of an exported memory.
@@ -580,119 +627,25 @@ impl Instance {
         }
     }
 
-    /// Shared entity state, for linking one instance's exports into
-    /// another's imports. The interpreter does not link yet, so it offers
-    /// nothing to share.
-    pub fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
-        match &self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.shared_memory_at(idx),
-            #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.with_instance(|inst| inst.shared_memory_at(idx)),
-        }
-    }
-
-    pub fn shared_table_state_at(&self, idx: usize) -> Option<ImportedTableState> {
-        match &self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.shared_table_state_at(idx),
-            #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.with_instance(|inst| {
-                inst.table_state_at(idx).map(|table| ImportedTableState {
-                    table,
-                    type_ctx: None,
-                })
-            }),
-        }
-    }
-
-    pub fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
-        match &self.inner {
-            #[cfg(sf_interp)]
-            // With the exporter's type context: a reference type's concrete
-            // heap type names an index in THIS module's type space, and the
-            // importer cannot resolve it otherwise.
-            Inner::Interp(inst) => inst.with_instance(|inst| {
-                inst.global_state_at(idx).map(|global| ImportedGlobalState {
-                    global,
-                    type_ctx: Some(inst.module().types().clone()),
-                })
-            }),
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.shared_global_state_at(idx),
-        }
-    }
-
-    /// Append a host function after instantiation, for the spec runner's
-    /// late-bound imports.
-    pub fn append_host_function<F>(&mut self, func_type: FunctionType, callback: F) -> usize
-    where
-        F: for<'a, 'b, 'c, 'd> Fn(
-                &'a mut Caller<'b>,
-                &'c [Value],
-                &'d mut [Value],
-            ) -> Result<(), WasmError>
-            + 'static,
-    {
-        match &mut self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.append_host_function(func_type, callback),
-            #[cfg(sf_interp)]
-            Inner::Interp(_) => {
-                let _ = (func_type, callback);
-                usize::MAX
-            }
-        }
-    }
-
-    /// The JIT's instance, for the entity-model surface the interpreter has
-    /// no counterpart for. `None` when this instance is on another engine.
+    /// Whether an exported local JIT function has native code. Returns None
+    /// for interpreter instances, host/linked functions or unknown names.
     #[cfg(sf_jit)]
     #[inline]
-    pub fn as_jit(&self) -> Option<&JitInstanceLease> {
+    pub fn function_has_native_code(&self, name: &str) -> Option<bool> {
         match &self.inner {
-            Inner::Jit(inst) => Some(inst),
+            Inner::Jit(inst) => inst.function_has_native_code(name),
             #[cfg(sf_interp)]
             Inner::Interp(_) => None,
         }
     }
 
-    #[cfg(sf_jit)]
-    #[inline]
-    pub fn as_jit_mut(&mut self) -> Option<&mut JitInstanceLease> {
-        match &mut self.inner {
-            Inner::Jit(inst) => Some(inst),
-            #[cfg(sf_interp)]
-            Inner::Interp(_) => None,
-        }
-    }
-
-    /// Scoped access to the interpreter's instance. `None` when this
-    /// instance is on another engine.
-    ///
-    /// The higher-ranked closure prevents a reference derived from the
-    /// instance-table token from escaping this call.
+    /// Collect an owned interpreter diagnostic snapshot. Returns None when
+    /// this instance uses another engine. Collection may allocate.
     #[cfg(sf_interp)]
     #[inline]
-    pub fn with_interp<R>(
-        &self,
-        use_instance: impl for<'instance> FnOnce(&'instance InterpInstance) -> R,
-    ) -> Option<R> {
+    pub fn interpreter_stats(&self) -> Option<crate::InterpreterStats> {
         match &self.inner {
-            Inner::Interp(inst) => Some(inst.with_instance(use_instance)),
-            #[cfg(sf_jit)]
-            Inner::Jit(_) => None,
-        }
-    }
-
-    #[cfg(sf_interp)]
-    #[inline]
-    pub fn with_interp_mut<R>(
-        &mut self,
-        use_instance: impl for<'instance> FnOnce(&'instance mut InterpInstance) -> R,
-    ) -> Option<R> {
-        match &mut self.inner {
-            Inner::Interp(inst) => Some(inst.with_instance_mut(use_instance)),
+            Inner::Interp(inst) => Some(inst.with_instance(|inst| inst.statistics())),
             #[cfg(sf_jit)]
             Inner::Jit(_) => None,
         }
@@ -845,18 +798,39 @@ impl RuntimeWorld {
         name: &str,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
+        let execution = self.registry.memory_access().enter()?;
+        let result = self.invoke_inner(id, name, args);
+        drop(execution);
+        result
+    }
+
+    fn invoke_inner(
+        &mut self,
+        id: InstanceId,
+        name: &str,
+        args: &[Value],
+    ) -> Result<collections::Vec<Value>, WasmError> {
         let token = self
             .registry
             .instance_table()
             .checkout(id)
             .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
+        let owner = RefTypeOwner::from_token(&token)
+            .ok_or_else(|| WasmError::invalid("instance has no engine"))?;
+        let args = owner.import_values(args)?;
+        let expose = |values: collections::Vec<RawValue>| {
+            values
+                .into_iter()
+                .map(|value| Value::from_vm(value, id.world()))
+                .collect()
+        };
         #[cfg(sf_jit)]
         if token.jit().is_some() {
-            return JitInstanceLease::invoke_token(token, name, args);
+            return JitInstanceLease::invoke_token(token, name, &args).map(expose);
         }
         #[cfg(sf_interp)]
         if token.interp().is_some() {
-            return interp_imports::invoke_by_name(token, name, args);
+            return interp_imports::invoke_by_name(token, name, &args).map(expose);
         }
         Err(WasmError::invalid(
             "runtime-world instance has no enabled engine",
@@ -878,16 +852,38 @@ impl WorldAccess {
         function_index: usize,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
+        let execution = self.begin_execution()?;
+        let result = self.invoke_inner(id, function_index, args);
+        drop(execution);
+        result
+    }
+
+    fn invoke_inner(
+        &self,
+        id: InstanceId,
+        function_index: usize,
+        args: &[Value],
+    ) -> Result<collections::Vec<Value>, WasmError> {
         let token = self
             .checkout(id)
             .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
+        let owner = RefTypeOwner::from_token(&token)
+            .ok_or_else(|| WasmError::invalid("instance has no engine"))?;
+        let args = owner.import_values(args)?;
+        let expose = |values: collections::Vec<RawValue>| {
+            values
+                .into_iter()
+                .map(|value| Value::from_vm(value, id.world()))
+                .collect()
+        };
         #[cfg(sf_jit)]
         if token.jit().is_some() {
-            return JitInstanceLease::invoke_function_index_token(token, function_index, args);
+            return JitInstanceLease::invoke_function_index_token(token, function_index, &args)
+                .map(expose);
         }
         #[cfg(sf_interp)]
         if token.interp().is_some() {
-            return interp_imports::invoke_by_index(token, function_index, args);
+            return interp_imports::invoke_by_index(token, function_index, &args).map(expose);
         }
         Err(WasmError::invalid(
             "runtime-world instance has no enabled engine",
@@ -992,7 +988,7 @@ mod tests {
             "#,
         )
         .expect("encode same-instance handle caller");
-        let callback_type = FunctionType::new(
+        let callback_type = crate::FunctionType::new(
             collections::vec![crate::value_type::ValueType::I32],
             collections::vec![crate::value_type::ValueType::I32],
         );
@@ -1212,7 +1208,6 @@ mod tests {
     /// `ref.func` in a body of a function declared nowhere outside code is
     /// invalid; the escapable set never scans bodies, so the validator must
     /// reject the module rather than the runtime inventing an identity.
-    #[cfg(sf_module_validator)]
     #[test]
     fn undeclared_code_ref_func_is_rejected() {
         let wasm = wat::parse_str(
@@ -1231,12 +1226,10 @@ mod tests {
 
         for &tier in Tier::ALL {
             let engine = Engine::new(Config::new().tier(tier)).expect("engine config");
-            let module = Module::new("undeclared-ref-func", &wasm).expect("parse module");
-            let mut world = RuntimeWorld::new();
-            let error = world
-                .instantiate(&engine, module, &[])
-                .expect_err("undeclared ref.func must fail validation");
-            let message = alloc::format!("{:?}", error.error());
+            let error = Instance::new(&engine, &wasm, &[])
+                .err()
+                .expect("undeclared ref.func must fail validation");
+            let message = alloc::format!("{:?}", error);
             assert!(
                 message.contains("undeclared function reference"),
                 "{tier:?}: unexpected rejection: {message}"
@@ -1345,7 +1338,9 @@ mod tests {
                     .expect_err("cast should trap");
                 assert_eq!(
                     error,
-                    WasmError::Trap("cast failure"),
+                    WasmError {
+                        repr: crate::error::ErrorRepr::Trap("cast failure")
+                    },
                     "{tier:?} {name}: wrong failure"
                 );
                 1
@@ -1382,7 +1377,7 @@ mod tests {
             let null_handle = RefValue::null();
             let null = Value::Ref(null_handle, crate::value_type::RefType::funcref());
 
-            let mut answers = collections::vec![
+            let answers = collections::vec![
                 invoke_i32(&mut world, consumer, tier, "test_func", function),
                 invoke_i32(&mut world, consumer, tier, "test_right", function),
                 invoke_i32(&mut world, consumer, tier, "test_wrong", function),
@@ -1405,24 +1400,21 @@ mod tests {
                 cast_traps(&mut world, consumer, tier, "cast_nonnull", null),
             ];
 
-            // Absolute function handles may outlive their owners. Abstract
-            // function matching needs only the arena provenance; concrete
-            // matching is the arm that checks out the owner's type context.
+            // A retained public handle is inert after its owner is freed:
+            // reject it before even an abstract ref.test enters Wasm.
             world.free(provider).expect("free reference provider");
-            answers.push(invoke_i32(
-                &mut world,
-                consumer,
-                tier,
-                "test_func",
-                function,
-            ));
+            let error = world
+                .invoke(consumer, "test_func", &[function])
+                .expect_err("stale public reference must not enter Wasm");
+            assert_eq!(error.class(), "invalid");
+            assert_eq!(error.message(), "reference owner is no longer available");
             answers
         }
 
         let jit = answers_for(Tier::Jit, &provider_wasm, &consumer_wasm);
         let interp = answers_for(Tier::Interp, &provider_wasm, &consumer_wasm);
         assert_eq!(jit, interp, "reference-type answers diverged by engine");
-        assert_eq!(jit, collections::vec![1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1]);
+        assert_eq!(jit, collections::vec![1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1]);
     }
 
     /// The design's Embedder API example: `b` calls a function owned by `a`
@@ -1463,23 +1455,18 @@ mod tests {
                 )
                 .expect("instantiate provider");
 
-            let (handle, func_type) = {
-                let instance = world.instance(a).expect("world retains the provider");
-                (
-                    instance
-                        .function_handle_at(0)
-                        .expect("exported function has a world address"),
-                    instance
-                        .function_type_at(0)
-                        .expect("exported function has a type"),
-                )
-            };
+            let exported = world
+                .instance(a)
+                .expect("provider")
+                .get_export("answer")
+                .expect("export metadata")
+                .expect("answer export");
 
             let b = world
                 .instantiate(
                     &engine,
                     Module::new("consumer", &consumer).expect("parse consumer"),
-                    &[Import::linked_func_typed("a", "answer", handle, func_type)],
+                    &[Import::new("a", "answer", exported)],
                 )
                 .expect("instantiate consumer");
 
@@ -1501,73 +1488,54 @@ mod tests {
         }
     }
 
-    /// A funcref-carrying imported global must reach a peer as an ABSOLUTE
-    /// handle. Linking synthesizes a host function past the parsed module's
-    /// function count for this shape, and that synthetic index used to be
-    /// skipped by world registration -- leaving a LOCAL index in a container
-    /// the reachability fact marks shared, which a peer would resolve against
-    /// its own function space. This path had no in-tree coverage.
-    #[cfg(sf_jit)]
+    /// A funcref exported in a shared global preserves its absolute identity,
+    /// including when the referenced function re-exports a host callback.
     #[test]
     fn linked_function_in_an_imported_global_carries_the_absolute_form() {
-        fn answer(
-            _caller: &mut Caller<'_>,
-            _args: &[Value],
-            results: &mut [Value],
-        ) -> Result<(), WasmError> {
-            results[0] = Value::I32(0x5eed);
-            Ok(())
-        }
-
-        let wasm = wat::parse_str(
-            r#"
-            (module
-              (type $ft (func (result i32)))
-              (global $g (import "host" "fn_global") funcref)
-              (table 1 funcref)
-              (func (export "call_it") (result i32)
+        let source = wat::parse_str(
+            r#"(module
+            (import "host" "answer" (func $answer (result i32)))
+            (global (export "fn_global") funcref (ref.func $answer)))"#,
+        )
+        .unwrap();
+        let target = wat::parse_str(
+            r#"(module
+            (type $ft (func (result i32)))
+            (global $g (import "source" "fn_global") funcref)
+            (table 1 funcref)
+            (func (export "call_it") (result i32)
                 (table.set (i32.const 0) (global.get $g))
-                (call_indirect (type $ft) (i32.const 0))))
-            "#,
+                (call_indirect (type $ft) (i32.const 0))))"#,
         )
-        .expect("encode module");
-
-        let engine = Engine::new(Config::new().tier(Tier::Jit)).expect("engine");
-        let func_type = FunctionType::new(
-            collections::Vec::new(),
-            collections::vec![crate::value_type::ValueType::I32],
-        );
-        let import = Import::global_with_linked_function(
-            "host",
-            "fn_global",
-            Value::Ref(RefValue::null(), crate::value_type::RefType::funcref()),
-            false,
-            Some((answer as crate::vm::entities::HostFn, func_type)),
-        );
-
-        let mut instance = Instance::from_module(
-            &engine,
-            Module::new("linked-global", &wasm).expect("parse"),
-            &[import],
-        )
-        .expect("instantiate with a linked-function global");
-
-        // The global must not hand out a local index.
-        let handle = match instance.global_at(0).expect("global") {
-            Some(Value::Ref(handle, _)) => handle,
-            other => panic!("expected a funcref global, got {other:?}"),
-        };
-        assert!(
-            !handle.is_null(),
-            "the linked function must have an address"
-        );
-
-        assert_eq!(
-            instance
-                .invoke("call_it", &[])
-                .expect("call through the global"),
-            collections::vec![Value::I32(0x5eed)]
-        );
+        .unwrap();
+        for &tier in Tier::ALL {
+            let engine = Engine::new(Config::new().tier(tier)).unwrap();
+            let mut world = RuntimeWorld::new();
+            let host = Import::func("host", "answer", |_, _, out| {
+                out[0] = Value::I32(0x5eed);
+                Ok(())
+            });
+            let source = world
+                .instantiate(&engine, Module::new("source", &source).unwrap(), &[host])
+                .unwrap();
+            let value = world
+                .instance(source)
+                .unwrap()
+                .get_export("fn_global")
+                .unwrap()
+                .unwrap();
+            let target = world
+                .instantiate(
+                    &engine,
+                    Module::new("target", &target).unwrap(),
+                    &[Import::new("source", "fn_global", value)],
+                )
+                .unwrap();
+            assert_eq!(
+                world.invoke(target, "call_it", &[]).unwrap(),
+                [Value::I32(0x5eed)]
+            );
+        }
     }
 
     /// An uncaught exception hands the embedder a `RefValue`, and until
@@ -1596,7 +1564,10 @@ mod tests {
                     .expect("instantiate");
 
             let error = instance.invoke("boom", &[]).expect_err("must throw");
-            let WasmError::Exception { exn, .. } = error else {
+            let WasmError {
+                repr: crate::error::ErrorRepr::Exception { exn, .. },
+            } = error
+            else {
                 panic!("{tier:?}: expected an uncaught exception, got {error:?}");
             };
             assert_eq!(
@@ -1667,7 +1638,12 @@ mod tests {
                 }
             };
             assert!(
-                matches!(error, WasmError::Trap(_)),
+                matches!(
+                    error,
+                    WasmError {
+                        repr: crate::error::ErrorRepr::Trap(_)
+                    }
+                ),
                 "{tier:?}: wrong instantiation failure: {error}"
             );
             assert!(
@@ -1777,5 +1753,14 @@ mod tests {
             tracked_alloc::set_tracking_enabled(false);
             tracked_alloc::reset_tracking();
         }
+    }
+}
+
+#[cfg(test)]
+impl Instance {
+    /// An absolute reference handle for a function, suitable for crossing
+    /// instance boundaries.
+    fn function_handle_at(&self, idx: usize) -> Option<RefValue> {
+        self.function_reference(idx)
     }
 }

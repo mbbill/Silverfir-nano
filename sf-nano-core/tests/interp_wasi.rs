@@ -209,7 +209,9 @@ fn run_wasi(path: &str) -> (Result<(), WasmError>, HostState) {
 fn completed_ok(result: &Result<(), WasmError>, state: &HostState) -> bool {
     match result {
         Ok(()) => true,
-        Err(WasmError::Trap("proc_exit")) => state.exit_code.get() == Some(0),
+        Err(error) if error.is_trap() && error.message() == "proc_exit" => {
+            state.exit_code.get() == Some(0)
+        }
         _ => false,
     }
 }

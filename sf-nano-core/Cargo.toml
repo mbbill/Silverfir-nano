@@ -2,14 +2,18 @@
 name = "sf-nano-core"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.94"
 authors = ["Bill Ming <mbbill@gmail.com>"]
-description = "A minimal no_std WebAssembly 2.0 interpreter"
-license = "MIT/Apache-2.0"
-keywords = ["wasm", "webassembly", "interpreter", "no_std"]
+description = "A compact optimizing WebAssembly JIT and interpreter for hosted and no_std targets"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mbbill/Silverfir-nano"
+documentation = "https://docs.rs/sf-nano-core"
+include = ["src/**", "!src/tmp/**", "interp_gen/**", "build.rs", "examples/**", "tests/**", "README.md", "LICENSE-*"]
+keywords = ["wasm", "webassembly", "jit", "interpreter", "no_std"]
 categories = ["wasm", "no-std"]
 
 [dependencies]
-tracked_alloc = { package = "sf-nano-tracked-alloc", path = "../tools/tracked-alloc" }
+tracked_alloc = { package = "sf-nano-tracked-alloc", version = "0.1.0", path = "../tools/tracked-alloc" }
 filetime = { version = "0.2", optional = true }
 
 [dev-dependencies]
@@ -58,9 +62,6 @@ thumb2-test = ["jit"]
 # In-tree WASI preview1 host layer.
 wasi = ["dep:filetime"]
 
-# The standalone Wasm validator, used by the spec-suite harness.
-validator = []
-
 # ---------------------------------------------------------------------------
 # Diagnostics. All off by default: each costs either binary size or run time,
 # and nothing in the engines depends on them.
@@ -82,9 +83,15 @@ call-trace = ["jit"]
 # IR dumping remains auto-on in hosted debug builds.
 jit-debug = ["jit"]
 
-# Route every allocation through the tracked-alloc facade and report phases.
+# Enable internal phase/runtime-buffer hooks. Heap statistics require the
+# embedding executable to install TrackingAllocator; container types stay alloc.
 memprof = ["tracked_alloc/memprof"]
 
 [[example]]
 name = "invoke_export"
 required-features = ["wasi"]
+
+[package.metadata.docs.rs]
+features = ["wasi"]
+default-target = "x86_64-unknown-linux-gnu"
+targets = ["x86_64-unknown-linux-gnu"]

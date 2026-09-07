@@ -226,3 +226,28 @@ pub(crate) unsafe fn collect_native_results_from_stack(
     }
     Ok(out)
 }
+
+impl crate::vm::entities::HostValueContext for StoreAccess<'_> {
+    fn world(&self) -> usize {
+        self.id().world()
+    }
+    fn import_value(
+        &self,
+        value: crate::Value,
+    ) -> Result<crate::vm::value::Value, crate::WasmError> {
+        self.with_store(|store| crate::vm::link::RefTypeOwner::Jit(store).import_value(value))?
+    }
+    fn validate_results(
+        &self,
+        values: &[crate::vm::value::Value],
+        types: &[crate::value_type::ValueType],
+    ) -> Result<(), crate::WasmError> {
+        self.with_store(|store| {
+            crate::vm::link::validate_host_results(
+                values,
+                types,
+                crate::vm::link::RefTypeOwner::Jit(store),
+            )
+        })?
+    }
+}

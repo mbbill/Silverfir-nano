@@ -1,17 +1,19 @@
 //! WASI preview1 support for sf-nano-core.
 //!
-//! Gated behind `#[cfg(sf_wasi_host)]`. Uses a thread-local `WasiCtx`
-//! so that plain `fn`-pointer `HostFn` callbacks can access WASI state
-//! without closures.
+//! Each import set owns its WASI context. Create separate import sets for
+//! isolated instances; cloning an import intentionally shares its context.
 
 use crate::collections;
 
+use crate::value_type::ValueType;
+use crate::{FunctionType, WasmError};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::string::{String, ToString};
-use std::thread_local;
 
-use crate::vm::instance::Import;
+use crate::vm::imports::Import;
 
 pub(crate) mod preview1;
 
@@ -23,12 +25,12 @@ pub const WASI_UNSTABLE: &str = "wasi_unstable";
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-pub struct PreopenDir {
+struct PreopenDir {
     pub guest_path: String,
     pub host_path: PathBuf,
 }
 
-pub enum FdEntry {
+enum FdEntry {
     Dir {
         host_path: PathBuf,
         rights_base: u64,
@@ -59,17 +61,17 @@ impl std::fmt::Debug for FdEntry {
 }
 
 pub struct WasiCtx {
-    pub args: collections::Vec<String>,
-    pub env: collections::Vec<(String, String)>,
-    pub preopens: collections::Vec<PreopenDir>,
-    pub next_fd: i32,
-    pub fds: HashMap<i32, FdEntry>,
-    pub closed_preopens: HashSet<i32>,
-    pub closed_stdio: HashSet<i32>,
+    args: collections::Vec<String>,
+    env: collections::Vec<(String, String)>,
+    preopens: collections::Vec<PreopenDir>,
+    next_fd: i32,
+    fds: HashMap<i32, FdEntry>,
+    closed_preopens: HashSet<i32>,
+    closed_stdio: HashSet<i32>,
 }
 
 impl WasiCtx {
-    pub fn new(
+    fn new(
         args: collections::Vec<String>,
         env: collections::Vec<(String, String)>,
         preopens: collections::Vec<PreopenDir>,
@@ -86,7 +88,7 @@ impl WasiCtx {
         }
     }
 
-    pub fn alloc_fd(&mut self, entry: FdEntry) -> i32 {
+    fn alloc_fd(&mut self, entry: FdEntry) -> i32 {
         let fd = self.next_fd;
         self.next_fd += 1;
         self.fds.insert(fd, entry);
@@ -154,49 +156,14 @@ impl Default for WasiContextBuilder {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Thread-local WasiCtx for fn-pointer HostFn callbacks
-// ---------------------------------------------------------------------------
+impl WasiCtx {
+    fn with_ctx<R>(&self, f: impl FnOnce(&WasiCtx) -> R) -> R {
+        f(self)
+    }
 
-use std::cell::RefCell;
-
-thread_local! {
-    static WASI_CTX: RefCell<Option<WasiCtx>> = const { RefCell::new(None) };
-}
-
-/// Install a WasiCtx as the active context for the current thread.
-/// Must be called before invoking any WASM function that uses WASI imports.
-pub fn set_wasi_ctx(ctx: WasiCtx) {
-    WASI_CTX.with(|cell| {
-        *cell.borrow_mut() = Some(ctx);
-    });
-}
-
-/// Remove and return the active WASI context (e.g., after execution finishes).
-pub fn take_wasi_ctx() -> Option<WasiCtx> {
-    WASI_CTX.with(|cell| cell.borrow_mut().take())
-}
-
-/// Access the thread-local WasiCtx. Panics if not installed.
-fn with_ctx<R>(f: impl FnOnce(&WasiCtx) -> R) -> R {
-    WASI_CTX.with(|cell| {
-        let borrow = cell.borrow();
-        let ctx = borrow
-            .as_ref()
-            .expect("WASI context not set; call set_wasi_ctx() before execution");
-        f(ctx)
-    })
-}
-
-/// Access the thread-local WasiCtx mutably. Panics if not installed.
-fn with_ctx_mut<R>(f: impl FnOnce(&mut WasiCtx) -> R) -> R {
-    WASI_CTX.with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        let ctx = borrow
-            .as_mut()
-            .expect("WASI context not set; call set_wasi_ctx() before execution");
-        f(ctx)
-    })
+    fn with_ctx_mut<R>(&mut self, f: impl FnOnce(&mut WasiCtx) -> R) -> R {
+        f(self)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,62 +171,128 @@ fn with_ctx_mut<R>(f: impl FnOnce(&mut WasiCtx) -> R) -> R {
 // ---------------------------------------------------------------------------
 
 /// Generate WASI imports for a given module namespace.
-fn wasi_imports_for(module: &str) -> collections::Vec<Import> {
+fn wasi_imports_for(module: &str, context: &Rc<RefCell<WasiCtx>>) -> collections::Vec<Import> {
     macro_rules! wasi {
-        ($name:literal, $f:expr) => {
-            Import::func(module, $name, $f)
-        };
+        ($f:ident, [$($param:ident),*], [$($result:ident),*]) => {{
+            let context = Rc::clone(context);
+            Import::func_typed(module, stringify!($f), move |caller, args, results| {
+                let mut context = context
+                    .try_borrow_mut()
+                    .map_err(|_| WasmError::trap("WASI context is already in use"))?;
+                context.$f(caller, args, results)
+            }, FunctionType::new(
+                collections::vec![$(ValueType::$param),*],
+                collections::vec![$(ValueType::$result),*],
+            ))
+        }};
     }
 
     collections::vec![
-        wasi!("args_sizes_get", preview1::args_sizes_get),
-        wasi!("args_get", preview1::args_get),
-        wasi!("environ_sizes_get", preview1::environ_sizes_get),
-        wasi!("environ_get", preview1::environ_get),
-        wasi!("fd_write", preview1::fd_write),
-        wasi!("fd_read", preview1::fd_read),
-        wasi!("fd_close", preview1::fd_close),
-        wasi!("fd_seek", preview1::fd_seek),
-        wasi!("fd_tell", preview1::fd_tell),
-        wasi!("fd_fdstat_get", preview1::fd_fdstat_get),
-        wasi!("fd_fdstat_set_flags", preview1::fd_fdstat_set_flags),
-        wasi!("fd_fdstat_set_rights", preview1::fd_fdstat_set_rights),
-        wasi!("fd_prestat_get", preview1::fd_prestat_get),
-        wasi!("fd_prestat_dir_name", preview1::fd_prestat_dir_name),
-        wasi!("fd_filestat_get", preview1::fd_filestat_get),
-        wasi!("fd_filestat_set_size", preview1::fd_filestat_set_size),
-        wasi!("fd_filestat_set_times", preview1::fd_filestat_set_times),
-        wasi!("fd_sync", preview1::fd_sync),
-        wasi!("fd_datasync", preview1::fd_datasync),
-        wasi!("fd_renumber", preview1::fd_renumber),
-        wasi!("fd_readdir", preview1::fd_readdir),
-        wasi!("fd_pread", preview1::fd_pread),
-        wasi!("fd_pwrite", preview1::fd_pwrite),
-        wasi!("fd_allocate", preview1::fd_allocate),
-        wasi!("fd_advise", preview1::fd_advise),
-        wasi!("clock_time_get", preview1::clock_time_get),
-        wasi!("clock_res_get", preview1::clock_res_get),
-        wasi!("random_get", preview1::random_get),
-        wasi!("proc_exit", preview1::proc_exit),
-        wasi!("sched_yield", preview1::sched_yield),
-        wasi!("sock_shutdown", preview1::sock_shutdown),
-        wasi!("poll_oneoff", preview1::poll_oneoff),
-        wasi!("path_create_directory", preview1::path_create_directory),
-        wasi!("path_filestat_get", preview1::path_filestat_get),
-        wasi!("path_filestat_set_times", preview1::path_filestat_set_times),
-        wasi!("path_open", preview1::path_open),
-        wasi!("path_readlink", preview1::path_readlink),
-        wasi!("path_remove_directory", preview1::path_remove_directory),
-        wasi!("path_unlink_file", preview1::path_unlink_file),
-        wasi!("path_rename", preview1::path_rename),
-        wasi!("path_link", preview1::path_link),
-        wasi!("path_symlink", preview1::path_symlink),
+        wasi!(args_sizes_get, [I32, I32], [I32]),
+        wasi!(args_get, [I32, I32], [I32]),
+        wasi!(environ_sizes_get, [I32, I32], [I32]),
+        wasi!(environ_get, [I32, I32], [I32]),
+        wasi!(fd_write, [I32, I32, I32, I32], [I32]),
+        wasi!(fd_read, [I32, I32, I32, I32], [I32]),
+        wasi!(fd_close, [I32], [I32]),
+        wasi!(fd_seek, [I32, I64, I32, I32], [I32]),
+        wasi!(fd_tell, [I32, I32], [I32]),
+        wasi!(fd_fdstat_get, [I32, I32], [I32]),
+        wasi!(fd_fdstat_set_flags, [I32, I32], [I32]),
+        wasi!(fd_fdstat_set_rights, [I32, I64, I64], [I32]),
+        wasi!(fd_prestat_get, [I32, I32], [I32]),
+        wasi!(fd_prestat_dir_name, [I32, I32, I32], [I32]),
+        wasi!(fd_filestat_get, [I32, I32], [I32]),
+        wasi!(fd_filestat_set_size, [I32, I64], [I32]),
+        wasi!(fd_filestat_set_times, [I32, I64, I64, I32], [I32]),
+        wasi!(fd_sync, [I32], [I32]),
+        wasi!(fd_datasync, [I32], [I32]),
+        wasi!(fd_renumber, [I32, I32], [I32]),
+        wasi!(fd_readdir, [I32, I32, I32, I64, I32], [I32]),
+        wasi!(fd_pread, [I32, I32, I32, I64, I32], [I32]),
+        wasi!(fd_pwrite, [I32, I32, I32, I64, I32], [I32]),
+        wasi!(fd_allocate, [I32, I64, I64], [I32]),
+        wasi!(fd_advise, [I32, I64, I64, I32], [I32]),
+        wasi!(clock_time_get, [I32, I64, I32], [I32]),
+        wasi!(clock_res_get, [I32, I32], [I32]),
+        wasi!(random_get, [I32, I32], [I32]),
+        wasi!(proc_exit, [I32], []),
+        wasi!(sched_yield, [], [I32]),
+        wasi!(sock_shutdown, [I32, I32], [I32]),
+        wasi!(poll_oneoff, [I32, I32, I32, I32], [I32]),
+        wasi!(path_create_directory, [I32, I32, I32], [I32]),
+        wasi!(path_filestat_get, [I32, I32, I32, I32, I32], [I32]),
+        wasi!(
+            path_filestat_set_times,
+            [I32, I32, I32, I32, I64, I64, I32],
+            [I32]
+        ),
+        wasi!(
+            path_open,
+            [I32, I32, I32, I32, I32, I64, I64, I32, I32],
+            [I32]
+        ),
+        wasi!(path_readlink, [I32, I32, I32, I32, I32, I32], [I32]),
+        wasi!(path_remove_directory, [I32, I32, I32], [I32]),
+        wasi!(path_unlink_file, [I32, I32, I32], [I32]),
+        wasi!(path_rename, [I32, I32, I32, I32, I32, I32], [I32]),
+        wasi!(path_link, [I32, I32, I32, I32, I32, I32, I32], [I32]),
+        wasi!(path_symlink, [I32, I32, I32, I32, I32], [I32]),
     ]
 }
 
-/// Generate all WASI imports (preview1 + unstable) for use with `Instance::new()`.
-pub fn wasi_imports() -> collections::Vec<Import> {
-    let mut imports = wasi_imports_for(WASI_SNAPSHOT_PREVIEW1);
-    imports.extend(wasi_imports_for(WASI_UNSTABLE));
+/// Bind preview1 and legacy WASI imports to an owned context.
+///
+/// Call this separately for each isolated instance. Cloning or reusing these
+/// imports intentionally shares arguments, environment, descriptors and their
+/// state. No thread-local setup is required. Resources are released when the
+/// last instance or import retaining this context is dropped.
+pub fn wasi_imports(context: WasiCtx) -> collections::Vec<Import> {
+    let context = Rc::new(RefCell::new(context));
+    let mut imports = wasi_imports_for(WASI_SNAPSHOT_PREVIEW1, &context);
+    imports.extend(wasi_imports_for(WASI_UNSTABLE, &context));
     imports
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Config, Engine, Instance, Tier, Value};
+
+    #[test]
+    fn context_borrow_failures_trap_and_owners_release_the_context() {
+        let bytes = wat::parse_str(
+            r#"(module
+            (import "wasi_snapshot_preview1" "sched_yield" (func $yield (result i32)))
+            (func (export "run") (result i32) call $yield))"#,
+        )
+        .unwrap();
+        for &tier in Tier::ALL {
+            let engine = Engine::new(Config::new().tier(tier)).unwrap();
+            let context = Rc::new(RefCell::new(WasiContextBuilder::new().build()));
+            let weak = Rc::downgrade(&context);
+            let imports = wasi_imports_for(WASI_SNAPSHOT_PREVIEW1, &context);
+            let mut instance = Instance::new(&engine, &bytes, &imports).unwrap();
+            let borrow = context.borrow_mut();
+            let error = instance.invoke("run", &[]).unwrap_err();
+            assert!(error.is_trap());
+            assert_eq!(error.message(), "WASI context is already in use");
+            drop(borrow);
+            assert_eq!(
+                instance.invoke("run", &[]).unwrap(),
+                collections::vec![Value::I32(0)]
+            );
+            drop(context);
+            drop(imports);
+            assert!(
+                weak.upgrade().is_some(),
+                "the live instance owns its callbacks"
+            );
+            drop(instance);
+            assert!(
+                weak.upgrade().is_none(),
+                "the last callback releases its context"
+            );
+        }
+    }
 }

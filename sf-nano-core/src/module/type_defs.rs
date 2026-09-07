@@ -17,46 +17,19 @@ use tracked_alloc::string::String;
 
 /// A complete type definition from the type section.
 #[derive(Debug, Clone, PartialEq)]
-pub struct DefType {
+pub(crate) struct DefType {
     /// The composite type (function, struct, or array).
-    pub composite: CompositeType,
+    pub(crate) composite: CompositeType,
     /// Indices of declared supertypes.
-    pub supertypes: collections::Vec<u32>,
+    pub(crate) supertypes: collections::Vec<u32>,
     /// Whether this type is final.
-    pub is_final: bool,
+    pub(crate) is_final: bool,
     /// Explicit recursion-group id, if any.
-    pub rec_group: Option<u32>,
+    pub(crate) rec_group: Option<u32>,
 }
 
 impl DefType {
-    pub fn func(params: collections::Vec<ValueType>, results: collections::Vec<ValueType>) -> Self {
-        Self {
-            composite: CompositeType::Func(Rc::new(FunctionType::new(params, results))),
-            supertypes: collections::vec![],
-            is_final: true,
-            rec_group: None,
-        }
-    }
-
-    pub fn struct_type(fields: collections::Vec<FieldType>) -> Self {
-        Self {
-            composite: CompositeType::Struct(StructType { fields }),
-            supertypes: collections::vec![],
-            is_final: true,
-            rec_group: None,
-        }
-    }
-
-    pub fn array(element: FieldType) -> Self {
-        Self {
-            composite: CompositeType::Array(ArrayType { element }),
-            supertypes: collections::vec![],
-            is_final: true,
-            rec_group: None,
-        }
-    }
-
-    pub fn validate_type_references(
+    pub(crate) fn validate_type_references(
         &self,
         current_idx: usize,
         type_count: usize,
@@ -115,7 +88,7 @@ impl DefType {
     }
 }
 
-pub fn validate_valtype_references(
+pub(crate) fn validate_valtype_references(
     vt: &ValueType,
     current_idx: usize,
     rec_group: Option<u32>,
@@ -164,7 +137,7 @@ fn validate_storage_type_references(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum CompositeType {
+pub(crate) enum CompositeType {
     Func(Rc<FunctionType>),
     Struct(StructType),
     Array(ArrayType),
@@ -215,119 +188,58 @@ impl fmt::Display for FunctionType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct StructType {
-    pub fields: collections::Vec<FieldType>,
+pub(crate) struct StructType {
+    pub(crate) fields: collections::Vec<FieldType>,
 }
 
 impl StructType {
-    pub fn new(fields: collections::Vec<FieldType>) -> Self {
+    pub(crate) fn new(fields: collections::Vec<FieldType>) -> Self {
         Self { fields }
-    }
-
-    pub fn field_offset(&self, field_idx: usize) -> usize {
-        self.fields[..field_idx]
-            .iter()
-            .map(|field| field.storage.size_bytes())
-            .sum()
-    }
-
-    pub fn size_bytes(&self) -> usize {
-        self.fields
-            .iter()
-            .map(|field| field.storage.size_bytes())
-            .sum()
-    }
-
-    pub fn field_count(&self) -> usize {
-        self.fields.len()
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ArrayType {
-    pub element: FieldType,
+pub(crate) struct ArrayType {
+    pub(crate) element: FieldType,
 }
 
 impl ArrayType {
-    pub fn new(element: FieldType) -> Self {
+    pub(crate) fn new(element: FieldType) -> Self {
         Self { element }
-    }
-
-    pub fn element_valtype(&self) -> ValueType {
-        self.element.storage.to_valtype()
-    }
-
-    pub fn element_size_bytes(&self) -> usize {
-        self.element.storage.size_bytes()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FieldType {
-    pub storage: StorageType,
-    pub mutable: bool,
+pub(crate) struct FieldType {
+    pub(crate) storage: StorageType,
+    pub(crate) mutable: bool,
 }
 
 impl FieldType {
-    pub fn new(storage: StorageType, mutable: bool) -> Self {
+    pub(crate) fn new(storage: StorageType, mutable: bool) -> Self {
         Self { storage, mutable }
-    }
-
-    pub fn immutable(storage: StorageType) -> Self {
-        Self {
-            storage,
-            mutable: false,
-        }
-    }
-
-    pub fn mutable_field(storage: StorageType) -> Self {
-        Self {
-            storage,
-            mutable: true,
-        }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StorageType {
+pub(crate) enum StorageType {
     Val(ValueType),
     Packed(PackedType),
 }
 
 impl StorageType {
-    pub fn to_valtype(&self) -> ValueType {
+    pub(crate) fn to_valtype(&self) -> ValueType {
         match self {
             StorageType::Val(vt) => *vt,
             StorageType::Packed(PackedType::I8 | PackedType::I16) => ValueType::I32,
         }
     }
-
-    pub fn size_bytes(&self) -> usize {
-        match self {
-            StorageType::Val(_) => 8,
-            StorageType::Packed(PackedType::I8) => 1,
-            StorageType::Packed(PackedType::I16) => 2,
-        }
-    }
-
-    pub fn is_packed(&self) -> bool {
-        matches!(self, StorageType::Packed(_))
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackedType {
+pub(crate) enum PackedType {
     I8,
     I16,
-}
-
-impl PackedType {
-    pub fn size_bytes(&self) -> usize {
-        match self {
-            PackedType::I8 => 1,
-            PackedType::I16 => 2,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -343,21 +255,5 @@ mod tests {
 
         assert_eq!(ft.params().len(), 2);
         assert_eq!(ft.results().len(), 1);
-    }
-
-    #[test]
-    fn test_struct_size() {
-        let st = StructType {
-            fields: collections::vec![
-                FieldType::immutable(StorageType::Val(ValueType::I32)),
-                FieldType::immutable(StorageType::Val(ValueType::I64)),
-                FieldType::immutable(StorageType::Packed(PackedType::I8)),
-            ],
-        };
-
-        assert_eq!(st.size_bytes(), 17);
-        assert_eq!(st.field_offset(0), 0);
-        assert_eq!(st.field_offset(1), 8);
-        assert_eq!(st.field_offset(2), 16);
     }
 }

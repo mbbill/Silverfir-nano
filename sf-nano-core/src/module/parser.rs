@@ -24,10 +24,7 @@ use crate::{
         Module,
     },
     opcodes::{Opcode, OpcodeFB, OpcodeFD},
-    utils::{
-        limits::{Limits, LimitsError},
-        payload::Payload,
-    },
+    utils::{limits::Limits, payload::Payload},
     value_type::{HeapType, ValueType},
 };
 
@@ -209,7 +206,6 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         }
         let section_id = payload.read_u8()?;
         let section_len = payload.read_leb128_u32()? as usize;
-        let payload_offset = payload.position();
         let mut section_payload: Payload = payload.advance_and_split_at(section_len)?.into();
         let section = WasmSection::try_from(section_id)?;
 
@@ -273,7 +269,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
                 data_count = Some(section_payload.read_leb128_u32()? as usize);
             }
             WasmSection::Code => {
-                parse_code_section(&mut functions, &mut section_payload, payload_offset)?;
+                parse_code_section(&mut functions, &mut section_payload)?;
             }
             WasmSection::Data => {
                 data_segments = parse_data_section(data_count, &mut section_payload)?;
@@ -361,7 +357,7 @@ fn narrow_table_limit_u64(value: u64) -> usize {
 #[inline]
 fn validate_limit_order<T: Ord>(min: T, max: T) -> Result<(), WasmError> {
     if max < min {
-        return Err(LimitsError::MinLargerThanMax.into());
+        return Err(WasmError::invalid("min larger than max"));
     }
     Ok(())
 }
@@ -1011,11 +1007,7 @@ fn parse_code(
     Ok((locals, code_begin, code_size))
 }
 
-fn parse_code_section(
-    functions: &mut [Function],
-    payload: &mut Payload,
-    payload_offset: usize,
-) -> Result<(), WasmError> {
+fn parse_code_section(functions: &mut [Function], payload: &mut Payload) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()? as usize;
     let imported_count = functions.iter().filter(|f| f.is_import()).count();
     // Own the code section once. Each FunctionSpec below keeps a cheap Rc
@@ -1034,8 +1026,6 @@ fn parse_code_section(
             .checked_add(code_size)
             .ok_or_else(|| WasmError::malformed("Function body range overflow"))?;
         let code = Bytecode::from_shared(code_arena.clone(), arena_start, arena_end)?;
-        let mut code_offset = code_begin;
-        code_offset += payload_offset;
         let function_index = index
             .checked_add(imported_count)
             .ok_or_else(|| WasmError::malformed("Function index overflow"))?;
@@ -1047,7 +1037,6 @@ fn parse_code_section(
             .ok_or_else(|| WasmError::invalid("Expected local function for code section"))?;
         spec.set_locals(locals);
         spec.set_code(code);
-        spec.set_code_offset(code_offset);
     }
     Ok(())
 }
@@ -1064,7 +1053,7 @@ fn parse_data<'a>(payload: &mut Payload<'a>) -> Result<Data, WasmError> {
         DATA_PASSIVE => {
             let bytes = payload.read_leb128_u32()? as usize;
             let init = payload.advance_and_split_at(bytes)?;
-            Ok(Data::new_passive(0, init))
+            Ok(Data::new_passive(init))
         }
         DATA_ACTIVE_MEMIDX => {
             let memory_index = payload.read_leb128_u32()? as usize;

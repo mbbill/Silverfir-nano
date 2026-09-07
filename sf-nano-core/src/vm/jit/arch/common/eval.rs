@@ -180,7 +180,9 @@ pub(crate) fn eval(
             let error = ctx
                 .error
                 .take()
-                .or_else(|| core::mem::take(&mut ctx.pending_escape).into_error())
+                .or_else(|| {
+                    core::mem::take(&mut ctx.pending_escape).into_error(access.id().world())
+                })
                 .unwrap_or_else(|| {
                     WasmError::internal("native root entry failed without setting an error")
                 });

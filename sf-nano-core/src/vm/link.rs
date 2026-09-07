@@ -1,8 +1,8 @@
 //! Cross-instance linking: the one place the engines actually meet.
 //!
-//! A [`LinkRegistry`] is the sharing handle an embedder passes to
-//! `Instance::from_module_with_registry` so that separately instantiated
-//! modules can exchange references. It bundles independently shared arenas;
+//! A [`LinkRegistry`] is the private sharing handle owned by a runtime world
+//! so that separately instantiated modules can exchange references.
+//! It bundles independently shared arenas;
 //! a registry entry is only as engine-specific as the engine that minted it,
 //! so entry payloads are gated on the engine that produces them:
 //!
@@ -16,11 +16,12 @@
 use crate::collections;
 use crate::error::WasmError;
 use crate::module::type_context::{concrete_type_matches_cross_context, TypeContext};
-use crate::value_type::{AbstractHeapType, HeapType};
+use crate::value_type::{AbstractHeapType, HeapType, ValueType};
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::FUNCADDR_TOP;
 use crate::vm::value::{RefValue, Value};
 use core::cell::{Cell, Ref, RefCell};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use tracked_alloc::{
     boxed::Box,
     rc::{Rc, Weak},
@@ -33,17 +34,27 @@ use crate::vm::jit::gc_heap::GcRef;
 #[cfg(sf_jit)]
 use crate::vm::jit::instance::JitInstance;
 
-/// Stable identity for one instance in a runtime world.
+/// Stable identity for one instance in one runtime world.
+/// An identity from a different world never resolves, even if its slot and
+/// generation happen to match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstanceId {
+    world: usize,
     index: u32,
     generation: u32,
 }
 
 impl InstanceId {
+    pub(crate) const fn world(self) -> usize {
+        self.world
+    }
     #[inline]
-    pub(crate) const fn from_parts(index: u32, generation: u32) -> Self {
-        Self { index, generation }
+    pub(crate) const fn from_parts(world: usize, index: u32, generation: u32) -> Self {
+        Self {
+            world,
+            index,
+            generation,
+        }
     }
 
     #[inline]
@@ -70,6 +81,8 @@ pub(crate) enum WorldSlot {
 }
 
 struct InstanceTableInner {
+    identity: usize,
+    access: alloc::rc::Rc<super::memory::WorldBorrowState>,
     slots: RefCell<collections::Vec<WorldSlot>>,
     generations: RefCell<collections::Vec<u32>>,
     in_use: RefCell<collections::Vec<u32>>,
@@ -129,9 +142,35 @@ pub(crate) enum InstanceFreeError {
 }
 
 impl InstanceTable {
+    /// World identity only: shared exported storage may outlive its source
+    /// instance, but references inside it still belong to this world.
+    pub(crate) fn owns(&self, id: InstanceId) -> bool {
+        self.0.identity == id.world
+    }
+
     #[inline]
     fn new() -> Self {
+        // Never recycle a world identity: handles may outlive their world.
+        // Refuse exhaustion instead of wrapping and admitting stale handles.
+        static NEXT_WORLD: AtomicUsize = AtomicUsize::new(1);
+        let mut identity = NEXT_WORLD.load(Ordering::Relaxed);
+        loop {
+            let next = identity
+                .checked_add(1)
+                .expect("runtime world identity space exhausted");
+            match NEXT_WORLD.compare_exchange_weak(
+                identity,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => identity = current,
+            }
+        }
         Self(Rc::new(InstanceTableInner {
+            identity,
+            access: alloc::rc::Rc::default(),
             slots: RefCell::new(collections::Vec::new()),
             generations: RefCell::new(collections::Vec::new()),
             in_use: RefCell::new(collections::Vec::new()),
@@ -144,7 +183,7 @@ impl InstanceTable {
         while let Some(index) = self.0.reusable.borrow_mut().pop() {
             let generation = self.0.generations.borrow()[index as usize];
             if generation != u32::MAX {
-                return InstanceId::from_parts(index, generation);
+                return InstanceId::from_parts(self.0.identity, index, generation);
             }
         }
 
@@ -158,11 +197,14 @@ impl InstanceTable {
         generations.push(0);
         in_use.push(0);
         release_pending.push(false);
-        InstanceId::from_parts(index as u32, 0)
+        InstanceId::from_parts(self.0.identity, index as u32, 0)
     }
 
     #[cfg(any(sf_interp, test))]
     pub(crate) fn abandon(&self, id: InstanceId) -> Result<(), InstanceFreeError> {
+        if id.world != self.0.identity {
+            return Err(InstanceFreeError::InvalidId);
+        }
         let generations = self.0.generations.borrow();
         if generations.get(id.index() as usize).copied() != Some(id.generation()) {
             return Err(InstanceFreeError::InvalidId);
@@ -216,6 +258,9 @@ impl InstanceTable {
     }
 
     fn occupy(&self, id: InstanceId, value: WorldSlot) -> Result<(), InstanceFreeError> {
+        if id.world != self.0.identity {
+            return Err(InstanceFreeError::InvalidId);
+        }
         let generations = self.0.generations.borrow();
         let Some(&generation) = generations.get(id.index() as usize) else {
             return Err(InstanceFreeError::InvalidId);
@@ -235,6 +280,9 @@ impl InstanceTable {
     }
 
     pub(crate) fn checkout(&self, id: InstanceId) -> Option<InstanceToken> {
+        if id.world != self.0.identity {
+            return None;
+        }
         let generations = self.0.generations.borrow();
         if generations.get(id.index() as usize).copied()? != id.generation() {
             return None;
@@ -270,6 +318,9 @@ impl InstanceTable {
     }
 
     pub(crate) fn free(&self, id: InstanceId) -> Result<(), InstanceFreeError> {
+        if id.world != self.0.identity {
+            return Err(InstanceFreeError::InvalidId);
+        }
         {
             let generations = self.0.generations.borrow();
             if generations.get(id.index() as usize).copied() != Some(id.generation()) {
@@ -324,6 +375,9 @@ impl InstanceTable {
 
     #[inline]
     pub(crate) fn in_use(&self, id: InstanceId) -> Option<u32> {
+        if id.world != self.0.identity {
+            return None;
+        }
         if self
             .0
             .generations
@@ -339,6 +393,14 @@ impl InstanceTable {
 }
 
 impl WorldAccess {
+    pub(crate) fn begin_execution(&self) -> Result<super::memory::ExecutionGuard, WasmError> {
+        let table = self
+            .table
+            .upgrade()
+            .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
+        table.access.enter()
+    }
+
     pub(crate) fn checkout(&self, id: InstanceId) -> Option<InstanceToken> {
         let table = self.table.upgrade()?;
         InstanceTable(table.into()).checkout(id)
@@ -462,13 +524,6 @@ impl InstanceLease {
     pub(crate) fn token(&self) -> &InstanceToken {
         self.token
             .as_ref()
-            .expect("instance lease already released")
-    }
-
-    #[inline]
-    pub(crate) fn token_mut(&mut self) -> &mut InstanceToken {
-        self.token
-            .as_mut()
             .expect("instance lease already released")
     }
 
@@ -706,7 +761,63 @@ pub(crate) enum RefTypeOwner<'a> {
 }
 
 impl<'a> RefTypeOwner<'a> {
-    fn from_token(token: &'a InstanceToken) -> Option<Self> {
+    pub(crate) fn world(self) -> usize {
+        self.instance_backref().self_id().world()
+    }
+
+    pub(crate) fn import_values(
+        self,
+        args: &[crate::Value],
+    ) -> Result<crate::value::ValueBuffer<Value>, WasmError> {
+        let mut converted = crate::value::ValueBuffer::new(args.len(), Value::Unknown);
+        for (dst, value) in converted.iter_mut().zip(args.iter().copied()) {
+            *dst = self.import_value(value)?;
+        }
+        Ok(converted)
+    }
+
+    /// Public handles are already absolute. Check the world before looking up
+    /// a word that could have the same numeric payload in another world.
+    pub(crate) fn import_value(self, value: crate::Value) -> Result<Value, WasmError> {
+        if let crate::Value::Ref(reference, _) = value {
+            let raw = reference.raw;
+            if raw.is_null() || raw.is_host() {
+                debug_assert_eq!(reference.world, 0);
+            } else {
+                if reference.world != self.world() {
+                    return Err(WasmError::invalid(
+                        "reference belongs to a different runtime world",
+                    ));
+                }
+                let owner = if raw.is_pooled() {
+                    match self.ref_entry_for_handle(raw) {
+                        #[cfg(sf_jit)]
+                        Some(RefRegistryEntry::Gc { owner, .. }) => Some(owner),
+                        Some(RefRegistryEntry::Exn(_)) => None,
+                        #[cfg(sf_jit)]
+                        Some(RefRegistryEntry::I31(_)) => None,
+                        None => return Err(WasmError::invalid("invalid reference")),
+                    }
+                } else {
+                    Some(
+                        self.function_entry_for_handle(raw)
+                            .ok_or_else(|| WasmError::invalid("invalid function reference"))?
+                            .owner,
+                    )
+                };
+                if let Some(owner) = owner {
+                    if owner != self.instance_backref().self_id()
+                        && self.instance_backref().checkout(owner).is_none()
+                    {
+                        return Err(WasmError::invalid("reference owner is no longer available"));
+                    }
+                }
+            }
+        }
+        Ok(value.vm_value())
+    }
+
+    pub(crate) fn from_token(token: &'a InstanceToken) -> Option<Self> {
         #[cfg(sf_jit)]
         if let Some(store) = token.jit() {
             return Some(Self::Jit(store));
@@ -790,6 +901,52 @@ impl<'a> RefTypeOwner<'a> {
     }
 }
 
+/// Check a host value before erasing its Rust variant into a Wasm slot.
+/// Non-null reference annotations are not evidence of an object's type.
+pub(crate) fn value_matches_type(
+    value: &Value,
+    expected: ValueType,
+    current: RefTypeOwner<'_>,
+) -> bool {
+    match (value, expected) {
+        (Value::I32(_), ValueType::I32)
+        | (Value::I64(_), ValueType::I64)
+        | (Value::F32(_), ValueType::F32)
+        | (Value::F64(_), ValueType::F64) => true,
+        #[cfg(sf_has_simd)]
+        (Value::V128(_), ValueType::V128) => true,
+        (Value::Ref(handle, actual), ValueType::Ref(expected)) => {
+            if handle.is_null() {
+                actual.nullable
+                    && expected.nullable
+                    && actual
+                        .heap_type
+                        .is_subtype_of(&expected.heap_type, current.types())
+            } else {
+                ref_type_matches(*handle, &expected.heap_type, current).unwrap_or(false)
+            }
+        }
+        _ => false,
+    }
+}
+
+/// A host callback may resume Wasm only after filling every declared result.
+pub(crate) fn validate_host_results(
+    values: &[Value],
+    types: &[ValueType],
+    current: RefTypeOwner<'_>,
+) -> Result<(), WasmError> {
+    if values.len() != types.len()
+        || !values
+            .iter()
+            .zip(types)
+            .all(|(value, ty)| value_matches_type(value, *ty, current))
+    {
+        return Err(WasmError::trap("host returned mistyped value"));
+    }
+    Ok(())
+}
+
 /// Test one non-null reference against a heap type using world provenance.
 ///
 /// Nullability remains a property of each instruction/API call site, so null
@@ -855,7 +1012,7 @@ pub(crate) fn ref_type_matches(
 
     let local_index = handle.encoded();
     if local_index < current.function_count() {
-        return function_type_matches(current, local_index as u32, expected, current);
+        return function_type_matches(current, local_index as u32, expected, current.types());
     }
 
     let entry = current
@@ -867,7 +1024,7 @@ pub(crate) fn ref_type_matches(
         HeapType::Concrete(_) => {}
     }
     if entry.owner == current.instance_backref().self_id() {
-        return function_type_matches(current, entry.local_index, expected, current);
+        return function_type_matches(current, entry.local_index, expected, current.types());
     }
 
     let token = current
@@ -876,14 +1033,14 @@ pub(crate) fn ref_type_matches(
         .ok_or_else(|| WasmError::internal("function ref points to missing instance"))?;
     let origin = RefTypeOwner::from_token(&token)
         .ok_or_else(|| WasmError::internal("function ref points to unavailable instance"))?;
-    function_type_matches(origin, entry.local_index, expected, current)
+    function_type_matches(origin, entry.local_index, expected, current.types())
 }
 
 fn function_type_matches(
     origin: RefTypeOwner<'_>,
     local_index: u32,
     expected: &HeapType,
-    current: RefTypeOwner<'_>,
+    current_types: &TypeContext,
 ) -> Result<bool, WasmError> {
     match expected {
         HeapType::Abstract(AbstractHeapType::Func) => Ok(true),
@@ -897,7 +1054,7 @@ fn function_type_matches(
             Ok(concrete_type_matches_cross_context(
                 origin.types(),
                 source_index,
-                current.types(),
+                current_types,
                 *target_index,
             ))
         }
@@ -991,7 +1148,6 @@ impl LinkArenas {
         entry.resolve_exn()
     }
 
-    #[cfg(sf_interp)]
     pub(crate) fn ref_entry_for_handle(&self, handle: RefValue) -> Option<RefRegistryEntry> {
         let idx = handle.pooled_index()?;
         self.refs.borrow().get(idx).cloned()
@@ -999,14 +1155,115 @@ impl LinkArenas {
 }
 
 #[derive(Clone)]
-pub struct LinkRegistry {
+pub(crate) struct LinkRegistry {
     arenas: LinkArenas,
     instances: InstanceTable,
 }
 
 impl LinkRegistry {
+    /// Value-based host global imports are checked before constant evaluation
+    /// or active segments can consume a raw representation.
+    pub(crate) fn validate_host_global(
+        &self,
+        value: crate::Value,
+        expected: ValueType,
+        types: &TypeContext,
+    ) -> Result<(), WasmError> {
+        let mismatch = || WasmError::unlinkable("incompatible host global value");
+        let valid = match (value, expected) {
+            (crate::Value::I32(_), ValueType::I32)
+            | (crate::Value::I64(_), ValueType::I64)
+            | (crate::Value::F32(_), ValueType::F32)
+            | (crate::Value::F64(_), ValueType::F64) => true,
+            #[cfg(sf_has_simd)]
+            (crate::Value::V128(_), ValueType::V128) => true,
+            (crate::Value::Ref(reference, actual), ValueType::Ref(expected)) => {
+                let handle = reference.raw;
+                if handle.is_null() {
+                    actual.nullable
+                        && expected.nullable
+                        && actual.heap_type.is_subtype_of(&expected.heap_type, types)
+                } else {
+                    if !handle.is_host() && reference.world != self.instances.0.identity {
+                        return Err(WasmError::unlinkable(
+                            "global reference belongs to a different runtime world",
+                        ));
+                    }
+                    let heap = &expected.heap_type;
+                    if handle.is_host() {
+                        matches!(
+                            (handle.is_extern(), heap),
+                            (true, HeapType::Abstract(AbstractHeapType::Extern))
+                                | (false, HeapType::Abstract(AbstractHeapType::Any))
+                        )
+                    } else if handle.is_pooled() {
+                        match self
+                            .arenas
+                            .ref_entry_for_handle(handle)
+                            .ok_or_else(mismatch)?
+                        {
+                            #[cfg(sf_jit)]
+                            RefRegistryEntry::Gc { owner, gc_ref } => {
+                                let token = self.instances.checkout(owner).ok_or_else(mismatch)?;
+                                let origin = RefTypeOwner::from_token(&token)
+                                    .and_then(RefTypeOwner::jit_store)
+                                    .ok_or_else(mismatch)?;
+                                if handle.is_extern() {
+                                    matches!(heap, HeapType::Abstract(AbstractHeapType::Extern))
+                                } else {
+                                    gc_ref_type_matches(origin, gc_ref, heap, types)?
+                                }
+                            }
+                            #[cfg(sf_jit)]
+                            RefRegistryEntry::I31(_) => {
+                                if handle.is_extern() {
+                                    matches!(heap, HeapType::Abstract(AbstractHeapType::Extern))
+                                } else {
+                                    matches!(
+                                        heap,
+                                        HeapType::Abstract(
+                                            AbstractHeapType::I31
+                                                | AbstractHeapType::Eq
+                                                | AbstractHeapType::Any
+                                        )
+                                    )
+                                }
+                            }
+                            RefRegistryEntry::Exn(_) => {
+                                if handle.is_extern() {
+                                    matches!(heap, HeapType::Abstract(AbstractHeapType::Extern))
+                                } else {
+                                    matches!(heap, HeapType::Abstract(AbstractHeapType::Exn))
+                                }
+                            }
+                        }
+                    } else {
+                        let entry = self
+                            .arenas
+                            .functions
+                            .entry_for_handle(handle)
+                            .ok_or_else(mismatch)?;
+                        let token = self.instances.checkout(entry.owner).ok_or_else(mismatch)?;
+                        let origin = RefTypeOwner::from_token(&token).ok_or_else(mismatch)?;
+                        function_type_matches(origin, entry.local_index, heap, types)?
+                    }
+                }
+            }
+            _ => false,
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(mismatch())
+        }
+    }
+
+    pub(crate) fn memory_access(&self) -> &alloc::rc::Rc<super::memory::WorldBorrowState> {
+        &self.instances.0.access
+    }
+
     #[inline]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             arenas: LinkArenas::new(),
             instances: InstanceTable::new(),
@@ -1140,12 +1397,14 @@ mod instance_table_tests {
 
     #[cfg(sf_interp)]
     fn occupied_reentrant_import(registry: &LinkRegistry) -> InstanceId {
-        // `(module (import "host" "reenter" (func)) (memory 1))`.
+        // `(module (import "host" "reenter" (func)) (memory 1)
+        //          (export "host" (func 0)))`.
         // Keep this binary literal small because the exact test runs in Miri.
         const REENTRANT_IMPORT_WASM: &[u8] = &[
             0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
             0x02, 0x10, 0x01, 0x04, 0x68, 0x6f, 0x73, 0x74, 0x07, 0x72, 0x65, 0x65, 0x6e, 0x74,
-            0x65, 0x72, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01,
+            0x65, 0x72, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x08, 0x01, 0x04, 0x68,
+            0x6f, 0x73, 0x74, 0x00, 0x00,
         ];
         let engine =
             Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter test engine");
@@ -1155,15 +1414,35 @@ mod instance_table_tests {
         let (id, handle) = registry.reserve_instance();
         let callback_handle = handle.clone();
         let host =
-            InterpInstance::boxed_caller_host(move |_module, _name, _caller, _args, _results| {
+            InterpInstance::boxed_caller_host(move |_module, _name, caller, _args, _results| {
                 let token = callback_handle
                     .checkout(id)
                     .ok_or_else(|| WasmError::internal("same-slot host re-entry failed"))?;
                 let mut reentered = InterpInstanceAccess::checked_out(token);
-                reentered.with_instance_mut(|instance| {
+                let reference = reentered.with_instance_mut(|instance| {
                     assert_eq!(instance.instance_backref().self_id(), id);
                     instance.memory_mut().expect("re-entered instance memory")[0] = 0x44;
+                    instance
+                        .function_handle_at(0)
+                        .expect("registered host function")
                 })?;
+                // The embedding adapter checks results after user code has
+                // reentered and released its store-body materialization.
+                caller.validate_results(&[], &[])?;
+                let round_trip =
+                    crate::vm::entities::HostCallback::from_host(|_, args, results| {
+                        results[0] = args[0];
+                        Ok(())
+                    });
+                let ty = crate::value_type::RefType::funcref();
+                let args = [Value::Ref(reference, ty)];
+                let mut results = [Value::Unknown];
+                round_trip.call(caller, &args, &mut results)?;
+                caller.validate_results(&results, &[ValueType::Ref(ty)])?;
+                assert_eq!(
+                    results, args,
+                    "public reference conversion preserves identity"
+                );
                 Ok(())
             });
         let import = crate::Import::func_typed(
@@ -1195,7 +1474,7 @@ mod instance_table_tests {
     fn checkout_rejects_generation_mismatch() {
         let registry = LinkRegistry::new();
         let (id, _) = occupied_store(&registry);
-        let stale = InstanceId::from_parts(id.index(), id.generation().wrapping_add(1));
+        let stale = InstanceId::from_parts(id.world, id.index(), id.generation().wrapping_add(1));
 
         assert!(registry.instance_table().checkout(stale).is_none());
         assert_eq!(registry.instance_table().free(id), Ok(()));
@@ -1229,7 +1508,7 @@ mod instance_table_tests {
         let table = registry.instance_table();
         let id = table.reserve();
         table.0.generations.borrow_mut()[id.index() as usize] = u32::MAX - 1;
-        let last = InstanceId::from_parts(id.index(), u32::MAX - 1);
+        let last = InstanceId::from_parts(id.world, id.index(), u32::MAX - 1);
 
         table.abandon(last).expect("retire vacant slot");
 
@@ -1510,7 +1789,7 @@ mod instance_table_tests {
         let table = registry.instance_table();
         let id = table.reserve();
         table.0.generations.borrow_mut()[id.index() as usize] = u32::MAX - 1;
-        let old = InstanceId::from_parts(id.index(), u32::MAX - 1);
+        let old = InstanceId::from_parts(id.world, id.index(), u32::MAX - 1);
         let handle = table.handle(old);
         let store = Box::new(JitInstance::new_with_registries(
             ModuleInst::new(

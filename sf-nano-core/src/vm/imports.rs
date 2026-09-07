@@ -11,40 +11,46 @@ use crate::error::WasmError;
 use crate::module::type_context::TypeContext;
 use crate::module::type_defs::FunctionType;
 use crate::utils::limits::Limits;
-use crate::vm::entities::{Caller, GlobalInst, HostCallback, HostFn, MemInst, TableInst};
+use crate::vm::entities::{Caller, GlobalInst, HostCallback, MemInst, TableInst};
+use crate::vm::link::InstanceId;
 use crate::vm::tag::TagIdentity;
-use crate::vm::value::{RefValue, Value};
+use crate::vm::value::RefValue;
+use crate::Value;
 
+/// A named host or linked-instance import. Construct it with the associated
+/// functions; runtime state and type-context representation are private.
+#[derive(Clone)]
 pub struct Import {
-    pub module: String,
-    pub name: String,
-    pub value: ImportValue,
+    pub(crate) module: String,
+    pub(crate) name: String,
+    pub(crate) value: ImportValue,
+    pub(crate) source: Option<InstanceId>,
 }
 
 #[derive(Clone)]
-pub struct ImportedTableState {
-    pub table: TableInst,
-    pub type_ctx: Option<TypeContext>,
+/// Shared table state obtained from an instance for linking another instance.
+/// Cloning preserves the identity of the underlying table.
+pub(crate) struct ImportedTableState {
+    pub(crate) table: TableInst,
+    pub(crate) type_ctx: Option<TypeContext>,
 }
 
 #[derive(Clone)]
-pub struct ImportedGlobalState {
-    pub global: GlobalInst,
-    pub type_ctx: Option<TypeContext>,
+/// Shared global state obtained from an instance for linking another instance.
+/// Cloning preserves the identity of the underlying global.
+pub(crate) struct ImportedGlobalState {
+    pub(crate) global: GlobalInst,
+    pub(crate) type_ctx: Option<TypeContext>,
 }
 
 #[derive(Clone)]
-pub struct ImportedGlobalValue {
-    pub value: Value,
-    pub linked_function: Option<(HostFn, FunctionType)>,
-}
-
-pub enum ImportedGlobal {
-    Value(ImportedGlobalValue),
+pub(crate) enum ImportedGlobal {
+    Value(Value),
     State(ImportedGlobalState),
 }
 
-pub enum ImportedFunction {
+#[derive(Clone)]
+pub(crate) enum ImportedFunction {
     Host {
         callback: HostCallback,
         func_type: Option<FunctionType>,
@@ -65,17 +71,18 @@ pub enum ImportedFunction {
 }
 
 #[derive(Clone)]
-pub struct ImportedTagState {
-    pub handle: TagIdentity,
-    pub func_type: FunctionType,
+pub(crate) struct ImportedTagState {
+    pub(crate) handle: TagIdentity,
+    pub(crate) func_type: FunctionType,
     /// Source-context type index for the tag's function type, or
     /// `u32::MAX` for host-minted tags that have no wasm type index.
     /// Enables cross-module rec-group identity checks at link time.
-    pub type_index: u32,
-    pub type_ctx: Option<TypeContext>,
+    pub(crate) type_index: u32,
+    pub(crate) type_ctx: Option<TypeContext>,
 }
 
-pub enum ImportValue {
+#[derive(Clone)]
+pub(crate) enum ImportValue {
     Func(ImportedFunction),
     Global(ImportedGlobal, bool),
     Memory(Limits, Option<MemInst>),
@@ -83,7 +90,53 @@ pub enum ImportValue {
     Tag(ImportedTagState),
 }
 
+/// An exported function, memory, table, global or exception tag.
+///
+/// Obtained from Instance::get_export or Instance::exports. Cloning preserves
+/// identity and type information. Bind it with Import::new within the same
+/// RuntimeWorld; the source instance's private type context cannot be replaced.
+#[derive(Clone)]
+pub struct Extern {
+    pub(crate) value: ImportValue,
+    pub(crate) source: InstanceId,
+}
+
 impl Import {
+    /// Bind an exported object under the module/name requested by an importer.
+    /// Both instances must belong to the same RuntimeWorld.
+    pub fn new(module: &str, name: &str, value: Extern) -> Self {
+        Self {
+            module: module.to_string(),
+            name: name.to_string(),
+            value: value.value,
+            source: Some(value.source),
+        }
+    }
+
+    /// Module name requested by the Wasm import declaration.
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    /// Name requested within the imported module.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Bind the same object under another module/name, preserving its type,
+    /// identity, captured host state and originating runtime world.
+    pub fn alias(&self, module: &str, name: &str) -> Self {
+        Self {
+            module: module.to_string(),
+            name: name.to_string(),
+            value: self.value.clone(),
+            source: self.source,
+        }
+    }
+
+    /// Bind a host callback using the Wasm import's declared signature.
+    /// Every result slot must be assigned a value of the declared type before
+    /// returning `Ok(())`. Missing or mistyped results trap before Wasm resumes.
     pub fn func<F>(module: &str, name: &str, f: F) -> Self
     where
         F: for<'a, 'b, 'c, 'd> Fn(
@@ -94,10 +147,11 @@ impl Import {
             + 'static,
     {
         Import {
+            source: None,
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Func(ImportedFunction::Host {
-                callback: HostCallback::new(f),
+                callback: HostCallback::from_host(f),
                 func_type: None,
                 type_index: u32::MAX,
                 type_ctx: None,
@@ -105,6 +159,8 @@ impl Import {
         }
     }
 
+    /// Bind a host callback with a signature checked during linking.
+    /// Result initialization and validation follow [`Self::func`].
     pub fn func_typed<F>(module: &str, name: &str, f: F, func_type: FunctionType) -> Self
     where
         F: for<'a, 'b, 'c, 'd> Fn(
@@ -115,10 +171,11 @@ impl Import {
             + 'static,
     {
         Import {
+            source: None,
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Func(ImportedFunction::Host {
-                callback: HostCallback::new(f),
+                callback: HostCallback::from_host(f),
                 func_type: Some(func_type),
                 type_index: u32::MAX,
                 type_ctx: None,
@@ -126,137 +183,12 @@ impl Import {
         }
     }
 
-    pub fn func_typed_with_context<F>(
-        module: &str,
-        name: &str,
-        f: F,
-        func_type: FunctionType,
-        type_ctx: TypeContext,
-    ) -> Self
-    where
-        F: for<'a, 'b, 'c, 'd> Fn(
-                &'a mut Caller<'b>,
-                &'c [Value],
-                &'d mut [Value],
-            ) -> Result<(), WasmError>
-            + 'static,
-    {
-        Self::func_typed_with_context_and_index(module, name, f, func_type, u32::MAX, type_ctx)
-    }
-
-    /// As above, with the source-context type index, so a cross-module
-    /// rec-group identity check has both halves it needs.
-    pub fn func_typed_with_context_and_index<F>(
-        module: &str,
-        name: &str,
-        f: F,
-        func_type: FunctionType,
-        type_index: u32,
-        type_ctx: TypeContext,
-    ) -> Self
-    where
-        F: for<'a, 'b, 'c, 'd> Fn(
-                &'a mut Caller<'b>,
-                &'c [Value],
-                &'d mut [Value],
-            ) -> Result<(), WasmError>
-            + 'static,
-    {
-        Import {
-            module: module.to_string(),
-            name: name.to_string(),
-            value: ImportValue::Func(ImportedFunction::Host {
-                callback: HostCallback::new(f),
-                func_type: Some(func_type),
-                type_index,
-                type_ctx: Some(type_ctx),
-            }),
-        }
-    }
-
-    pub fn linked_func_typed(
-        module: &str,
-        name: &str,
-        handle: RefValue,
-        func_type: FunctionType,
-    ) -> Self {
-        Self::linked_func_typed_with_context_and_index(
-            module,
-            name,
-            handle,
-            func_type,
-            u32::MAX,
-            TypeContext::empty(),
-        )
-    }
-
-    pub fn linked_func_typed_with_context(
-        module: &str,
-        name: &str,
-        handle: RefValue,
-        func_type: FunctionType,
-        type_ctx: TypeContext,
-    ) -> Self {
-        Self::linked_func_typed_with_context_and_index(
-            module,
-            name,
-            handle,
-            func_type,
-            u32::MAX,
-            type_ctx,
-        )
-    }
-
-    pub fn linked_func_typed_with_context_and_index(
-        module: &str,
-        name: &str,
-        handle: RefValue,
-        func_type: FunctionType,
-        type_index: u32,
-        type_ctx: TypeContext,
-    ) -> Self {
-        Import {
-            module: module.to_string(),
-            name: name.to_string(),
-            value: ImportValue::Func(ImportedFunction::Linked {
-                handle,
-                func_type,
-                type_index,
-                type_ctx: Some(type_ctx),
-            }),
-        }
-    }
-
     pub fn global(module: &str, name: &str, value: Value, mutable: bool) -> Self {
-        Self::global_with_linked_function(module, name, value, mutable, None)
-    }
-
-    pub fn global_with_linked_function(
-        module: &str,
-        name: &str,
-        value: Value,
-        mutable: bool,
-        linked_function: Option<(HostFn, FunctionType)>,
-    ) -> Self {
         Import {
+            source: None,
             module: module.to_string(),
             name: name.to_string(),
-            value: ImportValue::Global(
-                ImportedGlobal::Value(ImportedGlobalValue {
-                    value,
-                    linked_function,
-                }),
-                mutable,
-            ),
-        }
-    }
-
-    pub fn global_with_state(module: &str, name: &str, state: ImportedGlobalState) -> Self {
-        let mutable = state.global.mutable;
-        Import {
-            module: module.to_string(),
-            name: name.to_string(),
-            value: ImportValue::Global(ImportedGlobal::State(state), mutable),
+            value: ImportValue::Global(ImportedGlobal::Value(value), mutable),
         }
     }
 
@@ -290,13 +222,14 @@ impl Import {
         Self::memory_with_state(module, name, limits, None)
     }
 
-    pub fn memory_with_state(
+    pub(crate) fn memory_with_state(
         module: &str,
         name: &str,
         limits: Limits,
         memory: Option<MemInst>,
     ) -> Self {
         Import {
+            source: None,
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Memory(limits, memory),
@@ -323,21 +256,26 @@ impl Import {
         Self::table_with_state(module, name, limits, None)
     }
 
-    pub fn table_with_state(
+    pub(crate) fn table_with_state(
         module: &str,
         name: &str,
         limits: Limits,
         state: Option<ImportedTableState>,
     ) -> Self {
         Import {
+            source: None,
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Table(limits, state),
         }
     }
 
+    /// Create a fresh host tag with numeric or abstract-reference parameters.
+    /// Concrete type indices require a typed module export: a host tag has no
+    /// module type context, so using those indices fails at instantiation.
     pub fn tag_typed(module: &str, name: &str, func_type: FunctionType) -> Self {
         Import {
+            source: None,
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Tag(ImportedTagState {
@@ -349,27 +287,11 @@ impl Import {
         }
     }
 
-    pub fn tag_typed_with_context(
-        module: &str,
-        name: &str,
-        func_type: FunctionType,
-        type_ctx: TypeContext,
-    ) -> Self {
-        Import {
-            module: module.to_string(),
-            name: name.to_string(),
-            value: ImportValue::Tag(ImportedTagState {
-                handle: TagIdentity::mint_fresh(),
-                func_type,
-                type_index: u32::MAX,
-                type_ctx: Some(type_ctx),
-            }),
-        }
-    }
-
     /// Host-allocates-a-fresh-identity channel that also returns the minted
     /// handle, so host code can later recover the identity for
-    /// `Err(WasmError::HostThrow { tag, .. })` or cross-import reuse.
+    /// `Caller::throw(tag, args)` or cross-import reuse.
+    /// Parameter types follow the same restrictions as [`Self::tag_typed`].
+    /// Use [`Self::alias`] to reuse the tag under another import name.
     pub fn tag_typed_with_handle(
         module: &str,
         name: &str,
@@ -377,6 +299,7 @@ impl Import {
     ) -> (Self, TagIdentity) {
         let handle = TagIdentity::mint_fresh();
         let import = Import {
+            source: None,
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Tag(ImportedTagState {
@@ -388,69 +311,17 @@ impl Import {
         };
         (import, handle)
     }
-
-    /// Cross-module tag linking: import the tag using an explicit `TagIdentity`
-    /// obtained via `JitInstanceLease::tag_identity(...)` or a previous
-    /// `tag_typed_with_handle`/`linked_tag_typed*` call. Preserves tag
-    /// identity across module boundaries.
-    pub fn linked_tag_typed(
-        module: &str,
-        name: &str,
-        handle: TagIdentity,
-        func_type: FunctionType,
-    ) -> Self {
-        Import {
-            module: module.to_string(),
-            name: name.to_string(),
-            value: ImportValue::Tag(ImportedTagState {
-                handle,
-                func_type,
-                type_index: u32::MAX,
-                type_ctx: None,
-            }),
-        }
-    }
-
-    pub fn linked_tag_typed_with_context(
-        module: &str,
-        name: &str,
-        handle: TagIdentity,
-        func_type: FunctionType,
-        type_ctx: TypeContext,
-    ) -> Self {
-        Import {
-            module: module.to_string(),
-            name: name.to_string(),
-            value: ImportValue::Tag(ImportedTagState {
-                handle,
-                func_type,
-                type_index: u32::MAX,
-                type_ctx: Some(type_ctx),
-            }),
-        }
-    }
-
-    /// Full cross-module tag linking with explicit type_index, for proper
-    /// rec-group identity checks. Host callers without a wasm type_index
-    /// should use `linked_tag_typed_with_context` (which passes
-    /// `u32::MAX`).
-    pub fn linked_tag_typed_with_context_and_index(
-        module: &str,
-        name: &str,
-        handle: TagIdentity,
-        func_type: FunctionType,
-        type_index: u32,
-        type_ctx: TypeContext,
-    ) -> Self {
-        Import {
-            module: module.to_string(),
-            name: name.to_string(),
-            value: ImportValue::Tag(ImportedTagState {
-                handle,
-                func_type,
-                type_index,
-                type_ctx: Some(type_ctx),
-            }),
-        }
-    }
 }
+
+pub(crate) fn table_export(state: ImportedTableState) -> Result<ImportValue, WasmError> {
+    let limits = state.table.current_limits()?;
+    Ok(ImportValue::Table(limits, Some(state)))
+}
+
+pub(crate) fn memory_export(memory: MemInst) -> Result<ImportValue, WasmError> {
+    let limits = memory.current_limits()?;
+    Ok(ImportValue::Memory(limits, Some(memory)))
+}
+
+#[cfg(test)]
+mod test_support;

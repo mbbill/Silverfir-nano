@@ -345,15 +345,14 @@ dependencies = [
 name = "sf-nano-foldsim"
 version = "0.1.0"
 dependencies = [
- "sf-nano-core",
+ "wasmparser",
+ "wat",
 ]
 
 [[package]]
 name = "sf-nano-memprof-report"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
  "sf-nano-tracked-alloc",
 ]
 

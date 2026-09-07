@@ -7,7 +7,7 @@ use crate::collections;
 use core::fmt;
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum ReadError {
+pub(crate) enum ReadError {
     InsufficientData,
     ValueTooLong,
     UnusedBitsSet,

@@ -12,34 +12,67 @@ use crate::value_type::ValueType;
 use entities::FunctionType;
 use entities::{Data, Element, ElementInit, Function, Global, Memory, Table, Tag};
 
-pub mod builder;
-pub mod entities;
+pub(crate) mod entities;
 pub(crate) mod parser;
-pub mod type_context;
-pub mod type_defs;
-#[cfg(sf_module_validator)]
-pub mod validator;
+pub(crate) mod type_context;
+pub(crate) mod type_defs;
+pub(crate) mod validator;
 
 use crate::error::WasmError;
 
+/// A parsed, validated WebAssembly module, ready for instantiation.
+///
+/// Validation is independent of the execution engine. Instantiation checks
+/// imports and runtime resource limits, but does not validate the code again.
 #[derive(Debug)]
 pub struct Module {
     name: String,
     binary_version: u32,
-    types: type_context::TypeContext,
-    functions: collections::Vec<Function>,
-    tables: collections::Vec<Table>,
-    memories: collections::Vec<Memory>,
-    globals: collections::Vec<Global>,
-    tags: collections::Vec<Tag>,
-    elements: collections::Vec<Element>,
-    data: collections::Vec<Data>,
+    pub(crate) types: type_context::TypeContext,
+    pub(crate) functions: collections::Vec<Function>,
+    pub(crate) tables: collections::Vec<Table>,
+    pub(crate) memories: collections::Vec<Memory>,
+    pub(crate) globals: collections::Vec<Global>,
+    pub(crate) tags: collections::Vec<Tag>,
+    pub(crate) elements: collections::Vec<Element>,
+    pub(crate) data: collections::Vec<Data>,
     start_func_index: Option<usize>,
     data_count: Option<usize>,
 }
 
 impl Module {
+    /// Parse and validate a WebAssembly binary.
+    ///
+    /// This always performs full validation, including in `no_std` builds.
+    /// The input is copied into owned module storage and may be released after
+    /// this returns. `name` is a diagnostic label, not an import namespace.
     pub fn new(name: &str, bin: &[u8]) -> Result<Self, WasmError> {
+        let module = parser::parse_module(name, bin)?;
+        validator::Validator::new(&module).validate()?;
+        Ok(module)
+    }
+
+    /// Parse a binary whose WebAssembly validity the caller has established.
+    ///
+    /// Binary decoding and target capability checks still run. This avoids
+    /// repeating semantic validation when loading externally validated input;
+    /// ordinary callers should use [`Self::new`].
+    ///
+    /// # Safety
+    ///
+    /// `bin` must be a valid WebAssembly core module under the proposals
+    /// supported by this runtime, including all function bodies, type and index
+    /// references, and constant expressions. Validation of another binary,
+    /// successful WAT encoding, or successful decoding alone is insufficient.
+    /// Passing an invalid module can lead to undefined behavior during later
+    /// compilation or execution, even if this constructor returns `Ok`.
+    ///
+    /// Calling this constructor requires an explicit unsafe block:
+    ///
+    /// ```compile_fail
+    /// sf_nano_core::Module::new_unchecked("empty", b"\0asm\x01\0\0\0").unwrap();
+    /// ```
+    pub unsafe fn new_unchecked(name: &str, bin: &[u8]) -> Result<Self, WasmError> {
         let module = parser::parse_module(name, bin)?;
         module.ensure_simd_supported()?;
         Ok(module)
@@ -87,47 +120,47 @@ impl Module {
         &self.name
     }
 
-    pub fn version(&self) -> u32 {
+    pub(crate) fn version(&self) -> u32 {
         self.binary_version
     }
 
-    pub fn types(&self) -> &type_context::TypeContext {
+    pub(crate) fn types(&self) -> &type_context::TypeContext {
         &self.types
     }
 
-    pub fn functions(&self) -> &[Function] {
+    pub(crate) fn functions(&self) -> &[Function] {
         &self.functions
     }
 
-    pub fn memories(&self) -> &[Memory] {
+    pub(crate) fn memories(&self) -> &[Memory] {
         &self.memories
     }
 
-    pub fn tables(&self) -> &[Table] {
+    pub(crate) fn tables(&self) -> &[Table] {
         &self.tables
     }
 
-    pub fn globals(&self) -> &[Global] {
+    pub(crate) fn globals(&self) -> &[Global] {
         &self.globals
     }
 
-    pub fn tags(&self) -> &[Tag] {
+    pub(crate) fn tags(&self) -> &[Tag] {
         &self.tags
     }
 
-    pub fn elements(&self) -> &[Element] {
+    pub(crate) fn elements(&self) -> &[Element] {
         &self.elements
     }
 
-    pub fn data(&self) -> &[Data] {
+    pub(crate) fn data(&self) -> &[Data] {
         &self.data
     }
 
-    pub fn start_function_index(&self) -> Option<usize> {
+    pub(crate) fn start_function_index(&self) -> Option<usize> {
         self.start_func_index
     }
 
-    pub fn data_count(&self) -> Option<usize> {
+    pub(crate) fn data_count(&self) -> Option<usize> {
         self.data_count
     }
 
@@ -174,33 +207,6 @@ impl Module {
         }
 
         Ok(escapable)
-    }
-
-    /// Consume the module, returning all internal fields.
-    pub fn into_parts(
-        self,
-    ) -> (
-        type_context::TypeContext,
-        collections::Vec<Function>,
-        collections::Vec<Table>,
-        collections::Vec<Memory>,
-        collections::Vec<Global>,
-        collections::Vec<Tag>,
-        collections::Vec<Element>,
-        collections::Vec<Data>,
-        Option<usize>,
-    ) {
-        (
-            self.types,
-            self.functions,
-            self.tables,
-            self.memories,
-            self.globals,
-            self.tags,
-            self.elements,
-            self.data,
-            self.start_func_index,
-        )
     }
 }
 

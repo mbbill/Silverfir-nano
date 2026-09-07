@@ -5,7 +5,7 @@ use crate::summary::print_summary;
 use crate::types::TestStats;
 use crate::wast_test_runner::{TestResult, WastTestRunner};
 use log::{error, info, warn};
-use sf_nano_core::{reset_native_runtime_state, target_has_simd, Config, Engine, Tier};
+use sf_nano_core::{target_has_simd, Config, Engine, Tier};
 use std::{
     env,
     panic::AssertUnwindSafe,
@@ -412,7 +412,6 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         let test_start = Instant::now();
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            reset_native_runtime_state();
             let mut runner = WastTestRunner::new(engine);
             wast_input.run(&mut runner)
         }));
