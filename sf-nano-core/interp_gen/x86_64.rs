@@ -973,6 +973,12 @@ impl Isa for X86_64 {
                     a.ins(&format!("mov [rbp + rdx], {}", q(rd)));
                 }
             }
+            MemorySize => {
+                let rd = self.dst_target(dc);
+                a.ins(&format!("mov {}, {}", q(rd), q(MEMLEN)));
+                a.ins(&format!("shr {}, 16", q(rd)));
+                self.finish(a, dc, rd);
+            }
             GlobalGet => {
                 a.ins("mov rax, [rbx + 8]"); // index*8
                 a.ins(&format!("mov rcx, [r15 + {S_GLOBALS}]"));

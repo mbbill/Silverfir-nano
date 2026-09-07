@@ -1145,6 +1145,13 @@ impl Isa for Arm64 {
                     a.ins(&format!("str {}, [x20, x12]", x(rd)));
                 }
             }
+            MemorySize => {
+                let rd = self.dst_target(d);
+                // The parser rejects custom page sizes: one Wasm page is
+                // 64 KiB. x23 holds the logical length, not a reservation.
+                a.ins(&format!("lsr {}, x23, #16", x(rd)));
+                self.finish(a, d, rd);
+            }
             GlobalGet => {
                 a.ins("ldr x10, [x19, #8]"); // a = index*8
                 let rd = self.dst_target(d);

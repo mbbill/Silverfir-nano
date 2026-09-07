@@ -4044,7 +4044,10 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         _ => 0,
                     };
                     let dst = self.temp_slot_used(self.height());
-                    let idx = self.emit(Op::MemorySize, 0, 0, m, dst);
+                    // The dispatch chain carries memory 0's logical byte
+                    // length, refreshed after every slow-path operation.
+                    let flags = if m == 0 { 0 } else { FLAG_NO_NATIVE };
+                    let idx = self.emit(Op::MemorySize, flags, 0, m, dst);
                     self.push_result_temp(idx);
                 }
                 Opcode::MEMORY_GROW => {

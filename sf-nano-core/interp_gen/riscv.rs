@@ -299,6 +299,7 @@ fn rv32_native(op: Op) -> bool {
             | GlobalSet
             | MemoryFill
             | MemoryCopy
+            | MemorySize
             | I64_Load
             | I64_Store
             | I64_Store32
@@ -1143,6 +1144,16 @@ impl Isa for RiscV {
                         a.ins(&format!("sw {rdh}, 4({T5})"));
                     }
                 }
+            }
+            MemorySize => {
+                let rd = self.dst_target(v.d);
+                a.ins(&format!("srli {rd}, {MEMLEN}, 16"));
+                // A host-sized memory length divided by 64 KiB always
+                // fits one RV32 register; clear the value's high half.
+                if !self.rv64() {
+                    a.ins(&format!("li {}, 0", self.dst_hi(v.d)));
+                }
+                self.finish(a, v.d, rd, true);
             }
             GlobalGet => {
                 a.ins(&format!("{lp} {T1}, 8({PC})"));

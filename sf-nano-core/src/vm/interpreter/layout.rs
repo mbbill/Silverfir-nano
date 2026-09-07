@@ -383,11 +383,11 @@ const fn compute_family(op: Op) -> Fam {
         MovConst => Fam::ConstDst,
         MovPair => Fam::SrcABPairDst,
         Select => Fam::SrcABDst,
-        GlobalGet => Fam::Dst,
+        GlobalGet | MemorySize => Fam::Dst,
         GlobalSet | BrIf | BrIfNot | BrTable => Fam::SrcA,
         Br | Return | MemoryFill | MemoryCopy | MemoryFillCopy => Fam::Fixed,
         // Permanently slow (design doc SS12: host calls, memory/table
-        // grow and size, segment and reference ops), plus the two call
+        // grow, table size, segment and reference ops), plus the two call
         // flavours, which the cross-function fixup wires directly.
         _ => Fam::None,
     }
@@ -471,7 +471,7 @@ const fn compute_writes_acc(op: Op) -> bool {
         // MovPair's accumulator result is its second ordered copy. This
         // preserves the residency that its second constituent MovSlot
         // would have provided without adding another handler-table axis.
-        || matches!(op, GlobalGet | Select | MovPair)
+        || matches!(op, GlobalGet | MemorySize | Select | MovPair)
 }
 
 /// Ops whose static offset packs a memory index in the high bits can only
@@ -494,7 +494,7 @@ const fn compute_mem_guard(op: Op) -> MemGuard {
         Fam::Load => MemGuard::OffsetInB,
         Fam::Store => MemGuard::OffsetInC,
         _ => match op {
-            Op::MemoryFill | Op::MemoryCopy => MemGuard::IndexInB,
+            Op::MemoryFill | Op::MemoryCopy | Op::MemorySize => MemGuard::IndexInB,
             Op::MemoryFillCopy => MemGuard::IndexInC,
             _ => MemGuard::None,
         },
@@ -1086,7 +1086,7 @@ mod tests {
                 Fam::Load => ins.b >> 48 == 0,
                 Fam::Store => ins.c >> 48 == 0,
                 _ => match ins.op {
-                    Op::MemoryFill | Op::MemoryCopy => ins.b == 0,
+                    Op::MemoryFill | Op::MemoryCopy | Op::MemorySize => ins.b == 0,
                     Op::MemoryFillCopy => ins.c == 0,
                     _ => true,
                 },

@@ -332,6 +332,51 @@ fn stubs(a: &Asm) -> Stubs {
     }
 }
 
+/// Emit one handler family group into the existing packed table.
+fn emit_group(
+    isa: &mut dyn Isa,
+    a: &mut Asm,
+    st: &Stubs,
+    counting: bool,
+    group: Group,
+    slot_label: &mut [Option<String>],
+) {
+    let caps = isa.caps();
+    for &op in group.ops {
+        let fam = family(op);
+        if group.fused && !fam.has_fused_bank() {
+            continue;
+        }
+        for (ac, bc, dc, pair_dc) in combos(fam, caps.classes, caps.dsts, caps.has_l1) {
+            let v = Variant {
+                op,
+                a: ac,
+                b: bc,
+                d: dc,
+                pair_d: pair_dc,
+                fused: group.fused,
+                counted: counted(counting, ac, bc, dc, pair_dc),
+            };
+            if !isa.wants(&v) {
+                continue;
+            }
+            let Some(idx) = fam.index_of(ac, bc, dc, pair_dc, group.fused) else {
+                continue;
+            };
+            let slot = op_base(op) as usize + idx;
+            assert!(
+                slot_label[slot].is_none(),
+                "duplicate handler slot for {op:?} ({ac:?},{bc:?},{dc:?},{pair_dc:?},fused={})",
+                group.fused
+            );
+            let label = a.fresh("h");
+            a.label(&label);
+            isa.emit_handler(a, st, &v);
+            slot_label[slot] = Some(label);
+        }
+    }
+}
+
 /// Emit the whole engine for one backend. Returns the assembler source.
 pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> String {
     let caps = isa.caps();
@@ -366,45 +411,24 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
     a.align(6);
 
     for group in emit_order() {
-        for &op in group.ops {
-            let fam = family(op);
-            if group.fused && !fam.has_fused_bank() {
-                continue;
-            }
-            for (ac, bc, dc, pair_dc) in combos(fam, caps.classes, caps.dsts, caps.has_l1) {
-                let v = Variant {
-                    op,
-                    a: ac,
-                    b: bc,
-                    d: dc,
-                    pair_d: pair_dc,
-                    fused: group.fused,
-                    counted: counted(counting, ac, bc, dc, pair_dc),
-                };
-                if !isa.wants(&v) {
-                    continue;
-                }
-                let Some(idx) = fam.index_of(ac, bc, dc, pair_dc, group.fused) else {
-                    continue;
-                };
-                let slot = op_base(op) as usize + idx;
-                assert!(
-                    slot_label[slot].is_none(),
-                    "duplicate handler slot for {op:?} ({ac:?},{bc:?},{dc:?},{pair_dc:?},fused={})",
-                    group.fused
-                );
-                let label = a.fresh("h");
-                a.label(&label);
-                isa.emit_handler(&mut a, &st, &v);
-                slot_label[slot] = Some(label);
-            }
-        }
+        emit_group(isa, &mut a, &st, counting, group, &mut slot_label);
     }
 
     // Target-specific multi-cell handlers are appended so no ordinary
     // handler address or cache-line phase moves when this bank changes.
     let super_labels = isa.emit_superhandlers(&mut a, &st, counting);
     assert_eq!(super_labels.len(), SUPER_HANDLER_SLOTS);
+
+    // New handlers follow the existing multi-cell bank as well: adding a
+    // small operation must not shift the cache-line phase of those handlers.
+    emit_group(
+        isa,
+        &mut a,
+        &st,
+        counting,
+        g(&[MemorySize]),
+        &mut slot_label,
+    );
 
     let end = a.local("sf_end");
     a.label(&end);

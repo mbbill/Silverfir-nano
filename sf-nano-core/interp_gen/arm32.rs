@@ -171,6 +171,7 @@ fn native_op(op: Op) -> bool {
             | GlobalSet
             | MemoryFill
             | MemoryCopy
+            | MemorySize
             | I32_Load
             | I32_Load8S
             | I32_Load8U
@@ -683,6 +684,11 @@ impl Isa for Arm32 {
                     a.ins(&format!("str {rd}, [{T2}]"));
                     a.ins(&format!("str {rdh}, [{T2}, #4]"));
                 }
+            }
+            MemorySize => {
+                let rd = self.dst_target(v.d);
+                a.ins(&format!("lsr {rd}, {MEMLEN}, #16"));
+                self.finish(a, v.d, rd, false, T0);
             }
             GlobalGet => {
                 a.ins(&format!("ldr {T0}, [{PC}, #8]"));

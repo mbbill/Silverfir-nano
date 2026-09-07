@@ -6739,6 +6739,121 @@ mod tests {
     }
 
     #[test]
+    fn native_memory_size_refreshes_after_growth_and_keeps_other_memories_slow() {
+        for width in [32, 64] {
+            let ty = alloc::format!("i{width}");
+            let memory_ty = if width == 64 { "i64 " } else { "" };
+            let wasm = wat::parse_str(alloc::format!(
+                r#"(module
+                    (memory {memory_ty}1 2)
+                    (memory {memory_ty}3 4)
+                    (func $grow (param {ty}) (result {ty})
+                        (memory.grow (local.get 0)))
+                    (func (export "run") (param {ty})
+                        (result {ty} {ty} {ty} {ty} {ty} {ty})
+                        ({ty}.add (memory.size) ({ty}.const 10))
+                        (call $grow (local.get 0))
+                        (memory.size)
+                        (memory.size 1)
+                        (memory.grow 1 (local.get 0))
+                        (memory.size 1)))"#
+            ))
+            .unwrap();
+            let engine = Engine::new(Config::new().tier(crate::Tier::Interp)).unwrap();
+            let mut instance = crate::Instance::new(&engine, &wasm, &[]).unwrap();
+            let value = |n| {
+                if width == 64 {
+                    Value::I64(n)
+                } else {
+                    Value::I32(n as i32)
+                }
+            };
+            for (delta, expected) in [
+                (1, [11, 1, 2, 3, 3, 4]),
+                (1, [12, -1, 2, 4, -1, 4]),
+                (0, [12, 2, 2, 4, 4, 4]),
+            ] {
+                assert_eq!(
+                    instance.invoke("run", &[value(delta)]).unwrap().as_slice(),
+                    expected.map(value).as_slice(),
+                    "memory{width}, delta={delta}"
+                );
+            }
+            instance.with_interp(|inst| {
+                assert_eq!(
+                    inst.slow_exit_stats()
+                        .iter()
+                        .find(|(op, _)| *op == Op::MemorySize)
+                        .map(|(_, count)| *count),
+                    Some(6),
+                    "only the two memory 1 size queries per call take the slow path"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn native_memory_size_refreshes_after_host_grows_shared_memory_in_another_instance() {
+        let engine = Engine::new(Config::new().tier(crate::Tier::Interp)).unwrap();
+        let limits = crate::utils::limits::Limits::new(1, Some(2)).unwrap();
+        let shared = MemInst::new(&Config::new(), limits.clone()).unwrap();
+        let inner_wasm = wat::parse_str(
+            r#"(module
+                (import "m" "private" (memory 7 7))
+                (import "m" "shared" (memory 1 2))
+                (func (export "grow") (result i32 i32)
+                    (memory.grow 1 (i32.const 1))
+                    (memory.size)))"#,
+        )
+        .unwrap();
+        let inner = core::cell::RefCell::new(
+            crate::Instance::new(
+                &engine,
+                &inner_wasm,
+                &[
+                    Import::memory("m", "private", 7, Some(7)),
+                    Import::memory_with_state("m", "shared", limits.clone(), Some(shared.clone())),
+                ],
+            )
+            .unwrap(),
+        );
+        let outer_wasm = wat::parse_str(
+            r#"(module
+                (import "m" "shared" (memory 1 2))
+                (import "host" "grow" (func $grow (result i32 i32)))
+                (func (export "run") (result i32 i32 i32 i32)
+                    (memory.size)
+                    (call $grow)
+                    (i32.add (memory.size) (i32.const 10))))"#,
+        )
+        .unwrap();
+        let mut outer = crate::Instance::new(
+            &engine,
+            &outer_wasm,
+            &[
+                Import::memory_with_state("m", "shared", limits, Some(shared)),
+                Import::func("host", "grow", move |_, _, results| {
+                    results.copy_from_slice(&inner.borrow_mut().invoke("grow", &[])?);
+                    Ok(())
+                }),
+            ],
+        )
+        .unwrap();
+        for expected in [[1, 1, 7, 12], [2, -1, 7, 12]] {
+            assert_eq!(
+                outer.invoke("run", &[]).unwrap().as_slice(),
+                expected.map(Value::I32).as_slice()
+            );
+        }
+        outer.with_interp(|inst| {
+            assert!(inst
+                .slow_exit_stats()
+                .iter()
+                .all(|(op, _)| *op != Op::MemorySize));
+        });
+    }
+
+    #[test]
     fn return_call_runs_at_constant_depth() {
         // A million tail calls must not grow the activation stack; if the
         // frame is not reused this exhausts it instead of returning.
