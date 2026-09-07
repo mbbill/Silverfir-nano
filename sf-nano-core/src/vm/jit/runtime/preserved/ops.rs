@@ -232,10 +232,15 @@ fn raise_exception(
         tag: tag_identity,
     };
 
-    Err(WasmError::Exception {
-        exn: exn_handle,
-        tag: tag_identity,
-        module_tag_name: None,
+    Err(WasmError {
+        repr: crate::error::ErrorRepr::Exception {
+            exn: crate::RefValue::from_vm(
+                exn_handle,
+                current_store(ctx)?.instance_backref().self_id().world(),
+            ),
+            tag: tag_identity,
+            module_tag_name: None,
+        },
     })
 }
 

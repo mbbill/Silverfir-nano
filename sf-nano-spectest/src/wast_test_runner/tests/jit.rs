@@ -5,24 +5,6 @@ use super::*;
 #[test]
 fn native_if_mixed_operands_uses_direct_arm64() {
     let mut runner = instantiate_first_module_with_backend("if.wast", Tier::Jit);
-    let wasm_bytes = runner
-        .module_bytes
-        .values()
-        .next()
-        .expect("module bytes")
-        .clone();
-    let module = Module::new("debug", &wasm_bytes).expect("parse module");
-    let func_index = module
-        .functions()
-        .iter()
-        .enumerate()
-        .find(|(_, func)| {
-            func.export_names()
-                .iter()
-                .any(|name| name == "as-mixed-operands")
-        })
-        .map(|(index, _)| index)
-        .expect("exported function index");
     let id = only_instance_id(&runner);
     let ret = runner
         .world
@@ -30,12 +12,9 @@ fn native_if_mixed_operands_uses_direct_arm64() {
         .expect("invoke export");
     assert_eq!(ret.as_slice(), &[Value::I32(-3)]);
 
-    // Native code is the JIT's business, so this assertion reaches
-    // through to its instance rather than the engine-neutral one.
     let instance = runner.world.instance(id).expect("instance");
-    let jit = instance.as_jit().expect("this test runs on the jit");
     assert_eq!(
-        jit.function_has_native_code(func_index),
+        instance.function_has_native_code("as-mixed-operands"),
         Some(true),
         "expected native code to be compiled for as-mixed-operands"
     );

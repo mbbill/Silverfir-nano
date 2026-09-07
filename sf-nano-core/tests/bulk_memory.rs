@@ -202,7 +202,7 @@ fn adjacent_fill_copy_fusion_matches_sequential_effects_and_traps() {
             }
         }
         assert_eq!(
-            instance.memory().expect("memory"),
+            &*instance.memory().expect("memory"),
             expected.as_slice(),
             "fill=({fill_dst}, {value}, {fill_len}), \
              copy=({copy_dst}, {copy_src}, {copy_len})",

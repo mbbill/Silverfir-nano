@@ -37,6 +37,31 @@ jobs:
         if: ${{ always() && !cancelled() }}
         run: cargo fmt --all -- --check
 
+  msrv:
+    name: minimum supported Rust
+    needs: policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.94.0
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: correctness-msrv
+
+      - name: Check embedding contracts on minimum Rust
+        run: python3 -m ci.correctness msrv
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: correctness-msrv
+          path: target/ci-logs/msrv
+
   miri:
     name: Miri instance-table token discipline
     needs: policy
@@ -75,8 +100,9 @@ jobs:
             --features jit,interp \
             --lib \
             vm::link::instance_table_tests::miri_instance_table_scopes_materializations \
-            -- --exact --nocapture | tee miri-sb.log
+            -- --exact --nocapture 2>&1 | tee miri-sb.log
           grep -q '^test result: ok\. 1 passed' miri-sb.log
+          python3 -c "from pathlib import Path; from ci.runner import parse_log; assert not any(parse_log(Path('miri-sb.log'), 0)[:2]), 'Miri emitted compiler diagnostics'"
 
       - name: Check scoped materialization under Tree Borrows
         env:
@@ -91,8 +117,39 @@ jobs:
             --features jit,interp \
             --lib \
             vm::link::instance_table_tests::miri_instance_table_scopes_materializations \
-            -- --exact --nocapture | tee miri-tb.log
+            -- --exact --nocapture 2>&1 | tee miri-tb.log
           grep -q '^test result: ok\. 1 passed' miri-tb.log
+          python3 -c "from pathlib import Path; from ci.runner import parse_log; assert not any(parse_log(Path('miri-tb.log'), 0)[:2]), 'Miri emitted compiler diagnostics'"
+
+      - name: Check memory view aliasing under Stacked Borrows
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
+        run: |
+          set -o pipefail
+          cargo +nightly miri test \
+            -p sf-nano-core \
+            --no-default-features \
+            --features jit,interp \
+            --lib \
+            vm::memory::tests::memory_view_aliasing_and_backing_lifetime \
+            -- --exact --nocapture 2>&1 | tee miri-memory-sb.log
+          grep -q '^test result: ok\. 1 passed' miri-memory-sb.log
+          python3 -c "from pathlib import Path; from ci.runner import parse_log; assert not any(parse_log(Path('miri-memory-sb.log'), 0)[:2]), 'Miri emitted compiler diagnostics'"
+
+      - name: Check memory view aliasing under Tree Borrows
+        env:
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
+        run: |
+          set -o pipefail
+          cargo +nightly miri test \
+            -p sf-nano-core \
+            --no-default-features \
+            --features jit,interp \
+            --lib \
+            vm::memory::tests::memory_view_aliasing_and_backing_lifetime \
+            -- --exact --nocapture 2>&1 | tee miri-memory-tb.log
+          grep -q '^test result: ok\. 1 passed' miri-memory-tb.log
+          python3 -c "from pathlib import Path; from ci.runner import parse_log; assert not any(parse_log(Path('miri-memory-tb.log'), 0)[:2]), 'Miri emitted compiler diagnostics'"
 
   platform:
     name: ${{ matrix.platform }}

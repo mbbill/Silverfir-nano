@@ -21,14 +21,14 @@ use crate::vm::jit::runtime::code::{NativeCode, NativeCodeCache};
 #[cfg(sf_jit)]
 use core::cell::UnsafeCell;
 
-pub use super::type_defs::FunctionType;
+pub(crate) use super::type_defs::FunctionType;
 
 // ---------------------------------------------------------------------------
 // Bytecode / ConstExpr
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-pub struct Bytecode {
+pub(crate) struct Bytecode {
     data: Rc<[u8]>,
     start: usize,
     end: usize,
@@ -81,7 +81,7 @@ impl Default for Bytecode {
 }
 
 #[derive(Clone, Debug)]
-pub struct ConstExpr {
+pub(crate) struct ConstExpr {
     data: Rc<[u8]>,
 }
 
@@ -112,12 +112,11 @@ impl Default for ConstExpr {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub struct FunctionSpec {
+pub(crate) struct FunctionSpec {
     func_type: Rc<FunctionType>,
     type_index: u32,
     locals: collections::Vec<ValueType>,
     code: Bytecode,
-    code_offset: usize,
     #[cfg(sf_jit)]
     native_code: UnsafeCell<Option<NativeCode>>,
     #[cfg(sf_jit)]
@@ -129,13 +128,12 @@ unsafe impl Send for FunctionSpec {}
 unsafe impl Sync for FunctionSpec {}
 
 impl FunctionSpec {
-    pub fn new(func_type: Rc<FunctionType>, type_index: u32) -> Self {
+    pub(crate) fn new(func_type: Rc<FunctionType>, type_index: u32) -> Self {
         FunctionSpec {
             func_type,
             type_index,
             locals: collections::Vec::new(),
             code: Bytecode::default(),
-            code_offset: 0,
             #[cfg(sf_jit)]
             native_code: UnsafeCell::new(None),
             #[cfg(sf_jit)]
@@ -143,47 +141,39 @@ impl FunctionSpec {
         }
     }
 
-    pub fn locals(&self) -> &[ValueType] {
+    pub(crate) fn locals(&self) -> &[ValueType] {
         &self.locals
     }
 
-    pub fn set_locals(&mut self, locals: collections::Vec<ValueType>) {
+    pub(crate) fn set_locals(&mut self, locals: collections::Vec<ValueType>) {
         self.locals = locals;
     }
 
-    pub fn code(&self) -> &Bytecode {
+    pub(crate) fn code(&self) -> &Bytecode {
         &self.code
     }
 
-    pub fn set_code(&mut self, code: Bytecode) {
+    pub(crate) fn set_code(&mut self, code: Bytecode) {
         self.code = code;
     }
 
-    pub fn code_offset(&self) -> usize {
-        self.code_offset
-    }
-
-    pub fn set_code_offset(&mut self, offset: usize) {
-        self.code_offset = offset;
-    }
-
     #[inline(always)]
-    pub fn func_type(&self) -> &FunctionType {
+    pub(crate) fn func_type(&self) -> &FunctionType {
         &self.func_type
     }
 
     #[inline]
-    pub fn func_type_rc(&self) -> Rc<FunctionType> {
+    pub(crate) fn func_type_rc(&self) -> Rc<FunctionType> {
         self.func_type.clone()
     }
 
-    pub fn type_index(&self) -> u32 {
+    pub(crate) fn type_index(&self) -> u32 {
         self.type_index
     }
 
     #[cfg(sf_jit)]
     #[inline(always)]
-    pub fn has_native_code(&self) -> bool {
+    pub(crate) fn has_native_code(&self) -> bool {
         unsafe { (*self.native_cache.get()).is_compiled() }
     }
 
@@ -206,7 +196,7 @@ impl FunctionSpec {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub enum FunctionDef {
+pub(crate) enum FunctionDef {
     Local(FunctionSpec),
     Import {
         module: String,
@@ -217,20 +207,20 @@ pub enum FunctionDef {
 }
 
 #[derive(Debug)]
-pub struct Function {
+pub(crate) struct Function {
     export_names: collections::Vec<String>,
-    def: FunctionDef,
+    pub(crate) def: FunctionDef,
 }
 
 impl Function {
-    pub fn new_local(func_type: Rc<FunctionType>, type_index: u32) -> Self {
+    pub(crate) fn new_local(func_type: Rc<FunctionType>, type_index: u32) -> Self {
         Function {
             export_names: collections::Vec::new(),
             def: FunctionDef::Local(FunctionSpec::new(func_type, type_index)),
         }
     }
 
-    pub fn new_import(
+    pub(crate) fn new_import(
         module: String,
         name: String,
         func_type: Rc<FunctionType>,
@@ -247,67 +237,46 @@ impl Function {
         }
     }
 
-    pub fn def(&self) -> &FunctionDef {
-        &self.def
-    }
-
-    pub fn def_mut(&mut self) -> &mut FunctionDef {
-        &mut self.def
-    }
-
-    pub fn is_import(&self) -> bool {
+    pub(crate) fn is_import(&self) -> bool {
         matches!(self.def, FunctionDef::Import { .. })
     }
 
     /// Returns a reference to the function type.
     #[inline(always)]
-    pub fn func_type(&self) -> &FunctionType {
+    pub(crate) fn func_type(&self) -> &FunctionType {
         match &self.def {
             FunctionDef::Local(spec) => spec.func_type(),
             FunctionDef::Import { func_type, .. } => func_type,
         }
     }
 
-    #[inline]
-    pub fn func_type_rc(&self) -> Rc<FunctionType> {
-        match &self.def {
-            FunctionDef::Local(spec) => spec.func_type_rc(),
-            FunctionDef::Import { func_type, .. } => func_type.clone(),
-        }
-    }
-
-    pub fn type_index(&self) -> u32 {
+    pub(crate) fn type_index(&self) -> u32 {
         match &self.def {
             FunctionDef::Local(spec) => spec.type_index(),
             FunctionDef::Import { type_index, .. } => *type_index,
         }
     }
 
-    pub fn spec(&self) -> Option<&FunctionSpec> {
+    pub(crate) fn spec(&self) -> Option<&FunctionSpec> {
         match &self.def {
             FunctionDef::Local(spec) => Some(spec),
             FunctionDef::Import { .. } => None,
         }
     }
 
-    pub fn spec_mut(&mut self) -> Option<&mut FunctionSpec> {
+    pub(crate) fn spec_mut(&mut self) -> Option<&mut FunctionSpec> {
         match &mut self.def {
             FunctionDef::Local(spec) => Some(spec),
             FunctionDef::Import { .. } => None,
         }
     }
 
-    pub fn export_names(&self) -> &[String] {
+    pub(crate) fn export_names(&self) -> &[String] {
         &self.export_names
     }
 
-    pub fn add_export_name(&mut self, name: String) {
+    pub(crate) fn add_export_name(&mut self, name: String) {
         self.export_names.push(name);
-    }
-
-    /// Consume the Function, returning its export names and definition.
-    pub fn into_parts(self) -> (collections::Vec<String>, FunctionDef) {
-        (self.export_names, self.def)
     }
 }
 
@@ -316,7 +285,7 @@ impl Function {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct TableSpec {
+pub(crate) struct TableSpec {
     value_type: ValueType,
     limits: Limits,
     init_expr: Option<ConstExpr>,
@@ -329,7 +298,7 @@ impl Limitable for TableSpec {
 }
 
 impl TableSpec {
-    pub fn new(value_type: ValueType, limits: Limits) -> Result<Self, WasmError> {
+    pub(crate) fn new(value_type: ValueType, limits: Limits) -> Result<Self, WasmError> {
         let default_max = if limits.is64 {
             constants::MAX_TABLE_SIZE_64
         } else {
@@ -344,7 +313,7 @@ impl TableSpec {
         })
     }
 
-    pub fn new_with_init(
+    pub(crate) fn new_with_init(
         value_type: ValueType,
         limits: Limits,
         init_expr: ConstExpr,
@@ -363,17 +332,17 @@ impl TableSpec {
         })
     }
 
-    pub fn value_type(&self) -> ValueType {
+    pub(crate) fn value_type(&self) -> ValueType {
         self.value_type
     }
 
-    pub fn init_expr(&self) -> Option<&ConstExpr> {
+    pub(crate) fn init_expr(&self) -> Option<&ConstExpr> {
         self.init_expr.as_ref()
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum TableDef {
+pub(crate) enum TableDef {
     Local(TableSpec),
     Import {
         module: String,
@@ -383,20 +352,20 @@ pub enum TableDef {
 }
 
 #[derive(Debug, Clone)]
-pub struct Table {
+pub(crate) struct Table {
     export_names: collections::Vec<String>,
     def: TableDef,
 }
 
 impl Table {
-    pub fn new_local(value_type: ValueType, limits: Limits) -> Result<Self, WasmError> {
+    pub(crate) fn new_local(value_type: ValueType, limits: Limits) -> Result<Self, WasmError> {
         Ok(Table {
             export_names: collections::Vec::new(),
             def: TableDef::Local(TableSpec::new(value_type, limits)?),
         })
     }
 
-    pub fn new_local_with_init(
+    pub(crate) fn new_local_with_init(
         value_type: ValueType,
         limits: Limits,
         init_expr: ConstExpr,
@@ -407,7 +376,7 @@ impl Table {
         })
     }
 
-    pub fn new_import(
+    pub(crate) fn new_import(
         module: String,
         name: String,
         value_type: ValueType,
@@ -423,30 +392,30 @@ impl Table {
         })
     }
 
-    pub fn def(&self) -> &TableDef {
+    pub(crate) fn def(&self) -> &TableDef {
         &self.def
     }
 
-    pub fn is_import(&self) -> bool {
+    pub(crate) fn is_import(&self) -> bool {
         matches!(self.def, TableDef::Import { .. })
     }
 
-    pub fn spec(&self) -> &TableSpec {
+    pub(crate) fn spec(&self) -> &TableSpec {
         match &self.def {
             TableDef::Local(spec) => spec,
             TableDef::Import { spec, .. } => spec,
         }
     }
 
-    pub fn value_type(&self) -> ValueType {
+    pub(crate) fn value_type(&self) -> ValueType {
         self.spec().value_type()
     }
 
-    pub fn export_names(&self) -> &[String] {
+    pub(crate) fn export_names(&self) -> &[String] {
         &self.export_names
     }
 
-    pub fn add_export_name(&mut self, name: String) {
+    pub(crate) fn add_export_name(&mut self, name: String) {
         self.export_names.push(name);
     }
 }
@@ -462,7 +431,7 @@ impl Limitable for Table {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct MemorySpec {
+pub(crate) struct MemorySpec {
     limits: Limits,
 }
 
@@ -473,7 +442,7 @@ impl Limitable for MemorySpec {
 }
 
 impl MemorySpec {
-    pub fn new(limits: Limits) -> Result<Self, WasmError> {
+    pub(crate) fn new(limits: Limits) -> Result<Self, WasmError> {
         let default_max = if limits.is64 {
             constants::MAX_MEM_PAGES_64
         } else {
@@ -488,7 +457,7 @@ impl MemorySpec {
 }
 
 #[derive(Debug, Clone)]
-pub enum MemoryDef {
+pub(crate) enum MemoryDef {
     Local(MemorySpec),
     Import {
         module: String,
@@ -498,20 +467,24 @@ pub enum MemoryDef {
 }
 
 #[derive(Debug, Clone)]
-pub struct Memory {
+pub(crate) struct Memory {
     export_names: collections::Vec<String>,
     def: MemoryDef,
 }
 
 impl Memory {
-    pub fn new_local(limits: Limits) -> Result<Self, WasmError> {
+    pub(crate) fn new_local(limits: Limits) -> Result<Self, WasmError> {
         Ok(Memory {
             export_names: collections::Vec::new(),
             def: MemoryDef::Local(MemorySpec::new(limits)?),
         })
     }
 
-    pub fn new_import(module: String, name: String, limits: Limits) -> Result<Self, WasmError> {
+    pub(crate) fn new_import(
+        module: String,
+        name: String,
+        limits: Limits,
+    ) -> Result<Self, WasmError> {
         Ok(Memory {
             export_names: collections::Vec::new(),
             def: MemoryDef::Import {
@@ -522,26 +495,22 @@ impl Memory {
         })
     }
 
-    pub fn def(&self) -> &MemoryDef {
+    pub(crate) fn def(&self) -> &MemoryDef {
         &self.def
     }
 
-    pub fn is_import(&self) -> bool {
-        matches!(self.def, MemoryDef::Import { .. })
-    }
-
-    pub fn spec(&self) -> &MemorySpec {
+    pub(crate) fn spec(&self) -> &MemorySpec {
         match &self.def {
             MemoryDef::Local(spec) => spec,
             MemoryDef::Import { spec, .. } => spec,
         }
     }
 
-    pub fn export_names(&self) -> &[String] {
+    pub(crate) fn export_names(&self) -> &[String] {
         &self.export_names
     }
 
-    pub fn add_export_name(&mut self, name: String) {
+    pub(crate) fn add_export_name(&mut self, name: String) {
         self.export_names.push(name);
     }
 }
@@ -557,14 +526,14 @@ impl Limitable for Memory {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct GlobalSpec {
+pub(crate) struct GlobalSpec {
     value_type: ValueType,
     mutable: bool,
     init_expr: ConstExpr,
 }
 
 impl GlobalSpec {
-    pub fn new(value_type: ValueType, mutable: bool, init_expr: ConstExpr) -> Self {
+    pub(crate) fn new(value_type: ValueType, mutable: bool, init_expr: ConstExpr) -> Self {
         GlobalSpec {
             value_type,
             mutable,
@@ -572,21 +541,21 @@ impl GlobalSpec {
         }
     }
 
-    pub fn value_type(&self) -> ValueType {
+    pub(crate) fn value_type(&self) -> ValueType {
         self.value_type
     }
 
-    pub fn mutable(&self) -> bool {
+    pub(crate) fn mutable(&self) -> bool {
         self.mutable
     }
 
-    pub fn init_expr(&self) -> &ConstExpr {
+    pub(crate) fn init_expr(&self) -> &ConstExpr {
         &self.init_expr
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum GlobalDef {
+pub(crate) enum GlobalDef {
     Local(GlobalSpec),
     Import {
         module: String,
@@ -597,20 +566,25 @@ pub enum GlobalDef {
 }
 
 #[derive(Debug, Clone)]
-pub struct Global {
+pub(crate) struct Global {
     export_names: collections::Vec<String>,
     def: GlobalDef,
 }
 
 impl Global {
-    pub fn new_local(value_type: ValueType, mutable: bool, init_expr: ConstExpr) -> Self {
+    pub(crate) fn new_local(value_type: ValueType, mutable: bool, init_expr: ConstExpr) -> Self {
         Global {
             export_names: collections::Vec::new(),
             def: GlobalDef::Local(GlobalSpec::new(value_type, mutable, init_expr)),
         }
     }
 
-    pub fn new_import(module: String, name: String, value_type: ValueType, mutable: bool) -> Self {
+    pub(crate) fn new_import(
+        module: String,
+        name: String,
+        value_type: ValueType,
+        mutable: bool,
+    ) -> Self {
         Global {
             export_names: collections::Vec::new(),
             def: GlobalDef::Import {
@@ -622,40 +596,40 @@ impl Global {
         }
     }
 
-    pub fn def(&self) -> &GlobalDef {
+    pub(crate) fn def(&self) -> &GlobalDef {
         &self.def
     }
 
-    pub fn is_import(&self) -> bool {
+    pub(crate) fn is_import(&self) -> bool {
         matches!(self.def, GlobalDef::Import { .. })
     }
 
-    pub fn value_type(&self) -> ValueType {
+    pub(crate) fn value_type(&self) -> ValueType {
         match &self.def {
             GlobalDef::Local(spec) => spec.value_type(),
             GlobalDef::Import { value_type, .. } => *value_type,
         }
     }
 
-    pub fn mutable(&self) -> bool {
+    pub(crate) fn mutable(&self) -> bool {
         match &self.def {
             GlobalDef::Local(spec) => spec.mutable(),
             GlobalDef::Import { mutable, .. } => *mutable,
         }
     }
 
-    pub fn spec(&self) -> Option<&GlobalSpec> {
+    pub(crate) fn spec(&self) -> Option<&GlobalSpec> {
         match &self.def {
             GlobalDef::Local(spec) => Some(spec),
             GlobalDef::Import { .. } => None,
         }
     }
 
-    pub fn export_names(&self) -> &[String] {
+    pub(crate) fn export_names(&self) -> &[String] {
         &self.export_names
     }
 
-    pub fn add_export_name(&mut self, name: String) {
+    pub(crate) fn add_export_name(&mut self, name: String) {
         self.export_names.push(name);
     }
 }
@@ -665,30 +639,30 @@ impl Global {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct TagSpec {
+pub(crate) struct TagSpec {
     func_type: Rc<FunctionType>,
     type_index: u32,
 }
 
 impl TagSpec {
-    pub fn new(func_type: Rc<FunctionType>, type_index: u32) -> Self {
+    pub(crate) fn new(func_type: Rc<FunctionType>, type_index: u32) -> Self {
         TagSpec {
             func_type,
             type_index,
         }
     }
 
-    pub fn func_type(&self) -> &FunctionType {
+    pub(crate) fn func_type(&self) -> &FunctionType {
         &self.func_type
     }
 
-    pub fn type_index(&self) -> u32 {
+    pub(crate) fn type_index(&self) -> u32 {
         self.type_index
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum TagDef {
+pub(crate) enum TagDef {
     Local(TagSpec),
     Import {
         module: String,
@@ -699,20 +673,20 @@ pub enum TagDef {
 }
 
 #[derive(Debug, Clone)]
-pub struct Tag {
+pub(crate) struct Tag {
     export_names: collections::Vec<String>,
     def: TagDef,
 }
 
 impl Tag {
-    pub fn new_local(func_type: Rc<FunctionType>, type_index: u32) -> Self {
+    pub(crate) fn new_local(func_type: Rc<FunctionType>, type_index: u32) -> Self {
         Tag {
             export_names: collections::Vec::new(),
             def: TagDef::Local(TagSpec::new(func_type, type_index)),
         }
     }
 
-    pub fn new_import(
+    pub(crate) fn new_import(
         module: String,
         name: String,
         func_type: Rc<FunctionType>,
@@ -729,33 +703,22 @@ impl Tag {
         }
     }
 
-    pub fn def(&self) -> &TagDef {
+    pub(crate) fn def(&self) -> &TagDef {
         &self.def
     }
 
-    pub fn is_import(&self) -> bool {
-        matches!(self.def, TagDef::Import { .. })
-    }
-
-    pub fn func_type(&self) -> &FunctionType {
+    pub(crate) fn func_type(&self) -> &FunctionType {
         match &self.def {
             TagDef::Local(spec) => spec.func_type(),
             TagDef::Import { func_type, .. } => func_type,
         }
     }
 
-    pub fn type_index(&self) -> u32 {
-        match &self.def {
-            TagDef::Local(spec) => spec.type_index(),
-            TagDef::Import { type_index, .. } => *type_index,
-        }
-    }
-
-    pub fn export_names(&self) -> &[String] {
+    pub(crate) fn export_names(&self) -> &[String] {
         &self.export_names
     }
 
-    pub fn add_export_name(&mut self, name: String) {
+    pub(crate) fn add_export_name(&mut self, name: String) {
         self.export_names.push(name);
     }
 }
@@ -765,7 +728,7 @@ impl Tag {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum ElementInit {
+pub(crate) enum ElementInit {
     FunctionIndexes(collections::Vec<usize>),
     InitExprs {
         value_type: ValueType,
@@ -774,18 +737,7 @@ pub enum ElementInit {
 }
 
 impl ElementInit {
-    pub fn len(&self) -> usize {
-        match self {
-            ElementInit::FunctionIndexes(vec) => vec.len(),
-            ElementInit::InitExprs { exprs, .. } => exprs.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn value_type(&self) -> ValueType {
+    pub(crate) fn value_type(&self) -> ValueType {
         match self {
             ElementInit::FunctionIndexes(_) => ValueType::funcref(),
             ElementInit::InitExprs { value_type, .. } => *value_type,
@@ -794,7 +746,7 @@ impl ElementInit {
 }
 
 #[derive(Debug, Clone)]
-pub enum Element {
+pub(crate) enum Element {
     Active {
         table_index: usize,
         offset_expr: ConstExpr,
@@ -809,7 +761,11 @@ pub enum Element {
 }
 
 impl Element {
-    pub fn new_active(table_index: usize, offset_expr: ConstExpr, init: ElementInit) -> Self {
+    pub(crate) fn new_active(
+        table_index: usize,
+        offset_expr: ConstExpr,
+        init: ElementInit,
+    ) -> Self {
         Element::Active {
             table_index,
             offset_expr,
@@ -817,15 +773,15 @@ impl Element {
         }
     }
 
-    pub fn new_passive(init: ElementInit) -> Self {
+    pub(crate) fn new_passive(init: ElementInit) -> Self {
         Element::Passive { init }
     }
 
-    pub fn new_declarative(init: ElementInit) -> Self {
+    pub(crate) fn new_declarative(init: ElementInit) -> Self {
         Element::Declarative { init }
     }
 
-    pub fn get_init(&self) -> &ElementInit {
+    pub(crate) fn get_init(&self) -> &ElementInit {
         match self {
             Element::Active { init, .. }
             | Element::Passive { init }
@@ -833,7 +789,7 @@ impl Element {
         }
     }
 
-    pub fn value_type(&self) -> ValueType {
+    pub(crate) fn value_type(&self) -> ValueType {
         self.get_init().value_type()
     }
 }
@@ -843,20 +799,19 @@ impl Element {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum Data {
+pub(crate) enum Data {
     Active {
         memory_index: usize,
         offset_expr: ConstExpr,
         init: Rc<[u8]>,
     },
     Passive {
-        memory_index: usize,
         init: Rc<[u8]>,
     },
 }
 
 impl Data {
-    pub fn new_active(memory_index: usize, offset_expr: ConstExpr, init: &[u8]) -> Self {
+    pub(crate) fn new_active(memory_index: usize, offset_expr: ConstExpr, init: &[u8]) -> Self {
         Data::Active {
             memory_index,
             offset_expr,
@@ -864,14 +819,11 @@ impl Data {
         }
     }
 
-    pub fn new_passive(memory_index: usize, init: &[u8]) -> Self {
-        Data::Passive {
-            memory_index,
-            init: init.into(),
-        }
+    pub(crate) fn new_passive(init: &[u8]) -> Self {
+        Data::Passive { init: init.into() }
     }
 
-    pub fn get_init(&self) -> &[u8] {
+    pub(crate) fn get_init(&self) -> &[u8] {
         match self {
             Data::Active { init, .. } | Data::Passive { init, .. } => init,
         }

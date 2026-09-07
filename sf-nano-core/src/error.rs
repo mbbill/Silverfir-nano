@@ -3,14 +3,22 @@ use core::fmt;
 use tracked_alloc::string::String;
 
 use crate::collections;
-use crate::utils::{
-    leb128::ReadError as Leb128ReadError, limits::LimitsError, payload::PayloadError,
-};
+use crate::utils::{leb128::ReadError as Leb128ReadError, payload::PayloadError};
 use crate::vm::tag::TagIdentity;
-use crate::vm::value::{RefValue, Value};
+use crate::vm::value::Value;
+use crate::RefValue;
+
+/// An error from parsing, validation, linking, execution or a host callback.
+///
+/// The representation is private. Use the classification/accessor methods;
+/// host callbacks can return [`Self::trap`] or [`crate::Caller::throw`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct WasmError {
+    pub(crate) repr: ErrorRepr,
+}
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum WasmError {
+pub(crate) enum ErrorRepr {
     Malformed(&'static str),
     Invalid(&'static str),
     Unlinkable(&'static str),
@@ -26,11 +34,14 @@ pub enum WasmError {
         tag: TagIdentity,
         module_tag_name: Option<String>,
     },
-    /// Host-side throw inbound channel. A host callback returns
-    /// `Err(WasmError::HostThrow { .. })` to signal a wasm-catchable
-    /// exception. This variant is VM-internal — the runtime-call entry
+    /// Host-side throw inbound channel produced by `Caller::throw`.
+    /// This variant is VM-internal — the runtime-call entry
     /// consumes it and converts it into `NativeCallStatus::Thrown`. It
     /// should never reach the embedder.
+    HostThrowValues {
+        tag: TagIdentity,
+        args: collections::Vec<crate::Value>,
+    },
     HostThrow {
         tag: TagIdentity,
         args: collections::Vec<Value>,
@@ -39,21 +50,23 @@ pub enum WasmError {
 
 impl fmt::Display for WasmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            WasmError::Malformed(message) => write!(f, "Malformed: {}", message),
-            WasmError::Invalid(message) => write!(f, "Invalid: {}", message),
-            WasmError::Unlinkable(message) => write!(f, "Unlinkable: {}", message),
-            WasmError::Exhaustion(message) => write!(f, "Exhaustion: {}", message),
-            WasmError::Trap(message) => write!(f, "Trap: {}", message),
-            WasmError::Exit(code) => write!(f, "Exit: Process exited with code {}", code),
-            WasmError::Internal(message) => write!(f, "Internal error: {}", message),
-            WasmError::Exception {
+        match &self.repr {
+            ErrorRepr::Malformed(message) => write!(f, "Malformed: {}", message),
+            ErrorRepr::Invalid(message) => write!(f, "Invalid: {}", message),
+            ErrorRepr::Unlinkable(message) => write!(f, "Unlinkable: {}", message),
+            ErrorRepr::Exhaustion(message) => write!(f, "Exhaustion: {}", message),
+            ErrorRepr::Trap(message) => write!(f, "Trap: {}", message),
+            ErrorRepr::Exit(code) => write!(f, "Exit: Process exited with code {}", code),
+            ErrorRepr::Internal(message) => write!(f, "Internal error: {}", message),
+            ErrorRepr::Exception {
                 module_tag_name, ..
             } => match module_tag_name {
                 Some(name) => write!(f, "Uncaught exception: {}", name),
                 None => write!(f, "Uncaught exception"),
             },
-            WasmError::HostThrow { .. } => write!(f, "Host throw (internal)"),
+            ErrorRepr::HostThrow { .. } | ErrorRepr::HostThrowValues { .. } => {
+                write!(f, "Host throw (internal)")
+            }
         }
     }
 }
@@ -62,43 +75,57 @@ impl WasmError {
     #[cold]
     #[inline(never)]
     pub const fn malformed(message: &'static str) -> Self {
-        Self::Malformed(message)
+        Self {
+            repr: ErrorRepr::Malformed(message),
+        }
     }
 
     #[cold]
     #[inline(never)]
     pub const fn invalid(message: &'static str) -> Self {
-        Self::Invalid(message)
+        Self {
+            repr: ErrorRepr::Invalid(message),
+        }
     }
 
     #[cold]
     #[inline(never)]
     pub const fn unlinkable(message: &'static str) -> Self {
-        Self::Unlinkable(message)
+        Self {
+            repr: ErrorRepr::Unlinkable(message),
+        }
     }
 
     #[cold]
     #[inline(never)]
     pub const fn exhaustion(message: &'static str) -> Self {
-        Self::Exhaustion(message)
+        Self {
+            repr: ErrorRepr::Exhaustion(message),
+        }
     }
 
     #[cold]
     #[inline(never)]
     pub const fn trap(message: &'static str) -> Self {
-        Self::Trap(message)
+        Self {
+            repr: ErrorRepr::Trap(message),
+        }
     }
 
     #[cold]
     #[inline(never)]
     pub const fn exit_with_code(code: i32) -> Self {
-        Self::Exit(code)
+        Self {
+            repr: ErrorRepr::Exit(code),
+        }
     }
 
     #[cold]
     #[inline(never)]
     pub const fn internal(message: &'static str) -> Self {
-        Self::Internal(message)
+        Self {
+            repr: ErrorRepr::Internal(message),
+        }
     }
 
     /// Constructed at instantiation / `memory.grow` when a module would
@@ -108,72 +135,98 @@ impl WasmError {
     /// instantiated or grown in this configuration.
     #[cold]
     #[inline(never)]
-    pub const fn memory_exceeds_runtime_limit() -> Self {
-        Self::Unlinkable("memory exceeds runtime configured limit (wasm_memory_max_pages)")
-    }
-
-    /// Constructed when native compilation outgrows the configured
-    /// executable arena (`code_arena_bytes`). Same taxonomy as
-    /// [`Self::memory_exceeds_runtime_limit`]: the module is valid, this
-    /// configuration just cannot hold its compiled code.
-    #[cold]
-    #[inline(never)]
-    pub const fn code_arena_exhausted() -> Self {
-        Self::Unlinkable("native code arena exhausted (code_arena_bytes)")
+    pub(crate) const fn memory_exceeds_runtime_limit() -> Self {
+        Self {
+            repr: ErrorRepr::Unlinkable(
+                "memory exceeds runtime configured limit (wasm_memory_max_pages)",
+            ),
+        }
     }
 
     pub const fn is_malformed(&self) -> bool {
-        matches!(self, WasmError::Malformed(_))
+        matches!(&self.repr, ErrorRepr::Malformed(_))
     }
 
     pub const fn is_trap(&self) -> bool {
-        matches!(self, WasmError::Trap(_))
+        matches!(&self.repr, ErrorRepr::Trap(_))
     }
 
     pub const fn is_unlinkable(&self) -> bool {
-        matches!(self, WasmError::Unlinkable(_))
+        matches!(&self.repr, ErrorRepr::Unlinkable(_))
     }
 
     pub const fn is_exit(&self) -> bool {
-        matches!(self, WasmError::Exit(_))
+        matches!(&self.repr, ErrorRepr::Exit(_))
     }
 
     pub const fn message(&self) -> &'static str {
-        match self {
-            WasmError::Malformed(message)
-            | WasmError::Invalid(message)
-            | WasmError::Unlinkable(message)
-            | WasmError::Exhaustion(message)
-            | WasmError::Trap(message)
-            | WasmError::Internal(message) => message,
-            WasmError::Exit(_) => "Process exited with code",
-            WasmError::Exception { .. } => "uncaught wasm exception",
-            WasmError::HostThrow { .. } => "host throw (internal)",
+        match &self.repr {
+            ErrorRepr::Malformed(message)
+            | ErrorRepr::Invalid(message)
+            | ErrorRepr::Unlinkable(message)
+            | ErrorRepr::Exhaustion(message)
+            | ErrorRepr::Trap(message)
+            | ErrorRepr::Internal(message) => message,
+            ErrorRepr::Exit(_) => "Process exited with code",
+            ErrorRepr::Exception { .. } => "uncaught wasm exception",
+            ErrorRepr::HostThrow { .. } | ErrorRepr::HostThrowValues { .. } => {
+                "host throw (internal)"
+            }
         }
     }
 
     pub const fn class(&self) -> &'static str {
-        match self {
-            WasmError::Malformed(_) => "malformed",
-            WasmError::Invalid(_) => "invalid",
-            WasmError::Unlinkable(_) => "unlinkable",
-            WasmError::Exhaustion(_) => "exhaustion",
-            WasmError::Trap(_) => "trap",
-            WasmError::Exit(_) => "exit",
-            WasmError::Internal(_) => "internal",
-            WasmError::Exception { .. } => "exception",
-            WasmError::HostThrow { .. } => "host_throw",
+        match &self.repr {
+            ErrorRepr::Malformed(_) => "malformed",
+            ErrorRepr::Invalid(_) => "invalid",
+            ErrorRepr::Unlinkable(_) => "unlinkable",
+            ErrorRepr::Exhaustion(_) => "exhaustion",
+            ErrorRepr::Trap(_) => "trap",
+            ErrorRepr::Exit(_) => "exit",
+            ErrorRepr::Internal(_) => "internal",
+            ErrorRepr::Exception { .. } => "exception",
+            ErrorRepr::HostThrow { .. } | ErrorRepr::HostThrowValues { .. } => "host_throw",
         }
     }
 
     #[inline]
     pub const fn is_exception(&self) -> bool {
-        matches!(self, WasmError::Exception { .. })
+        matches!(&self.repr, ErrorRepr::Exception { .. })
     }
 
     pub const fn exit_code(&self) -> Option<i32> {
-        match self {
-            WasmError::Exit(code) => Some(*code),
+        match &self.repr {
+            ErrorRepr::Exit(code) => Some(*code),
+            _ => None,
+        }
+    }
+}
+
+impl core::error::Error for WasmError {}
+
+impl WasmError {
+    /// Reference to an uncaught exception; resolve its payload through the instance.
+    pub const fn exception(&self) -> Option<RefValue> {
+        match &self.repr {
+            ErrorRepr::Exception { exn, .. } => Some(*exn),
+            _ => None,
+        }
+    }
+
+    /// Identity of the tag attached to an uncaught exception.
+    pub const fn exception_tag(&self) -> Option<TagIdentity> {
+        match &self.repr {
+            ErrorRepr::Exception { tag, .. } => Some(*tag),
+            _ => None,
+        }
+    }
+
+    /// Export name associated with the uncaught exception tag, when available.
+    pub fn exception_tag_name(&self) -> Option<&str> {
+        match &self.repr {
+            ErrorRepr::Exception {
+                module_tag_name, ..
+            } => module_tag_name.as_deref(),
             _ => None,
         }
     }
@@ -195,20 +248,6 @@ impl From<PayloadError> for WasmError {
             },
             PayloadError::RewindOutOfBounds(_) => {
                 WasmError::internal("payload rewind out of bounds")
-            }
-        }
-    }
-}
-
-impl From<LimitsError> for WasmError {
-    fn from(error: LimitsError) -> Self {
-        match error {
-            LimitsError::MinLargerThanMax => WasmError::invalid("min larger than max"),
-            LimitsError::MaxLargerThanDefaultMax => {
-                WasmError::invalid("max larger than default max")
-            }
-            LimitsError::MinLargerThanDefaultMax => {
-                WasmError::invalid("min larger than default max")
             }
         }
     }

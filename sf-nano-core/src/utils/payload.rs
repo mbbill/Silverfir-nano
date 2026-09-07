@@ -2,7 +2,7 @@ use crate::utils::leb128;
 use core::fmt;
 
 #[derive(Debug)]
-pub enum PayloadError {
+pub(crate) enum PayloadError {
     UnexpectedEndOfInput(&'static str),
     InvalidData(&'static str),
     InvalidLEB128(leb128::ReadError),
@@ -27,7 +27,7 @@ impl From<leb128::ReadError> for PayloadError {
 }
 
 #[derive(Clone)]
-pub struct Payload<'a> {
+pub(crate) struct Payload<'a> {
     data: &'a [u8],
     position: usize,
 }
@@ -39,39 +39,39 @@ impl<'a> From<&'a [u8]> for Payload<'a> {
 }
 
 impl<'a> Payload<'a> {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.data.len() == self.position
     }
 
-    pub fn position(&self) -> usize {
+    pub(crate) fn position(&self) -> usize {
         self.position
     }
 
-    pub fn read_leb128_u32(&mut self) -> Result<u32, PayloadError> {
+    pub(crate) fn read_leb128_u32(&mut self) -> Result<u32, PayloadError> {
         let (value, consumed) = leb128::read_leb128_u32(&self.data[self.position..])?;
         self.position += consumed;
         Ok(value)
     }
 
-    pub fn read_leb128_i32(&mut self) -> Result<i32, PayloadError> {
+    pub(crate) fn read_leb128_i32(&mut self) -> Result<i32, PayloadError> {
         let (value, consumed) = leb128::read_leb128_i32(&self.data[self.position..])?;
         self.position += consumed;
         Ok(value)
     }
 
-    pub fn read_leb128_i64(&mut self) -> Result<i64, PayloadError> {
+    pub(crate) fn read_leb128_i64(&mut self) -> Result<i64, PayloadError> {
         let (value, consumed) = leb128::read_leb128_i64(&self.data[self.position..])?;
         self.position += consumed;
         Ok(value)
     }
 
-    pub fn read_leb128_u64(&mut self) -> Result<u64, PayloadError> {
+    pub(crate) fn read_leb128_u64(&mut self) -> Result<u64, PayloadError> {
         let (value, consumed) = leb128::read_leb128_u64(&self.data[self.position..])?;
         self.position += consumed;
         Ok(value)
     }
 
-    pub fn read_u8(&mut self) -> Result<u8, PayloadError> {
+    pub(crate) fn read_u8(&mut self) -> Result<u8, PayloadError> {
         if self.is_empty() {
             return Err(PayloadError::UnexpectedEndOfInput("read_u8"));
         }
@@ -80,14 +80,14 @@ impl<'a> Payload<'a> {
         Ok(byte)
     }
 
-    pub fn peek_u8(&self) -> Result<u8, PayloadError> {
+    pub(crate) fn peek_u8(&self) -> Result<u8, PayloadError> {
         if self.is_empty() {
             return Err(PayloadError::UnexpectedEndOfInput("peek_u8"));
         }
         Ok(self.data[self.position])
     }
 
-    pub fn read_f32(&mut self) -> Result<f32, PayloadError> {
+    pub(crate) fn read_f32(&mut self) -> Result<f32, PayloadError> {
         if self.position + 4 > self.data.len() {
             return Err(PayloadError::UnexpectedEndOfInput("read_f32"));
         }
@@ -100,7 +100,7 @@ impl<'a> Payload<'a> {
         ))
     }
 
-    pub fn read_f64(&mut self) -> Result<f64, PayloadError> {
+    pub(crate) fn read_f64(&mut self) -> Result<f64, PayloadError> {
         if self.position + 8 > self.data.len() {
             return Err(PayloadError::UnexpectedEndOfInput("read_f64"));
         }
@@ -113,7 +113,7 @@ impl<'a> Payload<'a> {
         ))
     }
 
-    pub fn read_bytes(&mut self, len: usize) -> Result<&[u8], PayloadError> {
+    pub(crate) fn read_bytes(&mut self, len: usize) -> Result<&[u8], PayloadError> {
         if self.position + len > self.data.len() {
             return Err(PayloadError::UnexpectedEndOfInput("read_bytes"));
         }
@@ -122,14 +122,14 @@ impl<'a> Payload<'a> {
         Ok(bytes)
     }
 
-    pub fn read_length_prefixed_utf8(&mut self) -> Result<&str, PayloadError> {
+    pub(crate) fn read_length_prefixed_utf8(&mut self) -> Result<&str, PayloadError> {
         let len = self.read_leb128_u32()? as usize;
         let bytes = self.read_bytes(len)?;
         core::str::from_utf8(bytes)
             .map_err(|_| PayloadError::InvalidData("read_length_prefixed_utf8"))
     }
 
-    pub fn rewind(&mut self, len: usize) -> Result<(), PayloadError> {
+    pub(crate) fn rewind(&mut self, len: usize) -> Result<(), PayloadError> {
         if len > self.position {
             return Err(PayloadError::RewindOutOfBounds("rewind"));
         }
@@ -137,7 +137,7 @@ impl<'a> Payload<'a> {
         Ok(())
     }
 
-    pub fn remaining_slice(&self) -> &'a [u8] {
+    pub(crate) fn remaining_slice(&self) -> &'a [u8] {
         &self.data[self.position..]
     }
 
@@ -153,7 +153,7 @@ impl<'a> Payload<'a> {
         self.position += len;
     }
 
-    pub fn advance_and_split_at(&mut self, len: usize) -> Result<&'a [u8], PayloadError> {
+    pub(crate) fn advance_and_split_at(&mut self, len: usize) -> Result<&'a [u8], PayloadError> {
         if self.position + len > self.data.len() {
             return Err(PayloadError::UnexpectedEndOfInput("advance_and_split_at"));
         }

@@ -38,6 +38,7 @@ pub(crate) mod backend;
 pub(crate) mod build;
 pub(crate) mod debug;
 pub(crate) mod entities;
+mod exports;
 pub(crate) mod expr_eval;
 pub(crate) mod gc_heap;
 pub(crate) mod instance;
@@ -49,3 +50,14 @@ pub(crate) mod runtime;
 pub(crate) mod template;
 pub(crate) mod value_encoding;
 pub(crate) mod wasm;
+
+/// A valid module whose native code cannot fit the configured arena cannot be
+/// linked in this configuration. This diagnostic belongs to JIT compilation.
+#[cold]
+#[inline(never)]
+pub(crate) const fn code_arena_exhausted() -> crate::error::WasmError {
+    crate::error::WasmError::unlinkable("native code arena exhausted (code_arena_bytes)")
+}
+
+#[cfg(test)]
+pub(crate) mod test_support;

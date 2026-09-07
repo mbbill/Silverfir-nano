@@ -2,16 +2,11 @@ use crate::error::WasmError;
 use core::fmt;
 
 macro_rules! define_opcodes {
-    ($mod_name:ident, $enum_name:ident, $type:ty, $(($name:ident, $display_name:expr, $value:expr)),* $(,)?) => {
-        #[allow(non_snake_case)]
-        pub mod $mod_name {
-            $(pub const $name: $type = $value;)*
-        }
-
+    ($enum_name:ident, $type:ty, $(($name:ident, $display_name:expr, $value:expr)),* $(,)?) => {
         #[derive(Copy, Clone, Debug, PartialEq)]
         #[allow(non_camel_case_types)]
         #[repr($type)]
-        pub enum $enum_name {
+        pub(crate) enum $enum_name {
             $($name = $value,)*
         }
 
@@ -26,13 +21,9 @@ macro_rules! define_opcodes {
             /// repr-backed enum stays in a register; `TryFrom` below adds
             /// the error for the paths that want one.
             #[inline]
-            pub fn from_repr(value: $type) -> Option<Self> {
+            pub(crate) fn from_repr(value: $type) -> Option<Self> {
                 match value {
-                    $($value)|* => {
-                        // SAFETY: the match above accepts exactly the
-                        // discriminants declared by this repr-backed enum.
-                        Some(unsafe { core::mem::transmute::<$type, $enum_name>(value) })
-                    }
+                    $($value => Some(Self::$name),)*
                     _ => None,
                 }
             }
@@ -57,14 +48,14 @@ macro_rules! define_opcodes {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum WasmOpcode {
+pub(crate) enum WasmOpcode {
     OP(Opcode),
     FB(OpcodeFB),
     FC(OpcodeFC),
     FD(OpcodeFD),
 }
 
-define_opcodes! {OPCODE_CONSTANTS, Opcode, u8,
+define_opcodes! {Opcode, u8,
     (   UNREACHABLE        , "unreachable"        , 0x00 ),
     (   NOP                , "nop"                , 0x01 ),
     (   BLOCK              , "block"              , 0x02 ),
@@ -264,7 +255,7 @@ define_opcodes! {OPCODE_CONSTANTS, Opcode, u8,
     (   PREFIX_FD          , "prefix_fd"          , 0xfd ),
 }
 
-define_opcodes! {OPCODE_FB_CONSTANTS, OpcodeFB, u32,
+define_opcodes! {OpcodeFB, u32,
     (STRUCT_NEW           , "struct.new"           , 0x00),
     (STRUCT_NEW_DEFAULT   , "struct.new_default"   , 0x01),
     (STRUCT_GET           , "struct.get"           , 0x02),
@@ -298,7 +289,7 @@ define_opcodes! {OPCODE_FB_CONSTANTS, OpcodeFB, u32,
     (I31_GET_U            , "i31.get_u"            , 0x1e),
 }
 
-define_opcodes! {OPCODE_FC_CONSTANTS, OpcodeFC, u32,
+define_opcodes! {OpcodeFC, u32,
     (I32_TRUNC_SAT_F32_S, "i32.trunc_sat_f32_s", 0x00),
     (I32_TRUNC_SAT_F32_U, "i32.trunc_sat_f32_u", 0x01),
     (I32_TRUNC_SAT_F64_S, "i32.trunc_sat_f64_s", 0x02),
@@ -319,7 +310,7 @@ define_opcodes! {OPCODE_FC_CONSTANTS, OpcodeFC, u32,
     (TABLE_FILL         , "table.fill"         , 0x11),
 }
 
-define_opcodes! {OPCODE_FD_CONSTANTS, OpcodeFD, u32,
+define_opcodes! {OpcodeFD, u32,
     (V128_LOAD                     , "v128.load"                    , 0x00),
     (V128_LOAD8X8_S                , "v128.load8x8_s"               , 0x01),
     (V128_LOAD8X8_U                , "v128.load8x8_u"               , 0x02),

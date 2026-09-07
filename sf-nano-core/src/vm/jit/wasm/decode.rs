@@ -21,7 +21,7 @@ use crate::{
     opcodes::{Opcode, OpcodeFB, OpcodeFC, OpcodeFD, WasmOpcode},
     utils::payload::Payload,
     value_type::{HeapType, RefType, ValueType},
-    vm::{entities::FunctionInst, tag::TagIdentity},
+    vm::{jit::entities::FunctionInst, tag::TagIdentity},
 };
 
 use super::{

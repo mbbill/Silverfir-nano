@@ -1,0 +1,601 @@
+{
+  "date": "2026-09-07",
+  "source": {
+    "base": "0983d9e487db6a9c50a34be6f596d6b66bf3e942",
+    "candidate": "uncommitted codex/public-api-release after tag/diagnostics and both validator optimizations",
+    "source_digest": "37283d5c788af305bb11a8dedf6fe06f9e0172dd9d6b6aef20a0663f11f60c93",
+    "files": 312
+  },
+  "rows": [
+    {
+      "engine": "jit",
+      "group": "startup/bz2",
+      "baseline": {
+        "median_ns": 43816263.44444445,
+        "normalized_ns": [
+          45456625.0,
+          43255604.5,
+          42731527.666666664,
+          43251625.0,
+          43812550.0,
+          45004777.666666664,
+          44542589.28571428,
+          43402198.0,
+          43819976.88888889,
+          44460375.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__bz2/baseline/raw/startup_bz2/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "candidate": {
+        "median_ns": 45523569.0,
+        "normalized_ns": [
+          46472667.0,
+          45007021.0,
+          45713027.666666664,
+          45861833.25,
+          44773650.0,
+          43528548.666666664,
+          45665488.0,
+          45698421.875,
+          44485518.55555555,
+          45381650.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__bz2/candidate/raw/startup_bz2/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "elapsed_change_percent": 3.8965110699598515
+    },
+    {
+      "engine": "interp",
+      "group": "startup/bz2",
+      "baseline": {
+        "median_ns": 1117059.0820707069,
+        "normalized_ns": [
+          1130609.8484848484,
+          1134885.106060606,
+          1115289.5656565656,
+          1083613.0075757576,
+          1087745.2,
+          1095859.005050505,
+          1123879.6883116884,
+          1118828.5984848484,
+          1127502.2457912457,
+          1089931.1848484848
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__bz2/baseline/raw/startup_bz2/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "candidate": {
+        "median_ns": 1989410.8055555555,
+        "normalized_ns": [
+          2003434.2105263157,
+          1966876.0789473683,
+          1960241.9649122807,
+          1965375.5526315789,
+          1998665.7894736843,
+          2002014.9824561405,
+          1996466.1654135338,
+          1957534.2631578948,
+          1986119.6374269007,
+          1992701.9736842106
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__bz2/candidate/raw/startup_bz2/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "elapsed_change_percent": 78.09360646061432
+    },
+    {
+      "engine": "jit",
+      "group": "startup/pulldown-cmark",
+      "candidate": {
+        "median_ns": 101606593.75,
+        "normalized_ns": [
+          101165083.5,
+          102523812.5,
+          103193292.0,
+          100466208.5,
+          99711875.0,
+          99057562.5,
+          101140437.5,
+          103986375.0,
+          103764937.5,
+          102048104.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__pulldown-cmark/candidate/raw/startup_pulldown-cmark/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "baseline": {
+        "median_ns": 99086868.0,
+        "normalized_ns": [
+          100141916.66666667,
+          99248888.66666667,
+          96767402.66666667,
+          100601027.66666667,
+          100287722.33333333,
+          98806236.0,
+          97136639.0,
+          98555194.33333333,
+          100064569.33333333,
+          98924847.33333333
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__pulldown-cmark/baseline/raw/startup_pulldown-cmark/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "elapsed_change_percent": 2.5429462055456264
+    },
+    {
+      "engine": "interp",
+      "group": "startup/pulldown-cmark",
+      "candidate": {
+        "median_ns": 4980803.380208334,
+        "normalized_ns": [
+          4883984.375,
+          5001617.1875,
+          5026666.666666667,
+          4981322.90625,
+          5025081.25,
+          4980283.854166667,
+          4890947.910714285,
+          4928490.890625,
+          4998659.722222222,
+          4920645.3125
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__pulldown-cmark/candidate/raw/startup_pulldown-cmark/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "baseline": {
+        "median_ns": 2954235.9759615385,
+        "normalized_ns": [
+          2924743.5384615385,
+          2965604.153846154,
+          2973747.871794872,
+          2961795.673076923,
+          2987177.5692307693,
+          2909944.4487179485,
+          2909762.3626373624,
+          2946676.278846154,
+          2973834.752136752,
+          2928567.3076923075
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__pulldown-cmark/baseline/raw/startup_pulldown-cmark/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "elapsed_change_percent": 68.59869762391585
+    },
+    {
+      "engine": "jit",
+      "group": "startup/spidermonkey",
+      "baseline": {
+        "median_ns": 2111610813.0,
+        "normalized_ns": [
+          2116691750.0,
+          2111189084.0,
+          2101575125.0,
+          2108231666.0,
+          2115416208.0,
+          2112032542.0,
+          2117907958.0,
+          2109822333.0,
+          2117133042.0,
+          2094695917.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__spidermonkey/baseline/raw/startup_spidermonkey/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "candidate": {
+        "median_ns": 2172675062.5,
+        "normalized_ns": [
+          2169881958.0,
+          2183380958.0,
+          2181439750.0,
+          2169780708.0,
+          2174932334.0,
+          2172864000.0,
+          2167201042.0,
+          2172486125.0,
+          2163174041.0,
+          2173779875.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__spidermonkey/candidate/raw/startup_spidermonkey/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "elapsed_change_percent": 2.8918325822193003
+    },
+    {
+      "engine": "interp",
+      "group": "startup/spidermonkey",
+      "baseline": {
+        "median_ns": 62744581.25,
+        "normalized_ns": [
+          61961625.0,
+          61911937.5,
+          62944888.666666664,
+          62952333.25,
+          62834925.0,
+          62022993.0,
+          62843000.0,
+          63095974.0,
+          62429703.666666664,
+          62654237.5
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__spidermonkey/baseline/raw/startup_spidermonkey/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "candidate": {
+        "median_ns": 106441083.25,
+        "normalized_ns": [
+          107433396.0,
+          107173146.0,
+          105538708.5,
+          105304083.5,
+          106801291.5,
+          108215292.0,
+          108682854.0,
+          105488416.5,
+          105301354.5,
+          106080875.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__spidermonkey/candidate/raw/startup_spidermonkey/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "elapsed_change_percent": 69.64187365582266
+    },
+    {
+      "engine": "jit",
+      "group": "startup/ffmpeg",
+      "candidate": {
+        "median_ns": 7816371958.5,
+        "normalized_ns": [
+          7781707084.0,
+          7796128500.0,
+          7786816666.0,
+          7805585125.0,
+          7926843000.0,
+          9769069083.0,
+          8874574959.0,
+          7804966333.0,
+          7827158792.0,
+          7863326208.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__ffmpeg/candidate/raw/startup_ffmpeg/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "baseline": {
+        "median_ns": 7899886958.5,
+        "normalized_ns": [
+          7782855500.0,
+          7512803416.0,
+          7494337666.0,
+          7509598708.0,
+          7769033250.0,
+          9063424125.0,
+          8771793166.0,
+          9575010250.0,
+          8745346917.0,
+          8016918417.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__ffmpeg/baseline/raw/startup_ffmpeg/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "elapsed_change_percent": -1.057167025790673
+    },
+    {
+      "engine": "interp",
+      "group": "startup/ffmpeg",
+      "candidate": {
+        "median_ns": 395152896.0,
+        "normalized_ns": [
+          395293042.0,
+          397907125.0,
+          395012750.0,
+          394941000.0,
+          392225209.0,
+          397928000.0,
+          392585500.0,
+          392291875.0,
+          398200833.0,
+          396099083.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__ffmpeg/candidate/raw/startup_ffmpeg/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "baseline": {
+        "median_ns": 226338208.5,
+        "normalized_ns": [
+          227195166.0,
+          235836500.0,
+          226727792.0,
+          225948625.0,
+          224836042.0,
+          221948250.0,
+          224364000.0,
+          227254583.0,
+          227406416.0,
+          224304750.0
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__ffmpeg/baseline/raw/startup_ffmpeg/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "elapsed_change_percent": 74.58514787175228
+    },
+    {
+      "engine": "jit",
+      "group": "startup/coremark",
+      "baseline": {
+        "median_ns": 4551593.004166666,
+        "normalized_ns": [
+          4469536.5,
+          4577479.1875,
+          4505222.208333333,
+          4495816.40625,
+          4539857.3,
+          4647684.041666667,
+          4626235.875,
+          4598839.203125,
+          4563328.708333333,
+          4509326.5625
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__coremark/baseline/raw/startup_coremark/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "candidate": {
+        "median_ns": 4642977.973090278,
+        "normalized_ns": [
+          4575713.625,
+          4572291.6875,
+          4570432.291666667,
+          4604302.0625,
+          4760068.75,
+          4761009.541666667,
+          4715845.982142857,
+          4676244.140625,
+          4609711.805555556,
+          4730557.8125
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__coremark/candidate/raw/startup_coremark/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "elapsed_change_percent": 2.0077579177214533
+    },
+    {
+      "engine": "interp",
+      "group": "startup/coremark",
+      "baseline": {
+        "median_ns": 88884.62596511855,
+        "normalized_ns": [
+          87964.71111111112,
+          95702.98395061729,
+          87188.99176954733,
+          86908.69320987654,
+          89761.33777777778,
+          91283.95061728395,
+          88988.22751322751,
+          89019.97191358024,
+          88781.0244170096,
+          87801.57407407407
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__coremark/baseline/raw/startup_coremark/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "candidate": {
+        "median_ns": 183634.04357021998,
+        "normalized_ns": [
+          184117.81218274112,
+          189493.44416243656,
+          181258.53130287648,
+          183098.19162436549,
+          187623.7736040609,
+          183150.27495769883,
+          185763.59680928208,
+          182882.61421319796,
+          182716.25324309082,
+          188217.1111675127
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__coremark/candidate/raw/startup_coremark/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "elapsed_change_percent": 106.59820703108367
+    },
+    {
+      "engine": "jit",
+      "group": "startup/argon2",
+      "candidate": {
+        "median_ns": 14587681.715277778,
+        "normalized_ns": [
+          14288708.333333334,
+          14446937.5,
+          14369351.888888888,
+          14743083.333333334,
+          14875311.133333333,
+          14689974.555555556,
+          14308470.238095239,
+          14485388.875,
+          14773092.592592593,
+          14780558.333333334
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__argon2/candidate/raw/startup_argon2/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "baseline": {
+        "median_ns": 14199578.138888888,
+        "normalized_ns": [
+          14171903.0,
+          14299854.166666666,
+          14689972.222222222,
+          14176586.833333334,
+          14283550.0,
+          13876168.944444444,
+          13953865.095238095,
+          14451765.625,
+          14222569.444444444,
+          13942233.333333334
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__argon2/baseline/raw/startup_argon2/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "elapsed_change_percent": 2.733204976885739
+    },
+    {
+      "engine": "interp",
+      "group": "startup/argon2",
+      "candidate": {
+        "median_ns": 798459.8949275363,
+        "normalized_ns": [
+          795485.5,
+          802557.5217391305,
+          798866.2463768116,
+          799621.8315217391,
+          787140.2173913043,
+          786906.25,
+          816429.0900621118,
+          815820.4239130435,
+          798053.5434782609,
+          787864.6739130435
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__argon2/candidate/raw/startup_argon2/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "baseline": {
+        "median_ns": 437516.18703384965,
+        "normalized_ns": [
+          446617.4698795181,
+          444426.4518072289,
+          435332.1646586345,
+          439481.9277108434,
+          436977.6096385542,
+          436191.9337349398,
+          437849.75559380377,
+          441358.1822289157,
+          437182.6184738956,
+          432194.8301204819
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__argon2/baseline/raw/startup_argon2/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "elapsed_change_percent": 82.49836659546523
+    },
+    {
+      "engine": "jit",
+      "group": "startup/erc20",
+      "baseline": {
+        "median_ns": 3189793.40625,
+        "normalized_ns": [
+          3222996.5833333335,
+          3254845.5,
+          3263631.9444444445,
+          3174638.8958333335,
+          3172825.0,
+          3093500.5833333335,
+          3080417.654761905,
+          3204947.9166666665,
+          3206264.277777778,
+          3136992.0166666666
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__erc20/baseline/raw/startup_erc20/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "candidate": {
+        "median_ns": 3236954.875,
+        "normalized_ns": [
+          3184458.3333333335,
+          3238493.0833333335,
+          3367574.0833333335,
+          3341728.2916666665,
+          3254377.0833333335,
+          3180582.1805555555,
+          3190273.8095238097,
+          3178098.09375,
+          3282446.7592592593,
+          3235416.6666666665
+        ],
+        "sample": "/tmp/sf-release-startup-final/jit/startup__erc20/candidate/raw/startup_erc20/silverfir-nano.jit/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "elapsed_change_percent": 1.4785117010271964
+    },
+    {
+      "engine": "interp",
+      "group": "startup/erc20",
+      "baseline": {
+        "median_ns": 86927.76907630521,
+        "normalized_ns": [
+          85558.13253012048,
+          86797.23855421686,
+          87058.29959839357,
+          86222.3391566265,
+          88095.5421686747,
+          89036.83052208835,
+          88179.90533562822,
+          85227.98674698795,
+          85821.0843373494,
+          88511.48602409639
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__erc20/baseline/raw/startup_erc20/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+      },
+      "candidate": {
+        "median_ns": 162221.72633928573,
+        "normalized_ns": [
+          160223.39732142858,
+          160040.17857142858,
+          162124.4419642857,
+          165724.65513392858,
+          162319.01071428572,
+          165611.9486607143,
+          164177.98660714287,
+          159879.71986607142,
+          160187.93402777778,
+          163868.9732142857
+        ],
+        "sample": "/tmp/sf-release-startup-final/interp/startup__erc20/candidate/raw/startup_erc20/silverfir-nano.interpreter/new/sample.json",
+        "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+      },
+      "elapsed_change_percent": 86.61669114835729
+    }
+  ],
+  "ffmpeg_jit_repeat": {
+    "engine": "jit",
+    "group": "startup/ffmpeg",
+    "baseline": {
+      "median_ns": 7518357541.5,
+      "normalized_ns": [
+        7538443584.0,
+        7539630500.0,
+        7530245708.0,
+        7507741792.0,
+        7512150000.0,
+        7504145666.0,
+        7518816833.0,
+        7527684875.0,
+        7517898250.0,
+        7509307542.0
+      ],
+      "sample": "/tmp/sf-release-startup-ffmpeg-repeat/jit/startup__ffmpeg/baseline/raw/startup_ffmpeg/silverfir-nano.jit/new/sample.json",
+      "binary_sha256": "7efe1234b72a1ddc7eac893d3eb858686787b74596ef29b43be0f19d83cb5d18"
+    },
+    "candidate": {
+      "median_ns": 7718519541.5,
+      "normalized_ns": [
+        7718489250.0,
+        7708359000.0,
+        7731813250.0,
+        7743977125.0,
+        7714273250.0,
+        7768185208.0,
+        7747978083.0,
+        7718549833.0,
+        7715397458.0,
+        7714941583.0
+      ],
+      "sample": "/tmp/sf-release-startup-ffmpeg-repeat/jit/startup__ffmpeg/candidate/raw/startup_ffmpeg/silverfir-nano.jit/new/sample.json",
+      "binary_sha256": "cdaa16f0a116131a57e181b515f8acd56ee56ecefc17bbf16ef68997cb1c9346"
+    },
+    "elapsed_change_percent": 2.6623102039925683
+  },
+  "limitations": "Local ARM64 pilot, dual-engine binaries, not x64 or CI gate. Timings precede subsequent cargo fmt only. A failed CUA unlock/state query overlapped the initial FFmpeg candidate measurement; retain that pair as confounded and use the separately measured reversed-order repeat for the JIT aggregate. No Rust compilation overlapped either measurement run.",
+  "aggregate_elapsed_change_percent": {
+    "jit": 2.599503658035407,
+    "interp": 80.56166848812502
+  }
+}

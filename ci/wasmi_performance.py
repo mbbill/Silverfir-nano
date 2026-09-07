@@ -388,6 +388,34 @@ def prepare_suite_copy(source: Path, destination: Path) -> None:
         )
 
 
+def adapt_runtime_api(suite: Path, source: Path) -> str | None:
+    """Apply the measured revision's explicit adapter migration, if present.
+
+    Old revisions retain the original adapter. The release migration changes
+    only error and memory APIs, preserving the benchmark's timed operations.
+    Remove it once the pinned upstream adapter uses the released API.
+    """
+    migration = source.resolve() / "ci" / "wasmi_adapter.patch"
+    if not migration.is_file():
+        return None
+    env = dict(os.environ)
+    command = ["git", "apply", "--check", str(migration)]
+    check = run_process(command, cwd=suite, env=env, capture=True, check=False)
+    if check.returncode:
+        # A repeated build may reuse the already migrated suite. Anything
+        # else, including upstream drift, must fail visibly.
+        run_process(
+            ["git", "apply", "--reverse", "--check", str(migration)],
+            cwd=suite, env=env, capture=True,
+        )
+    else:
+        run_process(
+            ["git", "apply", str(migration)],
+            cwd=suite, env=env, capture=True,
+        )
+    return hashlib.sha256(migration.read_bytes()).hexdigest()
+
+
 def reachable_packages(
     metadata: dict[str, Any],
     *,
@@ -542,6 +570,7 @@ def build_context(context: CargoContext) -> dict[str, Any]:
     criterion_home = context.target / "criterion-home"
     if criterion_home.exists():
         shutil.rmtree(criterion_home)
+    adapter_migration = adapt_runtime_api(context.suite, context.source)
     resolution = verify_resolution(context)
     started = time.monotonic()
     run_process(
@@ -552,6 +581,7 @@ def build_context(context: CargoContext) -> dict[str, Any]:
     )
     return {
         **resolution,
+        "adapter_migration_sha256": adapter_migration,
         "target": str(context.target.resolve()),
         "elapsed_seconds": time.monotonic() - started,
         "runtime_fingerprint": runtime_fingerprint(context),

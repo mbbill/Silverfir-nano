@@ -1,14 +1,15 @@
 use crate::collections;
+use crate::vm::jit::entities::FunctionInst;
 use crate::{
     error::WasmError,
     module::type_defs::FunctionType,
     vm::{
-        entities::{Caller, FunctionInst, HostCallback, MemInst},
+        entities::{Caller, HostCallback, MemInst},
         jit::arch,
         jit::build,
         jit::runtime::{code::NativeCode, StoreAccess},
         jit::value_encoding::absolutize,
-        link::{FuncEntry, InstanceBackref},
+        link::{value_matches_type, FuncEntry, InstanceBackref, RefTypeOwner},
         value::Value,
     },
 };
@@ -55,6 +56,17 @@ pub(super) fn eval(
             .functions
             .get(local_index as usize)
             .ok_or_else(|| WasmError::internal("function index out of range"))?;
+        let params = func.func_type().params();
+        if args.len() != params.len() {
+            return Err(WasmError::invalid("invalid argument count"));
+        }
+        if !args
+            .iter()
+            .zip(params)
+            .all(|(value, ty)| value_matches_type(value, *ty, RefTypeOwner::Jit(store)))
+        {
+            return Err(WasmError::invalid("argument type mismatch"));
+        }
         Ok::<_, WasmError>(match func {
             FunctionInst::Local { spec, .. } => spec
                 .get_native_code()
@@ -77,6 +89,7 @@ pub(super) fn eval(
             FunctionInst::Host {
                 func_type,
                 callback,
+                ..
             } => {
                 let memory = store.module().memories.first().cloned();
                 Ok(EvalTarget::Host {
@@ -113,12 +126,10 @@ pub(super) fn eval(
             callback,
             memory,
         } => {
-            if args.len() != func_type.params().len() {
-                return Err(WasmError::invalid("invalid argument count"));
-            }
             let mut returns = collections::vec![Value::default(); func_type.results().len()];
-            let mut caller = Caller::from_shared_memory(memory);
+            let mut caller = Caller::from_shared_memory(memory, access);
             callback.call(&mut caller, args, &mut returns)?;
+            caller.validate_results(&returns, func_type.results())?;
             Ok(returns)
         }
         EvalTarget::Linked {

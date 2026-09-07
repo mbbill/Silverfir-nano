@@ -31,11 +31,9 @@ use std::env;
 use std::fmt::Write as _;
 use std::fs;
 
-use sf_nano_core::error::WasmError;
-use sf_nano_core::module::type_context::TypeContext;
-use sf_nano_core::module::Module;
-use sf_nano_core::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
-use sf_nano_core::opcodes::{Opcode, OpcodeFC, WasmOpcode};
+mod input;
+use input::{bulk, op, Error, Immediate, ModuleInfo, Opcode, Stream, WasmOpcode};
+use wasmparser::{BlockType, FuncType};
 
 const WEIGHT_CAP: u32 = 6;
 
@@ -223,8 +221,8 @@ enum LastEmit {
 }
 
 struct Sim<'m> {
-    types: &'m TypeContext,
-    module: &'m Module,
+    types: &'m [Option<FuncType>],
+    module: &'m ModuleInfo<'m>,
     c: Counters,
     stack: Vec<Desc>,
     frames: Vec<Frame>,
@@ -249,11 +247,11 @@ struct Sim<'m> {
     desync_site: Option<String>,
 }
 
-fn block_arity(types: &TypeContext, bt: &BlockType) -> (usize, usize) {
+fn block_arity(types: &[Option<FuncType>], bt: &BlockType) -> (usize, usize) {
     match bt {
         BlockType::Empty => (0, 0),
-        BlockType::ValueType(_) => (0, 1),
-        BlockType::TypeIndex(idx) => match types.get_function_type(*idx as u32) {
+        BlockType::Type(_) => (0, 1),
+        BlockType::FuncType(idx) => match types.get(*idx as usize).and_then(Option::as_ref) {
             Some(ft) => (ft.params().len(), ft.results().len()),
             None => (0, 0),
         },
@@ -261,9 +259,9 @@ fn block_arity(types: &TypeContext, bt: &BlockType) -> (usize, usize) {
 }
 
 impl<'m> Sim<'m> {
-    fn new(module: &'m Module) -> Self {
+    fn new(module: &'m ModuleInfo<'m>) -> Self {
         Sim {
-            types: module.types(),
+            types: &module.types,
             module,
             c: Counters::default(),
             stack: Vec::new(),
@@ -472,7 +470,7 @@ impl<'m> Sim<'m> {
             LastEmit::Compare
         } else {
             match op {
-                Opcode::I32_ADD | Opcode::I32_SUB | Opcode::I64_ADD | Opcode::I64_SUB => {
+                op::I32_ADD | op::I32_SUB | op::I64_ADD | op::I64_SUB => {
                     // record dec-and-branch candidate shape: (Local, Const) operands
                     match (a, b, a_loc, b_loc) {
                         (Class::L, Class::C, Some(l), _) | (Class::C, Class::L, _, Some(l)) => {
@@ -616,31 +614,26 @@ impl<'m> Sim<'m> {
     fn count_raw(&mut self, wasm_op: WasmOpcode, w: f64) {
         self.c.raw_total.add(w);
         match wasm_op {
-            WasmOpcode::OP(o) => match o {
-                Opcode::LOCAL_GET | Opcode::LOCAL_SET | Opcode::LOCAL_TEE => {
-                    self.c.raw_local.add(w)
-                }
+            WasmOpcode::Plain(o) => match o {
+                op::LOCAL_GET | op::LOCAL_SET | op::LOCAL_TEE => self.c.raw_local.add(w),
                 o if is_const(o) => self.c.raw_const.add(w),
-                Opcode::BLOCK
-                | Opcode::LOOP
-                | Opcode::END
-                | Opcode::ELSE
-                | Opcode::NOP
-                | Opcode::DROP => self.c.raw_structure.add(w),
-                Opcode::BR
-                | Opcode::BR_IF
-                | Opcode::BR_TABLE
-                | Opcode::RETURN
-                | Opcode::CALL
-                | Opcode::CALL_INDIRECT
-                | Opcode::IF
-                | Opcode::SELECT
-                | Opcode::SELECT_T
-                | Opcode::RETURN_CALL
-                | Opcode::RETURN_CALL_INDIRECT
-                | Opcode::CALL_REF
-                | Opcode::RETURN_CALL_REF
-                | Opcode::UNREACHABLE => self.c.raw_control.add(w),
+                op::BLOCK | op::LOOP | op::END | op::ELSE | op::NOP | op::DROP => {
+                    self.c.raw_structure.add(w)
+                }
+                op::BR
+                | op::BR_IF
+                | op::BR_TABLE
+                | op::RETURN
+                | op::CALL
+                | op::CALL_INDIRECT
+                | op::IF
+                | op::SELECT
+                | op::SELECT_T
+                | op::RETURN_CALL
+                | op::RETURN_CALL_INDIRECT
+                | op::CALL_REF
+                | op::RETURN_CALL_REF
+                | op::UNREACHABLE => self.c.raw_control.add(w),
                 _ => self.c.raw_semantic.add(w),
             },
             _ => self.c.raw_semantic.add(w),
@@ -673,33 +666,33 @@ impl<'m> Sim<'m> {
 
 // Classify a plain opcode for the raw-mix pass and drive the simulation.
 fn is_load(op: Opcode) -> bool {
-    (op as u8) >= 0x28 && (op as u8) <= 0x35
+    op >= 0x28 && op <= 0x35
 }
 fn is_store(op: Opcode) -> bool {
-    (op as u8) >= 0x36 && (op as u8) <= 0x3e
+    op >= 0x36 && op <= 0x3e
 }
 fn is_const(op: Opcode) -> bool {
-    (op as u8) >= 0x41 && (op as u8) <= 0x44
+    op >= 0x41 && op <= 0x44
 }
 fn is_compare_bin(op: Opcode) -> bool {
-    let b = op as u8;
+    let b = op;
     (0x46..=0x4f).contains(&b)
         || (0x51..=0x5a).contains(&b)
         || (0x5b..=0x60).contains(&b)
         || (0x61..=0x66).contains(&b)
 }
 fn is_eqz(op: Opcode) -> bool {
-    matches!(op, Opcode::I32_EQZ | Opcode::I64_EQZ)
+    matches!(op, op::I32_EQZ | op::I64_EQZ)
 }
 fn is_numeric_bin(op: Opcode) -> bool {
-    let b = op as u8;
+    let b = op;
     (0x6a..=0x78).contains(&b)
         || (0x7c..=0x8a).contains(&b)
         || (0x92..=0x98).contains(&b)
         || (0xa0..=0xa6).contains(&b)
 }
 fn is_numeric_un(op: Opcode) -> bool {
-    let b = op as u8;
+    let b = op;
     (0x67..=0x69).contains(&b)
         || (0x79..=0x7b).contains(&b)
         || (0x8b..=0x91).contains(&b)
@@ -716,30 +709,23 @@ struct LoopWriteScan {
     map: HashMap<usize, Vec<u32>>,
 }
 
-impl OpcodeHandler for LoopWriteScan {
-    fn on_decode_begin(&mut self) -> Result<(), WasmError> {
-        Ok(())
-    }
-
-    fn on_stream<'x, 'y, 'z>(
-        &mut self,
-        stream: &mut OpStream<'x, 'y, 'z>,
-    ) -> Result<(), WasmError> {
+impl LoopWriteScan {
+    fn on_stream(&mut self, stream: &mut Stream<'_>) -> Result<(), Error> {
         while let Some(op) = stream.next()? {
             match op.wasm_op {
-                WasmOpcode::OP(Opcode::BLOCK) | WasmOpcode::OP(Opcode::IF) => {
+                WasmOpcode::Plain(op::BLOCK) | WasmOpcode::Plain(op::IF) => {
                     self.open.push(None);
                 }
-                WasmOpcode::OP(Opcode::LOOP) => {
+                WasmOpcode::Plain(op::LOOP) => {
                     self.open
                         .push(Some((op.op_offset, std::collections::HashSet::new())));
                 }
-                WasmOpcode::OP(Opcode::END) => {
+                WasmOpcode::Plain(op::END) => {
                     if let Some(Some((off, set))) = self.open.pop() {
                         self.map.insert(off, set.into_iter().collect());
                     }
                 }
-                WasmOpcode::OP(Opcode::LOCAL_SET) | WasmOpcode::OP(Opcode::LOCAL_TEE) => {
+                WasmOpcode::Plain(op::LOCAL_SET) | WasmOpcode::Plain(op::LOCAL_TEE) => {
                     if let Immediate::LocalIndex(idx) = op.imm {
                         for f in self.open.iter_mut().flatten() {
                             f.1.insert(idx);
@@ -751,10 +737,6 @@ impl OpcodeHandler for LoopWriteScan {
         }
         Ok(())
     }
-
-    fn on_decode_end(&mut self) -> Result<(), WasmError> {
-        Ok(())
-    }
 }
 
 struct SimHandler<'m> {
@@ -762,15 +744,8 @@ struct SimHandler<'m> {
     func_results: usize,
 }
 
-impl<'m> OpcodeHandler for SimHandler<'m> {
-    fn on_decode_begin(&mut self) -> Result<(), WasmError> {
-        Ok(())
-    }
-
-    fn on_stream<'x, 'y, 'z>(
-        &mut self,
-        stream: &mut OpStream<'x, 'y, 'z>,
-    ) -> Result<(), WasmError> {
+impl<'m> SimHandler<'m> {
+    fn on_stream(&mut self, stream: &mut Stream<'_>) -> Result<(), Error> {
         while let Some(op) = stream.next()? {
             let wasm_op = op.wasm_op;
             let imm = op.imm.clone();
@@ -779,7 +754,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                 if s.hist.len() >= 16 {
                     s.hist.remove(0);
                 }
-                s.hist.push((op.op_offset, format!("{:?}", wasm_op)));
+                s.hist.push((op.op_offset, format!("{:?}", op.operator)));
             }
             let w = s.weight();
             s.pre_depth = s
@@ -791,7 +766,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
             // ---------- raw mix (live code only, matching the sim's basis) ----------
             // a loop's END executes once per exit, not per iteration: raw-count
             // it at the post-pop weight, matching the emitted-side accounting
-            let w_raw = if matches!(wasm_op, WasmOpcode::OP(Opcode::END))
+            let w_raw = if matches!(wasm_op, WasmOpcode::Plain(op::END))
                 && matches!(s.frames.last(), Some(f) if f.is_loop)
             {
                 let loops = s.frames.iter().filter(|f| f.is_loop).count() as u32 - 1;
@@ -805,62 +780,66 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
 
             // ---------- simulation ----------
             let o = match wasm_op {
-                WasmOpcode::OP(o) => o,
-                WasmOpcode::FC(fc) => {
+                WasmOpcode::Plain(o) => o,
+                WasmOpcode::Bulk(fc) => {
                     if s.dead {
                         continue;
                     }
                     match fc {
                         // trunc_sat: unary conversions
-                        OpcodeFC::I32_TRUNC_SAT_F32_S
-                        | OpcodeFC::I32_TRUNC_SAT_F32_U
-                        | OpcodeFC::I32_TRUNC_SAT_F64_S
-                        | OpcodeFC::I32_TRUNC_SAT_F64_U
-                        | OpcodeFC::I64_TRUNC_SAT_F32_S
-                        | OpcodeFC::I64_TRUNC_SAT_F32_U
-                        | OpcodeFC::I64_TRUNC_SAT_F64_S
-                        | OpcodeFC::I64_TRUNC_SAT_F64_U => s.unop(w),
-                        OpcodeFC::MEMORY_INIT
-                        | OpcodeFC::MEMORY_COPY
-                        | OpcodeFC::MEMORY_FILL
-                        | OpcodeFC::TABLE_INIT
-                        | OpcodeFC::TABLE_COPY
-                        | OpcodeFC::TABLE_FILL => {
+                        bulk::I32_TRUNC_SAT_F32_S
+                        | bulk::I32_TRUNC_SAT_F32_U
+                        | bulk::I32_TRUNC_SAT_F64_S
+                        | bulk::I32_TRUNC_SAT_F64_U
+                        | bulk::I64_TRUNC_SAT_F32_S
+                        | bulk::I64_TRUNC_SAT_F32_U
+                        | bulk::I64_TRUNC_SAT_F64_S
+                        | bulk::I64_TRUNC_SAT_F64_U => s.unop(w),
+                        bulk::MEMORY_INIT
+                        | bulk::MEMORY_COPY
+                        | bulk::MEMORY_FILL
+                        | bulk::TABLE_INIT
+                        | bulk::TABLE_COPY
+                        | bulk::TABLE_FILL => {
                             for _ in 0..3 {
                                 let _ = s.consume(w);
                             }
                             s.emit_sem(w);
                             s.last_emit = LastEmit::Other;
                         }
-                        OpcodeFC::DATA_DROP | OpcodeFC::ELEM_DROP => {
+                        bulk::DATA_DROP | bulk::ELEM_DROP => {
                             s.emit_sem(w);
                             s.last_emit = LastEmit::Other;
                         }
-                        OpcodeFC::TABLE_GROW => {
+                        bulk::TABLE_GROW => {
                             let _ = s.consume(w);
                             let _ = s.consume(w);
                             s.emit_sem(w);
                             s.last_emit = LastEmit::Other;
                             s.push_temp();
                         }
-                        OpcodeFC::TABLE_SIZE => {
+                        bulk::TABLE_SIZE => {
                             s.emit_sem(w);
                             s.last_emit = LastEmit::Other;
                             s.push_temp();
+                        }
+                        _ => {
+                            s.bailed = true;
+                            return Err("foldsim: unmodeled bulk op".into());
                         }
                     }
                     continue;
                 }
                 _ => {
                     s.bailed = true;
-                    return Err(WasmError::invalid("foldsim: unmodeled prefix op"));
+                    return Err("foldsim: unmodeled prefix op".into());
                 }
             };
 
             // dead-code skipping with frame tracking
             if s.dead {
                 match o {
-                    Opcode::BLOCK | Opcode::LOOP | Opcode::IF => {
+                    op::BLOCK | op::LOOP | op::IF => {
                         let (p, r) = block_arity(
                             s.types,
                             match &imm {
@@ -872,15 +851,15 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                             base: s.stack.len().saturating_sub(p),
                             params: p,
                             results: r,
-                            is_loop: o == Opcode::LOOP,
-                            is_if: o == Opcode::IF,
+                            is_loop: o == op::LOOP,
+                            is_if: o == op::IF,
                             dead_entry: true,
                             end_targeted: false,
                             saw_else: false,
                             then_fell_live: false,
                         });
                     }
-                    Opcode::ELSE => {
+                    op::ELSE => {
                         if let Some(f) = s.frames.last_mut() {
                             f.saw_else = true;
                             // then-arm ended dead: no fall-through into end
@@ -892,7 +871,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                             s.push_unknown_temps(n);
                         }
                     }
-                    Opcode::END => {
+                    op::END => {
                         if let Some(f) = s.frames.pop() {
                             // reached the end while dead: code after is live
                             // only if this end is a genuine merge target
@@ -911,11 +890,11 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
             }
 
             match o {
-                Opcode::NOP => {}
-                Opcode::UNREACHABLE => {
+                op::NOP => {}
+                op::UNREACHABLE => {
                     s.dead = true;
                 }
-                Opcode::BLOCK | Opcode::LOOP => {
+                op::BLOCK | op::LOOP => {
                     let (p, r) = block_arity(
                         s.types,
                         match &imm {
@@ -923,7 +902,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                             _ => &BlockType::Empty,
                         },
                     );
-                    if o == Opcode::LOOP {
+                    if o == op::LOOP {
                         // loop header is a merge point (back-edges arrive here)
                         s.materialize_all(w, 0);
                         s.region += 1;
@@ -940,7 +919,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                         base: s.stack.len().saturating_sub(p),
                         params: p,
                         results: r,
-                        is_loop: o == Opcode::LOOP,
+                        is_loop: o == op::LOOP,
                         is_if: false,
                         dead_entry: false,
                         end_targeted: false,
@@ -948,7 +927,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                         then_fell_live: false,
                     });
                 }
-                Opcode::IF => {
+                op::IF => {
                     s.branch_condition(w);
                     s.materialize_all(w, 0);
                     let (p, r) = block_arity(
@@ -971,7 +950,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                         then_fell_live: false,
                     });
                 }
-                Opcode::ELSE => {
+                op::ELSE => {
                     // jump over else-arm from end of then-arm
                     s.materialize_all(w, 0);
                     s.emit_ctl(w);
@@ -986,7 +965,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     }
                     s.region += 1;
                 }
-                Opcode::END => {
+                op::END => {
                     if let Some(f) = s.frames.pop() {
                         // end-of-block materialization runs once per exit, not
                         // per loop iteration: weight computed after the pop
@@ -1007,7 +986,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     }
                     s.region += 1;
                 }
-                Opcode::BR => {
+                op::BR => {
                     if let Immediate::LabelIndex(d) = imm {
                         s.mark_branch_target(d);
                     }
@@ -1015,7 +994,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     s.emit_ctl(w);
                     s.dead = true;
                 }
-                Opcode::BR_IF => {
+                op::BR_IF => {
                     if let Immediate::LabelIndex(d) = imm {
                         s.mark_branch_target(d);
                     }
@@ -1023,7 +1002,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     s.materialize_all(w, 0);
                     s.emit_ctl(w);
                 }
-                Opcode::BR_TABLE => {
+                op::BR_TABLE => {
                     if let Immediate::BrLabels(ref labels, default) = imm {
                         for &d in labels.iter() {
                             s.mark_branch_target(d);
@@ -1035,28 +1014,24 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     s.emit_ctl(w);
                     s.dead = true;
                 }
-                Opcode::RETURN => {
+                op::RETURN => {
                     s.materialize_all(w, 0);
                     s.emit_ctl(w);
                     s.dead = true;
                 }
-                Opcode::CALL => {
+                op::CALL => {
                     let fidx = match imm {
                         Immediate::FunctionIndex(i) => i,
                         _ => 0,
                     };
                     let (p, r) = s
                         .module
-                        .functions()
-                        .get(fidx as usize)
-                        .map(|f| {
-                            let ft = f.func_type();
-                            (ft.params().len(), ft.results().len())
-                        })
+                        .function_type(fidx as usize)
+                        .map(|ft| (ft.params().len(), ft.results().len()))
                         .unwrap_or((0, 0));
                     s.call_boundary(w, p, r);
                 }
-                Opcode::CALL_INDIRECT => {
+                op::CALL_INDIRECT => {
                     let tidx = match imm {
                         Immediate::CallIndirectArgs { typeidx, .. } => typeidx,
                         _ => 0,
@@ -1064,13 +1039,14 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     let _target = s.consume(w);
                     let (p, r) = s
                         .types
-                        .get_function_type(tidx)
+                        .get(tidx as usize)
+                        .and_then(Option::as_ref)
                         .map(|ft| (ft.params().len(), ft.results().len()))
                         .unwrap_or((0, 0));
                     s.call_boundary(w, p, r);
                 }
-                Opcode::RETURN_CALL | Opcode::RETURN_CALL_INDIRECT => {
-                    if o == Opcode::RETURN_CALL_INDIRECT {
+                op::RETURN_CALL | op::RETURN_CALL_INDIRECT => {
+                    if o == op::RETURN_CALL_INDIRECT {
                         let _ = s.consume(w);
                     }
                     s.materialize_all(w, 2);
@@ -1078,7 +1054,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     s.emit_ctl(w);
                     s.dead = true;
                 }
-                Opcode::DROP => match s.stack.pop() {
+                op::DROP => match s.stack.pop() {
                     Some(Desc::Local(_)) => s.c.get_folded.add(w),
                     Some(Desc::Const) => s.c.const_folded.add(w),
                     Some(Desc::Temp { def_em, .. }) if def_em != u64::MAX => {
@@ -1087,7 +1063,7 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     Some(_) => {}
                     None => s.mark_desync("drop on empty stack"),
                 },
-                Opcode::SELECT | Opcode::SELECT_T => {
+                op::SELECT | op::SELECT_T => {
                     let _c = s.consume(w);
                     let _b = s.consume(w);
                     let _a = s.consume(w);
@@ -1095,58 +1071,58 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                     s.last_emit = LastEmit::Other;
                     s.push_temp();
                 }
-                Opcode::LOCAL_GET => {
+                op::LOCAL_GET => {
                     if let Immediate::LocalIndex(i) = imm {
                         s.stack.push(Desc::Local(i));
                     }
                 }
-                Opcode::LOCAL_SET => {
+                op::LOCAL_SET => {
                     if let Immediate::LocalIndex(i) = imm {
                         s.local_set(i, w, false);
                     }
                 }
-                Opcode::LOCAL_TEE => {
+                op::LOCAL_TEE => {
                     if let Immediate::LocalIndex(i) = imm {
                         s.local_set(i, w, true);
                     }
                 }
-                Opcode::GLOBAL_GET => {
+                op::GLOBAL_GET => {
                     s.emit_sem(w);
                     s.last_emit = LastEmit::Other;
                     s.push_temp();
                 }
-                Opcode::GLOBAL_SET => {
+                op::GLOBAL_SET => {
                     let _ = s.consume(w);
                     s.emit_sem(w);
                     s.last_emit = LastEmit::Other;
                 }
-                Opcode::TABLE_GET => {
-                    let _ = s.consume(w);
-                    s.emit_sem(w);
-                    s.last_emit = LastEmit::Other;
-                    s.push_temp();
-                }
-                Opcode::TABLE_SET => {
-                    let _ = s.consume(w);
-                    let _ = s.consume(w);
-                    s.emit_sem(w);
-                    s.last_emit = LastEmit::Other;
-                }
-                Opcode::MEMORY_SIZE => {
-                    s.emit_sem(w);
-                    s.last_emit = LastEmit::Other;
-                    s.push_temp();
-                }
-                Opcode::MEMORY_GROW => {
+                op::TABLE_GET => {
                     let _ = s.consume(w);
                     s.emit_sem(w);
                     s.last_emit = LastEmit::Other;
                     s.push_temp();
                 }
-                Opcode::REF_NULL | Opcode::REF_FUNC => {
+                op::TABLE_SET => {
+                    let _ = s.consume(w);
+                    let _ = s.consume(w);
+                    s.emit_sem(w);
+                    s.last_emit = LastEmit::Other;
+                }
+                op::MEMORY_SIZE => {
+                    s.emit_sem(w);
+                    s.last_emit = LastEmit::Other;
+                    s.push_temp();
+                }
+                op::MEMORY_GROW => {
+                    let _ = s.consume(w);
+                    s.emit_sem(w);
+                    s.last_emit = LastEmit::Other;
+                    s.push_temp();
+                }
+                op::REF_NULL | op::REF_FUNC => {
                     s.stack.push(Desc::Const);
                 }
-                Opcode::REF_IS_NULL => s.unop(w),
+                op::REF_IS_NULL => s.unop(w),
                 o if is_const(o) => {
                     s.stack.push(Desc::Const);
                 }
@@ -1174,14 +1150,14 @@ impl<'m> OpcodeHandler for SimHandler<'m> {
                 o if is_numeric_un(o) => s.unop(w),
                 _ => {
                     s.bailed = true;
-                    return Err(WasmError::invalid("foldsim: unmodeled op"));
+                    return Err("foldsim: unmodeled op".into());
                 }
             }
         }
         Ok(())
     }
 
-    fn on_decode_end(&mut self) -> Result<(), WasmError> {
+    fn finish(&mut self) -> Result<(), Error> {
         // final consistency check: after the implicit function-end, the
         // symbolic stack must hold exactly the function results (unless the
         // tail was dead code)
@@ -1344,7 +1320,7 @@ fn main() {
                 continue;
             }
         };
-        let module = match Module::new(path, &bytes) {
+        let module = match ModuleInfo::parse(&bytes) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("{path}: parse error: {e:?}");
@@ -1355,28 +1331,28 @@ fn main() {
         let mut bailed = 0usize;
         let mut desynced = 0usize;
         let mut funcs = 0usize;
-        for f in module.functions() {
-            let Some(spec) = f.spec() else { continue };
-            if spec.code().is_empty() {
-                continue;
-            }
+        for (index, body) in module.bodies.iter().enumerate() {
             funcs += 1;
             let mut scan = LoopWriteScan::default();
+            if Stream::new(body, &bytes)
+                .and_then(|mut stream| scan.on_stream(&mut stream))
+                .is_err()
             {
-                let mut d = Decoder::new(spec.code());
-                d.add_handler(&mut scan);
-                let _ = d.decode_function();
+                bailed += 1;
+                continue;
             }
             let mut h = SimHandler {
                 sim: Sim::new(&module),
-                func_results: f.func_type().results().len(),
+                func_results: module
+                    .function_type(module.imported_functions + index)
+                    .expect("validated function type")
+                    .results()
+                    .len(),
             };
             h.sim.loop_writes = scan.map;
-            let res = {
-                let mut d = Decoder::new(spec.code());
-                d.add_handler(&mut h);
-                d.decode_function()
-            };
+            let res = Stream::new(body, &bytes)
+                .and_then(|mut stream| h.on_stream(&mut stream))
+                .and_then(|()| h.finish());
             if res.is_err() || h.sim.bailed {
                 bailed += 1;
                 continue;

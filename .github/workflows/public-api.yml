@@ -1,0 +1,164 @@
+name: public API
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: public-api-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Rust build scripts run only with read permissions and no repository secrets.
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  capture:
+    name: capture API and memprof parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      review_required: ${{ steps.diff.outputs.review_required }}
+    env:
+      API_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      API_BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.API_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect the initial API baseline
+        if: github.event_name == 'pull_request'
+        id: plan
+        run: python3 -m ci.public_api_review plan --base-sha "$API_BASE"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-06
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: public-api
+
+      - uses: actions/cache@v6
+        id: extractor
+        with:
+          path: ~/.local/share/sf-api-extractor
+          key: public-api-extractor-${{ runner.os }}-${{ runner.arch }}-0.52.0-nightly-2026-09-06
+
+      - name: Install pinned API extractor
+        if: steps.extractor.outputs.cache-hit != 'true'
+        run: cargo +nightly-2026-09-06 install cargo-public-api --locked --version 0.52.0 --root "$HOME/.local/share/sf-api-extractor"
+
+      - name: Capture the candidate and verify memprof parity
+        run: |
+          python3 -m ci.public_api capture \
+            --extractor "$HOME/.local/share/sf-api-extractor/bin/cargo-public-api" \
+            --output target/public-api-evidence/head
+
+      # Only a historical capture can be cached by immutable base revision.
+      # Candidate extraction/parity always runs against this exact PR head.
+      - uses: actions/cache@v6
+        if: github.event_name == 'pull_request' && steps.plan.outputs.bootstrap == 'false'
+        id: baseline
+        with:
+          path: target/public-api-evidence/base
+          key: public-api-base-${{ runner.os }}-${{ runner.arch }}-${{ env.API_BASE }}-${{ hashFiles('ci/public_api.py') }}
+
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request' && steps.plan.outputs.bootstrap == 'false' && steps.baseline.outputs.cache-hit != 'true'
+        with:
+          ref: ${{ env.API_BASE }}
+          path: .api-base
+          persist-credentials: false
+
+      - name: Extract the actual base API with the same toolchain
+        if: github.event_name == 'pull_request' && steps.plan.outputs.bootstrap == 'false' && steps.baseline.outputs.cache-hit != 'true'
+        run: |
+          python3 -m ci.public_api baseline --root .api-base \
+            --extractor "$HOME/.local/share/sf-api-extractor/bin/cargo-public-api" \
+            --output target/public-api-evidence/base
+
+      - name: Prepare the exact-head API diff
+        if: github.event_name == 'pull_request'
+        id: diff
+        run: |
+          python3 -m ci.public_api_review prepare \
+            --base target/public-api-evidence/base \
+            --head target/public-api-evidence/head \
+            --output target/public-api-evidence \
+            --base-sha "$API_BASE" --head-sha "$API_HEAD"
+
+      # A misspelled/unconfigured environment otherwise creates an unprotected
+      # environment and silently grants the deployment job. Fail before that,
+      # but retain the concrete evidence even when repository setup is missing.
+      - name: Verify the human review environment is protected
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/environments/public-api-review" > "$RUNNER_TEMP/api-environment.json"
+          python3 -m ci.public_api_review environment "$RUNNER_TEMP/api-environment.json"
+
+      - name: Upload API evidence, including failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: public-api-${{ env.API_HEAD }}-${{ github.run_attempt }}
+          path: target/public-api-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  review:
+    name: human API review
+    needs: capture
+    if: github.event_name == 'pull_request' && needs.capture.outputs.review_required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: public-api-review
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      # No source checkout, build, credentials or publishing in this job.
+      - run: echo 'Human API review completed for the evidence attached to this run.'
+
+  gate:
+    name: public API gate
+    needs: [capture, review]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Require successful capture and any required human approval
+        env:
+          CAPTURE_RESULT: ${{ needs.capture.result }}
+          REVIEW_REQUIRED: ${{ needs.capture.outputs.review_required }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          assert os.environ['CAPTURE_RESULT'] == 'success', 'API capture/parity failed'
+          if os.environ['EVENT_NAME'] == 'pull_request':
+              required = os.environ['REVIEW_REQUIRED']
+              assert required in ('true', 'false'), 'Missing API review decision'
+              expected = 'success' if required == 'true' else 'skipped'
+              assert os.environ['REVIEW_RESULT'] == expected, 'Human API review is not complete'
+          PY
+
+      - name: Reject approval evidence for an older PR head
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          current_head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)
+          test "$current_head" = "$API_HEAD"

@@ -7,7 +7,7 @@ use crate::error::WasmError;
 use crate::module::entities::ConstExpr;
 use crate::value_type::{AbstractHeapType, HeapType, RefType};
 use crate::vm::const_eval::{self, ConstResolver};
-use crate::vm::entities::FunctionInst;
+use crate::vm::jit::entities::FunctionInst;
 use crate::vm::jit::instance::JitInstance;
 use crate::vm::jit::value_encoding::{absolutize, try_raw_to_value_in_store};
 use crate::vm::value::Value;

@@ -29,10 +29,16 @@
 //!   handler, plus host calls, traps with messages, and the activation
 //!   boundary.
 
+mod diagnostics;
 mod engine;
 mod exec;
+mod exports;
 mod fmath;
 mod instr;
+mod memory;
+mod module_view;
+#[cfg(test)]
+mod test_support;
 // The variant layout describes the generated handler set. The build script
 // compiles this same file independently, via `#[path]`, so the generator and
 // the linker agree on the space by construction.
@@ -46,11 +52,8 @@ const SLOT_GP_UNIT_BYTES: u8 = core::mem::size_of::<usize>() as u8;
 const EXTERNAL_FUNCREF_HOST_REQUIRED: &str =
     "interp: external function reference calls require a FuncRefHost hook";
 
-// `InterpInstance` is the engine's public face. The predecoded
-// representation behind it -- instructions, the opcode enum, operand
-// flags -- stays inside the engine: it is how a function is stored, not
-// an interface anything outside builds against.
-pub use exec::{FuncRefHost, InterpInstance};
+pub use diagnostics::InterpreterStats;
+pub(crate) use exec::InterpInstance;
 // The boundary converts host values through the same shared slot encoding
 // that the executor imports from `vm::value`.
 pub(crate) use exec::{

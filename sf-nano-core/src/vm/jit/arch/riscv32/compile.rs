@@ -56,7 +56,7 @@ pub(crate) fn compile_module(
         let needed = function_info_table_offset
             .saturating_add(compiled.abi().functions.len() * RISCV32_FUNCTION_INFO_SIZE);
         if needed > executable.capacity() {
-            return Err(WasmError::code_arena_exhausted());
+            return Err(crate::vm::jit::code_arena_exhausted());
         }
         executable.as_ptr()
     };

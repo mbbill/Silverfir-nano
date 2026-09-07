@@ -1,4 +1,4 @@
-use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
+use sf_nano_core::wasi::{wasi_imports, WasiContextBuilder};
 use sf_nano_core::{Config, Engine, Instance, Tier, Value};
 
 use std::env;
@@ -103,9 +103,8 @@ fn main() {
         .preopen_dir(".", Path::new("."))
         .inherit_env()
         .build();
-    set_wasi_ctx(ctx);
 
-    let imports = wasi_imports();
+    let imports = wasi_imports(ctx);
     let mut instance = Instance::new(
         &Engine::new(Config::new().tier(Tier::Jit)).expect("engine"),
         &data,
@@ -127,8 +126,8 @@ fn main() {
     }
 
     if let Some((offset, len)) = dump_memory {
-        let memory = instance.memory().unwrap_or_else(|| {
-            eprintln!("memory dump requested but module has no memory");
+        let memory = instance.memory().unwrap_or_else(|error| {
+            eprintln!("cannot read memory for dump: {error}");
             process::exit(1);
         });
         let end = offset

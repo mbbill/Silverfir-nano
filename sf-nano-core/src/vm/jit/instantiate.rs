@@ -6,6 +6,7 @@
 //! declarations ([`Import`]) that both engines are driven from.
 
 use crate::collections;
+use crate::vm::jit::entities::FunctionInst;
 
 use tracked_alloc::boxed::Box;
 #[cfg(any(sf_ir_dump, sf_jitdump))]
@@ -16,8 +17,7 @@ use crate::module::entities::{
     ConstExpr, Data, Element, ElementInit, FunctionDef, GlobalDef, MemoryDef, TableDef, TagDef,
 };
 use crate::module::type_context::{
-    check_function_types_equivalent, concrete_type_matches_cross_context,
-    value_types_equivalent_cross_module, TypeContext,
+    check_function_types_equivalent, concrete_type_matches_cross_context, TypeContext,
 };
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
@@ -26,7 +26,7 @@ use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 use crate::value_type::{HeapType, ValueType};
 use crate::vm::engine::Engine;
-use crate::vm::entities::{Caller, FunctionInst, GlobalInst, HostCallback, MemInst, TableInst};
+use crate::vm::entities::{GlobalInst, MemInst, TableInst};
 use crate::vm::imports::*;
 use crate::vm::instance::InstanceInstantiationError;
 use crate::vm::jit::entities::TableDispatchMode;
@@ -43,7 +43,7 @@ use crate::vm::link::{InstanceId, InstanceLease, InstanceToken, LinkRegistry};
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::{RefValue, Value};
 
-pub struct JitInstanceLease {
+pub(crate) struct JitInstanceLease {
     lease: InstanceLease,
 }
 
@@ -261,10 +261,6 @@ impl JitInstanceLease {
         registry: &LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
         let config = *engine.config();
-        module
-            .ensure_simd_supported()
-            .map_err(InstanceInstantiationError::Complete)?;
-
         let mut exports = collections::Vec::new();
         for (i, f) in module.functions().iter().enumerate() {
             for name in f.export_names() {
@@ -308,24 +304,23 @@ impl JitInstanceLease {
             .map_err(InstanceInstantiationError::Complete)?;
         let table_dispatch_modes = compute_static_table_dispatch_modes(&module)
             .map_err(InstanceInstantiationError::Complete)?;
-        let (
+        let Module {
             types,
-            mod_functions,
-            mod_tables,
-            mod_memories,
-            mod_globals,
-            mod_tags,
-            mod_elements,
-            mod_data,
-            _start,
-        ) = module.into_parts();
+            functions: mod_functions,
+            tables: mod_tables,
+            memories: mod_memories,
+            globals: mod_globals,
+            tags: mod_tags,
+            elements: mod_elements,
+            data: mod_data,
+            ..
+        } = module;
 
         let mut functions: collections::Vec<FunctionInst> =
             collections::Vec::with_capacity(mod_functions.len());
         for func in mod_functions {
             let type_index = func.type_index();
-            let (_export_names, def) = func.into_parts();
-            match def {
+            match func.def {
                 FunctionDef::Local(spec) => {
                     functions.push(FunctionInst::Local { spec, type_index });
                 }
@@ -347,9 +342,10 @@ impl JitInstanceLease {
                                 match imported_func {
                                     ImportedFunction::Host {
                                         func_type,
+                                        type_index,
                                         type_ctx,
                                         ..
-                                    } => (func_type.as_ref(), u32::MAX, type_ctx.as_ref()),
+                                    } => (func_type.as_ref(), *type_index, type_ctx.as_ref()),
                                     ImportedFunction::Linked {
                                         func_type,
                                         type_index,
@@ -389,12 +385,14 @@ impl JitInstanceLease {
                             match imported_func {
                                 ImportedFunction::Host { callback, .. } => {
                                     functions.push(FunctionInst::Host {
+                                        type_index,
                                         func_type,
                                         callback: callback.clone(),
                                     });
                                 }
                                 ImportedFunction::Linked { handle, .. } => {
                                     functions.push(FunctionInst::Linked {
+                                        type_index,
                                         func_type,
                                         handle: *handle,
                                     });
@@ -432,17 +430,12 @@ impl JitInstanceLease {
                             if let Some(state) = state {
                                 let actual_type = &state.table.value_type;
                                 let declared_type = &table.value_type();
-                                let compatible = if actual_type == declared_type {
-                                    true
-                                } else if let Some(type_ctx) = state.type_ctx.as_ref() {
-                                    value_types_equivalent_cross_module(
-                                        actual_type,
-                                        declared_type,
-                                        type_ctx,
-                                    )
-                                } else {
-                                    false
-                                };
+                                let compatible = global_value_types_equivalent_cross_context(
+                                    actual_type,
+                                    declared_type,
+                                    state.type_ctx.as_ref(),
+                                    &types,
+                                );
                                 if !compatible {
                                     return Err(WasmError::unlinkable(
                                         "incompatible import type: .",
@@ -631,19 +624,7 @@ impl JitInstanceLease {
 
                             match imported {
                                 ImportedGlobal::Value(imported) => {
-                                    let mut val = imported.value;
-                                    if let Some((callback, func_type)) = &imported.linked_function {
-                                        if let Value::Ref(_, ref_type) = val {
-                                            let func_idx = functions.len();
-                                            functions.push(FunctionInst::Host {
-                                                func_type: tracked_alloc::rc::Rc::new(
-                                                    func_type.clone(),
-                                                ),
-                                                callback: HostCallback::new(*callback),
-                                            });
-                                            val = Value::Ref(RefValue::new(func_idx), ref_type);
-                                        }
-                                    }
+                                    let val = imported.vm_value();
                                     let val_type = val.value_type();
                                     if *mutable {
                                         if val_type != *value_type {
@@ -820,15 +801,8 @@ impl JitInstanceLease {
             let store_ptr = {
                 let store = store.as_mut();
                 for func_idx in 0..store.module().functions.len() {
-                    // `escapable_functions` is sized to the PARSED module.
-                    // Linking can append synthetic host functions past that
-                    // count -- one per funcref-carrying imported global -- so
-                    // indexing it unguarded panics on those. They are
-                    // escapable by construction: each exists precisely
-                    // because a reference points at it, and registering them
-                    // is what lets the retag pass below hand the global an
-                    // absolute funcaddr instead of a local index that a peer
-                    // instance would resolve against its own functions.
+                    // Runtime-added functions are escapable; parsed reachability
+                    // covers only the original module's function indices.
                     if !escapable_functions.get(func_idx).copied().unwrap_or(true) {
                         continue;
                     }
@@ -1074,13 +1048,6 @@ impl JitInstanceLease {
             .expect("JIT instance lease must resolve to a JitInstance")
     }
 
-    pub(crate) fn store_mut(&mut self) -> &mut JitInstance {
-        self.lease
-            .token_mut()
-            .jit_mut()
-            .expect("JIT instance lease must resolve to a JitInstance")
-    }
-
     pub(crate) fn instance_id(&self) -> InstanceId {
         let id = self.store().instance_backref().self_id();
         debug_assert_eq!(id, self.lease.id());
@@ -1122,51 +1089,6 @@ impl JitInstanceLease {
             .transpose()?)
     }
 
-    pub(crate) fn global_at(&self, idx: usize) -> Result<Option<Value>, WasmError> {
-        let store = self.store();
-        Ok(store
-            .module()
-            .globals
-            .get(idx)
-            .map(|g| try_raw_to_value_in_store(g.raw(), g.value_type, store))
-            .transpose()?)
-    }
-
-    pub(crate) fn replace_global_at(&mut self, idx: usize, value: Value) -> Result<(), WasmError> {
-        let store = self.store_mut();
-        let reachable = store.module().global_is_reachable(idx);
-        let raw = value_to_container_raw_in_store(value, reachable, store);
-        let global = store
-            .module_mut()
-            .globals
-            .get_mut(idx)
-            .ok_or_else(|| WasmError::invalid("global index out of range"))?;
-        global.set_raw(raw);
-        Ok(())
-    }
-
-    pub(crate) fn memory(&self) -> Option<&[u8]> {
-        let store = self.store();
-        if store.module().memories.is_empty() {
-            None
-        } else {
-            let mem = store.memory(0);
-            let len = mem.memory_len();
-            Some(unsafe { core::slice::from_raw_parts(mem.memory_ptr(), len) })
-        }
-    }
-
-    pub(crate) fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        let store = self.store_mut();
-        if store.module().memories.is_empty() {
-            None
-        } else {
-            let mem = store.memory_mut(0);
-            let len = mem.memory_len();
-            Some(unsafe { core::slice::from_raw_parts_mut(mem.memory_ptr(), len) })
-        }
-    }
-
     pub(crate) fn memory_pages(&self, name: &str) -> Option<usize> {
         for (n, kind, idx) in self.store().exports() {
             if n == name && matches!(kind, ExportKind::Memory) {
@@ -1193,19 +1115,12 @@ impl JitInstanceLease {
             .map(|func| func.func_type().clone())
     }
 
-    pub(crate) fn function_type_index_at(&self, idx: usize) -> Option<u32> {
-        self.store()
-            .module()
-            .functions
-            .get(idx)
-            .map(FunctionInst::type_index)
-    }
-
-    /// Whether a local function has been compiled to native code.
+    /// Whether an exported local function has been compiled to native code.
     ///
-    /// Host functions, linked functions, and out-of-range indices return
+    /// Host functions, linked functions, and unknown export names return
     /// `None`.
-    pub fn function_has_native_code(&self, idx: usize) -> Option<bool> {
+    pub(crate) fn function_has_native_code(&self, name: &str) -> Option<bool> {
+        let idx = self.function_index_of_export(name)?;
         match self.store().module().functions.get(idx)? {
             FunctionInst::Local { spec, .. } => Some(spec.has_native_code()),
             FunctionInst::Host { .. } | FunctionInst::Linked { .. } => None,
@@ -1222,8 +1137,8 @@ impl JitInstanceLease {
         Some(absolutize(store, handle))
     }
 
-    /// Resolve an exported tag to its runtime identity. Required for
-    /// cross-module tag linking via `Import::linked_tag_typed(...)`.
+    /// Resolve an exported tag to its runtime identity for host throws and
+    /// exception classification. Cross-module linking uses typed exports.
     pub(crate) fn tag_identity(&self, name: &str) -> Option<TagIdentity> {
         let (_, _, idx) = self
             .store()
@@ -1267,25 +1182,6 @@ impl JitInstanceLease {
 
     pub(crate) fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
         self.store().module().memories.get(idx).cloned()
-    }
-
-    pub(crate) fn append_host_function<F>(&mut self, func_type: FunctionType, callback: F) -> usize
-    where
-        F: for<'a, 'b, 'c, 'd> Fn(
-                &'a mut Caller<'b>,
-                &'c [Value],
-                &'d mut [Value],
-            ) -> Result<(), WasmError>
-            + 'static,
-    {
-        let store = self.store_mut();
-        let idx = store.module().functions.len();
-        store.module_mut().functions.push(FunctionInst::Host {
-            func_type: tracked_alloc::rc::Rc::new(func_type),
-            callback: HostCallback::new(callback),
-        });
-        let _ = store.register_local_function(idx);
-        idx
     }
 }
 
@@ -1445,15 +1341,7 @@ fn materialize_element_init(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        module::{
-            builder::ModuleBuilder,
-            entities::{Memory, Table},
-            Module,
-        },
-        utils::limits::Limits,
-        value_type::ValueType,
-    };
+    use crate::{module::Module, utils::limits::Limits, value_type::ValueType};
 
     trait TestJitInstanceLease: Sized {
         fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError>;
@@ -1494,28 +1382,6 @@ mod tests {
         ) -> Result<collections::Vec<Value>, WasmError> {
             Self::invoke_token(self.checkout_for_invocation()?, name, args)
         }
-    }
-
-    fn importer_with_memory(limits: Limits) -> Module {
-        let mut builder = ModuleBuilder::new();
-        builder.with_name("importer");
-        builder.with_binary_version(1);
-        builder.append_memory(
-            Memory::new_import("env".into(), "mem".into(), limits)
-                .expect("memory import limits should stay valid"),
-        );
-        builder.build()
-    }
-
-    fn importer_with_table(limits: Limits, value_type: ValueType) -> Module {
-        let mut builder = ModuleBuilder::new();
-        builder.with_name("importer");
-        builder.with_binary_version(1);
-        builder.append_table(
-            Table::new_import("env".into(), "table".into(), value_type, limits)
-                .expect("table import limits should stay valid"),
-        );
-        builder.build()
     }
 
     #[test]
@@ -1568,7 +1434,7 @@ mod tests {
         let wasm = wat::parse_str(
             r#"
             (module
-              (type $super (func))
+              (type $super (sub (func)))
               (type $sub (sub $super (func)))
               (func $f (type $sub))
               (table 1 1 funcref)
@@ -1608,13 +1474,14 @@ mod tests {
 
     #[test]
     fn shared_memory_import_uses_live_size_and_shared_cap() {
-        let shared_memory = MemInst::new(
+        let shared_memory = crate::vm::jit::test_support::heap_memory(
             &crate::config::Config::new(),
             Limits::new(1, Some(2)).unwrap(),
         )
         .expect("test memory within runtime limits");
         grow_shared_memory_for_test(&shared_memory, 2);
-        let module = importer_with_memory(Limits::new(2, Some(2)).unwrap());
+        let wasm = wat::parse_str(r#"(module (import "env" "mem" (memory 2 2)))"#).unwrap();
+        let module = Module::new("importer", &wasm).unwrap();
         let import = Import::memory_with_state(
             "env",
             "mem",
@@ -1637,7 +1504,9 @@ mod tests {
     fn shared_table_import_uses_live_size_and_shared_cap() {
         let shared_table = TableInst::new(Limits::new(1, Some(2)).unwrap(), ValueType::funcref());
         grow_shared_table_for_test(&shared_table, 2);
-        let module = importer_with_table(Limits::new(2, Some(2)).unwrap(), ValueType::funcref());
+        let wasm =
+            wat::parse_str(r#"(module (import "env" "table" (table 2 2 funcref)))"#).unwrap();
+        let module = Module::new("importer", &wasm).unwrap();
         let import = Import::table_with_state(
             "env",
             "table",
@@ -1802,10 +1671,10 @@ mod tests {
             "env",
             "add_bias",
             move |_caller, params, results| {
-                let Value::I32(value) = params[0] else {
+                let crate::Value::I32(value) = params[0] else {
                     return Err(WasmError::invalid("expected i32 host argument"));
                 };
-                results[0] = Value::I32(value + observed_bias.get());
+                results[0] = crate::Value::I32(value + observed_bias.get());
                 observed_bias.set(observed_bias.get() + 1);
                 Ok(())
             },
@@ -1866,42 +1735,23 @@ mod tests {
     }
 
     #[test]
-    fn instantiation_rejects_builder_modules_with_simd_types() {
-        let mut builder = ModuleBuilder::new();
-        builder.with_name("simd-builder");
-        builder.with_binary_version(1);
-        builder.with_function_types(crate::collections::vec![tracked_alloc::rc::Rc::new(
-            crate::FunctionType::new(
-                crate::collections::vec![ValueType::V128],
-                crate::collections::Vec::new(),
-            ),
-        )]);
+    fn module_input_checks_simd_type_support() {
+        let wasm = wat::parse_str("(module (type (func (param v128))))").unwrap();
+        let module = Module::new("simd-input", &wasm);
 
         #[cfg(not(sf_has_simd))]
-        {
-            let err = match JitInstanceLease::from_module(
-                &crate::vm::engine::Engine::with_defaults(),
-                builder.build(),
-                &[],
-            ) {
-                Ok(_) => panic!("instantiation should reject unsupported SIMD-shaped modules"),
-                Err(err) => err,
-            };
-            assert_eq!(
-                err,
-                crate::WasmError::invalid("SIMD is not supported on this CPU")
-            );
-        }
+        assert_eq!(
+            module.expect_err("unsupported SIMD types must be rejected"),
+            crate::WasmError::invalid("SIMD is not supported on this CPU")
+        );
 
         #[cfg(sf_has_simd)]
-        {
-            JitInstanceLease::from_module(
-                &crate::vm::engine::Engine::with_defaults(),
-                builder.build(),
-                &[],
-            )
-            .expect("SIMD-enabled builds should allow unused v128 type definitions");
-        }
+        JitInstanceLease::from_module(
+            &crate::vm::engine::Engine::with_defaults(),
+            module.expect("SIMD-enabled builds allow v128 types"),
+            &[],
+        )
+        .expect("unused v128 types can be instantiated");
     }
 
     #[cfg(sf_has_simd)]
@@ -1921,9 +1771,9 @@ mod tests {
             JitInstanceLease::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
                 .expect("instantiation should succeed");
         let results = instance
-            .invoke("not", &[crate::Value::V128([0; 16])])
+            .invoke("not", &[Value::V128([0; 16])])
             .expect("live SIMD unary ops should lower and execute");
-        assert_eq!(results.as_slice(), &[crate::Value::V128([u8::MAX; 16])]);
+        assert_eq!(results.as_slice(), &[Value::V128([u8::MAX; 16])]);
     }
 
     #[cfg(sf_has_simd)]
@@ -1941,7 +1791,7 @@ mod tests {
         let mut instance =
             JitInstanceLease::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
                 .expect("instantiation should succeed");
-        let expected = crate::Value::V128([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]);
+        let expected = Value::V128([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]);
         let results = instance
             .invoke("const", &[])
             .expect("v128.const should lower and execute");

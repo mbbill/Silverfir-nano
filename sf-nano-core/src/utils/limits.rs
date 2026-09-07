@@ -1,35 +1,18 @@
-use core::fmt;
+use crate::WasmError;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     min: usize,
     max: Option<usize>,
     default_max: Option<usize>,
-    pub is64: bool,
-}
-
-#[derive(Debug)]
-pub enum LimitsError {
-    MinLargerThanMax,
-    MaxLargerThanDefaultMax,
-    MinLargerThanDefaultMax,
-}
-
-impl fmt::Display for LimitsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LimitsError::MinLargerThanMax => write!(f, "MinLargerThanMax"),
-            LimitsError::MaxLargerThanDefaultMax => write!(f, "MaxLargerThanDefaultMax"),
-            LimitsError::MinLargerThanDefaultMax => write!(f, "MinLargerThanDefaultMax"),
-        }
-    }
+    pub(crate) is64: bool,
 }
 
 impl Limits {
-    pub fn new(min: usize, max: Option<usize>) -> Result<Self, LimitsError> {
+    pub fn new(min: usize, max: Option<usize>) -> Result<Self, WasmError> {
         if let Some(max) = max {
             if max < min {
-                return Err(LimitsError::MinLargerThanMax);
+                return Err(WasmError::invalid("min larger than max"));
             }
         }
         Ok(Limits {
@@ -40,10 +23,10 @@ impl Limits {
         })
     }
 
-    pub fn new_64(min: usize, max: Option<usize>) -> Result<Self, LimitsError> {
+    pub fn new_64(min: usize, max: Option<usize>) -> Result<Self, WasmError> {
         if let Some(max) = max {
             if max < min {
-                return Err(LimitsError::MinLargerThanMax);
+                return Err(WasmError::invalid("min larger than max"));
             }
         }
         Ok(Limits {
@@ -52,6 +35,11 @@ impl Limits {
             default_max: None,
             is64: true,
         })
+    }
+
+    /// Whether these limits describe a 64-bit memory or table.
+    pub fn is_64(&self) -> bool {
+        self.is64
     }
 
     /// Returns the minimum value.
@@ -65,19 +53,19 @@ impl Limits {
     }
 
     /// Returns the effective maximum (explicit max or default max).
-    pub fn get_max(&self) -> usize {
+    pub(crate) fn get_max(&self) -> usize {
         self.max
             .unwrap_or_else(|| self.default_max.unwrap_or(usize::MAX))
     }
 
-    pub fn with_default_max(&self, default_max: usize) -> Result<Self, LimitsError> {
+    pub(crate) fn with_default_max(&self, default_max: usize) -> Result<Self, WasmError> {
         if let Some(max) = self.max {
             if max > default_max {
-                return Err(LimitsError::MaxLargerThanDefaultMax);
+                return Err(WasmError::invalid("max larger than default max"));
             }
         }
         if self.min > default_max {
-            return Err(LimitsError::MinLargerThanDefaultMax);
+            return Err(WasmError::invalid("min larger than default max"));
         }
         Ok(Limits {
             min: self.min,
@@ -88,16 +76,6 @@ impl Limits {
     }
 }
 
-pub trait Limitable {
+pub(crate) trait Limitable {
     fn limits(&self) -> &Limits;
-
-    fn get_min(&self) -> usize {
-        self.limits().min
-    }
-
-    fn get_max(&self) -> usize {
-        self.limits()
-            .max
-            .unwrap_or(self.limits().default_max.unwrap())
-    }
 }

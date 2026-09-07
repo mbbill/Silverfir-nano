@@ -159,7 +159,7 @@ impl HeapType {
         }
     }
 
-    pub fn is_subtype_of(&self, other: &HeapType, types: &TypeContext) -> bool {
+    pub(crate) fn is_subtype_of(&self, other: &HeapType, types: &TypeContext) -> bool {
         match (self, other) {
             (a, b) if a == b => true,
             (Self::Abstract(sub), Self::Abstract(sup)) => sub.is_subtype_of(sup),
@@ -213,7 +213,7 @@ impl HeapType {
         }
     }
 
-    pub fn top_type(&self, types: &TypeContext) -> HeapType {
+    pub(crate) fn top_type(&self, types: &TypeContext) -> HeapType {
         match self {
             Self::Abstract(aht) => Self::Abstract(aht.top_type()),
             Self::Concrete(idx) => match types.get(*idx) {
@@ -228,7 +228,9 @@ impl HeapType {
         }
     }
 
-    pub fn parse(payload: &mut crate::utils::payload::Payload) -> Result<HeapType, WasmError> {
+    pub(crate) fn parse(
+        payload: &mut crate::utils::payload::Payload,
+    ) -> Result<HeapType, WasmError> {
         let first_byte = payload.peek_u8().map_err(WasmError::from)?;
 
         if let Ok(aht) = AbstractHeapType::try_from(first_byte) {
@@ -425,7 +427,7 @@ impl RefType {
         )
     }
 
-    pub fn is_subtype_of(&self, other: &RefType, types: &TypeContext) -> bool {
+    pub(crate) fn is_subtype_of(&self, other: &RefType, types: &TypeContext) -> bool {
         let nullability_ok = self.nullable == other.nullable || other.nullable;
         let heap_ok = self.heap_type.is_subtype_of(&other.heap_type, types);
         nullability_ok && heap_ok
@@ -595,7 +597,7 @@ impl ValueType {
         }
     }
 
-    pub fn is_subtype_of(&self, other: &ValueType, types: &TypeContext) -> bool {
+    pub(crate) fn is_subtype_of(&self, other: &ValueType, types: &TypeContext) -> bool {
         if *self == ValueType::Unknown {
             return true;
         }
@@ -613,7 +615,7 @@ impl ValueType {
     }
 
     #[inline]
-    pub fn can_initialize(&self, target_type: &ValueType, types: &TypeContext) -> bool {
+    pub(crate) fn can_initialize(&self, target_type: &ValueType, types: &TypeContext) -> bool {
         self.is_subtype_of(target_type, types)
     }
 
@@ -640,17 +642,6 @@ impl ValueType {
         }
     }
 
-    pub fn is_subtype_of_eqref(&self) -> bool {
-        use AbstractHeapType::*;
-        match self {
-            ValueType::Ref(rt) => match &rt.heap_type {
-                HeapType::Abstract(aht) => matches!(aht, Eq | I31 | Struct | Array | None),
-                HeapType::Concrete(_) => true,
-            },
-            _ => false,
-        }
-    }
-
     pub fn to_lowercase_name(&self) -> &'static str {
         match self {
             ValueType::I32 => "i32",
@@ -663,7 +654,9 @@ impl ValueType {
         }
     }
 
-    pub fn parse(payload: &mut crate::utils::payload::Payload) -> Result<ValueType, WasmError> {
+    pub(crate) fn parse(
+        payload: &mut crate::utils::payload::Payload,
+    ) -> Result<ValueType, WasmError> {
         let first_byte = payload.read_u8().map_err(WasmError::from)?;
 
         match first_byte {

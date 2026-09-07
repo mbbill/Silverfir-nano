@@ -46,6 +46,37 @@ def fake_run(value: float, version: str) -> dict:
 
 
 class WasmiPerformanceTests(unittest.TestCase):
+    def test_old_runtime_has_no_adapter_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(wasmi_performance, "run_process") as run:
+                self.assertIsNone(wasmi_performance.adapt_runtime_api(root, root))
+                run.assert_not_called()
+
+    def test_adapter_migration_is_repeatable_and_rejects_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            (source / "ci").mkdir(parents=True)
+            (source / "ci/wasmi_adapter.patch").write_text(
+                "diff --git a/adapter.rs b/adapter.rs\n"
+                "--- a/adapter.rs\n+++ b/adapter.rs\n"
+                "@@ -1 +1 @@\n-old_api\n+new_api\n",
+                encoding="utf-8",
+            )
+            suite = root / "suite"
+            suite.mkdir()
+            adapter = suite / "adapter.rs"
+            adapter.write_text("old_api\n", encoding="utf-8")
+            digest = wasmi_performance.adapt_runtime_api(suite, source)
+            self.assertEqual(adapter.read_text(), "new_api\n")
+            self.assertEqual(len(digest), 64)
+            self.assertEqual(wasmi_performance.adapt_runtime_api(suite, source), digest)
+            adapter.write_text("different_api\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "command failed"):
+                wasmi_performance.adapt_runtime_api(suite, source)
+            self.assertEqual(adapter.read_text(), "different_api\n")
+
     def test_manifest_has_all_criterion_groups_without_score_runner(
         self,
     ) -> None:

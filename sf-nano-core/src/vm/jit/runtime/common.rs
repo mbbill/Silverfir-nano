@@ -1,8 +1,6 @@
 use core::mem::align_of;
 
 use crate::error::WasmError;
-use crate::value_type::ValueType;
-use crate::vm::value::Value;
 
 use super::context::NativeContext;
 
@@ -34,20 +32,6 @@ pub(crate) fn internal_error(message: &'static str) -> WasmError {
 #[inline]
 pub(crate) fn trap_error(message: &'static str) -> WasmError {
     WasmError::trap(message)
-}
-
-#[inline]
-pub(crate) fn value_matches_value_type(value: &Value, ty: ValueType) -> bool {
-    match (value, ty) {
-        (Value::I32(_), ValueType::I32) => true,
-        (Value::I64(_), ValueType::I64) => true,
-        (Value::F32(_), ValueType::F32) => true,
-        (Value::F64(_), ValueType::F64) => true,
-        #[cfg(sf_has_simd)]
-        (Value::V128(_), ValueType::V128) => true,
-        (Value::Ref(_, _), ValueType::Ref(_)) => true,
-        _ => false,
-    }
 }
 
 #[inline]
@@ -94,7 +78,9 @@ pub(crate) fn run_frame_call_with_status<T>(
 
     match result {
         Ok(status) => status as u32,
-        Err(WasmError::HostThrow { .. }) => {
+        Err(WasmError {
+            repr: crate::error::ErrorRepr::HostThrow { .. },
+        }) => {
             debug_assert!(
                 false,
                 "HostThrow must be consumed by the runtime-call entry before reaching run_frame_call_with_status"

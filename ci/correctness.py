@@ -10,6 +10,7 @@ Usage:
     python -m ci.correctness cross riscv32
     python -m ci.correctness bare thumbv8m
     python -m ci.correctness bare riscv32
+    python -m ci.correctness msrv
 
 Host jobs run only native work. Cross jobs all run on x64 Linux and each own
 one QEMU-user target. Bare jobs compile and assemble target_os="none"
@@ -38,6 +39,7 @@ RV32_LINUX = "riscv32gc-unknown-linux-musl"
 SPECIAL_FUNCREF_GUARD_TEST = (
     "vm::interpreter::exec::tests::special_funcref_in_private_table_takes_slow_path"
 )
+MSRV = "1.94.0"
 
 ENGINE_FEATURE_CONFIGS = (
     ("jit-only", "jit"),
@@ -320,6 +322,20 @@ def run_host(label: str) -> int:
         run_host_feature_matrix(runner)
     run_native_spectest(runner)
     run_native_wasitest(runner)
+    return runner.finish()
+
+
+def run_msrv() -> int:
+    """Compile and exercise embedding contracts on the supported Rust floor."""
+    runner = Runner("msrv")
+    runner.run(
+        "minimum Rust embedding contracts",
+        ["cargo", f"+{MSRV}", "test", "--locked", "-p", "sf-nano-core",
+         "--all-features", "--test", "public_api_contract",
+         "--test", "module_validation", "--test", "export_linking",
+         "--test", "wasi_context", "--test", "memory_borrowing",
+         "--test", "host_value_types", "--test", "reference_ownership"],
+    )
     return runner.finish()
 
 
@@ -646,11 +662,14 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     bare = subparsers.add_parser("bare", help="one compile-only bare-metal target")
     bare.add_argument("platform", choices=tuple(BARE_PLATFORMS))
+    subparsers.add_parser("msrv", help="embedding contracts on the minimum supported Rust")
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.suite == "msrv":
+        return run_msrv()
     if args.suite == "host":
         return run_host(args.platform)
     if args.suite == "cross":

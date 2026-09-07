@@ -11,28 +11,28 @@ use crate::{
 };
 /// Context for validating constant expressions
 #[derive(Debug, Clone, Default)]
-pub struct ValidationContext {
+pub(crate) struct ValidationContext {
     is_passive: bool,
     only_imported_globals: bool,
     validating_global_index: Option<usize>,
 }
 
 impl ValidationContext {
-    pub fn passive() -> Self {
+    pub(crate) fn passive() -> Self {
         Self {
             is_passive: true,
             ..Default::default()
         }
     }
 
-    pub fn active() -> Self {
+    pub(crate) fn active() -> Self {
         Self {
             is_passive: false,
             ..Default::default()
         }
     }
 
-    pub fn global(index: usize) -> Self {
+    pub(crate) fn global(index: usize) -> Self {
         Self {
             is_passive: false,
             only_imported_globals: false,
@@ -40,7 +40,7 @@ impl ValidationContext {
         }
     }
 
-    pub fn table_init() -> Self {
+    pub(crate) fn table_init() -> Self {
         Self {
             is_passive: false,
             only_imported_globals: true,
@@ -51,7 +51,7 @@ impl ValidationContext {
 
 impl ConstExpr {
     /// Validate a constant expression with a specific validation context
-    pub fn validate_in_context(
+    pub(crate) fn validate_in_context(
         &self,
         module: &Module,
         ctx: &ValidationContext,

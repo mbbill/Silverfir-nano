@@ -1,15 +1,12 @@
 //! WAST test runner adapted for sf-nano (single-module WebAssembly 2.0 interpreter)
 
 use log::debug;
-use sf_nano_core::module::entities::{FunctionDef, GlobalDef};
-use sf_nano_core::module::type_context::TypeContext;
-use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
+use sf_nano_core::Module;
 use sf_nano_core::{
-    Caller, Engine, HostFn, Import, InstanceId, Limitable, RefValue, RuntimeWorld, Value,
-    WasmError, WorldAccess,
+    Caller, Engine, HostFn, Import, InstanceId, RefValue, RuntimeWorld, Value, WasmError,
 };
-use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
+use std::{collections::HashMap, fmt, fs, path::Path};
 use wast::{
     core::{NanPattern, V128Pattern, WastArgCore, WastRetCore},
     QuoteWat, Wast, WastArg, WastDirective, WastExecute, WastInvoke, WastRet,
@@ -138,9 +135,7 @@ impl From<WastValue> for Value {
                 panic!("Either should not be converted to Value")
             }
             WastValue::NullRef(ref_type) => Value::Ref(RefValue::null(), ref_type),
-            WastValue::FuncRef(Some(idx)) => {
-                Value::Ref(RefValue::new(idx as usize), RefType::funcref())
-            }
+            WastValue::FuncRef(Some(_)) => panic!("indexed function references need an instance"),
             WastValue::FuncRef(None) => Value::Ref(RefValue::null(), RefType::funcref()),
             WastValue::ExternRef(Some(idx)) => {
                 let externref_type = RefType::new(false, AbstractHeapType::Extern.into());
@@ -175,7 +170,7 @@ impl From<WastValue> for Value {
                     HeapType::Abstract(AbstractHeapType::Extern) => {
                         RefValue::externref(idx as usize)
                     }
-                    _ => RefValue::new(idx as usize),
+                    _ => panic!("indexed engine references need an instance"),
                 };
                 Value::Ref(handle, ref_type)
             }
@@ -249,304 +244,6 @@ fn spectest_imports() -> Vec<Import> {
 }
 
 // ---------------------------------------------------------------------------
-// Cross-module function forwarding (spectest-only, lives in std code)
-// ---------------------------------------------------------------------------
-//
-// HostFn is a plain fn pointer — no closures. To forward calls to
-// registered module exports, we use a thread-local slot table:
-//   1. Before instantiation, allocate a slot per cross-module function import.
-//   2. Each slot stores the target instance id and function index.
-//   3. Macro-generated fn pointers (fwd_00..fwd_127) each call forward_call(N).
-//   4. forward_call checks the instance out through a non-owning world handle.
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ForwardingTarget {
-    FunctionIndex(usize),
-}
-
-struct ForwardingSlot {
-    instance_id: InstanceId,
-    target: ForwardingTarget,
-}
-
-thread_local! {
-    static FORWARDING_SLOTS: RefCell<Vec<Option<ForwardingSlot>>> =
-        RefCell::new(Vec::new());
-    static FORWARDING_WORLD: RefCell<Option<WorldAccess>> = RefCell::new(None);
-}
-
-fn find_exported_global_index(module: &Module, export_name: &str) -> Option<usize> {
-    module
-        .globals()
-        .iter()
-        .enumerate()
-        .find_map(|(idx, global)| {
-            global
-                .export_names()
-                .iter()
-                .any(|name| name == export_name)
-                .then_some(idx)
-        })
-}
-
-fn find_exported_function_index(module: &Module, export_name: &str) -> Option<usize> {
-    module
-        .functions()
-        .iter()
-        .enumerate()
-        .find_map(|(idx, func)| {
-            func.export_names()
-                .iter()
-                .any(|name| name == export_name)
-                .then_some(idx)
-        })
-}
-
-fn find_exported_table_index(module: &Module, export_name: &str) -> Option<usize> {
-    module.tables().iter().enumerate().find_map(|(idx, table)| {
-        table
-            .export_names()
-            .iter()
-            .any(|name| name == export_name)
-            .then_some(idx)
-    })
-}
-
-fn find_exported_memory_index(module: &Module, export_name: &str) -> Option<usize> {
-    module
-        .memories()
-        .iter()
-        .enumerate()
-        .find_map(|(idx, memory)| {
-            memory
-                .export_names()
-                .iter()
-                .any(|name| name == export_name)
-                .then_some(idx)
-        })
-}
-
-fn alloc_forwarding_function_slot(instance_id: InstanceId, function_index: usize) -> usize {
-    alloc_forwarding_slot_target(instance_id, ForwardingTarget::FunctionIndex(function_index))
-}
-
-/// Allocate -- or reuse -- the slot forwarding to `(instance, target)`.
-///
-/// Reuse matters: `build_imports` runs per instantiation and walks every
-/// exported function of every registered module, so allocating afresh each
-/// time exhausts the 128 fn-pointer table in a file with several registered
-/// modules. Past that point `FORWARDER_TABLE.get` returns None and the import
-/// is silently dropped, which surfaces as "missing function import" a long way
-/// from the cause. Slots are keyed by what they forward to, so the table is
-/// bounded by distinct targets rather than by instantiation count.
-fn alloc_forwarding_slot_target(instance_id: InstanceId, target: ForwardingTarget) -> usize {
-    FORWARDING_SLOTS.with(|cell| {
-        let mut slots = cell.borrow_mut();
-        let existing = slots.iter().position(|s| {
-            s.as_ref()
-                .is_some_and(|s| s.instance_id == instance_id && s.target == target)
-        });
-        if let Some(idx) = existing {
-            return idx;
-        }
-        let idx = slots.len();
-        slots.push(Some(ForwardingSlot {
-            instance_id,
-            target,
-        }));
-        idx
-    })
-}
-
-fn clear_forwarding() {
-    FORWARDING_SLOTS.with(|cell| cell.borrow_mut().clear());
-    FORWARDING_WORLD.with(|cell| *cell.borrow_mut() = None);
-}
-
-fn forward_call(
-    slot: usize,
-    _caller: &mut Caller,
-    args: &[Value],
-    results: &mut [Value],
-) -> Result<(), WasmError> {
-    let (instance_id, target) = FORWARDING_SLOTS.with(|cell| {
-        let slots = cell.borrow();
-        match slots.get(slot).and_then(|s| s.as_ref()) {
-            Some(s) => Ok((s.instance_id, s.target)),
-            None => Err(WasmError::internal("forwarding slot empty")),
-        }
-    })?;
-    let world = FORWARDING_WORLD
-        .with(|cell| cell.borrow().clone())
-        .ok_or_else(|| WasmError::internal("forwarding world is not installed"))?;
-    let ret = match target {
-        ForwardingTarget::FunctionIndex(function_index) => {
-            world.invoke(instance_id, function_index, args)?
-        }
-    };
-    for (dst, value) in results.iter_mut().zip(ret) {
-        *dst = value;
-    }
-    Ok(())
-}
-
-macro_rules! make_forwarder {
-    ($name:ident, $n:expr) => {
-        fn $name(
-            caller: &mut Caller,
-            args: &[Value],
-            results: &mut [Value],
-        ) -> Result<(), WasmError> {
-            forward_call($n, caller, args, results)
-        }
-    };
-}
-
-make_forwarder!(fwd_00, 0);
-make_forwarder!(fwd_01, 1);
-make_forwarder!(fwd_02, 2);
-make_forwarder!(fwd_03, 3);
-make_forwarder!(fwd_04, 4);
-make_forwarder!(fwd_05, 5);
-make_forwarder!(fwd_06, 6);
-make_forwarder!(fwd_07, 7);
-make_forwarder!(fwd_08, 8);
-make_forwarder!(fwd_09, 9);
-make_forwarder!(fwd_10, 10);
-make_forwarder!(fwd_11, 11);
-make_forwarder!(fwd_12, 12);
-make_forwarder!(fwd_13, 13);
-make_forwarder!(fwd_14, 14);
-make_forwarder!(fwd_15, 15);
-make_forwarder!(fwd_16, 16);
-make_forwarder!(fwd_17, 17);
-make_forwarder!(fwd_18, 18);
-make_forwarder!(fwd_19, 19);
-make_forwarder!(fwd_20, 20);
-make_forwarder!(fwd_21, 21);
-make_forwarder!(fwd_22, 22);
-make_forwarder!(fwd_23, 23);
-make_forwarder!(fwd_24, 24);
-make_forwarder!(fwd_25, 25);
-make_forwarder!(fwd_26, 26);
-make_forwarder!(fwd_27, 27);
-make_forwarder!(fwd_28, 28);
-make_forwarder!(fwd_29, 29);
-make_forwarder!(fwd_30, 30);
-make_forwarder!(fwd_31, 31);
-make_forwarder!(fwd_32, 32);
-make_forwarder!(fwd_33, 33);
-make_forwarder!(fwd_34, 34);
-make_forwarder!(fwd_35, 35);
-make_forwarder!(fwd_36, 36);
-make_forwarder!(fwd_37, 37);
-make_forwarder!(fwd_38, 38);
-make_forwarder!(fwd_39, 39);
-make_forwarder!(fwd_40, 40);
-make_forwarder!(fwd_41, 41);
-make_forwarder!(fwd_42, 42);
-make_forwarder!(fwd_43, 43);
-make_forwarder!(fwd_44, 44);
-make_forwarder!(fwd_45, 45);
-make_forwarder!(fwd_46, 46);
-make_forwarder!(fwd_47, 47);
-make_forwarder!(fwd_48, 48);
-make_forwarder!(fwd_49, 49);
-make_forwarder!(fwd_50, 50);
-make_forwarder!(fwd_51, 51);
-make_forwarder!(fwd_52, 52);
-make_forwarder!(fwd_53, 53);
-make_forwarder!(fwd_54, 54);
-make_forwarder!(fwd_55, 55);
-make_forwarder!(fwd_56, 56);
-make_forwarder!(fwd_57, 57);
-make_forwarder!(fwd_58, 58);
-make_forwarder!(fwd_59, 59);
-make_forwarder!(fwd_60, 60);
-make_forwarder!(fwd_61, 61);
-make_forwarder!(fwd_62, 62);
-make_forwarder!(fwd_63, 63);
-make_forwarder!(fwd_64, 64);
-make_forwarder!(fwd_65, 65);
-make_forwarder!(fwd_66, 66);
-make_forwarder!(fwd_67, 67);
-make_forwarder!(fwd_68, 68);
-make_forwarder!(fwd_69, 69);
-make_forwarder!(fwd_70, 70);
-make_forwarder!(fwd_71, 71);
-make_forwarder!(fwd_72, 72);
-make_forwarder!(fwd_73, 73);
-make_forwarder!(fwd_74, 74);
-make_forwarder!(fwd_75, 75);
-make_forwarder!(fwd_76, 76);
-make_forwarder!(fwd_77, 77);
-make_forwarder!(fwd_78, 78);
-make_forwarder!(fwd_79, 79);
-make_forwarder!(fwd_80, 80);
-make_forwarder!(fwd_81, 81);
-make_forwarder!(fwd_82, 82);
-make_forwarder!(fwd_83, 83);
-make_forwarder!(fwd_84, 84);
-make_forwarder!(fwd_85, 85);
-make_forwarder!(fwd_86, 86);
-make_forwarder!(fwd_87, 87);
-make_forwarder!(fwd_88, 88);
-make_forwarder!(fwd_89, 89);
-make_forwarder!(fwd_90, 90);
-make_forwarder!(fwd_91, 91);
-make_forwarder!(fwd_92, 92);
-make_forwarder!(fwd_93, 93);
-make_forwarder!(fwd_94, 94);
-make_forwarder!(fwd_95, 95);
-make_forwarder!(fwd_96, 96);
-make_forwarder!(fwd_97, 97);
-make_forwarder!(fwd_98, 98);
-make_forwarder!(fwd_99, 99);
-make_forwarder!(fwd_100, 100);
-make_forwarder!(fwd_101, 101);
-make_forwarder!(fwd_102, 102);
-make_forwarder!(fwd_103, 103);
-make_forwarder!(fwd_104, 104);
-make_forwarder!(fwd_105, 105);
-make_forwarder!(fwd_106, 106);
-make_forwarder!(fwd_107, 107);
-make_forwarder!(fwd_108, 108);
-make_forwarder!(fwd_109, 109);
-make_forwarder!(fwd_110, 110);
-make_forwarder!(fwd_111, 111);
-make_forwarder!(fwd_112, 112);
-make_forwarder!(fwd_113, 113);
-make_forwarder!(fwd_114, 114);
-make_forwarder!(fwd_115, 115);
-make_forwarder!(fwd_116, 116);
-make_forwarder!(fwd_117, 117);
-make_forwarder!(fwd_118, 118);
-make_forwarder!(fwd_119, 119);
-make_forwarder!(fwd_120, 120);
-make_forwarder!(fwd_121, 121);
-make_forwarder!(fwd_122, 122);
-make_forwarder!(fwd_123, 123);
-make_forwarder!(fwd_124, 124);
-make_forwarder!(fwd_125, 125);
-make_forwarder!(fwd_126, 126);
-make_forwarder!(fwd_127, 127);
-
-const FORWARDER_TABLE: [HostFn; 128] = [
-    fwd_00, fwd_01, fwd_02, fwd_03, fwd_04, fwd_05, fwd_06, fwd_07, fwd_08, fwd_09, fwd_10, fwd_11,
-    fwd_12, fwd_13, fwd_14, fwd_15, fwd_16, fwd_17, fwd_18, fwd_19, fwd_20, fwd_21, fwd_22, fwd_23,
-    fwd_24, fwd_25, fwd_26, fwd_27, fwd_28, fwd_29, fwd_30, fwd_31, fwd_32, fwd_33, fwd_34, fwd_35,
-    fwd_36, fwd_37, fwd_38, fwd_39, fwd_40, fwd_41, fwd_42, fwd_43, fwd_44, fwd_45, fwd_46, fwd_47,
-    fwd_48, fwd_49, fwd_50, fwd_51, fwd_52, fwd_53, fwd_54, fwd_55, fwd_56, fwd_57, fwd_58, fwd_59,
-    fwd_60, fwd_61, fwd_62, fwd_63, fwd_64, fwd_65, fwd_66, fwd_67, fwd_68, fwd_69, fwd_70, fwd_71,
-    fwd_72, fwd_73, fwd_74, fwd_75, fwd_76, fwd_77, fwd_78, fwd_79, fwd_80, fwd_81, fwd_82, fwd_83,
-    fwd_84, fwd_85, fwd_86, fwd_87, fwd_88, fwd_89, fwd_90, fwd_91, fwd_92, fwd_93, fwd_94, fwd_95,
-    fwd_96, fwd_97, fwd_98, fwd_99, fwd_100, fwd_101, fwd_102, fwd_103, fwd_104, fwd_105, fwd_106,
-    fwd_107, fwd_108, fwd_109, fwd_110, fwd_111, fwd_112, fwd_113, fwd_114, fwd_115, fwd_116,
-    fwd_117, fwd_118, fwd_119, fwd_120, fwd_121, fwd_122, fwd_123, fwd_124, fwd_125, fwd_126,
-    fwd_127,
-];
-
-// ---------------------------------------------------------------------------
 // WastTestRunner
 // ---------------------------------------------------------------------------
 
@@ -554,7 +251,6 @@ pub struct WastTestRunner {
     engine: Engine,
     world: RuntimeWorld,
     instances: HashMap<String, InstanceId>,
-    module_bytes: HashMap<String, Vec<u8>>,
     module_counter: u32,
     current_module: Option<String>,
     named_modules: HashMap<String, String>,
@@ -564,14 +260,11 @@ pub struct WastTestRunner {
 
 impl WastTestRunner {
     pub fn new(engine: Engine) -> Self {
-        clear_forwarding();
         let world = RuntimeWorld::new();
-        FORWARDING_WORLD.with(|cell| *cell.borrow_mut() = Some(world.handle()));
         WastTestRunner {
             engine,
             world,
             instances: HashMap::new(),
-            module_bytes: HashMap::new(),
             module_counter: 0,
             current_module: None,
             named_modules: HashMap::new(),
@@ -748,18 +441,39 @@ impl WastTestRunner {
     // -----------------------------------------------------------------------
 
     fn execute_wast_invoke(&mut self, invoke: &WastInvoke) -> Result<Vec<Value>, TestError> {
-        self.sync_registered_imports_from_sources()
-            .map_err(|error| TestError::infrastructure(error.to_string()))?;
-
         let internal_name = self
             .resolve_module_name(invoke.module.as_ref())
             .map_err(TestError::infrastructure)?;
 
-        let args: Vec<Value> = self
+        let id =
+            self.instances.get(&internal_name).copied().ok_or_else(|| {
+                TestError::infrastructure("missing invocation instance".to_string())
+            })?;
+        let instance = self
+            .world
+            .instance(id)
+            .ok_or_else(|| TestError::infrastructure("freed invocation instance".to_string()))?;
+        let args = self
             .convert_wast_args(&invoke.args)
             .into_iter()
-            .map(|arg| arg.into())
-            .collect();
+            .map(|arg| {
+                let indexed = match &arg {
+                    WastValue::FuncRef(Some(index)) => Some((*index, RefType::funcref())),
+                    WastValue::Ref(Some(index), ty) if ty.is_funcref() => Some((*index, *ty)),
+                    _ => None,
+                };
+                if let Some((index, ty)) = indexed {
+                    let function = instance.get_func_by_index(index as usize).ok_or_else(|| {
+                        TestError::infrastructure(format!(
+                            "unknown function reference index {index}"
+                        ))
+                    })?;
+                    Ok(Value::Ref(function.to_value().into(), ty))
+                } else {
+                    Ok(arg.into())
+                }
+            })
+            .collect::<Result<Vec<Value>, TestError>>()?;
 
         let result = self
             .instances
@@ -779,11 +493,6 @@ impl WastTestRunner {
                         )
                     })
             });
-
-        self.sync_registered_imports_back_to_sources(&internal_name)
-            .map_err(|error| TestError::infrastructure(error.to_string()))?;
-        self.sync_registered_imports_from_sources()
-            .map_err(|error| TestError::infrastructure(error.to_string()))?;
 
         result
     }
@@ -811,9 +520,25 @@ impl WastTestRunner {
             )));
         }
 
+        let module = match exec {
+            WastExecute::Invoke(invoke) => invoke.module.as_ref(),
+            WastExecute::Get { module, .. } => module.as_ref(),
+            WastExecute::Wat(_) => None,
+        };
+        let instance = self
+            .resolve_module_name(module)
+            .ok()
+            .and_then(|name| self.instances.get(&name).copied())
+            .and_then(|id| self.world.instance(id));
+        let function_ref = |index: u32| {
+            instance?
+                .get_func_by_index(index as usize)
+                .map(|function| RefValue::from(function.to_value()))
+        };
+
         for (i, (actual_val, expected_val)) in actual.iter().zip(expected_values.iter()).enumerate()
         {
-            if !values_equal_with_nan(actual_val, expected_val) {
+            if !values_equal_with_nan(actual_val, expected_val, &function_ref) {
                 return Err(TestError::infrastructure(format!(
                     "Expected: {:?} for {} result {}, Actual: {:?}",
                     expected_val, action_description, i, actual_val
@@ -945,7 +670,7 @@ impl WastTestRunner {
                 match Module::new("test_malformed", &bytes) {
                     Ok(module) => {
                         let imports = self
-                            .build_imports(&bytes)
+                            .build_imports()
                             .map_err(|error| TestError::infrastructure(error.to_string()))?;
                         match self.world.instantiate(&self.engine, module, &imports) {
                             Ok(id) => {
@@ -1100,8 +825,6 @@ impl WastTestRunner {
         match exec {
             WastExecute::Invoke(invoke) => self.execute_wast_invoke(invoke),
             WastExecute::Get { module, global, .. } => {
-                self.sync_registered_imports_from_sources()
-                    .map_err(|error| TestError::infrastructure(error.to_string()))?;
                 let internal_name = self
                     .resolve_module_name(module.as_ref())
                     .map_err(TestError::infrastructure)?;
@@ -1209,15 +932,11 @@ impl WastTestRunner {
         let previous_current = self.current_module.replace(internal_name.clone());
 
         self.instances.insert(internal_name.clone(), instance_id);
-        self.module_bytes
-            .insert(internal_name.clone(), compiled.wasm_bytes);
 
         if let Some(name) = compiled.name {
             self.named_modules.insert(name, internal_name.clone());
         }
 
-        self.sync_registered_imports_back_to_sources(&internal_name)?;
-        self.sync_registered_imports_from_sources()?;
         if let Some(previous_current) = previous_current {
             self.drop_unreachable_module(&previous_current)?;
         }
@@ -1259,7 +978,6 @@ impl WastTestRunner {
             self.world.free(id)?;
         }
         self.instances.remove(internal_name);
-        self.module_bytes.remove(internal_name);
         Ok(())
     }
 
@@ -1268,397 +986,32 @@ impl WastTestRunner {
     }
 
     fn instantiate_named(&mut self, wasm_bytes: &[u8]) -> Result<InstanceId, WasmError> {
-        let imports = self.build_imports(wasm_bytes)?;
+        let imports = self.build_imports()?;
         let module = Module::new("main", wasm_bytes)?;
         self.world
             .instantiate(&self.engine, module, &imports)
             .map_err(|error| error.into_parts().1)
     }
 
-    /// Build imports for a module by providing spectest imports plus exports
-    /// Build imports for instantiation, forwarding cross-module function calls
-    /// via thread-local slot table.
-    fn build_imports(&self, wasm_bytes: &[u8]) -> Result<Vec<Import>, WasmError> {
+    /// Bind spectest host imports and registered modules' opaque exports.
+    fn build_imports(&self) -> Result<Vec<Import>, WasmError> {
         let mut imports = spectest_imports();
 
-        // For each registered module, provide its exports as imports.
+        // The runtime preserves shared identity, current sizes and private
+        // type-context metadata for every kind of registered export.
         for (registered_name, internal_name) in &self.registered_as {
-            if let Some((instance_id, instance)) = self
+            if let Some(instance) = self
                 .instances
                 .get(internal_name)
-                .and_then(|id| self.world.instance(*id).map(|instance| (*id, instance)))
+                .and_then(|id| self.world.instance(*id))
             {
-                if let Some(bytes) = self.module_bytes.get(internal_name) {
-                    if let Ok(module) = Module::new("_export_scan", bytes) {
-                        // Global exports — preserve live global identity
-                        for global in module.globals() {
-                            for export_name in global.export_names() {
-                                if let Some(state) =
-                                    find_exported_global_index(&module, export_name).and_then(
-                                        |global_idx| instance.shared_global_state_at(global_idx),
-                                    )
-                                {
-                                    imports.push(Import::global_with_state(
-                                        registered_name,
-                                        export_name,
-                                        state,
-                                    ));
-                                } else if !match global.def() {
-                                    sf_nano_core::module::entities::GlobalDef::Local(spec) => {
-                                        spec.mutable()
-                                    }
-                                    sf_nano_core::module::entities::GlobalDef::Import {
-                                        mutable,
-                                        ..
-                                    } => *mutable,
-                                } {
-                                    // No shared state (the interpreter keeps
-                                    // globals in one array and cannot hand out
-                                    // a cell). For an IMMUTABLE global a value
-                                    // snapshot is exact -- it can never change,
-                                    // so there is nothing for sharing to
-                                    // preserve. A mutable one is deliberately
-                                    // left unprovided rather than copied, since
-                                    // the exporter's later writes would be lost.
-                                    if let Ok(Some(value)) = instance.get_global(export_name) {
-                                        imports.push(Import::global(
-                                            registered_name,
-                                            export_name,
-                                            value,
-                                            false,
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-
-                        // Function exports — use shared linked handles
-                        for func in module.functions() {
-                            for export_name in func.export_names() {
-                                let ft = func.func_type().clone();
-                                let type_ctx = module.types().clone();
-                                if let Some(func_idx) =
-                                    find_exported_function_index(&module, export_name)
-                                {
-                                    if let Some(handle) = instance.function_handle_at(func_idx) {
-                                        let type_index = instance
-                                            .function_type_index_at(func_idx)
-                                            .unwrap_or(u32::MAX);
-                                        imports.push(
-                                            Import::linked_func_typed_with_context_and_index(
-                                                registered_name,
-                                                export_name,
-                                                handle,
-                                                ft,
-                                                type_index,
-                                                type_ctx.clone(),
-                                            ),
-                                        );
-                                    } else {
-                                        // A function without a world identity
-                                        // (for example, a re-exported host
-                                        // function) still crosses through the
-                                        // host boundary. The forwarding slot
-                                        // names its owning world instance by id,
-                                        // never by a pointer into harness
-                                        // storage.
-                                        let slot =
-                                            alloc_forwarding_function_slot(instance_id, func_idx);
-                                        // A dropped import here becomes
-                                        // "missing function import" at
-                                        // instantiation, so say which limit
-                                        // was hit rather than letting it look
-                                        // like a linking bug.
-                                        assert!(
-                                            slot < FORWARDER_TABLE.len(),
-                                            "forwarding slot table exhausted ({} entries): \
-                                             raise FORWARDER_TABLE or reuse more aggressively",
-                                            FORWARDER_TABLE.len()
-                                        );
-                                        if let Some(&fwd) = FORWARDER_TABLE.get(slot) {
-                                            // With the exporter's type context,
-                                            // so rec-group identity is checked
-                                            // rather than mere structure.
-                                            imports.push(
-                                                Import::func_typed_with_context_and_index(
-                                                    registered_name,
-                                                    export_name,
-                                                    fwd,
-                                                    ft,
-                                                    instance
-                                                        .function_type_index_at(func_idx)
-                                                        .unwrap_or(u32::MAX),
-                                                    type_ctx.clone(),
-                                                ),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Tag exports — carry the live runtime identity *and*
-                        // the source-context type_index so cross-module
-                        // rec-group identity checks link correctly.
-                        for tag in module.tags() {
-                            for export_name in tag.export_names() {
-                                let Some(handle) = instance.tag_identity(export_name) else {
-                                    continue;
-                                };
-                                imports.push(Import::linked_tag_typed_with_context_and_index(
-                                    registered_name,
-                                    export_name,
-                                    handle,
-                                    tag.func_type().clone(),
-                                    tag.type_index(),
-                                    module.types().clone(),
-                                ));
-                            }
-                        }
-
-                        // Table exports — use live instance sizes
-                        for table in module.tables() {
-                            for export_name in table.export_names() {
-                                let current_size = instance
-                                    .table_size(export_name)
-                                    .unwrap_or(table.limits().min());
-                                let state = find_exported_table_index(&module, export_name)
-                                    .and_then(|table_idx| {
-                                        instance.shared_table_state_at(table_idx)
-                                    });
-                                let import = if table.limits().is64 {
-                                    Import::table_with_state(
-                                        registered_name,
-                                        export_name,
-                                        sf_nano_core::Limits::new_64(
-                                            current_size,
-                                            table.limits().max(),
-                                        )
-                                        .expect("registered table export limits should stay valid"),
-                                        state,
-                                    )
-                                } else {
-                                    Import::table_with_state(
-                                        registered_name,
-                                        export_name,
-                                        sf_nano_core::Limits::new(
-                                            current_size,
-                                            table.limits().max(),
-                                        )
-                                        .expect("registered table export limits should stay valid"),
-                                        state,
-                                    )
-                                };
-                                imports.push(import);
-                            }
-                        }
-
-                        // Memory exports — use live instance sizes
-                        for memory in module.memories() {
-                            for export_name in memory.export_names() {
-                                let current_pages = instance
-                                    .memory_pages(export_name)
-                                    .unwrap_or(memory.limits().min());
-                                let shared_memory =
-                                    find_exported_memory_index(&module, export_name)
-                                        .and_then(|mem_idx| instance.shared_memory_at(mem_idx));
-                                let import = if memory.limits().is64 {
-                                    Import::memory_with_state(
-                                        registered_name,
-                                        export_name,
-                                        sf_nano_core::Limits::new_64(
-                                            current_pages,
-                                            memory.limits().max(),
-                                        )
-                                        .expect(
-                                            "registered memory export limits should stay valid",
-                                        ),
-                                        shared_memory,
-                                    )
-                                } else {
-                                    Import::memory_with_state(
-                                        registered_name,
-                                        export_name,
-                                        sf_nano_core::Limits::new(
-                                            current_pages,
-                                            memory.limits().max(),
-                                        )
-                                        .expect(
-                                            "registered memory export limits should stay valid",
-                                        ),
-                                        shared_memory,
-                                    )
-                                };
-                                imports.push(import);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Provide stubs/forwarders for imports from non-registered named modules
-        if let Ok(module) = Module::new("_import_scan", wasm_bytes) {
-            for func in module.functions() {
-                if let FunctionDef::Import {
-                    module: ref mod_name,
-                    ref name,
-                    ..
-                } = *func.def()
-                {
-                    let import_name = name.as_str();
-                    let mod_name = mod_name.as_str();
-                    if mod_name == "spectest" || self.registered_as.contains_key(mod_name) {
-                        continue;
-                    }
-                    if let Some(internal) = self.named_modules.get(mod_name) {
-                        if let Some(inst) = self
-                            .instances
-                            .get(internal)
-                            .and_then(|id| self.world.instance(*id))
-                        {
-                            if let Some(value) = inst.get_global(import_name)? {
-                                imports.push(Import::global(mod_name, import_name, value, false));
-                            } else {
-                                fn fallback_stub(
-                                    _: &mut Caller,
-                                    _: &[Value],
-                                    _: &mut [Value],
-                                ) -> Result<(), WasmError> {
-                                    Ok(())
-                                }
-                                imports.push(Import::func(
-                                    mod_name,
-                                    import_name,
-                                    fallback_stub as HostFn,
-                                ));
-                            }
-                        }
-                    }
+                for (name, value) in instance.exports()? {
+                    imports.push(Import::new(registered_name, &name, value));
                 }
             }
         }
 
         Ok(imports)
-    }
-
-    fn sync_registered_imports_from_sources(&mut self) -> Result<(), WasmError> {
-        let mut global_ops = Vec::new();
-
-        let module_entries: Vec<_> = self
-            .module_bytes
-            .iter()
-            .map(|(name, bytes)| (name.clone(), bytes.clone()))
-            .collect();
-
-        for (dst_internal, bytes) in module_entries {
-            let Ok(module) = Module::new("_sync_imports_dst", &bytes) else {
-                continue;
-            };
-
-            for (dst_idx, global) in module.globals().iter().enumerate() {
-                let GlobalDef::Import { module, name, .. } = global.def() else {
-                    continue;
-                };
-                let Some(src_internal) = self.registered_as.get(module.as_str()) else {
-                    continue;
-                };
-                let src_internal = src_internal.clone();
-                let Some(src_bytes) = self.module_bytes.get(&src_internal) else {
-                    continue;
-                };
-                let Ok(src_module) = Module::new("_sync_imports_src", src_bytes) else {
-                    continue;
-                };
-                let Some(src_idx) = find_exported_global_index(&src_module, name.as_str()) else {
-                    continue;
-                };
-                let Some(value) = self
-                    .instances
-                    .get(&src_internal)
-                    .and_then(|id| self.world.instance(*id))
-                    .map(|instance| instance.global_at(src_idx))
-                    .transpose()?
-                    .flatten()
-                else {
-                    continue;
-                };
-                global_ops.push((dst_internal.clone(), dst_idx, value));
-            }
-        }
-
-        for (dst_internal, dst_idx, value) in global_ops {
-            let Some(id) = self.instances.get(&dst_internal).copied() else {
-                continue;
-            };
-            if let Some(instance) = self.world.instance_mut(id) {
-                let _ = instance.replace_global_at(dst_idx, value);
-            }
-        }
-        Ok(())
-    }
-
-    fn sync_registered_imports_back_to_sources(
-        &mut self,
-        src_internal: &str,
-    ) -> Result<(), WasmError> {
-        let mut global_ops = Vec::new();
-
-        let Some(bytes) = self.module_bytes.get(src_internal) else {
-            return Ok(());
-        };
-        let Ok(module) = Module::new("_sync_exports_src", bytes) else {
-            return Ok(());
-        };
-
-        for (src_idx, global) in module.globals().iter().enumerate() {
-            let GlobalDef::Import {
-                module,
-                name,
-                mutable,
-                ..
-            } = global.def()
-            else {
-                continue;
-            };
-            if !*mutable {
-                continue;
-            }
-            let Some(dst_internal) = self.registered_as.get(module.as_str()) else {
-                continue;
-            };
-            let dst_internal = dst_internal.clone();
-            let Some(dst_bytes) = self.module_bytes.get(&dst_internal) else {
-                continue;
-            };
-            let Ok(dst_module) = Module::new("_sync_exports_dst", dst_bytes) else {
-                continue;
-            };
-            let Some(dst_idx) = find_exported_global_index(&dst_module, name.as_str()) else {
-                continue;
-            };
-            let Some(value) = self
-                .instances
-                .get(src_internal)
-                .and_then(|id| self.world.instance(*id))
-                .map(|instance| instance.global_at(src_idx))
-                .transpose()?
-                .flatten()
-            else {
-                continue;
-            };
-            global_ops.push((dst_internal, dst_idx, value));
-        }
-
-        for (dst_internal, dst_idx, value) in global_ops {
-            let Some(id) = self.instances.get(&dst_internal).copied() else {
-                continue;
-            };
-            if let Some(instance) = self.world.instance_mut(id) {
-                let _ = instance.replace_global_at(dst_idx, value);
-            }
-        }
-        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1826,11 +1179,30 @@ impl WastTestRunner {
 // NaN-aware value comparison
 // ---------------------------------------------------------------------------
 
-fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
+// Null expectations carry abstract heap types or module-local indices. No
+// runtime type context is available to this value-only comparison.
+fn null_type_is_subtype(actual: RefType, expected: RefType) -> bool {
+    if actual.nullable && !expected.nullable {
+        return false;
+    }
+    match (actual.heap_type, expected.heap_type) {
+        (HeapType::Abstract(actual), HeapType::Abstract(expected)) => {
+            actual.is_subtype_of(&expected)
+        }
+        (HeapType::Concrete(actual), HeapType::Concrete(expected)) => actual == expected,
+        _ => false,
+    }
+}
+
+fn values_equal_with_nan(
+    actual: &Value,
+    expected: &WastValue,
+    function_ref: &impl Fn(u32) -> Option<RefValue>,
+) -> bool {
     if let WastValue::Either(cases) = expected {
         return cases
             .iter()
-            .any(|candidate| values_equal_with_nan(actual, candidate));
+            .any(|candidate| values_equal_with_nan(actual, candidate, function_ref));
     }
 
     if let Some(actual_v128) = actual.as_v128_bytes() {
@@ -1855,7 +1227,7 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
         {
             match (actual_ref, expected_ref) {
                 (ref_val, Some(expected_idx)) => {
-                    !ref_val.is_null() && ref_val.payload() == *expected_idx as usize
+                    function_ref(*expected_idx).is_some_and(|expected| *ref_val == expected)
                 }
                 (ref_val, None) => ref_val.is_null(),
             }
@@ -1863,8 +1235,8 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
         (Value::Ref(actual_ref, _), WastValue::FuncRef(None)) => actual_ref.is_null(),
         (Value::Ref(actual_ref, ref_type), WastValue::NullRef(expected_type)) => {
             actual_ref.is_null()
-                && (ref_type.is_subtype_of(expected_type, &TypeContext::empty())
-                    || expected_type.is_subtype_of(&ref_type, &TypeContext::empty()))
+                && (null_type_is_subtype(*ref_type, *expected_type)
+                    || null_type_is_subtype(*expected_type, *ref_type))
                 || (actual_ref.is_null()
                     && ((ref_type.is_funcref() && expected_type.is_funcref())
                         || (ref_type.is_externref() && expected_type.is_externref())))
@@ -1944,9 +1316,7 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
             if ref_type.is_externref() =>
         {
             match (actual_ref, expected_ref) {
-                (ref_val, Some(expected_idx)) => {
-                    !ref_val.is_null() && ref_val.payload() == *expected_idx as usize
-                }
+                (ref_val, Some(expected_idx)) => ref_val.host_id() == Some(*expected_idx as usize),
                 (ref_val, None) => ref_val.is_null(),
             }
         }
@@ -1956,7 +1326,11 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
                     if ref_val.is_null() || *actual_rt != *expected_rt {
                         false
                     } else {
-                        ref_val.payload() == *expected_idx as usize
+                        if expected_rt.is_funcref() {
+                            function_ref(*expected_idx).is_some_and(|expected| *ref_val == expected)
+                        } else {
+                            ref_val.host_id() == Some(*expected_idx as usize)
+                        }
                     }
                 }
                 (ref_val, None) => ref_val.is_null(),
@@ -2113,6 +1487,56 @@ mod tests {
 
     fn test_engine() -> Engine {
         engine_for(Tier::DEFAULT)
+    }
+
+    #[test]
+    fn module_names_do_not_register_imports() {
+        for &tier in Tier::ALL {
+            let mut runner = WastTestRunner::new(engine_for(tier));
+            runner
+                .execute_wast_content(
+                    r#"
+                (module $source (func (export "f")))
+                (assert_unlinkable
+                    (module (import "source" "f" (func))) "unknown import")
+                (register "source" $source)
+                (module (import "source" "f" (func $f))
+                    (func (export "run") call $f))
+                (invoke "run")
+                "#,
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn registered_globals_share_start_and_trapping_call_writes() {
+        for &tier in Tier::ALL {
+            let mut runner = WastTestRunner::new(engine_for(tier));
+            runner
+                .execute_wast_content(
+                    r#"
+                (module $source
+                    (global $g (export "g") (mut i32) (i32.const 1))
+                    (func (export "read") (result i32) global.get $g))
+                (register "source" $source)
+                (module $target
+                    (import "source" "g" (global $g (mut i32)))
+                    (import "source" "read" (func $read (result i32)))
+                    (func $start i32.const 2 global.set $g)
+                    (start $start)
+                    (func (export "read_after_write") (result i32)
+                        i32.const 3 global.set $g call $read)
+                    (func (export "write_then_trap")
+                        i32.const 4 global.set $g unreachable))
+                (assert_return (get $source "g") (i32.const 2))
+                (assert_return (invoke $target "read_after_write") (i32.const 3))
+                (assert_trap (invoke $target "write_then_trap") "unreachable")
+                (assert_return (get $source "g") (i32.const 4))
+                "#,
+                )
+                .unwrap();
+        }
     }
 
     fn instantiate_first_module_with_backend(path: &str, tier: Tier) -> WastTestRunner {
@@ -2322,14 +1746,14 @@ mod tests {
                     (throw $e (ref.func $dummy)))
                   (func (export "throw_pair")
                     (throw $epair (ref.func $pair)))
-                  (func (export "same") (result i32)
+                  (func (export "caught_local") (result i32)
                     (block $h (result (ref $ft))
                       (try_table (catch $e $h)
                         (throw $e (ref.func $dummy)))
                       unreachable)
-                    (ref.eq (ref.func $dummy))))
+                    (call_ref $ft)))
                 (register "src")
-                (assert_return (invoke "same") (i32.const 1))
+                (assert_return (invoke "caught_local") (i32.const 99))
                 (module
                   (type $ft (func (result i32)))
                   (type $pair (func (result i32 i64)))

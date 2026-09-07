@@ -5,15 +5,17 @@
 //! flat runtime state, so nothing here exists in an interpreter-only build —
 //! which is exactly why it lives inside the `jit` subtree instead of behind
 //! per-item cfgs in `vm::entities`. The shared entity types (`MemInst`,
-//! `TableInst`, `GlobalInst`, `FunctionInst`) stay in `vm::entities`; the
-//! JIT-only operations on them live here as extension traits.
+//! `TableInst`, `GlobalInst`) stay in `vm::entities`; their JIT operations
+//! live here as extensions. `FunctionInst` is the JIT-owned runtime function
+//! representation and lives here in full.
 
 use crate::collections;
 use crate::config::Config;
 use crate::error::WasmError;
-use crate::module::{type_context::TypeContext, type_defs::FunctionType};
+use crate::module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType};
+use crate::utils::limits::Limits;
 use crate::value_type::{AbstractHeapType, HeapType, ValueType};
-use crate::vm::entities::{FunctionInst, GlobalInst, MemBacking, MemInst, TableInst};
+use crate::vm::entities::{GlobalCell, GlobalInst, HostCallback, MemBacking, MemInst, TableInst};
 use crate::vm::jit::runtime::code_buf::CodeBuffer;
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::RefValue;
@@ -21,6 +23,61 @@ use core::cell::{Cell, RefCell};
 use tracked_alloc::rc::Rc;
 #[cfg(any(sf_ir_dump, sf_jitdump))]
 use tracked_alloc::string::String;
+
+#[derive(Debug)]
+pub(crate) enum FunctionInst {
+    Local {
+        spec: FunctionSpec,
+        type_index: u32,
+    },
+    Host {
+        type_index: u32,
+        func_type: Rc<FunctionType>,
+        callback: HostCallback,
+    },
+    Linked {
+        type_index: u32,
+        func_type: Rc<FunctionType>,
+        handle: RefValue,
+    },
+}
+
+impl FunctionInst {
+    #[inline]
+    pub(crate) fn func_type(&self) -> &FunctionType {
+        match self {
+            FunctionInst::Local { spec, .. } => spec.func_type(),
+            FunctionInst::Host { func_type, .. } => func_type,
+            FunctionInst::Linked { func_type, .. } => func_type,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn type_index(&self) -> u32 {
+        match self {
+            FunctionInst::Local { type_index, .. } => *type_index,
+            FunctionInst::Host { type_index, .. } | FunctionInst::Linked { type_index, .. } => {
+                *type_index
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn spec(&self) -> Option<&FunctionSpec> {
+        match self {
+            FunctionInst::Local { spec, .. } => Some(spec),
+            FunctionInst::Host { .. } | FunctionInst::Linked { .. } => None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn linked_handle(&self) -> Option<RefValue> {
+        match self {
+            FunctionInst::Linked { handle, .. } => Some(*handle),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TableDispatchMode {
@@ -318,7 +375,7 @@ impl Default for ModuleInst {
             config: Config::new(),
             #[cfg(any(sf_ir_dump, sf_jitdump))]
             name: String::new(),
-            types: TypeContext::empty(),
+            types: TypeContext::new(collections::Vec::new()),
             functions: collections::Vec::new(),
             function_handles: collections::Vec::new(),
             tables: collections::Vec::new(),
@@ -332,5 +389,51 @@ impl Default for ModuleInst {
             global_reachable: collections::Vec::new(),
             native_buf: RefCell::new(None),
         }
+    }
+}
+
+// Native instantiation rebuilds shared wrappers with the importing module's
+// declared types. The interpreter retains the original shared wrappers.
+impl TableInst {
+    #[inline]
+    pub(crate) fn from_shared(
+        limits: Limits,
+        value_type: ValueType,
+        elements: Rc<RefCell<collections::Vec<RefValue>>>,
+        revision: Rc<Cell<u64>>,
+    ) -> Self {
+        Self {
+            elements,
+            revision,
+            limits,
+            value_type,
+        }
+    }
+    #[inline]
+    pub(crate) fn clone_shared_elements(&self) -> Rc<RefCell<collections::Vec<RefValue>>> {
+        Rc::clone(&self.elements)
+    }
+}
+
+impl GlobalInst {
+    pub(crate) fn from_shared(cell: Rc<GlobalCell>, mutable: bool, value_type: ValueType) -> Self {
+        let raw_ptr = cell.raw_ptr();
+        GlobalInst {
+            raw_ptr,
+            cell,
+            mutable,
+            value_type,
+        }
+    }
+    #[inline]
+    pub(crate) fn clone_shared_cell(&self) -> Rc<GlobalCell> {
+        Rc::clone(&self.cell)
+    }
+}
+
+#[cfg(sf_has_guard_pages)]
+impl MemInst {
+    pub(crate) fn has_guard_pages(&self) -> bool {
+        self.backing.borrow().guard.is_some()
     }
 }

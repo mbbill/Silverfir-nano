@@ -229,22 +229,6 @@ pub(crate) fn reset_debug_state() {
     SIGNAL_COUNT.store(0, Ordering::Relaxed);
 }
 
-/// Drop all registered JIT ranges.
-///
-/// Callers must only use this when no compiled native frames from the old
-/// ranges can still fault, otherwise a later trap would be unable to resolve
-/// back to its owning function.
-pub(crate) fn clear_registered_jit_ranges() {
-    lock_trap_table();
-    unsafe {
-        let table = &raw mut TRAP_TABLE;
-        if let Some(table) = (*table).as_mut() {
-            table.clear();
-        }
-    }
-    unlock_trap_table();
-}
-
 /// Set the byte offset of `NativeContext::trap_kind` so the signal handler
 /// can write it without knowing the struct layout at compile time.
 pub(crate) fn set_context_offsets(
@@ -259,6 +243,22 @@ pub(crate) fn set_context_offsets(
 
 #[cfg(test)]
 mod tests {
+
+    /// Drop all registered JIT ranges.
+    ///
+    /// Callers must only use this when no compiled native frames from the old
+    /// ranges can still fault, otherwise a later trap would be unable to resolve
+    /// back to its owning function.
+    fn clear_registered_jit_ranges() {
+        lock_trap_table();
+        unsafe {
+            let table = &raw mut TRAP_TABLE;
+            if let Some(table) = (*table).as_mut() {
+                table.clear();
+            }
+        }
+        unlock_trap_table();
+    }
     use super::*;
     use std::sync::Mutex;
 

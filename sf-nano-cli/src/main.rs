@@ -1,6 +1,6 @@
 #[cfg(feature = "jit")]
 use sf_nano_core::jit_stats_snapshot;
-use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
+use sf_nano_core::wasi::{wasi_imports, WasiContextBuilder};
 use sf_nano_core::{Config, Engine, Tier};
 
 use std::path::PathBuf;
@@ -241,11 +241,12 @@ fn run_cli(args: &[String]) -> i32 {
             }
         }
         let ctx = ctx_builder.build();
-        set_wasi_ctx(ctx);
+        let imports = wasi_imports(ctx);
 
         run_module(
             &engine,
             &data,
+            &imports,
             module_name,
             compile_only,
             #[cfg(feature = "interp")]
@@ -277,11 +278,12 @@ fn run_cli(args: &[String]) -> i32 {
 fn run_module(
     engine: &Engine,
     data: &[u8],
+    imports: &[sf_nano_core::Import],
     module_name: &str,
     compile_only: bool,
     #[cfg(feature = "interp")] interp_stats: bool,
 ) -> i32 {
-    use sf_nano_core::{module::Module, RuntimeWorld};
+    use sf_nano_core::{Module, RuntimeWorld};
 
     let module = match Module::new(module_name, data) {
         Ok(module) => module,
@@ -290,9 +292,8 @@ fn run_module(
             return 1;
         }
     };
-    let imports = wasi_imports();
     let mut world = RuntimeWorld::new();
-    let instance_id = match world.instantiate(engine, module, &imports) {
+    let instance_id = match world.instantiate(engine, module, imports) {
         Ok(instance_id) => instance_id,
         Err(err) => {
             eprintln!("Error instantiating module: {}", err.error());
@@ -340,37 +341,33 @@ fn run_module(
 /// for -- the one place the CLI still asks which engine ran.
 #[cfg(feature = "interp")]
 fn print_interp_stats(instance: &sf_nano_core::Instance) {
-    let Some(()) = instance.with_interp(|inst| {
-        let native = inst.dispatch_count();
-        if native > 0 && inst.dispatch_counting_enabled() {
-            eprintln!("[interp] native dispatches: {native}");
-        }
-        let code_len = inst.engine_code_len();
-        if code_len > 0 {
-            eprintln!(
-                "[interp] engine code: {code_len} bytes ({:.1} KB)",
-                code_len as f64 / 1024.0
-            );
-        }
-        let bigrams = inst.bigram_stats();
-        if !bigrams.is_empty() {
-            eprintln!("[interp] top fallthrough bigrams (static):");
-            for ((a, b), n) in bigrams.iter().take(16) {
-                eprintln!("[interp]   {a:?} -> {b:?}: {n}");
-            }
-        }
-        let slow = inst.slow_exit_stats();
-        if !slow.is_empty() {
-            let total: u64 = slow.iter().map(|(_, n)| n).sum();
-            eprintln!("[interp] slow exits: {total}");
-            for (op, n) in slow.iter().take(12) {
-                eprintln!("[interp]   {op:?}: {n}");
-            }
-        }
-    }) else {
+    let Some(stats) = instance.interpreter_stats() else {
         eprintln!("[interp] --interp-stats: this module ran on another engine");
         return;
     };
+    if let Some(native) = stats.dispatches.filter(|&count| count > 0) {
+        eprintln!("[interp] native dispatches: {native}");
+    }
+    let code_len = stats.engine_code_bytes;
+    if code_len > 0 {
+        eprintln!(
+            "[interp] engine code: {code_len} bytes ({:.1} KB)",
+            code_len as f64 / 1024.0
+        );
+    }
+    if !stats.bigrams.is_empty() {
+        eprintln!("[interp] top fallthrough bigrams (static):");
+        for ((a, b), n) in stats.bigrams.iter().take(16) {
+            eprintln!("[interp]   {a} -> {b}: {n}");
+        }
+    }
+    if !stats.slow_exits.is_empty() {
+        let total: u64 = stats.slow_exits.iter().map(|(_, n)| n).sum();
+        eprintln!("[interp] slow exits: {total}");
+        for (op, n) in stats.slow_exits.iter().take(12) {
+            eprintln!("[interp]   {op}: {n}");
+        }
+    }
 }
 
 fn print_usage(program_name: &str) {

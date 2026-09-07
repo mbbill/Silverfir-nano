@@ -4,7 +4,7 @@ use core::fmt;
 
 use crate::{
     error::WasmError,
-    opcodes::{self, *},
+    opcodes::*,
     utils::payload::Payload,
     value_type::{HeapType, RefType, ValueType},
 };
@@ -21,7 +21,7 @@ pub(crate) fn simd_opcode_error() -> WasmError {
     simd_unsupported_target_error()
 }
 
-pub trait OpcodeHandler {
+pub(crate) trait OpcodeHandler {
     fn on_decode_begin(&mut self) -> Result<(), WasmError>;
 
     /// Streaming interface: consumers can fetch one or multiple ops from `stream`.
@@ -32,7 +32,7 @@ pub trait OpcodeHandler {
 }
 
 #[derive(Debug, Clone)]
-pub enum BlockType {
+pub(crate) enum BlockType {
     Empty,
     ValueType(ValueType),
     TypeIndex(usize),
@@ -50,7 +50,7 @@ impl fmt::Display for BlockType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CatchClauseKind {
+pub(crate) enum CatchClauseKind {
     Catch,
     CatchRef,
     CatchAll,
@@ -69,15 +69,15 @@ impl fmt::Display for CatchClauseKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct CatchClause {
-    pub kind: CatchClauseKind,
-    pub tag_idx: Option<u32>,
-    pub label_idx: u32,
+pub(crate) struct CatchClause {
+    pub(crate) kind: CatchClauseKind,
+    pub(crate) tag_idx: Option<u32>,
+    pub(crate) label_idx: u32,
 }
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
-pub enum Immediate {
+pub(crate) enum Immediate {
     None,
     I32(i32),
     I64(i64),
@@ -276,17 +276,17 @@ impl fmt::Display for Immediate {
 
 /// A single decoded instruction with its immediate and byte offsets.
 #[derive(Debug, Clone)]
-pub struct DecodedOp {
-    pub wasm_op: WasmOpcode,
-    pub op_offset: usize,
-    pub next_op_offset: usize,
-    pub imm: Immediate,
+pub(crate) struct DecodedOp {
+    pub(crate) wasm_op: WasmOpcode,
+    pub(crate) op_offset: usize,
+    pub(crate) next_op_offset: usize,
+    pub(crate) imm: Immediate,
 }
 
-pub struct Decoder<'a, 'b> {
+pub(crate) struct Decoder<'a, 'b> {
     handlers: collections::Vec<&'a mut dyn OpcodeHandler>,
     code: &'b [u8],
-    payload: Payload<'b>,
+    pub(crate) payload: Payload<'b>,
     /// The op most recently decoded. Every consumer in this tree walks the
     /// body strictly forwards, one op at a time, so there is one slot
     /// rather than a buffer: a `Vec` of `DecodedOp` cost a push, a
@@ -295,13 +295,10 @@ pub struct Decoder<'a, 'b> {
     /// reference to it is handed out.
     current: DecodedOp,
     end_reached: bool,
-    /// Test-only switch for differential coverage of predecoder fast paths.
-    #[cfg(test)]
-    predecode_fast_disabled: bool,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
-    pub fn new(code: &'b [u8]) -> Self {
+    pub(crate) fn new(code: &'b [u8]) -> Self {
         Decoder {
             handlers: collections::Vec::new(),
             code,
@@ -313,17 +310,10 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 imm: Immediate::None,
             },
             end_reached: false,
-            #[cfg(test)]
-            predecode_fast_disabled: false,
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn disable_predecode_fast_for_test(&mut self) {
-        self.predecode_fast_disabled = true;
-    }
-
-    pub fn add_handler(&mut self, handler: &'a mut dyn OpcodeHandler) {
+    pub(crate) fn add_handler(&mut self, handler: &'a mut dyn OpcodeHandler) {
         self.handlers.push(handler);
     }
 
@@ -334,7 +324,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
         self.handlers.iter_mut().try_for_each(f)
     }
 
-    pub fn decode_function(&mut self) -> Result<(), WasmError> {
+    pub(crate) fn decode_function(&mut self) -> Result<(), WasmError> {
         self.notify_handlers(|h| h.on_decode_begin())?;
 
         // Drive each handler with its own pass over the body.
@@ -1218,38 +1208,16 @@ fn decode_block_type(payload: &mut Payload<'_>) -> Result<BlockType, WasmError> 
     Ok(block_type)
 }
 
-pub struct OpStream<'d, 'a, 'b> {
-    decoder: &'d mut Decoder<'a, 'b>,
+pub(crate) struct OpStream<'d, 'a, 'b> {
+    pub(crate) decoder: &'d mut Decoder<'a, 'b>,
 }
 
 impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
-    /// Bytes not yet consumed by the generic decoder.
-    ///
-    /// This narrow crate-internal hook lets the interpreter probe its common
-    /// opcodes without constructing an owning `DecodedOp`. A miss must leave
-    /// the slice untouched and fall back to [`OpStream::next`].
-    #[cfg(sf_interp)]
-    #[inline]
-    pub(crate) fn predecode_bytes(&self) -> &'b [u8] {
-        #[cfg(test)]
-        if self.decoder.predecode_fast_disabled {
-            return &[];
-        }
-        self.decoder.payload.remaining_slice()
-    }
-
-    /// Commit a predecoder probe that already validated `len` input bytes.
-    #[cfg(sf_interp)]
-    #[inline]
-    pub(crate) fn consume_predecoded(&mut self, len: usize) {
-        self.decoder.payload.advance_known_valid(len);
-    }
-
     /// Decode and return the next op, or `None` at the end of the body.
     ///
     /// The reference borrows the stream, so it is valid until the next
     /// call — which is exactly how every consumer reads it.
-    pub fn next(&mut self) -> Result<Option<&DecodedOp>, WasmError> {
+    pub(crate) fn next(&mut self) -> Result<Option<&DecodedOp>, WasmError> {
         if self.decoder.end_reached {
             return Ok(None);
         }
@@ -1258,53 +1226,14 @@ impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
     }
 }
 
-pub struct OpcodePrinter {
-    indent: usize,
-}
-
-impl OpcodePrinter {
-    pub fn new() -> Self {
-        OpcodePrinter { indent: 1 }
-    }
-}
-
-impl OpcodeHandler for OpcodePrinter {
-    fn on_stream<'x, 'y, 'z>(
-        &mut self,
-        stream: &mut OpStream<'x, 'y, 'z>,
-    ) -> Result<(), WasmError> {
-        use crate::opcodes::Opcode::*;
-        while let Some(decoded) = stream.next()? {
-            if let opcodes::WasmOpcode::OP(op) = decoded.wasm_op {
-                if let END | ELSE = op {
-                    if self.indent > 0 {
-                        self.indent -= 1
-                    };
-                }
-                if let BLOCK | LOOP | IF | ELSE = op {
-                    self.indent += 1;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn on_decode_begin(&mut self) -> Result<(), WasmError> {
-        Ok(())
-    }
-
-    fn on_decode_end(&mut self) -> Result<(), WasmError> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Decoder, OpStream, OpcodeHandler};
-    use crate::{
-        error::WasmError,
-        opcodes::OPCODE_CONSTANTS::{BLOCK, END, PREFIX_FD},
-    };
+    use crate::{error::WasmError, opcodes::Opcode};
+
+    const BLOCK: u8 = Opcode::BLOCK as u8;
+    const END: u8 = Opcode::END as u8;
+    const PREFIX_FD: u8 = Opcode::PREFIX_FD as u8;
 
     struct DrainHandler;
 

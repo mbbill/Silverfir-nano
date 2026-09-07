@@ -180,6 +180,7 @@ def prepare(
             f"{WASMI_BENCHMARKS_REVISION}"
         )
     wasmi_performance.verify_cargo_criterion(cargo, toolchain)
+    wasmi_performance.adapt_runtime_api(suite, source)
     wasmi_performance.write_patch_config(
         suite / ".cargo" / "config.toml",
         source,

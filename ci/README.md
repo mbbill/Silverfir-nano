@@ -35,6 +35,14 @@ python -m ci.lint_policy
 
 ## Performance jobs
 
+When a measured revision includes `ci/wasmi_adapter.patch`, the wasmi driver
+applies that revision's explicit API migration to its private suite copy before
+building and records the patch hash. Older revisions keep the pinned adapter.
+The current migration changes error construction and guarded memory access;
+instantiation and timed calls are unchanged. Patch conflicts fail the build.
+Remove this transitional patch when the pinned upstream adapter adopts the
+released API. It adds no benchmark runs or engine configurations.
+
 `ci.performance` compares adjacent baseline/candidate samples as paired log
 ratios:
 

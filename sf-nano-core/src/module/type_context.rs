@@ -23,40 +23,30 @@ struct ActiveTypeGroup {
 }
 
 #[derive(Clone)]
-pub struct TypeContext {
+pub(crate) struct TypeContext {
     types: Rc<[Rc<DefType>]>,
 }
 
 impl TypeContext {
-    pub fn new(types: collections::Vec<Rc<DefType>>) -> Self {
+    pub(crate) fn new(types: collections::Vec<Rc<DefType>>) -> Self {
         Self {
             types: collections::into_alloc_vec(types).into(),
         }
     }
 
-    pub fn empty() -> Self {
-        Self {
-            types: Rc::from([]),
-        }
-    }
-
-    pub fn get(&self, idx: u32) -> Option<&Rc<DefType>> {
+    pub(crate) fn get(&self, idx: u32) -> Option<&Rc<DefType>> {
         self.types.get(idx as usize)
     }
 
-    pub fn as_slice(&self) -> &[Rc<DefType>] {
+    pub(crate) fn as_slice(&self) -> &[Rc<DefType>] {
         &self.types
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.types.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.types.is_empty()
-    }
-
-    pub fn get_function_type(&self, idx: u32) -> Option<&Rc<FunctionType>> {
+    pub(crate) fn get_function_type(&self, idx: u32) -> Option<&Rc<FunctionType>> {
         self.get(idx)
             .and_then(|def_type| match &def_type.composite {
                 CompositeType::Func(func_type) => Some(func_type),
@@ -64,7 +54,7 @@ impl TypeContext {
             })
     }
 
-    pub fn types_equivalent(&self, idx1: u32, idx2: u32) -> bool {
+    pub(crate) fn types_equivalent(&self, idx1: u32, idx2: u32) -> bool {
         let mut visiting_groups = collections::Vec::new();
         self.types_equivalent_inner(idx1, idx2, &mut visiting_groups)
     }
@@ -338,7 +328,7 @@ impl core::fmt::Debug for TypeContext {
     }
 }
 
-pub fn check_function_types_equivalent(
+pub(crate) fn check_function_types_equivalent(
     export_type: &FunctionType,
     import_type: &FunctionType,
     export_type_ctx: &TypeContext,
@@ -368,7 +358,7 @@ pub fn check_function_types_equivalent(
     true
 }
 
-pub fn concrete_type_matches_cross_context(
+pub(crate) fn concrete_type_matches_cross_context(
     actual_type_ctx: &TypeContext,
     actual_type_idx: u32,
     expected_type_ctx: &TypeContext,
@@ -405,7 +395,7 @@ pub fn concrete_type_matches_cross_context(
     false
 }
 
-pub fn value_types_equivalent_cross_module(
+pub(crate) fn value_types_equivalent_cross_module(
     exp_type: &ValueType,
     imp_type: &ValueType,
     export_type_ctx: &TypeContext,

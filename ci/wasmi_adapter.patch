@@ -1,0 +1,35 @@
+diff --git a/runtimes/silverfir-nano/lib.rs b/runtimes/silverfir-nano/lib.rs
+index 549db60..e6cee92 100644
+--- a/runtimes/silverfir-nano/lib.rs
++++ b/runtimes/silverfir-nano/lib.rs
+@@ -137,17 +137,17 @@ impl ModuleInstance for SilverfirNanoModule {
+         let memory = self
+             .instance
+             .memory()
+-            .ok_or_else(|| anyhow!("silverfir-nano: module has no memory"))?;
+-        let slice = mem_slice(memory, ptr, buffer.len())?;
++            .map_err(|err| anyhow!("silverfir-nano: cannot borrow memory: {err}"))?;
++        let slice = mem_slice(&memory, ptr, buffer.len())?;
+         buffer.copy_from_slice(slice);
+         Ok(())
+     }
+
+     fn write_memory(&mut self, _name: &str, ptr: u32, buffer: &[u8]) -> anyhow::Result<()> {
+-        let memory = self
++        let mut memory = self
+             .instance
+             .memory_mut()
+-            .ok_or_else(|| anyhow!("silverfir-nano: module has no memory"))?;
++            .map_err(|err| anyhow!("silverfir-nano: cannot borrow memory: {err}"))?;
+         let len = memory.len();
+         let start = ptr as usize;
+         let end = start
+@@ -197,7 +197,7 @@ fn host_value_to_utils(val: Value) -> Result<utils::Val, WasmError> {
+         Value::F32(val) => utils::Val::F32(val),
+         Value::F64(val) => utils::Val::F64(val),
+         _ => {
+-            return Err(WasmError::Trap(
++            return Err(WasmError::trap(
+                 "silverfir-nano: unsupported host function argument type",
+             ));
+         }

@@ -29,16 +29,16 @@ use super::entities::{Data, Element};
 mod expressions;
 mod functions;
 
-pub struct Validator<'a> {
+pub(crate) struct Validator<'a> {
     module: &'a Module,
 }
 
 impl<'a> Validator<'a> {
-    pub fn new(module: &'a Module) -> Self {
+    pub(crate) fn new(module: &'a Module) -> Self {
         Validator { module }
     }
 
-    pub fn validate(&mut self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&mut self) -> Result<(), WasmError> {
         self.module.ensure_simd_supported()?;
 
         if self.module.version() != 1 {

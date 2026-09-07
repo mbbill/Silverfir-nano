@@ -55,7 +55,7 @@ fn unsupported() -> WasmError {
 }
 
 pub(crate) fn is_template_unsupported(err: &WasmError) -> bool {
-    matches!(err, WasmError::Internal(message) if *message == TEMPLATE_UNSUPPORTED)
+    matches!(err, WasmError { repr: crate::error::ErrorRepr::Internal(message) } if *message == TEMPLATE_UNSUPPORTED)
 }
 
 pub(crate) fn scan_function(
@@ -1511,7 +1511,12 @@ mod tests {
             &[0x41, 0x00, 0x0b],
         );
         let err = scan_function(test_config(8), &spec, false).unwrap_err();
-        assert!(matches!(err, crate::error::WasmError::Invalid(_)));
+        assert!(matches!(
+            err,
+            crate::error::WasmError {
+                repr: crate::error::ErrorRepr::Invalid(_)
+            }
+        ));
     }
 
     #[test]
@@ -1526,7 +1531,12 @@ mod tests {
             ],
         );
         let err = scan_function(test_config(4), &spec, false).unwrap_err();
-        assert!(matches!(err, crate::error::WasmError::Invalid(_)));
+        assert!(matches!(
+            err,
+            crate::error::WasmError {
+                repr: crate::error::ErrorRepr::Invalid(_)
+            }
+        ));
     }
 
     #[test]

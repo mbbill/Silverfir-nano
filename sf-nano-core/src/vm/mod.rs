@@ -29,6 +29,7 @@ pub(crate) mod entities;
 pub(crate) mod imports;
 pub(crate) mod instance;
 pub(crate) mod link;
+pub(crate) mod memory;
 pub(crate) mod tag;
 pub(crate) mod value;
 

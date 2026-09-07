@@ -24,11 +24,11 @@ use crate::module::Module;
 use crate::value_type::ValueType;
 use crate::vm::entities::{Caller, HostCallback};
 use crate::vm::interpreter::{InterpInstance, InterpInstanceAccess};
-use crate::vm::link::InstanceToken;
+use crate::vm::link::{value_matches_type, InstanceToken, RefTypeOwner};
 use crate::vm::value::Value;
 use tracked_alloc::string::String;
 
-use super::{Import, ImportValue, ImportedFunction};
+use crate::vm::imports::{Import, ImportValue, ImportedFunction};
 
 /// One resolved host import: the module's declared signature plus the
 /// callback the embedder bound to that name.
@@ -161,12 +161,10 @@ pub(super) fn bind(
             for (ty, &raw) in entry.func_type.params().iter().zip(args.iter()) {
                 params.push(raw_to_value(*ty, raw)?);
             }
-            let mut vresults: Vec<Value> = Vec::with_capacity(results.len());
-            for ty in entry.func_type.results().iter() {
-                vresults.push(raw_to_value(*ty, 0)?);
-            }
+            let mut vresults = crate::collections::vec![Value::Unknown; results.len()];
 
             entry.callback.call(caller, &params, &mut vresults)?;
+            caller.validate_results(&vresults, entry.func_type.results())?;
 
             for (dst, v) in results.iter_mut().zip(vresults.iter()) {
                 *dst = value_to_raw(v)?;
@@ -205,6 +203,9 @@ pub(super) fn invoke_by_name(
     let raw_args = access.with_instance(|inst| {
         let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
         for (&value_type, &value) in func_type.params().iter().zip(args) {
+            if !value_matches_type(&value, value_type, RefTypeOwner::Interp(inst)) {
+                return Err(WasmError::invalid("argument type mismatch"));
+            }
             let value = inst.localize_value_for_type(value, value_type);
             raw_args.push(value_to_raw(&value)?);
         }
@@ -242,6 +243,9 @@ pub(super) fn call_by_index(
             .ok_or(WasmError::invalid("function index out of range"))?
             .func_type();
         for (&value_type, &value) in func_type.params().iter().zip(args) {
+            if !value_matches_type(&value, value_type, RefTypeOwner::Interp(inst)) {
+                return Err(WasmError::invalid("argument type mismatch"));
+            }
             let value = inst.localize_value_for_type(value, value_type);
             raw_args.push(value_to_raw(&value)?);
         }
@@ -292,6 +296,9 @@ pub(super) fn invoke_by_index(
             .ok_or(WasmError::invalid("function index out of range"))?
             .func_type();
         for (&value_type, &value) in func_type.params().iter().zip(args) {
+            if !value_matches_type(&value, value_type, RefTypeOwner::Interp(inst)) {
+                return Err(WasmError::invalid("argument type mismatch"));
+            }
             let value = inst.localize_value_for_type(value, value_type);
             raw_args.push(value_to_raw(&value)?);
         }
@@ -328,16 +335,6 @@ pub(super) fn global_at(inst: &InterpInstance, idx: usize) -> Result<Option<Valu
         .value_type();
     let value = raw_to_value(ty, raw)?;
     Ok(Some(inst.absolutize_value_for_type(value, ty)))
-}
-
-/// Overwrite a global by index, checked against its declared type.
-pub(super) fn replace_global_at(
-    inst: &mut InterpInstance,
-    idx: usize,
-    value: Value,
-) -> Result<(), WasmError> {
-    let raw = value_to_raw(&value)?;
-    inst.set_global_at(idx, raw)
 }
 
 /// The numeric value types this boundary carries, or `None` for a type

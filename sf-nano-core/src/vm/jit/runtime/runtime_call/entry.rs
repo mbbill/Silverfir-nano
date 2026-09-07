@@ -10,23 +10,21 @@ use crate::{
         jit::instance::JitInstance,
         jit::runtime::{
             self,
-            common::{
-                internal_error, run_frame_call_with_status, trap_error, value_matches_value_type,
-                NativeCallStatus,
-            },
+            common::{internal_error, run_frame_call_with_status, trap_error, NativeCallStatus},
             context::{NativeContext, PendingEscape},
             StoreAccess,
         },
         jit::value_encoding::{
             localize, try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
+        link::{value_matches_type, RefTypeOwner},
         tag::TagIdentity,
         value::{machine_raw_to_ref, RefValue, Value},
     },
 };
 
 #[cfg(test)]
-use crate::vm::entities::{Caller, FunctionInst};
+use crate::vm::entities::Caller;
 
 use super::abi::{
     RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind, RuntimeCallTypeCheckKind,
@@ -344,9 +342,12 @@ fn invoke_runtime_target(
     };
     let ret_vals = match runtime::eval_access(target, local_index, &args) {
         Ok(values) => values,
-        Err(WasmError::HostThrow {
-            tag,
-            args: exn_args,
+        Err(WasmError {
+            repr:
+                crate::error::ErrorRepr::HostThrow {
+                    tag,
+                    args: exn_args,
+                },
         }) => {
             if !validate_host_throw_payload(tag, &exn_args, ctx) {
                 return Err(trap_error("host threw mistyped exception"));
@@ -404,7 +405,7 @@ fn validate_host_throw_payload(tag: TagIdentity, payload: &[Value], ctx: &Native
         return false;
     }
     for (value, expected) in payload.iter().zip(params.iter()) {
-        if !value_matches_value_type(value, *expected) {
+        if !value_matches_type(value, *expected, RefTypeOwner::Jit(store)) {
             return false;
         }
     }
@@ -413,6 +414,7 @@ fn validate_host_throw_payload(tag: TagIdentity, payload: &[Value], ctx: &Native
 
 #[cfg(test)]
 mod tests {
+    use crate::vm::jit::entities::FunctionInst;
     #[cfg(any(sf_ir_dump, sf_jitdump))]
     use tracked_alloc::string::String;
     use tracked_alloc::{boxed::Box, rc::Rc};
@@ -423,22 +425,33 @@ mod tests {
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
-            entities::{HostFn, MemInst},
             jit::entities::ModuleInst,
-            jit::instance::{tests::store as test_store, JitInstance},
+            jit::instance::JitInstance,
             jit::runtime::{common::NativeCallStatus, context::NativeContextBox},
+            link::{InstanceToken, LinkRegistry},
         },
     };
 
-    fn test_context(module: ModuleInst) -> (Box<JitInstance>, NativeContextBox) {
-        let mut store = test_store(module);
-        let n_globals = store.module().globals.len();
+    fn test_context(module: ModuleInst) -> (InstanceToken, NativeContextBox) {
+        let registry = LinkRegistry::new();
+        let (id, instance) = registry.reserve_instance();
+        let n_globals = module.globals.len();
+        let store = Box::new(JitInstance::new_with_registries(
+            module,
+            instance,
+            registry.function_registry_shared(),
+            registry.ref_registry_shared(),
+            #[cfg(sf_has_simd)]
+            registry.simd_registry_shared(),
+        ));
+        registry.instance_table().occupy_jit(id, store).unwrap();
+        let token = registry.instance_table().checkout(id).unwrap();
         let ctx = NativeContext::new(
-            (&mut *store) as *mut JitInstance,
+            token.jit_pointer().unwrap(),
             core::ptr::null_mut(),
             n_globals,
         );
-        (store, ctx)
+        (token, ctx)
     }
 
     fn call_runtime<T: Copy>(ctx: &mut NativeContext, frame: &mut [u64], meta: &T) -> u32 {
@@ -473,14 +486,15 @@ mod tests {
             crate::config::Config::new(),
             #[cfg(any(sf_ir_dump, sf_jitdump))]
             String::from("m"),
-            TypeContext::empty(),
+            TypeContext::new(collections::Vec::new()),
         );
         module.functions.push(FunctionInst::Host {
+            type_index: u32::MAX,
             func_type,
-            callback: crate::vm::entities::HostCallback::new(host_add as HostFn),
+            callback: crate::vm::entities::HostCallback::new(host_add),
         });
         module.memories.push(
-            MemInst::new(
+            crate::vm::jit::test_support::heap_memory(
                 &crate::config::Config::new(),
                 Limits::new(1, Some(1)).unwrap(),
             )
@@ -537,21 +551,22 @@ mod tests {
             crate::config::Config::new(),
             #[cfg(any(sf_ir_dump, sf_jitdump))]
             String::from("m"),
-            TypeContext::empty(),
+            TypeContext::new(collections::Vec::new()),
         );
         module.functions.push(FunctionInst::Host {
+            type_index: u32::MAX,
             func_type,
-            callback: crate::vm::entities::HostCallback::new(host_add as HostFn),
+            callback: crate::vm::entities::HostCallback::new(host_add),
         });
         module.memories.push(
-            MemInst::new(
+            crate::vm::jit::test_support::heap_memory(
                 &crate::config::Config::new(),
                 Limits::new(1, Some(1)).unwrap(),
             )
             .expect("test memory within runtime limits"),
         );
         let (mut store, mut ctx) = test_context(module);
-        let _ = store.register_local_function(0);
+        store.jit_mut().unwrap().register_local_function(0);
         let meta = RuntimeCallMeta {
             func_idx_source: 2,
             func_idx_source_kind: RuntimeCallTargetKind::FrameSlot as u32,
