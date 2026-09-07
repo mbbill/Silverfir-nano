@@ -1,0 +1,39 @@
+{
+  "head": "4030fa549e0d56539f9616d2f3d751decf0f3dfa",
+  "base": "0983d9e487db6a9c50a34be6f596d6b66bf3e942",
+  "run_id": 34141541984,
+  "stage": "primary jobs; independent runner confirmation pending",
+  "engine": "interp",
+  "category": "startup",
+  "warning_audit": "failed: 3 compiler warnings; primary success conclusion only forwards regression to confirmation",
+  "jobs": [
+    {
+      "job_id": 101804461735,
+      "url": "https://github.com/mbbill/Silverfir-nano/actions/runs/34141541984/job/101804461735",
+      "architecture": "x64-linux",
+      "rows": [
+        "| startup/bz2 | 1.604ms | 2.757ms | -41.83% (-45.05%..-40.44%) | 2.39% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/pulldown-cmark | 4.126ms | 6.720ms | -38.60% (-38.85%..-38.42%) | 0.23% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/spidermonkey | 88.368ms | 144.800ms | -38.97% (-39.25%..-38.51%) | 0.34% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/ffmpeg | 321.567ms | 543.096ms | -40.79% (-43.74%..-40.15%) | 1.93% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/coremark | 156.558us | 273.042us | -42.66% (-43.66%..-42.27%) | 0.73% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/argon2 | 663.718us | 1.138ms | -41.69% (-42.05%..-41.43%) | 0.33% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/erc20 | 145.141us | 241.451us | -39.89% (-40.32%..-39.43%) | 0.50% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |"
+      ]
+    },
+    {
+      "job_id": 101804461768,
+      "url": "https://github.com/mbbill/Silverfir-nano/actions/runs/34141541984/job/101804461768",
+      "architecture": "arm64-linux",
+      "rows": [
+        "| startup/bz2 | 1.312ms | 2.297ms | -42.89% (-44.01%..-42.37%) | 0.98% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/pulldown-cmark | 3.226ms | 5.473ms | -41.05% (-41.57%..-40.78%) | 0.43% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/spidermonkey | 68.002ms | 116.981ms | -41.87% (-43.10%..-41.24%) | 0.85% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/ffmpeg | 284.016ms | 467.679ms | -39.27% (-39.63%..-38.97%) | 0.28% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/coremark | 106.029us | 203.385us | -47.87% (-48.24%..-47.63%) | 0.33% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/argon2 | 517.374us | 920.170us | -43.77% (-44.06%..-43.43%) | 0.48% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/erc20 | 103.613us | 183.988us | -43.69% (-44.12%..-43.49%) | 0.31% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |"
+      ]
+    }
+  ]
+}

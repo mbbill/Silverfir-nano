@@ -1042,3 +1042,36 @@ metadata and the corresponding support-package checksum in core's lockfile.
 Source and dependency selections are identical. The local checksum manifest is
 `/tmp/sf-release-clean-package-evidence.json`; these packages are not approved
 for publication and will be regenerated for the final reviewed revision.
+
+### Linux startup CI and warning visibility (2026-09-07)
+
+The 4030fa54 run successfully builds the migrated wasmi adapter and measures
+both Linux interpreter startup suites. All seven workloads on each architecture
+are marked REGRESSION by the primary job. x64 CoreMark rises from 156.558 to
+273.042 us, and ERC20 from 145.141 to 241.451 us. ARM64 CoreMark rises from
+106.029 to 203.385 us, and ERC20 from 103.613 to 183.988 us. The full primary
+tables and exact job links are retained in
+[the CI evidence](release-evidence/linux-release-startup-primary.json).
+Independent-runner confirmation is still pending; a successful primary job
+only forwards these regressions and is not a passing performance result.
+These observations agree with the local safe-input validation cost investigation.
+
+The completed x64 Linux, ARM64 Linux, Windows and Darwin correctness jobs all
+fail the three-warning interpreter ownership cluster described above. Thumb
+and RV32 bare-metal also fail the non-SIMD opcode/immediate cluster. RISC-V64
+additionally reports the interpreter test-support memory accessors as unused.
+These remain visible failures pending the ownership decisions; no engine
+implementation or suppression changes were made to clear them. Policy, Miri
+and the Rust 1.94 gate pass. API extraction succeeds but the protected human
+review environment is still missing, so the API gate remains failed.
+
+The wasmi identity build used Cargo's json-render-diagnostics mode, whose
+diagnostics go to stderr rather than the stdout artifact stream. Its captured
+stderr was discarded. The harness now prints it, retains a diagnostic log and
+uses the existing CI warning parser to append an ACTION REQUIRED summary.
+The change adds no builds and leaves timing and numeric verdicts unchanged.
+A regression test exercises the real stdout/stderr protocol and verifies that
+Cargo's aggregate warning tally is not double counted. All 141 CI tests pass;
+a real interp-only identity build reports all three warnings and preserves
+the exact compiled-runtime fingerprint. Lint policy and diff checks also pass.
+This logging correction is local while the existing CI measurements finish.
