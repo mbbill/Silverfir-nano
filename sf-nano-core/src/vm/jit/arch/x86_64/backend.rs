@@ -13,9 +13,9 @@ use crate::{
     vm::{
         jit::machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineIntWidth, MachineReg, MachineReturnAbi, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg, MachineRegOwner,
+            MachineReturnAbi, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -88,20 +88,22 @@ pub(crate) struct X86_64Backend<'a> {
     /// its literal pool and loaded RIP-relatively.
     pub(super) fp_literals: collections::Vec<u64>,
     pub(super) fp_literal_fixups: collections::Vec<FpLiteralFixup>,
-    /// Peephole state: EFLAGS still reflects the 32-bit result of this
-    /// register's most recent ALU write, valid only while the text cursor
-    /// sits at the recorded position. Any emission moves the cursor and
-    /// invalidates the entry implicitly; nothing ever needs to clear it.
-    pub(super) flags32: Option<(X86Reg, usize)>,
+    /// Peephole state: EFLAGS reflects this register's most recent ALU result
+    /// at the recorded width, valid only while the text cursor
+    /// sits at the recorded position. Emission invalidates the entry unless
+    /// a flags-preserving operation explicitly carries the proof forward.
+    pub(super) int_flags: Option<(MachineIntWidth, X86Reg, usize)>,
     /// Jump tables pending emission. Entry words flush after the function
     /// body next to the FP literal pool so table data never sits in the
     /// instruction stream between a dispatch and its handlers.
     pub(super) pending_jump_tables: collections::Vec<PendingJumpTable>,
-    /// 1-slot peephole lookahead, mirroring the arm64 backend: holds a
-    /// fusible load so `emit_inst_at` can try the memory-operand ALU
-    /// form when the next op arrives. Emission order is preserved on
+    /// 1-slot peephole lookahead for load+ALU, compare+select, and GP
+    /// address snapshots immediately followed by a narrow load.
+    /// `emit_inst_at` proves each pair before lowering it together.
+    /// Emission order is preserved on
     /// every path — hit, miss, and block-end drain.
     pending_op: Option<(&'a MachineInst, usize)>,
+    pub(super) narrow_equality: Option<super::narrow_equality::NarrowEquality>,
 }
 
 /// One deferred jump table: the movabs immediate to patch with the
@@ -191,16 +193,21 @@ impl X86_64Backend<'_> {
         }
     }
 
-    /// Record that EFLAGS now reflects `reg`'s 32-bit result.
-    pub(super) fn note_flags32(&mut self, reg: X86Reg) {
-        self.flags32 = Some((reg, self.core.text.len()));
+    /// Record only ZF for an ALU result, at its exact operand width.
+    pub(super) fn note_int_flags(&mut self, width: MachineIntWidth, reg: X86Reg) {
+        self.int_flags = Some((width, reg, self.core.text.len()));
     }
 
-    /// True while EFLAGS still reflects `reg`'s 32-bit value — a
-    /// `test reg, reg` here would be redundant and would break
-    /// ALU/branch macro-fusion.
-    pub(super) fn flags32_current(&self, reg: X86Reg) -> bool {
-        self.flags32 == Some((reg, self.core.text.len()))
+    pub(super) fn current_int_flags(&self) -> Option<(MachineIntWidth, X86Reg)> {
+        self.int_flags
+            .filter(|(_, _, position)| *position == self.core.text.len())
+            .map(|(width, reg, _)| (width, reg))
+    }
+
+    /// Low-word zero and full-width zero are different predicates. This
+    /// proof covers ZF only; ordering comparisons still require CMP.
+    pub(super) fn int_flags_current(&self, width: MachineIntWidth, reg: X86Reg) -> bool {
+        self.current_int_flags() == Some((width, reg))
     }
 
     pub(super) fn intern_fp_literal(&mut self, bits: u64) -> usize {
@@ -236,9 +243,10 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             fp_scratch: abi::new_fp_scratch_pool(),
             fp_literals: collections::Vec::new(),
             fp_literal_fixups: collections::Vec::new(),
-            flags32: None,
+            int_flags: None,
             pending_jump_tables: collections::Vec::new(),
             pending_op: None,
+            narrow_equality: None,
         }
     }
 
@@ -375,6 +383,10 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.core.bind_label(done);
     }
 
+    fn lower_body_entry_guard(&mut self, next: Option<MachineBlockId>) -> Result<bool, WasmError> {
+        self.emit_body_entry_guard(next)
+    }
+
     /// Body entry prelude. On x86_64, `call` already pushed the return
     /// address onto the host stack when the caller stub entered, leaving SP
     /// misaligned by 8 (relative to the 16-byte requirement). The body
@@ -417,6 +429,12 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         // Streaming entry: the lookahead never carries across blocks.
         self.pending_op = None;
+        self.narrow_equality =
+            super::narrow_equality::narrow_equality(block, self.core.mir_blocks()?);
+        // A fallthrough edge may emit no bytes, but other predecessors do
+        // not promise the same flags. Position stamps only prove reuse
+        // within the current block.
+        self.int_flags = None;
         self.core.current_block = Some(block.id);
         self.core.current_edge_target = None;
         self.core.reset_block_fp_state(block)?;
@@ -424,10 +442,37 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
-        // Try to fuse the buffered load with this incoming op. On a hit
-        // one instruction consumes both; on a miss the load is emitted
-        // solo first, preserving program order (and trap order).
+        if self
+            .narrow_equality
+            .is_some_and(|plan| index >= plan.first_skipped)
+        {
+            debug_assert!(self.pending_op.is_none());
+            return Ok(());
+        }
+        // Try to consume the buffered pair together. On a miss, emit
+        // the previous op first, preserving program order and trap order.
         if let Some((prev, prev_index)) = self.pending_op.take() {
+            if matches!(prev.kind, MachineInstKind::Move { .. }) {
+                let load = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .and_then(|block| {
+                        super::fusion::copied_narrow_load(
+                            prev,
+                            inst,
+                            &block.ops[index + 1..],
+                            &block.terminator,
+                        )
+                    });
+                if let Some(load) = load {
+                    self.core.current_op_index = Some(index);
+                    self.lower_inst(&load)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
             if let Some(fusion) = super::fusion::load_alu_fusion(prev, inst) {
                 let loaded_dead = self
                     .core
@@ -486,6 +531,28 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         }
         if super::fusion::fusible_load(&inst.kind)
             || matches!(inst.kind, MachineInstKind::IntCompare { .. })
+            || (matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord | MachineStorageType::GpI64,
+                    src: MachineValue::Reg(_),
+                    ..
+                }
+            ) && self
+                .core
+                .current_block
+                .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                .and_then(|block| block.ops.get(index + 1))
+                .is_some_and(|next| {
+                    matches!(
+                        next.kind,
+                        MachineInstKind::IndexedLoad {
+                            width: MachineMemWidth::U8 | MachineMemWidth::U16,
+                            ..
+                        }
+                    )
+                }))
         {
             self.pending_op = Some((inst, index));
             return Ok(());
@@ -510,6 +577,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         }
         self.core.current_op_index = None;
         let result = self.lower_terminator(term, fallthrough);
+        self.narrow_equality = None;
         self.gp_scratch.assert_all_free();
         self.fp_scratch.assert_all_free();
         self.core.current_block = None;
@@ -642,9 +710,23 @@ impl<'a> crate::vm::jit::arch::shared_64::ModuleLinkBackend64<'a> for X86_64Back
 impl<'a> X86_64Backend<'a> {
     #[inline]
     pub(super) fn emit_gp_move_width(&mut self, width: MachineIntWidth, dst: X86Reg, src: X86Reg) {
+        let flags = self
+            .current_int_flags()
+            .filter(|&(produced_width, producer)| {
+                dst != producer
+                    || (dst == src
+                        && (width == MachineIntWidth::I64
+                            || produced_width == MachineIntWidth::I32))
+            });
         match width {
             MachineIntWidth::I32 => enc::mov_rr_32(&mut self.core.text, dst, src),
             MachineIntWidth::I64 => enc::mov_rr_64(&mut self.core.text, dst, src),
+        }
+        // MOV preserves flags, but replacing the producer invalidates the
+        // association. Even a self-copy through r32 can turn a nonzero i64
+        // with a zero low half into zero, so it cannot carry a 64-bit proof.
+        if let Some((produced_width, producer)) = flags {
+            self.note_int_flags(produced_width, producer);
         }
     }
 
@@ -658,8 +740,9 @@ impl<'a> X86_64Backend<'a> {
         match ty {
             // GpWord carries both i32 values and references. Preserve the full
             // 64-bit carrier here so ref null sentinels survive plain moves.
-            MachineStorageType::GpWord => enc::mov_rr_64(&mut self.core.text, dst, src),
-            MachineStorageType::GpI64 => enc::mov_rr_64(&mut self.core.text, dst, src),
+            MachineStorageType::GpWord | MachineStorageType::GpI64 => {
+                self.emit_gp_move_width(MachineIntWidth::I64, dst, src)
+            }
             MachineStorageType::Fp32 | MachineStorageType::Fp64 | MachineStorageType::V128 => {
                 return Err(WasmError::internal(
                     "x86_64 GP move requested for FP storage type".into(),
@@ -693,8 +776,13 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Branch fixup helpers ─────────────────────────────────────────────
 
-    /// Emit JMP rel32 with a fixup to be patched later.
+    /// Bound nearby targets use rel8 immediately; others keep a rel32 fixup.
     pub(super) fn emit_jmp(&mut self, label: usize) {
+        if let Some(target) = self.core.labels.get(label).copied().flatten() {
+            if enc::try_branch_rel8(&mut self.core.text, None, target) {
+                return;
+            }
+        }
         let rel32_offset = enc::jmp_rel32(&mut self.core.text);
         self.fixups.push(BranchFixup {
             rel32_offset,
@@ -702,8 +790,13 @@ impl<'a> X86_64Backend<'a> {
         });
     }
 
-    /// Emit Jcc rel32 with a fixup to be patched later.
+    /// Bound nearby targets use rel8 immediately; others keep a rel32 fixup.
     pub(super) fn emit_jcc(&mut self, cc: Cc, label: usize) {
+        if let Some(target) = self.core.labels.get(label).copied().flatten() {
+            if enc::try_branch_rel8(&mut self.core.text, Some(cc), target) {
+                return;
+            }
+        }
         let rel32_offset = enc::jcc_rel32(&mut self.core.text, cc);
         self.fixups.push(BranchFixup {
             rel32_offset,
@@ -946,5 +1039,164 @@ impl<'a> X86_64Backend<'a> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod result_flags_tests {
+    use super::*;
+    use crate::vm::jit::{
+        arch::common::core::FunctionBody,
+        backend::BackendConfig,
+        machine::machine_ir::{
+            MachineBranchCond, MachineCompareKind, MachineConstId, MachineEdge, MachineFuncId,
+            MachineFunction, MachineFunctionAbi, MachineIntBinaryOp, MachineSign,
+        },
+        runtime::code::CodegenModuleView,
+    };
+
+    #[derive(Debug)]
+    struct TestModule;
+
+    impl CodegenModuleView for TestModule {
+        fn backend(&self) -> BackendConfig {
+            abi::compile_backend_config()
+        }
+
+        fn runtime_for(&self, _id: MachineFuncId) -> Option<&MachineFunctionAbi> {
+            None
+        }
+
+        fn const_ptr(&self, _id: MachineConstId) -> Option<*const u8> {
+            None
+        }
+    }
+
+    fn function() -> MachineFunction {
+        let mut function = MachineFunction::default();
+        for id in 0..3 {
+            function.program.blocks.push(MachineBlock {
+                id: MachineBlockId(id),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            });
+        }
+        function
+    }
+
+    fn subtract_one(backend: &mut X86_64Backend<'_>, width: MachineIntWidth) {
+        backend
+            .lower_int_binary(
+                width,
+                MachineIntBinaryOp::Sub,
+                MachineReg(4),
+                MachineValue::Reg(MachineReg(4)),
+                MachineValue::Imm64(1),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn zero_branches_omit_compare_only_for_equal_width_eq_and_ne() {
+        let function = function();
+        for produced in [MachineIntWidth::I32, MachineIntWidth::I64] {
+            for compared in [MachineIntWidth::I32, MachineIntWidth::I64] {
+                for kind in [
+                    MachineCompareKind::Eq,
+                    MachineCompareKind::Ne,
+                    MachineCompareKind::Lt,
+                ] {
+                    let core = CompilerCore::new(&TestModule, FunctionBody::Mir(&function));
+                    let mut backend = X86_64Backend::new(core);
+                    subtract_one(&mut backend, produced);
+                    let start = backend.core.text.len();
+                    backend
+                        .lower_terminator_dispatch(
+                            &MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width: compared,
+                                    kind,
+                                    sign: MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(MachineReg(4)),
+                                    rhs: MachineValue::Imm64(0),
+                                },
+                                then_edge: MachineEdge {
+                                    target: MachineBlockId(1),
+                                    args: collections::Vec::new(),
+                                },
+                                else_edge: MachineEdge {
+                                    target: MachineBlockId(2),
+                                    args: collections::Vec::new(),
+                                },
+                            },
+                            Some(MachineBlockId(2)),
+                        )
+                        .unwrap();
+                    let only_jcc = backend.core.text.len() - start == 6;
+                    assert_eq!(
+                        only_jcc,
+                        produced == compared && kind != MachineCompareKind::Lt
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn r32_self_moves_cannot_preserve_full_width_zero_proofs() {
+        let function = function();
+        for produced in [MachineIntWidth::I32, MachineIntWidth::I64] {
+            for copied in [MachineIntWidth::I32, MachineIntWidth::I64] {
+                let core = CompilerCore::new(&TestModule, FunctionBody::Mir(&function));
+                let mut backend = X86_64Backend::new(core);
+                subtract_one(&mut backend, produced);
+                let reg = backend.map_gp_reg(MachineReg(4)).unwrap();
+                backend.emit_gp_move_width(copied, reg, reg);
+                assert_eq!(
+                    backend.int_flags_current(produced, reg),
+                    produced == MachineIntWidth::I32 || copied == MachineIntWidth::I64
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn register_replacement_lea_multiply_and_block_entries_end_the_proof() {
+        let function = function();
+        for case in 0..4 {
+            let core = CompilerCore::new(&TestModule, FunctionBody::Mir(&function));
+            let mut backend = X86_64Backend::new(core);
+            subtract_one(&mut backend, MachineIntWidth::I64);
+            let dst = backend.map_gp_reg(MachineReg(4)).unwrap();
+            let src = backend.map_gp_reg(MachineReg(5)).unwrap();
+            match case {
+                0 => backend.emit_gp_move_width(MachineIntWidth::I64, dst, src),
+                1 => backend
+                    .lower_int_binary(
+                        MachineIntWidth::I64,
+                        MachineIntBinaryOp::Sub,
+                        MachineReg(4),
+                        MachineValue::Reg(MachineReg(5)),
+                        MachineValue::Imm64(1),
+                    )
+                    .unwrap(),
+                2 => backend
+                    .lower_int_binary(
+                        MachineIntWidth::I64,
+                        MachineIntBinaryOp::Mul,
+                        MachineReg(4),
+                        MachineValue::Reg(MachineReg(4)),
+                        MachineValue::Imm64(3),
+                    )
+                    .unwrap(),
+                3 => backend.begin_block(&function.program.blocks[1]).unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(
+                !backend.int_flags_current(MachineIntWidth::I64, dst),
+                "case {case}"
+            );
+        }
     }
 }

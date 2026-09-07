@@ -13,10 +13,23 @@ use crate::vm::jit::machine::machine_ir::{
 
 use super::BlockFeatures;
 
-pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) -> BlockFeatures {
-    let mut gp_consts: collections::Vec<(u64, MachineReg)> = collections::Vec::new();
-    let mut fp_consts: collections::Vec<(u64, MachineFloatWidth, MachineReg)> =
-        collections::Vec::new();
+#[derive(Default)]
+pub(super) struct ConstantScratch {
+    gp: collections::Vec<(u64, MachineReg)>,
+    fp: collections::Vec<(u64, MachineFloatWidth, MachineReg)>,
+}
+
+pub(super) fn deduplicate_constants(
+    block: &mut MachineBlock,
+    first_fp_reg: u16,
+    scratch: &mut ConstantScratch,
+) -> BlockFeatures {
+    // Constants are block-local; only the backing allocations survive into
+    // the next block. Keep this reset here so every caller gets fresh facts.
+    let gp_consts = &mut scratch.gp;
+    let fp_consts = &mut scratch.fp;
+    gp_consts.clear();
+    fp_consts.clear();
     let mut features = BlockFeatures::default();
 
     for inst in &mut block.ops {
@@ -99,11 +112,14 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
             _ => {}
         }
 
-        // Invalidate tracking for any register redefined by this instruction.
-        inst.kind.for_each_defined_reg(|def| {
-            gp_consts.retain(|(_, r)| *r != def);
-            fp_consts.retain(|(_, _, r)| *r != def);
-        });
+        // Most instructions precede any tracked nonzero literal. Avoid the
+        // instruction-definition walk when there are no facts to invalidate.
+        if !gp_consts.is_empty() || !fp_consts.is_empty() {
+            inst.kind.for_each_defined_reg(|def| {
+                gp_consts.retain(|(_, r)| *r != def);
+                fp_consts.retain(|(_, _, r)| *r != def);
+            });
+        }
 
         if let Some(e) = new_gp {
             gp_consts.push(e);

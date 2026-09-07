@@ -118,8 +118,7 @@ pub(crate) fn unregister_jit_ranges_in(code_start: usize, code_end: usize) {
 
 /// Look up the error-return address for a faulting PC.
 ///
-/// Must be called with the trap table lock held (or from the signal handler
-/// where concurrent modification is not expected on the same thread).
+/// Must be called with the trap table lock held, including in a signal handler.
 unsafe fn lookup_return_error(pc: usize) -> Option<usize> {
     let Some(table) = (unsafe { &*(&raw const TRAP_TABLE) }).as_ref() else {
         return None;
@@ -160,13 +159,16 @@ pub(in crate::vm::jit::runtime) fn signal_count_inc_and_check() -> bool {
 ///
 /// # Safety
 ///
-/// Must be called from a signal context where concurrent mutation of
-/// `TRAP_TABLE` on the same thread is not possible. The trap table is
-/// append-only during compilation and stable during execution, so this
-/// holds as long as signals only fire during `eval()`.
+/// The interrupted thread must not hold the trap-table lock. Guard faults
+/// originate in generated code, outside registration and code-buffer teardown.
+/// Other threads may compile or drop code concurrently; the lookup takes the
+/// same lock as those writers before borrowing any vector storage.
 #[inline]
 pub(in crate::vm::jit::runtime) unsafe fn try_resolve_trap(pc: usize) -> Option<TrapResolution> {
-    let error_ret = unsafe { lookup_return_error(pc) }?;
+    lock_trap_table();
+    let error_ret = unsafe { lookup_return_error(pc) };
+    unlock_trap_table();
+    let error_ret = error_ret?;
     let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
     let stack_end_offset = STACK_END_OFFSET.load(Ordering::Relaxed);
     let stack_guard_end_offset = STACK_GUARD_END_OFFSET.load(Ordering::Relaxed);
@@ -262,6 +264,11 @@ mod tests {
 
     static TEST_TRAP_TABLE_LOCK: Mutex<()> = Mutex::new(());
 
+    fn resolve_error(pc: usize) -> Option<usize> {
+        // These test calls do not run inside a table mutation.
+        unsafe { try_resolve_trap(pc) }.map(|resolution| resolution.error_ret)
+    }
+
     #[test]
     fn clear_registered_jit_ranges_drops_stale_entries() {
         let _guard = TEST_TRAP_TABLE_LOCK.lock().unwrap();
@@ -269,15 +276,11 @@ mod tests {
         clear_registered_jit_ranges();
         register_jit_ranges(&[(0x1000, 0x1100, 0x2000)]);
 
-        unsafe {
-            assert_eq!(lookup_return_error(0x1080), Some(0x2000));
-        }
+        assert_eq!(resolve_error(0x1080), Some(0x2000));
 
         clear_registered_jit_ranges();
 
-        unsafe {
-            assert_eq!(lookup_return_error(0x1080), None);
-        }
+        assert_eq!(resolve_error(0x1080), None);
     }
 
     #[test]
@@ -293,13 +296,37 @@ mod tests {
 
         unregister_jit_ranges_in(0x1000, 0x1800);
 
-        unsafe {
-            assert_eq!(lookup_return_error(0x1080), None);
-            assert_eq!(lookup_return_error(0x1280), None);
-            assert_eq!(lookup_return_error(0x2080), Some(0x3000));
-        }
+        assert_eq!(resolve_error(0x1080), None);
+        assert_eq!(resolve_error(0x1280), None);
+        assert_eq!(resolve_error(0x2080), Some(0x3000));
 
         clear_registered_jit_ranges();
+    }
+
+    #[test]
+    fn trap_lookup_stays_valid_while_other_threads_register_and_remove_code() {
+        let _guard = TEST_TRAP_TABLE_LOCK.lock().unwrap();
+        register_jit_ranges(&[(0x1000, 0x1100, 0x2000)]);
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let ranges: collections::Vec<_> = (0..128)
+                    .map(|i| (0x3000 + i * 0x100, 0x3100 + i * 0x100, 0x9000))
+                    .collect();
+                start.wait();
+                for _ in 0..1000 {
+                    register_jit_ranges(&ranges);
+                    unregister_jit_ranges_in(0x3000, 0xb000);
+                }
+            });
+            start.wait();
+            for _ in 0..50_000 {
+                assert_eq!(resolve_error(0x1080), Some(0x2000));
+                assert_eq!(resolve_error(0x2000), None);
+                assert_eq!(resolve_error(0xc000), None);
+            }
+        });
+        unregister_jit_ranges_in(0x1000, 0x1100);
     }
 
     #[test]

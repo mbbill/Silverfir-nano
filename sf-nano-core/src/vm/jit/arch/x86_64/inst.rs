@@ -960,9 +960,14 @@ impl<'a> X86_64Backend<'a> {
                 }
             }
         }
-        if fusion.w32 {
-            self.note_flags32(dst);
-        }
+        self.note_int_flags(
+            if fusion.w32 {
+                MachineIntWidth::I32
+            } else {
+                MachineIntWidth::I64
+            },
+            dst,
+        );
         Ok(())
     }
 
@@ -1156,12 +1161,19 @@ impl<'a> X86_64Backend<'a> {
         // materialize the source or the base address will be lost.
         let materialize_scratch = if base == scratch0 { scratch1 } else { scratch0 };
         let src_gp = self.materialize_value(materialize_scratch, src)?;
+        // Snapshot after materialization: loading an immediate zero can use
+        // XOR and invalidate the producer's ZF. The MOV store itself changes
+        // neither flags nor any register, including the producer's value.
+        let flags = self.current_int_flags();
         match width {
             MachineMemWidth::U8 => enc::store_8(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U16 => enc::store_16(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U32 => enc::store_32(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U64 => enc::store_64(&mut self.core.text, base, disp, src_gp),
         };
+        if let Some((produced_width, reg)) = flags {
+            self.note_int_flags(produced_width, reg);
+        }
         Ok(())
     }
 
@@ -1249,6 +1261,30 @@ impl<'a> X86_64Backend<'a> {
                         || (width == MachineIntWidth::I32 && imm_val as u32 as i32 == imm)
                     {
                         let lhs_gp = self.materialize_value(*scratch0, lhs)?;
+                        if dst != lhs_gp && width == MachineIntWidth::I64 {
+                            // Keep two-operand ADD/SUB when already coalesced.
+                            // The i64 form benefits from replacing its copy
+                            // plus arithmetic. Keep i32 immediate ADD/SUB:
+                            // the shorter form regressed native x64 execution.
+                            // SUB must not negate MIN into a signed disp32.
+                            let displacement = match op {
+                                MachineIntBinaryOp::Add => Some(imm),
+                                MachineIntBinaryOp::Sub => imm.checked_neg(),
+                                _ => None,
+                            };
+                            if let Some(displacement) = displacement {
+                                enc::lea_offset(
+                                    &mut self.core.text,
+                                    width == MachineIntWidth::I64,
+                                    dst,
+                                    lhs_gp,
+                                    displacement,
+                                );
+                                // LEA does not produce result flags. Its emitted
+                                // bytes invalidate int_flags' position stamp.
+                                return Ok(());
+                            }
+                        }
                         if dst != lhs_gp {
                             self.emit_gp_move_width(width, dst, lhs_gp);
                         }
@@ -1285,14 +1321,22 @@ impl<'a> X86_64Backend<'a> {
                             }
                             _ => unreachable!(),
                         };
-                        if width == MachineIntWidth::I32 {
-                            self.note_flags32(dst);
-                        }
+                        self.note_int_flags(width, dst);
                         return Ok(());
                     }
                 }
                 let lhs_gp = self.materialize_value(*scratch0, lhs)?;
                 let rhs_gp = self.materialize_value(*scratch1, rhs)?;
+                if op == MachineIntBinaryOp::Add && dst != lhs_gp && dst != rhs_gp {
+                    enc::lea_sum(
+                        &mut self.core.text,
+                        width == MachineIntWidth::I64,
+                        dst,
+                        lhs_gp,
+                        rhs_gp,
+                    );
+                    return Ok(());
+                }
                 // Handle aliasing: if dst == rhs_gp but dst != lhs_gp,
                 // mov dst, lhs would clobber rhs before the operation.
                 if dst == rhs_gp && dst != lhs_gp {
@@ -1376,12 +1420,10 @@ impl<'a> X86_64Backend<'a> {
                         _ => unreachable!(),
                     };
                 }
-                // Every path above leaves dst's 32-bit result flags in
-                // EFLAGS: either the ALU op wrote dst last, or its result
-                // was moved into dst and mov does not touch flags.
-                if width == MachineIntWidth::I32 {
-                    self.note_flags32(dst);
-                }
+                // Every path above leaves dst's result ZF in EFLAGS at
+                // this width: either the ALU wrote dst last, or its result
+                // was moved into dst without changing flags.
+                self.note_int_flags(width, dst);
                 Ok(())
             }
             MachineIntBinaryOp::Mul => {
@@ -1431,6 +1473,30 @@ impl<'a> X86_64Backend<'a> {
         if let MachineValue::Imm64(amount) = rhs {
             let scratch0 = self.gp_scratch.scoped_alloc().detach();
             let lhs_gp = self.materialize_value(*scratch0, lhs)?;
+            if dst != lhs_gp
+                && matches!(op, MachineIntBinaryOp::Rotl | MachineIntBinaryOp::Rotr)
+                && super::cpu::has_bmi2()
+            {
+                let mask = if width == MachineIntWidth::I64 {
+                    63
+                } else {
+                    31
+                };
+                let amount = (amount & mask) as u8;
+                let right = if op == MachineIntBinaryOp::Rotl {
+                    0u8.wrapping_sub(amount) & mask as u8
+                } else {
+                    amount
+                };
+                enc::rorx_rri(
+                    &mut self.core.text,
+                    width == MachineIntWidth::I64,
+                    dst,
+                    lhs_gp,
+                    right,
+                );
+                return Ok(());
+            }
             if dst != lhs_gp {
                 self.emit_gp_move_width(width, dst, lhs_gp);
             }
@@ -1468,6 +1534,27 @@ impl<'a> X86_64Backend<'a> {
                 }
                 _ => unreachable!(),
             };
+            return Ok(());
+        }
+        let bmi2_op = match op {
+            MachineIntBinaryOp::Shl => Some(enc::Bmi2Shift::Left),
+            MachineIntBinaryOp::ShrU => Some(enc::Bmi2Shift::UnsignedRight),
+            MachineIntBinaryOp::ShrS => Some(enc::Bmi2Shift::SignedRight),
+            _ => None,
+        };
+        if let Some(op) = bmi2_op.filter(|_| super::cpu::has_bmi2()) {
+            let scratch0 = self.gp_scratch.scoped_alloc().detach();
+            let scratch1 = self.gp_scratch.scoped_alloc().detach();
+            let lhs = self.materialize_value(*scratch0, lhs)?;
+            let rhs = self.materialize_value(*scratch1, rhs)?;
+            enc::bmi2_shift_rrr(
+                &mut self.core.text,
+                width == MachineIntWidth::I64,
+                op,
+                dst,
+                lhs,
+                rhs,
+            );
             return Ok(());
         }
         // Variable shift: RCX is scratch-only on x86_64, so own it explicitly
@@ -1791,6 +1878,21 @@ impl<'a> X86_64Backend<'a> {
         let dst = self.map_gp_reg(dst)?;
         let src = self.map_gp_reg(src)?;
         // dst = (src >> lsb) & ((1 << bits) - 1)
+        if lsb != 0 && super::cpu::prefer_bextr() {
+            let scratch = self.gp_scratch.scoped_alloc().detach();
+            let control = self.materialize_value(
+                *scratch,
+                MachineValue::Imm64((u64::from(bits) << 8) | u64::from(lsb)),
+            )?;
+            enc::bextr_rrr(
+                &mut self.core.text,
+                width == MachineIntWidth::I64,
+                dst,
+                src,
+                control,
+            );
+            return Ok(());
+        }
         if dst != src {
             self.emit_gp_move_width(width, dst, src);
         }
@@ -2001,7 +2103,9 @@ impl<'a> X86_64Backend<'a> {
                     let done = self.core.new_label();
                     // Wasm select conditions are i32 values; ignore any stale
                     // upper half that may remain in a GpWord carrier.
-                    enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
+                    if !self.int_flags_current(MachineIntWidth::I32, cond_gp) {
+                        enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
+                    }
                     self.emit_jcc(Cc::E, false_label);
                     let true_fp = self.prepare_float_operand(width, on_true, *gp0, *fp0)?;
                     if dst_fp != true_fp as u8 {
@@ -2053,7 +2157,9 @@ impl<'a> X86_64Backend<'a> {
             };
             // Wasm select conditions are i32 values; ignore any stale
             // upper half that may remain in a GpWord carrier.
-            enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
+            if !self.int_flags_current(MachineIntWidth::I32, cond_gp) {
+                enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
+            }
             if dst == true_reg && dst != false_reg {
                 self.emit_gp_cmov_ty(ty, Cc::E, dst, false_reg)?;
             } else if dst == false_reg {
@@ -2227,19 +2333,22 @@ impl<'a> X86_64Backend<'a> {
             // Int -> Float conversions
             MachineConvertOp::F32ConvertI32S => {
                 // CVTSI2SS xmm, r32
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F32, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F32, *fp1 as u8)?;
                 enc::cvtsi2ss_r32(&mut self.core.text, dst_fp, src_gp);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F32, dst_fp)?;
             }
             MachineConvertOp::F32ConvertI32U => {
                 // Zero-extend to 64-bit first for unsigned interpretation
                 enc::mov_rr_32(&mut self.core.text, *gp0, src_gp);
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F32, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F32, *fp1 as u8)?;
                 enc::cvtsi2ss_r64(&mut self.core.text, dst_fp, *gp0);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F32, dst_fp)?;
             }
             MachineConvertOp::F32ConvertI64S => {
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F32, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F32, *fp1 as u8)?;
                 enc::cvtsi2ss_r64(&mut self.core.text, dst_fp, src_gp);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F32, dst_fp)?;
             }
@@ -2247,7 +2356,8 @@ impl<'a> X86_64Backend<'a> {
                 // x86_64 has no unsigned int-to-float instruction.
                 // For values that fit in i64 (bit 63 = 0), use signed conversion.
                 // For values with bit 63 set, shift right by 1, convert, then double.
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F32, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F32, *fp1 as u8)?;
                 enc::test_rr_64(&mut self.core.text, src_gp, src_gp);
                 let large = self.core.new_label();
                 self.emit_jcc(Cc::S, large); // JS = sign flag set = bit 63 is 1
@@ -2268,23 +2378,27 @@ impl<'a> X86_64Backend<'a> {
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F32, dst_fp)?;
             }
             MachineConvertOp::F64ConvertI32S => {
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F64, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F64, *fp1 as u8)?;
                 enc::cvtsi2sd_r32(&mut self.core.text, dst_fp, src_gp);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F64, dst_fp)?;
             }
             MachineConvertOp::F64ConvertI32U => {
                 enc::mov_rr_32(&mut self.core.text, *gp0, src_gp);
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F64, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F64, *fp1 as u8)?;
                 enc::cvtsi2sd_r64(&mut self.core.text, dst_fp, *gp0);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F64, dst_fp)?;
             }
             MachineConvertOp::F64ConvertI64S => {
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F64, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F64, *fp1 as u8)?;
                 enc::cvtsi2sd_r64(&mut self.core.text, dst_fp, src_gp);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F64, dst_fp)?;
             }
             MachineConvertOp::F64ConvertI64U => {
-                let dst_fp = self.dst_float_reg(dst, MachineFloatWidth::F64, *fp1 as u8)?;
+                let dst_fp =
+                    self.prepare_int_to_float_dst(dst, MachineFloatWidth::F64, *fp1 as u8)?;
                 enc::test_rr_64(&mut self.core.text, src_gp, src_gp);
                 let large = self.core.new_label();
                 self.emit_jcc(Cc::S, large);
@@ -2533,16 +2647,26 @@ impl<'a> X86_64Backend<'a> {
                 // copies: the scalar move forms merge into the destination's
                 // upper lanes, and that false dependency on the destination's
                 // previous value serializes loop iterations.
-                let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
-                    let scratch = *fp1 as u8;
-                    enc::movaps_rr(&mut self.core.text, scratch, rhs_fp as u8);
-                    scratch
+                let actual_rhs = if result_fp == rhs_fp as u8
+                    && matches!(op, MachineFloatBinaryOp::Add | MachineFloatBinaryOp::Mul)
+                {
+                    // Add and multiply can consume the rhs in place. This
+                    // preserves rounding and signed zero; either operand's
+                    // arithmetic NaN is permitted by Wasm.
+                    lhs_fp as u8
                 } else {
-                    rhs_fp as u8
+                    let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
+                        let scratch = *fp1 as u8;
+                        enc::movaps_rr(&mut self.core.text, scratch, rhs_fp as u8);
+                        scratch
+                    } else {
+                        rhs_fp as u8
+                    };
+                    if result_fp != lhs_fp as u8 {
+                        enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8);
+                    }
+                    actual_rhs
                 };
-                if result_fp != lhs_fp as u8 {
-                    enc::movaps_rr(&mut self.core.text, result_fp, lhs_fp as u8);
-                }
                 match (width, op) {
                     (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
                         enc::addss(&mut self.core.text, result_fp, actual_rhs)
@@ -2834,20 +2958,28 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Float conversion helpers ────────────────────────────────────────────
 
-    /// Get FP destination register: if dst is FP reg, use it directly; else use scratch.
-    fn dst_float_reg(
+    /// Integer conversion defines a scalar from scratch. When profitable for
+    /// the CPU, clear its XMM destination to break the legacy CVTSI2SS/SD
+    /// dependency on the previous value. No source lives in this FP register,
+    /// and scalar carriers have no observable upper lanes. XORPS leaves
+    /// integer EFLAGS intact.
+    fn prepare_int_to_float_dst(
         &mut self,
         dst: MachineReg,
         width: MachineFloatWidth,
         scratch_fp: u8,
     ) -> Result<u8, WasmError> {
-        if self.core.is_fp_reg(dst) {
+        let dst_fp = if self.core.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)? as u8;
             self.core.set_fp_reg_width(dst, width)?;
-            Ok(dst_fp)
+            dst_fp
         } else {
-            Ok(scratch_fp)
+            scratch_fp
+        };
+        if super::cpu::clear_int_to_float_dst() {
+            enc::xorps(&mut self.core.text, dst_fp, dst_fp);
         }
+        Ok(dst_fp)
     }
 
     /// If dst is a GP register, move float result from XMM to GP.

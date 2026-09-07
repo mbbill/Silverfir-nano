@@ -82,6 +82,14 @@ pub(crate) trait ArchBackend<'a>: Sized {
     fn lower_prologue(&mut self);
     fn lower_root_caller_stub(&mut self);
     fn lower_epilogue(&mut self);
+    /// Optionally consume an empty entry branch before setting up the body
+    /// frame. A successful lowering must bind the entry block label, return
+    /// without a frame on its fast arm, and fall through to `next` on its
+    /// other arm. It must prove that no CFG edge can reenter the removed
+    /// entry block and that neither arm needs entry-edge moves.
+    fn lower_body_entry_guard(&mut self, _next: Option<MachineBlockId>) -> Result<bool, WasmError> {
+        Ok(false)
+    }
     fn lower_body_prelude(&mut self);
     fn lower_body_local_error_tail(&mut self);
 
