@@ -359,7 +359,7 @@ mod tests {
         enc::cmp_rr_16(&mut text, X86Reg::R8, X86Reg::RDI);
         enc::cmp_rr_16(&mut text, X86Reg::RSI, X86Reg::R9);
         assert_eq!(
-            text.finish(),
+            text.finish().as_slice(),
             [0x40, 0x3a, 0xf7, 0x45, 0x3a, 0xc1, 0x66, 0x44, 0x3b, 0xc7, 0x66, 0x41, 0x3b, 0xf1]
         );
     }
