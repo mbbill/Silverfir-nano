@@ -30,7 +30,7 @@ use crate::module::Module;
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::{AbstractHeapType, HeapType, RefType, ValueType};
 use crate::vm::engine::Engine;
-use crate::vm::entities::{Caller, GlobalInst, MemInst, TableInst};
+use crate::vm::entities::{check_memory_quota, Caller, GlobalInst, MemBacking, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedFunction, ImportedGlobal};
 use crate::vm::link::{
     ref_type_matches, FuncEntry, InstanceBackref, InstanceId, InstanceLease, InstanceToken,
@@ -1187,7 +1187,7 @@ impl InterpInstance {
         let mut function_handles = Vec::with_capacity(module.functions().len());
         let mut function_identities = Vec::with_capacity(module.functions().len());
         for (func_idx, func) in module.functions().iter().enumerate() {
-            let linked_handle = match func.def() {
+            let linked_handle = match &func.def {
                 crate::module::entities::FunctionDef::Import {
                     module: import_module,
                     name,
@@ -1267,7 +1267,7 @@ impl InterpInstance {
         let import_names = module
             .functions()
             .iter()
-            .map(|func| match func.def() {
+            .map(|func| match &func.def {
                 crate::module::entities::FunctionDef::Import { module, name, .. } => {
                     Some(Rc::new((module.clone(), name.clone())))
                 }
@@ -1288,7 +1288,19 @@ impl InterpInstance {
             // reading the JIT gives it.
             let inst = match imported_memories.get(i).cloned().flatten() {
                 Some(shared) => shared,
-                None => MemInst::new_heap(&config, limits.clone())?,
+                None => {
+                    check_memory_quota(&config, limits)?;
+                    let initial_bytes = limits.min() * crate::constants::WASM_PAGE_SIZE;
+                    MemInst {
+                        backing: Rc::new(RefCell::new(MemBacking {
+                            data: vec![0u8; initial_bytes],
+                            host_callback_borrowed: Cell::new(false),
+                            #[cfg(sf_has_guard_pages)]
+                            guard: None,
+                        })),
+                        limits: *limits,
+                    }
+                }
             };
             memories.push(MemoryState {
                 inst,
@@ -1621,7 +1633,10 @@ impl InterpInstance {
             // The offset is guest-controlled, so the bound is computed
             // without wrapping: on a 32-bit host `off + len` overflows
             // `usize` and turns an out-of-range segment into an in-range one.
-            let n = init.len() as u64;
+            let n = match &init {
+                ElementInit::FunctionIndexes(indices) => indices.len(),
+                ElementInit::InitExprs { exprs, .. } => exprs.len(),
+            } as u64;
             if off + n > len {
                 return Err(WasmError::trap("out of bounds table access"));
             }
@@ -2965,9 +2980,8 @@ impl InterpInstance {
             .functions()
             .get(callee)
             .ok_or(WasmError::trap("undefined element"))?;
-        match func.def() {
-            crate::module::entities::FunctionDef::Import { .. } => {}
-            _ => return Err(WasmError::invalid("interp: not an import")),
+        if !func.is_import() {
+            return Err(WasmError::invalid("interp: not an import"));
         }
         let func_type = func.func_type();
         let p = func_type.params().len();
@@ -4408,7 +4422,10 @@ impl InterpInstance {
                     self.module
                         .elements()
                         .get(seg)
-                        .map(|e| e.get_init().len())
+                        .map(|e| match e.get_init() {
+                            ElementInit::FunctionIndexes(indices) => indices.len(),
+                            ElementInit::InitExprs { exprs, .. } => exprs.len(),
+                        })
                         .unwrap_or(0) as u64
                 };
                 let tlen = self.tables.get(tidx).map(|t| t.entries.len()).unwrap_or(0) as u64;

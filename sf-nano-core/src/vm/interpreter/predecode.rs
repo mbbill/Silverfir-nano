@@ -3745,18 +3745,14 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         .module
                         .functions()
                         .get(fidx as usize)
-                        .map(|f| f.func_type_rc())
+                        .map(|f| f.func_type())
                         .ok_or(WasmError::invalid("interp: bad call target"))?;
+                    let params = ft.params().len() as u32;
+                    let results = ft.results().len() as u32;
                     if tail && fidx == self.func_index {
-                        self.self_tail_call(ft.params().len() as u32)?;
+                        self.self_tail_call(params)?;
                     } else {
-                        self.call_boundary_tail(
-                            Some(fidx as u64),
-                            ft.params().len() as u32,
-                            ft.results().len() as u32,
-                            None,
-                            tail,
-                        )?;
+                        self.call_boundary_tail(Some(fidx as u64), params, results, None, tail)?;
                     }
                 }
                 Opcode::CALL_INDIRECT | Opcode::RETURN_CALL_INDIRECT => {

@@ -2,6 +2,7 @@
 use super::exec::InterpInstance;
 use crate::collections::Vec;
 use crate::error::WasmError;
+use crate::module::entities::TagDef;
 use crate::vm::imports::{
     memory_export, table_export, ImportValue, ImportedFunction, ImportedGlobal,
     ImportedGlobalState, ImportedTableState, ImportedTagState,
@@ -73,7 +74,10 @@ impl InterpInstance {
             return Ok(Some(ImportValue::Tag(ImportedTagState {
                 handle: self.tag_identity_at(idx).ok_or_else(missing)?,
                 func_type: tag.func_type().clone(),
-                type_index: tag.type_index(),
+                type_index: match tag.def() {
+                    TagDef::Local(spec) => spec.type_index(),
+                    TagDef::Import { type_index, .. } => *type_index,
+                },
                 type_ctx: Some(module.types().clone()),
             })));
         }
