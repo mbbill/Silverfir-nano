@@ -1093,7 +1093,6 @@ dependencies = [
 name = "sf-nano-core"
 version = "0.1.0"
 dependencies = [
- "paste",
  "sf-nano-tracked-alloc",
 ]
 

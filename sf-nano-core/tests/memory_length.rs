@@ -54,7 +54,10 @@ fn memory_growth_preserves_live_values_and_refreshes_length() {
         for seed in [0, 17, -19, i64::MAX] {
             let expected = seed.wrapping_mul(16).wrapping_add(76);
             assert_eq!(
-                instance.invoke("run", &[Value::I64(seed)]).unwrap(),
+                instance
+                    .invoke("run", &[Value::I64(seed)])
+                    .unwrap()
+                    .as_slice(),
                 [Value::I64(expected), value(-1), value(2), Value::I32(91)]
             );
             for address in [-1, 131072, 0x1_0000_0000] {
@@ -90,7 +93,10 @@ fn normal_and_template_memory_checks_preserve_the_access_address() {
                 .invoke("write", &[Value::I32(address), Value::I32(0x12345678)])
                 .unwrap();
             assert_eq!(
-                instance.invoke("read", &[Value::I32(address)]).unwrap(),
+                instance
+                    .invoke("read", &[Value::I32(address)])
+                    .unwrap()
+                    .as_slice(),
                 [Value::I32(0x12345678)],
                 "budget={budget}, address={address}"
             );
@@ -102,7 +108,10 @@ fn normal_and_template_memory_checks_preserve_the_access_address() {
                 .is_err());
         }
         assert_eq!(
-            instance.invoke("read", &[Value::I32(65532)]).unwrap(),
+            instance
+                .invoke("read", &[Value::I32(65532)])
+                .unwrap()
+                .as_slice(),
             [Value::I32(0x12345678)]
         );
     }
@@ -136,7 +145,10 @@ fn ordinary_callers_exchange_parameters_and_results_with_template_bodies() {
             }
         };
         assert_eq!(
-            instance.invoke("run", &[value(17), value(-4)]).unwrap(),
+            instance
+                .invoke("run", &[value(17), value(-4)])
+                .unwrap()
+                .as_slice(),
             [value(17), value(-3)]
         );
     }
@@ -166,7 +178,10 @@ fn memory64_offsets_and_access_ends_cannot_wrap_into_low_memory() {
         for address in [0, 65_512] {
             instance.invoke(&store, &[Value::I64(address)]).unwrap();
             assert_eq!(
-                instance.invoke(&load, &[Value::I64(address)]).unwrap(),
+                instance
+                    .invoke(&load, &[Value::I64(address)])
+                    .unwrap()
+                    .as_slice(),
                 [Value::I64(19)]
             );
         }
@@ -181,7 +196,7 @@ fn memory64_offsets_and_access_ends_cannot_wrap_into_low_memory() {
             );
         }
         assert_eq!(
-            instance.invoke(&load, &[Value::I64(0)]).unwrap(),
+            instance.invoke(&load, &[Value::I64(0)]).unwrap().as_slice(),
             [Value::I64(19)]
         );
     }
