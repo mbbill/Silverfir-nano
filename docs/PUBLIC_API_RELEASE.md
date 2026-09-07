@@ -1157,3 +1157,56 @@ selected regressions: bz2 is 53.014 to 54.932 ms (-3.49% in the performance
 ratio), and spidermonkey is 2.761 to 2.885 s (-4.30%). Its cross-run verdict
 fails. Only ARM64 JIT startup confirmation remains live; the performance
 workflow cannot pass with the three already confirmed failing suites.
+
+### Completed confirmations and private-runtime ownership follow-up
+
+ARM64 JIT confirmation 101811485461 has now completed with a failing cross-run
+verdict. Four cases reproduce: pulldown-cmark 118.975 to 122.108 ms, FFmpeg
+9.390 to 9.609 s, argon2 16.677 to 17.179 ms, and ERC20 3.785 to 3.900 ms.
+Spidermonkey is classified NEGLIGIBLE on that confirmation runner. All 46 jobs
+in the performance run are terminal. The complete printed confirmation rows
+are preserved in `release-evidence/linux-release-startup-confirmation.json`.
+No threshold or measurement floor was changed.
+
+The [benchmark validation audit](release-evidence/benchmark-validation-audit.md)
+confirms that V8 and Wasmtime/Cranelift validate their inputs, and the wasmi
+execution reference is `eager.checked`. The main startup ranking excludes
+wasmi's lazy modes. Nano main's optional validator was not enabled by the
+benchmark features; the release candidate enables the existing implementation
+in safe loading. Consequently the startup regression includes additional work,
+not a competitor configuration that omits verification. No second verifier
+was written.
+
+The private raw Value inspection/encoding helpers have moved to their sole
+production owner, JIT global instantiation. The scoped instance-table fixtures
+now borrow their heap memory backing rather than use two interpreter-only
+unsafe slice accessors. No public signature or call ABI changes in this step.
+
+The interpreter now reads `Limits::effective_max`, preserving the existing
+explicit/default metadata instead of duplicating growth ceilings. Its u64
+Wasm-cap and byte-size checks remain. An external boundary test then exposed
+a separate existing JIT bug: a host-imported table32 without an explicit max
+accepted growth beyond the table32 index space (returning the old size 2 rather
+than -1). JIT memory/table growth now additionally applies address-width and
+representation caps; the new regression test covers normal/zero/failed growth,
+local and host-imported resources, explicit/unspecified maxima, and both memory
+index widths. The failure test passed after that correction with both guarded
+and pure-heap JIT configurations. This behavior correction is intentional and
+is not described as a pure ownership move.
+
+The final native core run passes 686 test cases in 28 groups with no warnings;
+four ignored tests remain. Release spec runs pass 260 JIT and 175 interpreter
+files. The existing scoped-materialization Miri test runs once and passes with
+strict provenance under both Stacked Borrows and Tree Borrows. Native pure-JIT
+and pure-interpreter library checks and pure-interpreter test compilation have
+no warnings. These local results do not override hosted failures at 4030fa54.
+
+Thumb/RV32 still fail the warning audit for SIMD-only Immediate variants and
+WasmOpcode::FD. An isolated capability-gating experiment removed that decoder
+cluster but exposed unused SIMD primitives in the intentionally backend-neutral
+semantic IR on RISC-V JIT. It was reverted rather than extending cfgs through
+the IR or adding suppressions. The earlier blanket requirement for author
+approval on every ownership cleanup was too broad: the policy explicitly
+requires individual approval for new suppressions, while these retained fixes
+settle ownership without adding any. The remaining SIMD representation boundary
+is still unresolved and the release remains a draft.

@@ -2,8 +2,22 @@
   "run_id": 34141541984,
   "pr_head": "4030fa549e0d56539f9616d2f3d751decf0f3dfa",
   "baseline": "0983d9e487db6a9c50a34be6f596d6b66bf3e942",
-  "stage": "Both interpreter and x64 JIT confirmation complete; ARM64 JIT confirmation still running",
+  "stage": "All four startup confirmation jobs complete; both interpreter jobs and both JIT jobs confirm regressions",
   "jobs": [
+    {
+      "id": 101811485461,
+      "platform": "arm64-linux",
+      "engine": "jit",
+      "url": "https://github.com/mbbill/Silverfir-nano/actions/runs/34141541984/job/101811485461",
+      "conclusion": "failure",
+      "rows": [
+        "| startup/pulldown-cmark | 118.975ms | 122.108ms | -2.57% (-3.23%..-1.53%) | 0.66% | 99.999972% | 0.000028% | 10 | 1 | 99.998509% | **REGRESSION** |",
+        "| startup/spidermonkey | 2.596s | 2.644s | -1.82% (-3.00%..-1.21%) | 0.53% | 99.999917% | 0.000083% | 10 | 1 | >99.999999% | NEGLIGIBLE |",
+        "| startup/ffmpeg | 9.390s | 9.609s | -2.28% (-2.62%..-1.93%) | 0.21% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/argon2 | 16.677ms | 17.179ms | -2.92% (-3.03%..-2.63%) | 0.12% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "| startup/erc20 | 3.785ms | 3.900ms | -2.95% (-3.33%..-2.59%) | 0.22% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |"
+      ]
+    },
     {
       "id": 101811485362,
       "platform": "x64-linux",
