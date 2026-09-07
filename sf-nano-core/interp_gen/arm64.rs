@@ -5,7 +5,7 @@
 //!   x19 = pc (current 32-byte dispatch cell)   x20 = frame base
 //!   x21 = &EnterState                          x22 = memory 0 base
 //!   x23 = memory 0 length                      x24 = cell array base
-//!   x25 = globals base                         x26 = return-stack cursor
+//!   x26 = return-stack cursor
 //!   x27 = return-stack limit                   x28 = value-stack limit
 //!   x8  = accumulator     x17 = l0     x14 = l1     x15 = dispatch counter
 //!   x7  = prefetched next handler word
@@ -658,7 +658,7 @@ impl Isa for Arm64 {
         a.ins("ldp x19, x20, [sp, #16]");
         a.ins("ldp x21, x22, [sp, #32]");
         a.ins("ldp x23, x24, [sp, #48]");
-        a.ins("ldp x25, x26, [sp, #64]");
+        a.ins("ldr x26, [sp, #64]");
         a.ins("ldp x27, x28, [sp, #80]");
         a.ins("ldp x29, x30, [sp], #96");
         a.ins("ret");
@@ -680,7 +680,7 @@ impl Isa for Arm64 {
         a.ins("stp x19, x20, [sp, #16]");
         a.ins("stp x21, x22, [sp, #32]");
         a.ins("stp x23, x24, [sp, #48]");
-        a.ins("stp x25, x26, [sp, #64]");
+        a.ins("str x26, [sp, #64]");
         a.ins("stp x27, x28, [sp, #80]");
         a.ins("mov x21, x0");
         a.ins("ldr x19, [x21, #8]");
@@ -688,7 +688,6 @@ impl Isa for Arm64 {
         a.ins("ldr x22, [x21, #24]");
         a.ins("ldr x23, [x21, #32]");
         a.ins("ldr x24, [x21, #40]");
-        a.ins("ldr x25, [x21, #48]");
         a.ins("ldr x26, [x21, #56]");
         a.ins("ldr x27, [x21, #64]");
         a.ins("ldr x28, [x21, #72]");
@@ -816,7 +815,7 @@ impl Isa for Arm64 {
         a.ins("ldr x12, [x11, w10, uxtw #3]"); // fi = entries[t]
         a.ins("lsr x13, x12, #32");
         a.ins(&format!("cbnz x13, {}", st.slow)); // upper 32 bits are nonzero
-        a.ins("ldr x13, [x21, #136]"); // info length
+        a.ins("ldr x13, [x21, #48]"); // info length
         a.ins("cmp x12, x13");
         a.ins(&format!("b.hs {}", st.slow)); // function index out of bounds
         a.ins("ldr x13, [x21, #128]"); // info base
@@ -1146,15 +1145,15 @@ impl Isa for Arm64 {
                 }
             }
             GlobalGet => {
-                a.ins("ldr x10, [x19, #8]"); // a = index*8
+                a.ins("ldr x10, [x19, #8]"); // a = storage cell address
                 let rd = self.dst_target(d);
-                a.ins(&format!("ldr {}, [x25, x10]", x(rd)));
+                a.ins(&format!("ldr {}, [x10]", x(rd)));
                 self.finish(a, d, rd);
             }
             GlobalSet => {
                 let ra = self.src_a(a, v.a, 10);
-                a.ins("ldr x12, [x19, #24]"); // c = index*8
-                a.ins(&format!("str {}, [x25, x12]", x(ra)));
+                a.ins("ldr x12, [x19, #24]"); // c = storage cell address
+                a.ins(&format!("str {}, [x12]", x(ra)));
             }
             I32_Eqz | I64_Eqz => {
                 let w32 = v.op == I32_Eqz;

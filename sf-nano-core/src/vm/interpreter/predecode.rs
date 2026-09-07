@@ -44,7 +44,7 @@ use super::engine::PinCensus;
 use super::instr::{operand_is_f32, result_is_f32};
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
-    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_NO_NATIVE, FLAG_SHARED_GLOBAL,
+    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_GLOBAL_CONVERT, FLAG_NO_NATIVE,
     FLAG_SHARED_TABLE,
 };
 #[cfg(test)]
@@ -1354,13 +1354,14 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             .is_some_and(|t| t.limits().is64)
     }
 
-    /// Whether the table at `idx` is reachable from another instance, and so
-    /// is held as the shared entity rather than a private array.
-    /// Whether the global at `idx` is reachable from another instance, and so
-    /// lives in a shared cell rather than this instance's array.
-    fn global_is_shared(&self, idx: u64) -> bool {
+    /// Reachable reference globals need the runtime's storage/frame conversion.
+    /// Numeric globals use identical raw bits in private and shared cells.
+    fn global_needs_conversion(&self, idx: u64) -> bool {
         self.module.globals().get(idx as usize).is_some_and(|g| {
-            matches!(g.def(), GlobalDef::Import { .. }) || !g.export_names().is_empty()
+            !matches!(
+                g.value_type(),
+                ValueType::I32 | ValueType::I64 | ValueType::F32 | ValueType::F64
+            ) && (matches!(g.def(), GlobalDef::Import { .. }) || !g.export_names().is_empty())
         })
     }
 
@@ -4013,8 +4014,8 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         _ => return Err(desync()),
                     };
                     let dst = self.temp_slot_used(self.height());
-                    let flags = if self.global_is_shared(g as u64) {
-                        FLAG_SHARED_GLOBAL
+                    let flags = if self.global_needs_conversion(g as u64) {
+                        FLAG_GLOBAL_CONVERT
                     } else {
                         0
                     };
@@ -4033,8 +4034,8 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     if a_const {
                         flags |= FLAG_A_CONST;
                     }
-                    if self.global_is_shared(g as u64) {
-                        flags |= FLAG_SHARED_GLOBAL;
+                    if self.global_needs_conversion(g as u64) {
+                        flags |= FLAG_GLOBAL_CONVERT;
                     }
                     self.emit(Op::GlobalSet, flags, a, 0, g as u64);
                 }

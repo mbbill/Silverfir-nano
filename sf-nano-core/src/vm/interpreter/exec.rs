@@ -15,6 +15,8 @@
 //! Instantiation is self-contained: globals, active data and element
 //! segments, and funcref tables are built directly from the parsed module.
 
+use core::cell::Cell;
+
 use tracked_alloc::boxed::Box;
 use tracked_alloc::rc::Rc;
 use tracked_alloc::string::String;
@@ -606,7 +608,10 @@ pub struct InterpInstance {
     memories: Vec<MemoryState>,
     dropped_data: Vec<bool>,
     dropped_elems: Vec<bool>,
-    globals: Vec<u64>,
+    // Cell keeps linked raw addresses valid across safe Rust reads/writes.
+    // The allocation never grows after construction; moving the instance
+    // moves only the vector header, not the cells referenced by its code.
+    globals: Vec<Cell<u64>>,
     /// Globals backed by an aliased cell, by index. These live in an
     /// `Rc`-owned cell rather than the array above because both sides must
     /// observe each other's writes; the array slot beside them is unused.
@@ -847,14 +852,14 @@ fn eval_const(
     module: &Module,
     function_handles: &[RefValue],
     expr: &[u8],
-    globals: &[u64],
+    globals: &[Cell<u64>],
 ) -> Result<u64, WasmError> {
     use crate::vm::const_eval::{self, ConstResolver};
 
     struct R<'a> {
         module: &'a Module,
         function_handles: &'a [RefValue],
-        globals: &'a [u64],
+        globals: &'a [Cell<u64>],
     }
 
     impl ConstResolver for R<'_> {
@@ -885,7 +890,7 @@ fn eval_const(
             let raw = self
                 .globals
                 .get(global_idx as usize)
-                .copied()
+                .map(Cell::get)
                 .ok_or_else(|| {
                     WasmError::invalid("interp: constant expression reads a later global")
                 })?;
@@ -1352,7 +1357,7 @@ impl InterpInstance {
                             spec.value_type(),
                         )));
                     }
-                    globals.push(v);
+                    globals.push(Cell::new(v));
                 }
                 GlobalDef::Import {
                     module: md,
@@ -1388,11 +1393,11 @@ impl InterpInstance {
                                 };
                             }
                             shared_globals.push(None);
-                            globals.push(raw)
+                            globals.push(Cell::new(raw))
                         }
                         // Aliased, not copied: both sides must observe each
-                        // other's writes. Accesses to it are denied a native
-                        // handler, since the chain indexes the array below.
+                        // other's writes. Numeric native accesses link to this
+                        // shared cell; reference conversions stay in Rust.
                         Some((ImportedGlobal::State(st), _)) => {
                             // Mutability must match EXACTLY, in both
                             // directions: importing a `mut` global as
@@ -1427,7 +1432,7 @@ impl InterpInstance {
                                     )
                                 };
                             }
-                            globals.push(raw);
+                            globals.push(Cell::new(raw));
                             continue;
                         }
                         None => return Err(WasmError::unlinkable("missing global import")),
@@ -1726,7 +1731,21 @@ impl InterpInstance {
         }
 
         let engine = NativeEngine::new();
-        let mut scratch = LinkScratch::default();
+        // Raw cell addresses are stable for the lifetime of the linked code.
+        // Shared globals retain their Rc owner; private cells stay in the
+        // fixed Cell array. No native access may bypass reference conversion.
+        let mut scratch = LinkScratch::with_globals(
+            self.globals
+                .iter()
+                .zip(&self.shared_globals)
+                .map(|(local, shared)| {
+                    shared
+                        .as_ref()
+                        .map_or_else(|| local.as_ptr(), GlobalInst::raw_ptr)
+                        as u64
+                })
+                .collect(),
+        );
         #[cfg(test)]
         let test_code = Some(unlinked.clone_code_for_oracle());
         #[cfg(not(test))]
@@ -2435,7 +2454,7 @@ impl InterpInstance {
         // value as of instantiation rather than now.
         match self.shared_globals.get(idx)?.as_ref() {
             Some(shared) => Some(shared.raw()),
-            None => self.globals.get(idx).copied(),
+            None => self.globals.get(idx).map(Cell::get),
         }
     }
 
@@ -2446,9 +2465,9 @@ impl InterpInstance {
             shared.set_raw(raw);
             return Ok(());
         }
-        match self.globals.get_mut(idx) {
+        match self.globals.get(idx) {
             Some(slot) => {
-                *slot = raw;
+                slot.set(raw);
                 Ok(())
             }
             None => Err(WasmError::invalid("interp: global index out of range")),
@@ -3220,7 +3239,6 @@ impl InterpInstance {
             mem_base: 0,
             mem_len: 0,
             code_base: cells_base,
-            globals: self.globals.as_mut_ptr() as u64,
             ret_cursor: ret_ptr + ctx.ret_cursor as u64,
             ret_limit: ret_ptr + (ctx.ret_stack.len() * 8 - RET_RECORD) as u64,
             stack_limit: stack_ptr + (ctx.stack.len() as u64) * 8,
@@ -4190,7 +4208,7 @@ impl InterpInstance {
                 let i = ins.a as usize;
                 let value = match self.shared_globals.get(i).and_then(|g| g.as_ref()) {
                     Some(shared) => shared.raw(),
-                    None => self.globals[i],
+                    None => self.globals[i].get(),
                 };
                 frame[ins.c as usize] = self.global_slot_for_frame(i, value);
             }
@@ -4199,7 +4217,7 @@ impl InterpInstance {
                 let v = self.global_slot_for_storage(i, opa!(ins));
                 match self.shared_globals.get_mut(i).and_then(|g| g.as_mut()) {
                     Some(shared) => shared.set_raw(v),
-                    None => self.globals[i] = v,
+                    None => self.globals[i].set(v),
                 }
             }
 
@@ -4641,6 +4659,7 @@ mod tests {
     use super::*;
     use crate::module::Module;
     use core::cell::Cell;
+    use std::format;
     use std::vec::Vec as StdVec;
 
     trait TestInterpInstance: Sized {
@@ -4748,6 +4767,173 @@ mod tests {
         let mut results = [0u64; 1];
         inst.invoke(idx, args, &mut results)?;
         Ok(results[0])
+    }
+
+    #[test]
+    fn numeric_globals_stay_native_across_storage_kinds() {
+        use crate::vm::imports::ImportedGlobalState;
+
+        for (wat_type, value_type, bits) in [
+            ("i32", ValueType::I32, 0x89ab_cdef),
+            ("i64", ValueType::I64, 0x1234_5678_89ab_cdef),
+            ("f32", ValueType::F32, 0x8000_0000),
+            ("f64", ValueType::F64, 0x7ff8_1234_5678_9abc),
+        ] {
+            for storage in ["private", "exported", "value-import", "shared-import"] {
+                let global = match storage {
+                    "private" => format!("(global $g (mut {wat_type}) ({wat_type}.const 0))"),
+                    "exported" => {
+                        format!("(global $g (export \"g\") (mut {wat_type}) ({wat_type}.const 0))")
+                    }
+                    _ => format!("(import \"env\" \"g\" (global $g (mut {wat_type})))"),
+                };
+                let src = format!(
+                    "(module {global}
+                        (func (export \"get\") (result {wat_type}) global.get $g)
+                        (func (export \"set\") (param {wat_type})
+                            local.get 0 global.set $g))"
+                );
+                let mut shared = GlobalInst::new_raw(0, true, value_type);
+                let imports = match storage {
+                    "value-import" => vec![Import::global(
+                        "env",
+                        "g",
+                        raw_to_value_for_interp(0, value_type).expect("value"),
+                        true,
+                    )],
+                    "shared-import" => vec![Import::global_with_state(
+                        "env",
+                        "g",
+                        ImportedGlobalState {
+                            global: shared.clone(),
+                            type_ctx: None,
+                        },
+                    )],
+                    _ => Vec::new(),
+                };
+                let bin = wat::parse_str(&src).expect("wat");
+                let mut inst = InterpInstance::new(
+                    &Engine::with_defaults(),
+                    Module::new("globals", &bin).expect("module"),
+                    None,
+                    &imports,
+                )
+                .expect("instantiate");
+                let get = inst.find_export("get").expect("get");
+                let set = inst.find_export("set").expect("set");
+                let mut results = [0];
+                inst.invoke(set, &[bits], &mut []).expect("native set");
+                inst.invoke(get, &[], &mut results).expect("native get");
+                assert_eq!(results[0], bits, "{wat_type} {storage}: raw bits");
+                assert_eq!(inst.global_at(0), Some(bits), "host observes native store");
+
+                // Moving the instance and using the host accessor must not
+                // invalidate the private or shared addresses retained in code.
+                let mut moved = Box::new(inst);
+                moved.set_global_at(0, 0).expect("host store");
+                moved
+                    .invoke(get, &[], &mut results)
+                    .expect("get after move");
+                assert_eq!(results[0], 0);
+                if storage == "shared-import" {
+                    assert_eq!(shared.raw(), 0, "host store reaches shared owner");
+                    shared.set_raw(bits);
+                    moved
+                        .invoke(get, &[], &mut results)
+                        .expect("get after external store");
+                    assert_eq!(results[0], bits, "external store reaches native reader");
+                }
+                let native = moved.native.as_ref().expect("native state");
+                assert_eq!(
+                    native.slow_exits[Op::GlobalGet as usize],
+                    0,
+                    "{wat_type} {storage}"
+                );
+                assert_eq!(
+                    native.slow_exits[Op::GlobalSet as usize],
+                    0,
+                    "{wat_type} {storage}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exported_funcref_globals_keep_storage_conversion() {
+        let bin = wat::parse_str(
+            r#"(module
+            (func $target (result i32) i32.const 42)
+            (global $g (export "g") (mut funcref) (ref.null func))
+            (elem declare func $target)
+            (func (export "roundtrip") (result funcref)
+                ref.func $target global.set $g global.get $g))"#,
+        )
+        .expect("wat");
+        let mut inst = InterpInstance::new(
+            &Engine::with_defaults(),
+            Module::new("ref-global", &bin).expect("module"),
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let roundtrip = inst.find_export("roundtrip").expect("roundtrip");
+        let mut results = [0];
+        inst.invoke(roundtrip, &[], &mut results)
+            .expect("roundtrip");
+        let stored = inst.global_at(0).expect("stored reference");
+        assert_eq!(inst.global_slot_for_frame(0, stored), results[0]);
+        let native = inst.native.as_ref().expect("native state");
+        assert_eq!(native.slow_exits[Op::GlobalGet as usize], 1);
+        assert_eq!(native.slow_exits[Op::GlobalSet as usize], 1);
+    }
+
+    #[test]
+    fn native_shared_global_observes_host_updates_on_reentry() {
+        use crate::vm::imports::ImportedGlobalState;
+
+        let initial = 0x1234_5678_9abc_def0;
+        let replacement = 0x7654_3210_fedc_ba98;
+        let mut shared = GlobalInst::new_raw(0, true, ValueType::I64);
+        let imports = [Import::global_with_state(
+            "env",
+            "g",
+            ImportedGlobalState {
+                global: shared.clone(),
+                type_ctx: None,
+            },
+        )];
+        let host = InterpInstance::boxed_host(move |_, name, _, _, _| {
+            assert_eq!(name, "touch");
+            assert_eq!(
+                shared.raw(),
+                initial,
+                "host sees the preceding native store"
+            );
+            shared.set_raw(replacement);
+            Ok(())
+        });
+        let bin = wat::parse_str(
+            r#"(module
+            (import "env" "g" (global $g (mut i64)))
+            (import "env" "touch" (func $touch))
+            (func (export "run") (param i64) (result i64)
+                local.get 0 global.set $g call $touch global.get $g))"#,
+        )
+        .expect("wat");
+        let mut inst = InterpInstance::new(
+            &Engine::with_defaults(),
+            Module::new("host-global", &bin).expect("module"),
+            Some(host),
+            &imports,
+        )
+        .expect("instantiate");
+        let run = inst.find_export("run").expect("run");
+        let mut results = [0];
+        inst.invoke(run, &[initial], &mut results).expect("run");
+        assert_eq!(results[0], replacement, "native reader sees the host store");
+        let native = inst.native.as_ref().expect("native state");
+        assert_eq!(native.slow_exits[Op::GlobalGet as usize], 0);
+        assert_eq!(native.slow_exits[Op::GlobalSet as usize], 0);
     }
 
     fn run2(src: &str, export: &str, args: &[u64]) -> Result<[u64; 2], WasmError> {

@@ -4,7 +4,7 @@
 //! ```text
 //!   s2 = pc          s3 = frame base   s4 = &EnterState
 //!   s5 = memory 0 base                 s6 = memory 0 length
-//!   s7 = cell array base               s8 = globals base
+//!   s7 = cell array base
 //!   s9 = return-stack cursor           s10 = return-stack limit
 //!   s11 = value-stack limit            a1  = dispatch counter
 //!   s1 = accumulator   s0 = l0   a0 = l1 (RV64 only)
@@ -53,7 +53,6 @@ const STATE: &str = "s4";
 const MEM: &str = "s5";
 const MEMLEN: &str = "s6";
 const CODE: &str = "s7";
-const GLOB: &str = "s8";
 const RETSP: &str = "s9";
 const RETLIM: &str = "s10";
 const STKLIM: &str = "s11";
@@ -697,7 +696,7 @@ impl Isa for RiscV {
         let (lp, sp) = (self.lp(), self.sp());
         let frame = if self.rv64() { 128 } else { 64 };
         let saved = [
-            "ra", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
+            "ra", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s9", "s10", "s11",
         ];
 
         a.label(&st.exit_common);
@@ -751,7 +750,6 @@ impl Isa for RiscV {
         a.ins(&format!("{lp} {MEM}, 24({STATE})"));
         a.ins(&format!("{lp} {MEMLEN}, 32({STATE})"));
         a.ins(&format!("{lp} {CODE}, 40({STATE})"));
-        a.ins(&format!("{lp} {GLOB}, 48({STATE})"));
         a.ins(&format!("{lp} {RETSP}, 56({STATE})"));
         a.ins(&format!("{lp} {RETLIM}, 64({STATE})"));
         a.ins(&format!("{lp} {STKLIM}, 72({STATE})"));
@@ -1146,7 +1144,6 @@ impl Isa for RiscV {
             }
             GlobalGet => {
                 a.ins(&format!("{lp} {T1}, 8({PC})"));
-                a.ins(&format!("add {T1}, {GLOB}, {T1}"));
                 let rd = self.dst_target(v.d);
                 a.ins(&format!("{lp} {rd}, 0({T1})"));
                 if !self.rv64() {
@@ -1157,7 +1154,6 @@ impl Isa for RiscV {
             GlobalSet => {
                 let (x, xh) = self.pair(a, v.a, 8, T1, T2);
                 a.ins(&format!("{lp} {T5}, 24({PC})"));
-                a.ins(&format!("add {T5}, {GLOB}, {T5}"));
                 a.ins(&format!("{} {x}, 0({T5})", self.sp()));
                 if !self.rv64() {
                     a.ins(&format!("sw {xh}, 4({T5})"));
@@ -1863,7 +1859,7 @@ impl RiscV {
         a.ins(&format!("ld {T4}, 0({T3})")); // fi
         a.ins(&format!("srli {T5}, {T4}, 32"));
         self.br_far(a, "bne", T5, "zero", &st.slow); // upper 32 bits are nonzero
-        a.ins(&format!("ld {T5}, 136({STATE})")); // info length
+        a.ins(&format!("ld {T5}, 48({STATE})")); // info length
         self.br_far(a, "bgeu", T4, T5, &st.slow);
         a.ins(&format!("ld {T5}, 128({STATE})")); // info base
         a.ins(&format!("slli {T6}, {T4}, 1"));
