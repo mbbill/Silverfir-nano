@@ -973,15 +973,22 @@ impl Isa for X86_64 {
                 }
             }
             GlobalGet => {
-                a.ins("mov rax, [rbx + 16]"); // storage cell address
+                // Keep the indexed load/store shape with a zero offset.
+                // Base-only addressing regressed the global chain on CI's
+                // EPYC 9V74; the indexed form recovers it even with fixed
+                // 32- or 64-byte handler alignment. Resolving the cell ahead
+                // of time replaces the old index load with a zero idiom.
+                a.ins("mov rcx, [rbx + 16]"); // storage cell address
+                a.ins("xor eax, eax");
                 let rd = self.dst_target(dc);
-                a.ins(&format!("mov {}, [rax]", q(rd)));
+                a.ins(&format!("mov {}, [rcx + rax]", q(rd)));
                 self.finish(a, dc, rd);
             }
             GlobalSet => {
                 let ra = self.src(a, v.a, 8, RAX);
-                a.ins("mov rdx, [rbx + 16]"); // storage cell address
-                a.ins(&format!("mov [rdx], {}", q(ra)));
+                a.ins("mov rcx, [rbx + 16]"); // storage cell address
+                a.ins("xor edx, edx");
+                a.ins(&format!("mov [rcx + rdx], {}", q(ra)));
             }
             I32_Eqz | I64_Eqz => {
                 let w32 = v.op == I32_Eqz;
