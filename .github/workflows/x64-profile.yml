@@ -37,8 +37,8 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 8f69395be2f1a2c652b9ade0ba17b5f637e4ed74
-          path: source-reuse
+          ref: 7fbc510b0fc6edd06d2bd926c6ba0e49d4b3f4ee
+          path: source-inline
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -58,7 +58,7 @@ jobs:
           import json, os, shutil
           from pathlib import Path
           Path('coremark-out').mkdir()
-          for name in ['main', 'parent', 'reuse']:
+          for name in ['main', 'parent', 'inline']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -67,11 +67,11 @@ jobs:
           PYCODE
       - name: Save and audit the source variants
         run: |
-          for name in main parent reuse; do
+          for name in main parent inline; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-reuse
+        working-directory: source-inline
         env:
           CARGO_TERM_COLOR: never
         run: |
@@ -81,7 +81,7 @@ jobs:
             exit 1
           fi
           cargo test --locked -p sf-nano-core --no-default-features --features jit,interp \
-            --test memory_length --test call_status --test integer_division --test integer_sums --test jump_table_membership 2>&1 | tee ../coremark-out/correctness-unguarded-memory.log
+            --test call_inlining --test memory_length --test call_status --test integer_division --test integer_sums --test jump_table_membership 2>&1 | tee ../coremark-out/correctness-unguarded-memory.log
           cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
             2>&1 | tee ../coremark-out/correctness-spec-build.log
           target/release/sf-nano-spectest --backend jit --log-level info \
@@ -91,7 +91,7 @@ jobs:
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in main parent reuse; do
+          for name in main parent inline; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
               --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
             python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
@@ -106,11 +106,11 @@ jobs:
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
             --variant main="$PWD/coremark-out/main" \
             --variant parent="$PWD/coremark-out/parent" \
-            --variant reuse="$PWD/coremark-out/reuse" \
+            --variant inline="$PWD/coremark-out/inline" \
             --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 4 --out-dir coremark-out
       - name: Capture the native code of every revision
         run: |
-          for name in main parent reuse; do
+          for name in main parent inline; do
             SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
               "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
           done
@@ -120,7 +120,7 @@ jobs:
           sudo apt-get install -y -qq linux-tools-common linux-tools-generic
           PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
           sudo sysctl -w kernel.perf_event_paranoid=1
-          for name in parent reuse; do
+          for name in parent inline; do
             taskset -c 1 setarch "$(uname -m)" -R python3 ci/x64_profile_capture.py \
               --perf "$PERF_BIN" --out-dir "profile-out/$name" -- \
               "$PWD/coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark
@@ -128,7 +128,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-gp-reuse-${{ matrix.draw }}
+          name: nano-coremark-small-call-inline-${{ matrix.draw }}
           path: |
             coremark-out/*.log
             coremark-out/*.json
