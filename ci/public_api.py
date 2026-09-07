@@ -2,7 +2,7 @@
 """Capture and check the embedding API, including memprof transparency.
 
 Capturing writes a candidate for review, never the accepted snapshots. A
-snapshot update is not evidence of human approval; see docs/PUBLIC_API_RELEASE.md.
+snapshot update is not evidence of human approval; see docs/PUBLIC_API_POLICY.md.
 The Rust toolchain and extractor are pinned because rustdoc JSON and inferred
 trait implementations are compiler-version dependent.
 """

@@ -56,6 +56,21 @@
   configuration is not exercised by the work that changes that configuration,
   so it drifts out of date while still being cited as evidence (code).
 
+- 2026-09-07 rationale: retain the Wasmtime-style embedding model and a small
+  published allocation helper; changing valuable runtime code merely to remove
+  the profiler dependency was not worth it. Profiling must preserve public
+  types and traits, even at the cost of losing detailed container tracking (sourced).
+
+- 2026-09-07 (7d1f0c8c) pitfall: hiding internal types alone does not secure the
+  embedding boundary. References need owner identity and lifetime checks, host
+  results need type checks, and memory views must block execution and growth
+  while borrowed. Captured WASI state avoids cross-instance ambient context (code).
+
+- 2026-09-07 rationale: API additions also need human review; compatibility or
+  agent-updated snapshots cannot grant it. Compare actual base/head surfaces
+  across features, including memprof and the published helper, then require
+  explicit approval tied to that head (sourced).
+
 ## Moves
 
 - 2026-07-25 (d4dc0be9) dropped: the separate minimal `no_std` front-end

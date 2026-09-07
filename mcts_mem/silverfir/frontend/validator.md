@@ -3,10 +3,8 @@
   types, control-flow nesting and branch targets, start-function signature,
   tag result types, and export-name uniqueness (`Validator`).
 
-- The standalone validator is a separable component selected at build time
-  (`sf_module_validator`); the compilation pipeline independently re-derives
-  the types it needs while decoding, and a build can verify with the validator,
-  with the decoder's own checks, or both.
+- Safe loading always runs the existing semantic validator; bypass requires an
+  explicit unsafe prevalidated-input contract ([[input-validation]]).
 
 - Each local function is validated by implementing the decoder's handler trait
   and running the decode pass over its code (imported functions are skipped);
@@ -138,3 +136,8 @@
   the original fast interpreter did not consume validator outputs (no jump
   table, no stack-height precomputation), trading away ~3,580 LOC of binary
   for the trusted-input fast path (sourced).
+
+- 2026-09-07 (68412439) pitfall: valid memory64/table64 operations exposed old
+  runtime truncation despite correct validation. Preserve full growth deltas,
+  normalize each bulk endpoint by its own index width, and check overflow;
+  a memory32 inline fast path needs module-type evidence (code).
