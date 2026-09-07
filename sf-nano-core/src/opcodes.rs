@@ -52,6 +52,7 @@ pub(crate) enum WasmOpcode {
     OP(Opcode),
     FB(OpcodeFB),
     FC(OpcodeFC),
+    #[cfg(sf_has_simd)]
     FD(OpcodeFD),
 }
 

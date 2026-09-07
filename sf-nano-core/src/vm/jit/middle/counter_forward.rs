@@ -399,23 +399,24 @@ fn operand_root(const_pool: &[u64], facts: &ValueFacts, operand: SsaOperand) -> 
 }
 
 fn primitive_writes_memory(kind: &PrimitiveOpKind) -> bool {
-    matches!(
-        kind,
+    match kind {
         PrimitiveOpKind::I32Store { .. }
-            | PrimitiveOpKind::I64Store { .. }
-            | PrimitiveOpKind::F32Store { .. }
-            | PrimitiveOpKind::F64Store { .. }
-            | PrimitiveOpKind::I32Store8 { .. }
-            | PrimitiveOpKind::I32Store16 { .. }
-            | PrimitiveOpKind::I64Store8 { .. }
-            | PrimitiveOpKind::I64Store16 { .. }
-            | PrimitiveOpKind::I64Store32 { .. }
-            | PrimitiveOpKind::V128Store { .. }
-            | PrimitiveOpKind::MemoryFill { .. }
-            | PrimitiveOpKind::MemoryCopy { .. }
-            | PrimitiveOpKind::MemoryInit { .. }
-            | PrimitiveOpKind::MemoryGrow { .. }
-    )
+        | PrimitiveOpKind::I64Store { .. }
+        | PrimitiveOpKind::F32Store { .. }
+        | PrimitiveOpKind::F64Store { .. }
+        | PrimitiveOpKind::I32Store8 { .. }
+        | PrimitiveOpKind::I32Store16 { .. }
+        | PrimitiveOpKind::I64Store8 { .. }
+        | PrimitiveOpKind::I64Store16 { .. }
+        | PrimitiveOpKind::I64Store32 { .. }
+        | PrimitiveOpKind::MemoryFill { .. }
+        | PrimitiveOpKind::MemoryCopy { .. }
+        | PrimitiveOpKind::MemoryInit { .. }
+        | PrimitiveOpKind::MemoryGrow { .. } => true,
+        #[cfg(sf_has_simd)]
+        PrimitiveOpKind::V128Store { .. } => true,
+        _ => false,
+    }
 }
 
 /// Check every op strictly between the store and the load.

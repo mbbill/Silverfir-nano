@@ -83,8 +83,11 @@ pub(crate) enum Immediate {
     I64(i64),
     F32(f32),
     F64(f64),
+    #[cfg(sf_has_simd)]
     V128([u8; 16]),
+    #[cfg(sf_has_simd)]
     ShuffleMask([u8; 16]),
+    #[cfg(sf_has_simd)]
     LaneIndex(u8),
     Block(BlockType),
     RefType(ValueType),
@@ -115,6 +118,7 @@ pub(crate) enum Immediate {
         offset: u64,
         memidx: u32,
     },
+    #[cfg(sf_has_simd)]
     MemArgLane {
         align: u32,
         offset: u64,
@@ -186,8 +190,11 @@ impl fmt::Display for Immediate {
             I64(imm) => write!(f, "i64({})", imm),
             F32(imm) => write!(f, "f32({:e})", imm),
             F64(imm) => write!(f, "f64({:e})", imm),
+            #[cfg(sf_has_simd)]
             V128(bytes) => write!(f, "v128({:02x?})", bytes),
+            #[cfg(sf_has_simd)]
             ShuffleMask(mask) => write!(f, "shuffle({:02x?})", mask),
+            #[cfg(sf_has_simd)]
             LaneIndex(lane) => write!(f, "lane({})", lane),
             Block(imm) => write!(f, "blocktype({})", imm),
             RefType(imm) => write!(f, "reftype({})", imm),
@@ -221,6 +228,7 @@ impl fmt::Display for Immediate {
                 "align({}), offset({}), memidx({})",
                 align, offset, memidx
             ),
+            #[cfg(sf_has_simd)]
             MemArgLane {
                 align,
                 offset,

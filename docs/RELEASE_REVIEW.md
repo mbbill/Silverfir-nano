@@ -30,7 +30,7 @@ matching handler; that existing limitation is documented, not fixed here.
 | Minimal API and memprof transparency | Five core API profiles have exact memprof parity; both support-crate profiles and feature/MSRV contracts are captured. Real CI evidence for `7d1f0c8c` matches the local digest. | Capture the final head and obtain explicit acceptance of its entire initial API. No snapshot update counts as approval. |
 | Human review enforcement | Workflow and policy implementation fail closed when the review environment is absent; CI demonstrates that failure. | Configure the protected environment and required main-branch gate using authenticated repository administration, then verify them. |
 | Hosted correctness | `587f5752` passes 684 core test cases and JIT 260/interpreter 175 spec files locally; exclusions are unchanged. CI at `4030fa54` passes policy, Miri and Rust 1.94. | All supported configuration gates must pass on the final revision. |
-| Single-engine and low-memory builds | The ownership follow-up moves raw conversions into JIT, shares effective growth limits with the interpreter, and removes unsafe test-only memory accessors. Native single-engine library checks are warning-free. Thumb/RV32 still report the original non-SIMD decoding warnings. | Resolve the SIMD representation boundary and verify all final configurations without suppressions. These warning failures are not passes. |
+| Single-engine and low-memory builds | The ownership follow-up moves raw conversions into JIT, shares effective growth limits with the interpreter, and removes unsafe test-only memory accessors. Native single-engine checks and local Thumb, RV32, RV64, and ARMv7 checks are warning-free after the decoder/IR SIMD capability cleanup. | Verify the final head on the hosted platform matrix. Earlier hosted warning failures remain failures until replaced by final-head evidence. |
 | Startup and execution performance | All eight Linux wasmi primary jobs complete at `4030fa54`; [complete printed tables](release-evidence/linux-release-wasmi-primary.json) retain noisy-floor results. All four [startup confirmations](release-evidence/linux-release-startup-confirmation.json) are complete: seven interpreter regressions on each architecture, two JIT regressions on x64 and four on ARM64. | Resolve regressions under the unchanged gates. Validator optimizations reduce safe loading cost but do not establish a passing full-startup result. The [validation audit](release-evidence/benchmark-validation-audit.md) distinguishes checked, unchecked and deferred competitors. |
 | Packages and downstream integration | Clean `7d1f0c8c` archives pass Cargo verification; an independent unpacked-package consumer builds the actual wasmi adapter and exercises both engines. CI adapter migration is fixed at `4030fa54`. | Regenerate and verify exact archives from the final clean reviewed revision. |
 | Publication | Package names, metadata, licenses and dependency versions are prepared. | Explicit approval of the final package set/version and actual publication; then verify registry-based integration. |
@@ -50,13 +50,18 @@ test exposed that an unbounded host table32 previously accepted growth beyond
 its index space. This is an intentional correctness fix, not merely a move.
 The scoped Miri fixtures use backing borrows instead of test-only raw slices.
 
-The non-SIMD warning cluster remains unresolved. An isolated experiment that
-gated the decoded SIMD variants and moved JIT SIMD decoding into a capability
-submodule removed the decoder warnings, but created unused SIMD primitive
-variants in the deliberately backend-independent semantic IR on RISC-V JIT.
-That incomplete experiment was reverted; no suppression or expansion of cfgs
-through the IR was retained. The decoder/IR capability boundary needs a
-coherent design before further structural changes.
+The non-SIMD capability boundary now spans decoded operations, semantic
+primitives, and the already capability-gated machine IR. Unsupported targets
+still reject SIMD in the shared decoder; impossible non-SIMD lowering stubs
+are removed. The primitive semantics and ordering for SIMD-capable builds are
+unchanged. Local core/spec and cross-compilation checks pass without warning
+suppressions; hosted final-head validation is still pending.
+
+The added resource-growth tests exposed old x64 memory64/table64 truncation
+and interpreter table64 growth semantics. Separate fixes preserve full deltas,
+check limits and overflow, and return the correctly typed -1 on failure. Tests
+reproduce the old failures and pass after the fixes on local x64/ARM64. An
+adjacent bulk-memory/table index-width audit remains outstanding.
 
 Remote administration also remains unavailable through the current authorized
 tools; the requested authentication choice has not been answered. The exact
