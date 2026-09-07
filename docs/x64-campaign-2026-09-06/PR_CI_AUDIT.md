@@ -2,7 +2,8 @@
 
 Original head: df70f1c9a1b72e46b29ab77620cc76458873382f.
 Correctness run 34092213833: complete, 6 successful and 5 failed actual jobs.
-Performance run 34092213857: still running; no complete performance verdict.
+Performance run 34092213857: later cancelled by the corrective push;
+no complete performance verdict.
 
 ## Reproduced and locally fixed
 
@@ -26,19 +27,29 @@ Performance run 34092213857: still running; no complete performance verdict.
    RV32 JIT spectest also cross-builds without warnings. All eight affected
    x64/Rosetta integration tests pass with memprof enabled.
 
-## Feature ownership decision pending
+## Feature ownership decision resolved (2026-09-07)
 
 Nightly spectest interp-only declares four unused dependencies: sf-nano-core,
 wat, env_logger and structopt. Both untouched main and the PR reproduce them.
 The binary only prints a missing-JIT-driver message and exits 2. The source
 feature comment describing an interp-only runner contradicts that behavior.
 
-Proposed design: explicitly require jit for the WAST binary; interpreter spec
-execution remains jit,interp and pure-interpreter compile coverage remains in
-core and CLI. Alternative: preserve the diagnostic placeholder and separate
-its dependencies from the WAST runner. AGENTS.md requires this feature-boundary
-cluster be reported before changing ownership; the user decision is pending.
-No suppressions, new engine cfg structure or warning exemptions were added.
+The user approved reusing PR #41's standalone fix a1da5a7b; it is retained here
+as f721e68d with the original commit recorded by cherry-pick. The shared WAST
+runner now builds and runs with either engine independently. CI uses pure
+interp for interpreter spec execution, and native-code/GC-only fixtures live
+in the JIT test module. The earlier proposal to require jit for this binary
+is superseded. No warning suppression or exemption is added, and no interpreter
+performance changes from PR #41 are included.
+
+Validation on the combined PR revision: spectest unit tests pass in pure interp
+(20), pure jit (28), and dual-engine (29) configurations. Complete release WAST
+runs with `--interp` and `--backend native` both exit successfully on ARM64.
+The exact RV32 nightly `-Z build-std=std,panic_abort` pure-interpreter spectest
+build succeeds with zero compiler/linker warnings. All 120 CI helper tests,
+formatting, lint policy and whitespace checks pass. The removed helper test
+covered the superseded combined-feature workaround; existing coverage-plan
+tests now assert independent `jit` and `interp` spectest builds.
 
 ## Performance policy
 
@@ -68,9 +79,8 @@ The RV32 job still fails the four-dependency pure-interpreter spectest warning
 audit described above; all its actual spec/WASI execution checks pass. PR #41
 contains standalone commit a1da5a7b enabling the shared WAST harness for either
 engine independently. That PR's correctness run 34093520841 passes all platforms.
-Reusing that specific fix, instead of requiring jit for spectest, has been
-presented to the user as the preferred resolution; no feature-boundary change
-has been applied here pending the decision.
+The user subsequently approved reusing that specific fix, instead of requiring
+jit for spectest; see the resolved decision above.
 
 ### Why this run takes longer
 
