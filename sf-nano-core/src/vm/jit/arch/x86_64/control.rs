@@ -81,8 +81,8 @@ impl<'a> X86_64Backend<'a> {
                 // emit them inline and jump straight to the target instead
                 // of round-tripping through an out-of-line stub — a loop
                 // latch through a stub costs a second taken jump per
-                // iteration. Conditional edges keep stubs: their moves are
-                // taken-path-only.
+                // iteration. Conditional fallthrough moves are likewise
+                // inline, after the branch has selected that path.
                 self.emit_jump_edge_inline(edge, fallthrough)
             }
             MachineTerminator::Branch {
@@ -158,11 +158,12 @@ impl<'a> X86_64Backend<'a> {
         else_edge: &MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let blocks = self.core.mir_blocks()?;
-        let then_fallthrough =
-            is_fallthrough_edge(then_edge.target, &then_edge.args, fallthrough, blocks);
-        let else_fallthrough =
-            is_fallthrough_edge(else_edge.target, &else_edge.args, fallthrough, blocks);
+        // Copies on the physical fallthrough path can run after the Jcc.
+        // Equal targets may share that path only when their arguments also
+        // match; otherwise the two edges must retain their distinct copies.
+        let else_fallthrough = fallthrough == Some(else_edge.target);
+        let then_fallthrough = fallthrough == Some(then_edge.target)
+            && (!else_fallthrough || then_edge.args == else_edge.args);
         let then_label = (!then_fallthrough)
             .then(|| self.core.emit_edge(then_edge.target, &then_edge.args))
             .transpose()?;
@@ -274,6 +275,11 @@ impl<'a> X86_64Backend<'a> {
                     self.emit_jmp(else_label);
                 }
             }
+        }
+        if else_fallthrough {
+            self.emit_jump_edge_inline(else_edge, fallthrough)?;
+        } else if then_fallthrough {
+            self.emit_jump_edge_inline(then_edge, fallthrough)?;
         }
         Ok(())
     }
@@ -943,5 +949,181 @@ impl<'a> X86_64Backend<'a> {
             entry_labels,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fallthrough_tests {
+    use super::*;
+    use crate::vm::jit::{
+        arch::common::{
+            backend::ArchBackend,
+            core::{CompilerCore, FunctionBody},
+        },
+        backend::BackendConfig,
+        machine::machine_ir::{
+            MachineBlock, MachineBlockParam, MachineFuncId, MachineFunction, MachineFunctionAbi,
+            MachineReg, MachineSign,
+        },
+        runtime::{code::CodegenModuleView, code_buf::CodeBuffer},
+    };
+
+    #[derive(Debug)]
+    struct TestModule;
+
+    impl CodegenModuleView for TestModule {
+        fn backend(&self) -> BackendConfig {
+            super::super::abi::compile_backend_config()
+        }
+        fn runtime_for(&self, _id: MachineFuncId) -> Option<&MachineFunctionAbi> {
+            None
+        }
+        fn const_ptr(&self, _id: MachineConstId) -> Option<*const u8> {
+            None
+        }
+    }
+
+    #[test]
+    fn inline_fallthrough_copies_preserve_path_selection_and_parallel_arguments() {
+        let first = MachineReg(6); // R8, volatile in both host ABIs.
+        let second = MachineReg(7); // R9.
+        let marker = 0x8c31_a059_b62e_d407;
+        for shared_edge in 0..3 {
+            let same_target = shared_edge != 0;
+            for fallthrough in [None, Some(MachineBlockId(1)), Some(MachineBlockId(2))] {
+                for condition in 0..6 {
+                    for return_lane in [first, second] {
+                        let mut function = MachineFunction::default();
+                        for id in 0..3 {
+                            function.program.blocks.push(MachineBlock {
+                                id: MachineBlockId(id),
+                                params: if id == 0 {
+                                    collections::Vec::new()
+                                } else {
+                                    collections::vec![
+                                        MachineBlockParam::gp_word(first),
+                                        MachineBlockParam::gp_word(second),
+                                    ]
+                                },
+                                ops: collections::Vec::new(),
+                                terminator: MachineTerminator::Return,
+                            });
+                        }
+                        let cond = match condition {
+                            0 => MachineBranchCond::Value(MachineValue::Reg(first)),
+                            1 | 2 => MachineBranchCond::IntCompare {
+                                width: MachineIntWidth::I64,
+                                kind: if condition == 1 {
+                                    MachineCompareKind::Eq
+                                } else {
+                                    MachineCompareKind::Lt
+                                },
+                                sign: MachineSign::Unsigned,
+                                lhs: MachineValue::Reg(first),
+                                rhs: MachineValue::Reg(second),
+                            },
+                            3 => MachineBranchCond::TestBits {
+                                width: MachineIntWidth::I32,
+                                kind: MachineCompareKind::Ne,
+                                src: MachineValue::Reg(first),
+                                mask: MachineValue::Imm64(8),
+                            },
+                            _ => MachineBranchCond::Value(MachineValue::Imm64(condition - 4)),
+                        };
+                        let then_edge = MachineEdge {
+                            target: MachineBlockId(1),
+                            args: collections::vec![
+                                MachineValue::Reg(second),
+                                MachineValue::Reg(first)
+                            ],
+                        };
+                        let else_edge = MachineEdge {
+                            target: MachineBlockId(if same_target { 1 } else { 2 }),
+                            args: if shared_edge == 2 {
+                                then_edge.args.clone()
+                            } else {
+                                collections::vec![
+                                    MachineValue::Imm64(marker),
+                                    MachineValue::Reg(first)
+                                ]
+                            },
+                        };
+                        let core = CompilerCore::new(&TestModule, FunctionBody::Mir(&function));
+                        let mut backend = X86_64Backend::new(core);
+                        enc::mov_rr_64(&mut backend.core.text, X86Reg::R8, C_ARG0);
+                        enc::mov_rr_64(&mut backend.core.text, X86Reg::R9, C_ARG1);
+                        backend
+                            .lower_branch(&cond, &then_edge, &else_edge, fallthrough)
+                            .unwrap();
+                        let inline = fallthrough == Some(then_edge.target)
+                            || fallthrough == Some(else_edge.target);
+                        let stubs = if shared_edge == 2 && fallthrough == Some(then_edge.target) {
+                            0
+                        } else if inline {
+                            1
+                        } else {
+                            2
+                        };
+                        assert_eq!(backend.core.edge_stubs.len(), stubs);
+                        // Emit the promised physical successor first. Returning
+                        // either lane checks cycles and source/destination aliasing.
+                        let order = if fallthrough == Some(MachineBlockId(2)) {
+                            [2, 1]
+                        } else {
+                            [1, 2]
+                        };
+                        for id in order {
+                            let label = backend.core.block_label(MachineBlockId(id)).unwrap();
+                            backend.core.bind_label(label);
+                            let reg = backend.map_gp_reg(return_lane).unwrap();
+                            enc::mov_rr_64(&mut backend.core.text, X86Reg::RAX, reg);
+                            enc::ret(&mut backend.core.text);
+                        }
+                        for edge in core::mem::take(&mut backend.core.edge_stubs) {
+                            backend.core.bind_label(edge.label);
+                            emit_parallel_moves::<X86_64Backend<'_>>(
+                                &mut backend,
+                                &edge.params,
+                                &edge.args,
+                                &edge.arg_float_widths,
+                            )
+                            .unwrap();
+                            let label = backend.core.block_label(edge.target).unwrap();
+                            backend.emit_jmp(label);
+                        }
+                        backend.patch_fixups().unwrap();
+                        let bytes = backend.core.text.finish();
+                        let mut code = CodeBuffer::with_capacity(4096).unwrap();
+                        code.begin_write();
+                        code.emit_bytes(&bytes);
+                        code.finish_write(0, bytes.len());
+                        // R8/R9 and the parallel-move scratch lanes are volatile
+                        // in both host ABIs; no stack or preserved state is touched.
+                        let run: unsafe extern "C" fn(u64, u64) -> u64 = unsafe { code.fn_ptr(0) };
+                        let inputs = [0, 1, 8, 1 << 32, 0x1357_2468_abcd_9012, u64::MAX];
+                        for a in inputs {
+                            for b in inputs {
+                                let taken = match condition {
+                                    0 => a as u32 != 0,
+                                    1 => a == b,
+                                    2 => a < b,
+                                    3 => a & 8 != 0,
+                                    _ => condition != 4,
+                                };
+                                let expected = if return_lane == second {
+                                    a
+                                } else if taken || shared_edge == 2 {
+                                    b
+                                } else {
+                                    marker
+                                };
+                                assert_eq!(unsafe { run(a, b) }, expected,
+                                    "condition={condition}, same_target={same_target}, fallthrough={fallthrough:?}, lane={return_lane:?}, a={a:#x}, b={b:#x}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
