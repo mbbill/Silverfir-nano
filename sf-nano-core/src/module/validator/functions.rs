@@ -295,7 +295,10 @@ impl<'a> FunctionValidator<'a> {
             function.locals(),
         );
 
-        context.push_ctrl(FrameType::Function, function.func_type_rc())?;
+        context.push_ctrl(
+            FrameType::Function,
+            ControlSignature::Indexed(function.func_type_rc()),
+        )?;
 
         Ok(FunctionValidator {
             module,
@@ -305,12 +308,9 @@ impl<'a> FunctionValidator<'a> {
         })
     }
 
-    fn get_block_type(&self, block_type: BlockType) -> Result<Rc<FunctionType>, WasmError> {
+    fn get_block_type(&self, block_type: BlockType) -> Result<ControlSignature, WasmError> {
         match block_type {
-            BlockType::Empty => Ok(Rc::new(FunctionType::new(
-                collections::Vec::new(),
-                collections::Vec::new(),
-            ))),
+            BlockType::Empty => Ok(ControlSignature::Empty),
             BlockType::ValueType(value_type) => {
                 if let ValueType::Ref(ref_type) = value_type {
                     if let HeapType::Concrete(idx) = ref_type.heap_type {
@@ -319,16 +319,14 @@ impl<'a> FunctionValidator<'a> {
                         }
                     }
                 }
-                Ok(Rc::new(FunctionType::new(
-                    collections::Vec::new(),
-                    collections::vec![value_type],
-                )))
+                Ok(ControlSignature::Single(value_type))
             }
             BlockType::TypeIndex(type_index) => self
                 .module
                 .types()
                 .get_function_type(type_index as u32)
                 .cloned()
+                .map(ControlSignature::Indexed)
                 .ok_or_else(|| WasmError::malformed("block type index out of range")),
         }
     }
@@ -2339,9 +2337,35 @@ enum FrameType {
     TryTable,
 }
 
+// Inline block signatures need no heap allocation. Indexed signatures keep
+// sharing the module's canonical function type, including multi-value types.
+#[derive(Clone)]
+enum ControlSignature {
+    Empty,
+    Single(ValueType),
+    Indexed(Rc<FunctionType>),
+}
+
+impl ControlSignature {
+    fn params(&self) -> &[ValueType] {
+        match self {
+            Self::Empty | Self::Single(_) => &[],
+            Self::Indexed(function_type) => function_type.params(),
+        }
+    }
+
+    fn results(&self) -> &[ValueType] {
+        match self {
+            Self::Empty => &[],
+            Self::Single(value_type) => core::slice::from_ref(value_type),
+            Self::Indexed(function_type) => function_type.results(),
+        }
+    }
+}
+
 struct ControlFrame {
     frame_type: FrameType,
-    function_type: Rc<FunctionType>,
+    function_type: ControlSignature,
     height: usize,
     unreachable: bool,
     inits_height: usize,
@@ -2350,7 +2374,7 @@ struct ControlFrame {
 impl ControlFrame {
     fn new(
         frame_type: FrameType,
-        function_type: Rc<FunctionType>,
+        function_type: ControlSignature,
         height: usize,
         unreachable: bool,
         inits_height: usize,
@@ -2368,7 +2392,7 @@ impl ControlFrame {
         self.frame_type
     }
 
-    fn function_type(&self) -> Rc<FunctionType> {
+    fn function_type(&self) -> ControlSignature {
         self.function_type.clone()
     }
 
@@ -2499,7 +2523,7 @@ impl Context {
     fn push_ctrl(
         &mut self,
         frame_type: FrameType,
-        function_type: Rc<FunctionType>,
+        function_type: ControlSignature,
     ) -> Result<(), WasmError> {
         let inits_height = self.inits.len();
         self.control_frames.push(ControlFrame::new(
