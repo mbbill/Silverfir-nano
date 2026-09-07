@@ -2,6 +2,9 @@
 
 Base: main 0983d9e4. Working branch: codex/public-api-release.
 
+For a compact view of the proposed release, scoped verification evidence and
+remaining decisions, start with [the release review checklist](RELEASE_REVIEW.md).
+
 ## Accepted direction
 
 Keep the existing Wasmtime-style embedding model: configuration, engine,
@@ -1104,3 +1107,21 @@ three compiler warnings. Their numeric tables contain NOISY-FLOOR results
 (x64 bulk-ops and ARM64 fibonacci-tail), which must not be described as proof
 that those workloads are unchanged. Startup and independent-runner confirmation
 are still pending. No V8 or Cranelift comparison was added.
+
+### Complete primary CI evidence (2026-09-07)
+
+All eight wasmi primary jobs at 4030fa54 have completed. Their 108 printed
+benchmark rows and job links are retained in
+[the complete primary tables](release-evidence/linux-release-wasmi-primary.json).
+The previously pending x64 JIT startup job flags bz2 and spidermonkey as
+REGRESSION; its CoreMark/ERC20 rows are NOISY-FLOOR, not proof of unchanged
+performance. ARM64 JIT flags five startup workloads. Both interpreter startup
+suites flag all seven. Four independent startup confirmation jobs are now live
+in run 34141541984; all statements about these primary verdicts remain provisional.
+The interpreter jobs' three compiler warnings remain real audit failures.
+
+Correctness CI has also finished all jobs. The final RV32 and ARMv7 logs add
+no new warning categories or test failures; they fail the already reported
+ownership/capability clusters. Main and the remote PR head were rechecked over
+normal Git SSH and remain 0983d9e4 and 4030fa54 respectively. The local validator
+signature and warning-display commits have not interrupted the active run.
