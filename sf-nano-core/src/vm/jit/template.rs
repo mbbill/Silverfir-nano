@@ -1050,6 +1050,14 @@ impl<'a> TemplateEmitter<'a> {
         if self.stack_height != self.result_count {
             return Err(unsupported());
         }
+        // Template evaluation leaves results in the operand area. The frame
+        // return ABI publishes them at slot zero, like ordinary JIT bodies.
+        // Copy forward: destination slots precede the operand source slots.
+        for index in 0..self.result_count {
+            let ty = self.spec.func_type().results()[usize::from(index)];
+            self.load_slot(backend, ty, self.operand_slot(index)?, self.gp0())?;
+            self.store_reg(backend, ty, index, self.gp0())?;
+        }
         backend.emit_template_return()
     }
 

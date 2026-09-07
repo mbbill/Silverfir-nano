@@ -126,9 +126,11 @@ pub(super) fn reuse_loaded_values(
                     src: MachineValue::Reg(src_reg),
                 };
             }
-            inst.kind.for_each_defined_reg(|dst| {
-                kill_tracked_loads_by_reg(tracked, dst);
-            });
+            if !tracked.is_empty() {
+                inst.kind.for_each_defined_reg(|dst| {
+                    kill_tracked_loads_by_reg(tracked, dst);
+                });
+            }
             if let Some(load) = produced_load {
                 tracked.push(load);
             }

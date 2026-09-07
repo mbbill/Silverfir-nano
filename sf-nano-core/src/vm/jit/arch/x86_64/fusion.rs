@@ -4,8 +4,65 @@ use super::enc::{Cc, MemAluOp};
 use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind,
     MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineRegOwner, MachineSign, MachineStorageType, MachineValue,
+    MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
+    MACHINE_FIXED_REG_COUNT,
 };
+
+/// Read through an immediately preceding GP snapshot without materializing
+/// the copy. This is an emitter-only substitution: cached-value ownership in
+/// MachineIR stays intact. Narrow loads cannot participate in load+ALU fusion.
+pub(super) fn copied_narrow_load(
+    copy: &MachineInst,
+    load: &MachineInst,
+    after: &[MachineInst],
+    term: &MachineTerminator,
+) -> Option<MachineInst> {
+    let MachineInstKind::Move {
+        owner: MachineRegOwner::LinearValue,
+        ty: MachineStorageType::GpWord | MachineStorageType::GpI64,
+        dst: copied,
+        src: MachineValue::Reg(source),
+    } = copy.kind
+    else {
+        return None;
+    };
+    let dynamic_gp = |reg: MachineReg| {
+        reg.0 >= MACHINE_FIXED_REG_COUNT && usize::from(reg.0) < super::abi::max_gp_mapped_regs()
+    };
+    if copied == source || !dynamic_gp(copied) || !dynamic_gp(source) {
+        return None;
+    }
+    let MachineInstKind::IndexedLoad {
+        dst,
+        base,
+        index,
+        index_extend,
+        offset,
+        width: width @ (MachineMemWidth::U8 | MachineMemWidth::U16),
+        extension,
+    } = load.kind
+    else {
+        return None;
+    };
+    if !dynamic_gp(dst)
+        || (base != copied && index != copied)
+        || (dst != copied
+            && crate::vm::jit::machine::peephole::helpers::reg_live_after(after, term, copied))
+    {
+        return None;
+    }
+    Some(MachineInst {
+        kind: MachineInstKind::IndexedLoad {
+            dst,
+            base: if base == copied { source } else { base },
+            index: if index == copied { source } else { index },
+            index_extend,
+            offset,
+            width,
+            extension,
+        },
+    })
+}
 
 /// A fused `load + ALU` pair: `dst <- dst OP [mem]` in one instruction,
 /// replacing a load into a transient plus a reg-reg ALU op. The loaded
@@ -207,5 +264,164 @@ pub(super) fn map_int_cond(kind: MachineCompareKind, sign: MachineSign) -> Cc {
         (MachineCompareKind::Le, MachineSign::Unsigned) => Cc::BE,
         (MachineCompareKind::Ge, MachineSign::Signed) => Cc::GE,
         (MachineCompareKind::Ge, MachineSign::Unsigned) => Cc::AE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::jit::machine::machine_ir::{MachineBlockId, MachineEdge};
+
+    fn copy() -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::Move {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: MachineReg(7),
+                src: MachineValue::Reg(MachineReg(9)),
+            },
+        }
+    }
+
+    fn load() -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::IndexedLoad {
+                dst: MachineReg(4),
+                base: MachineReg(2),
+                index: MachineReg(7),
+                index_extend: MachineIndexExtend::ZeroExtend32,
+                offset: 0,
+                width: MachineMemWidth::U8,
+                extension: MachineLoadExtension::ZeroExtend,
+            },
+        }
+    }
+
+    fn address(inst: &MachineInst, regs: &[u64; 12]) -> u64 {
+        let MachineInstKind::IndexedLoad {
+            base,
+            index,
+            index_extend,
+            offset,
+            ..
+        } = inst.kind
+        else {
+            panic!("expected indexed load")
+        };
+        let index = regs[usize::from(index.0)];
+        let index = match index_extend {
+            MachineIndexExtend::None => index,
+            MachineIndexExtend::ZeroExtend32 => u64::from(index as u32),
+        };
+        regs[usize::from(base.0)]
+            .wrapping_add(index)
+            .wrapping_add(offset as u64)
+    }
+
+    #[test]
+    fn copied_address_preserves_aliasing_high_bits_and_displacements() {
+        for base in [2, 7, 9] {
+            for index in [7, 9] {
+                if base != 7 && index != 7 {
+                    continue;
+                }
+                for dst in [4, 7, 9] {
+                    for extend in [MachineIndexExtend::None, MachineIndexExtend::ZeroExtend32] {
+                        for offset in [i32::MIN, -257, 0, 65535, i32::MAX] {
+                            for width in [MachineMemWidth::U8, MachineMemWidth::U16] {
+                                for extension in [
+                                    MachineLoadExtension::None,
+                                    MachineLoadExtension::ZeroExtend,
+                                    MachineLoadExtension::SignExtend,
+                                ] {
+                                    let original = MachineInst {
+                                        kind: MachineInstKind::IndexedLoad {
+                                            dst: MachineReg(dst),
+                                            base: MachineReg(base),
+                                            index: MachineReg(index),
+                                            index_extend: extend,
+                                            offset,
+                                            width,
+                                            extension,
+                                        },
+                                    };
+                                    let rewritten = copied_narrow_load(
+                                        &copy(),
+                                        &original,
+                                        &[],
+                                        &MachineTerminator::Return,
+                                    )
+                                    .unwrap();
+                                    let mut regs = [0x1234_5678_8000_0042u64; 12];
+                                    regs[7] = 0xdead_beef;
+                                    let actual = address(&rewritten, &regs);
+                                    regs[7] = regs[9];
+                                    assert_eq!(actual, address(&original, &regs));
+                                    let MachineInstKind::IndexedLoad {
+                                        dst: new_dst,
+                                        width: new_width,
+                                        extension: new_extension,
+                                        ..
+                                    } = rewritten.kind
+                                    else {
+                                        unreachable!()
+                                    };
+                                    assert_eq!(
+                                        (new_dst, new_width, new_extension),
+                                        (MachineReg(dst), width, extension)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn copied_address_requires_a_dead_linear_gp_snapshot() {
+        let copy = copy();
+        let load = load();
+        let edge = MachineTerminator::Jump(MachineEdge {
+            target: MachineBlockId(1),
+            args: crate::collections::vec![MachineValue::Reg(MachineReg(7))],
+        });
+        assert!(copied_narrow_load(&copy, &load, &[], &edge).is_none());
+        let use_copy = MachineInst {
+            kind: MachineInstKind::Move {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: MachineReg(5),
+                src: MachineValue::Reg(MachineReg(7)),
+            },
+        };
+        assert!(
+            copied_narrow_load(&copy, &load, &[use_copy], &MachineTerminator::Return).is_none()
+        );
+        let mut overwrite = load.clone();
+        if let MachineInstKind::IndexedLoad { dst, .. } = &mut overwrite.kind {
+            *dst = MachineReg(7);
+        }
+        assert!(copied_narrow_load(&copy, &overwrite, &[], &edge).is_some());
+        for reg in [0, 1, 2, 3, 12, 40] {
+            let mut invalid = copy.clone();
+            if let MachineInstKind::Move { src, .. } = &mut invalid.kind {
+                *src = MachineValue::Reg(MachineReg(reg));
+            }
+            assert!(copied_narrow_load(&invalid, &load, &[], &MachineTerminator::Return).is_none());
+        }
+        let mut cached = copy.clone();
+        if let MachineInstKind::Move { owner, .. } = &mut cached.kind {
+            *owner = MachineRegOwner::CachedCell;
+        }
+        assert!(copied_narrow_load(&cached, &load, &[], &MachineTerminator::Return).is_none());
+        for width in [MachineMemWidth::U32, MachineMemWidth::U64] {
+            let mut wide = load.clone();
+            if let MachineInstKind::IndexedLoad { width: w, .. } = &mut wide.kind {
+                *w = width;
+            }
+            assert!(copied_narrow_load(&copy, &wide, &[], &MachineTerminator::Return).is_none());
+        }
     }
 }

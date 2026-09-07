@@ -31,9 +31,11 @@
 //!    every incoming CFG edge, on backends where those definitions already
 //!    zero-extend (`gp32_defs_zero_extend`).
 
+mod cache_loop_frame_words;
 mod copy_propagate;
 mod deduplicate_constants;
 mod eliminate_dead_params;
+mod eliminate_overwritten_frame_stores;
 mod fold_induction_offsets;
 mod forward_stored_values;
 mod fuse_compare_branch;
@@ -48,6 +50,7 @@ mod relax_index_extends;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
+mod simplify_demanded_bits;
 
 use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
@@ -62,19 +65,24 @@ struct BlockFeatures {
     // oracle at the end of `optimize_block` guards this contract as passes
     // gain new patterns.
     load_count: usize,
-    has_store: bool,
+    store_count: usize,
     has_move: bool,
     has_address_add: bool,
     may_fuse_isel: bool,
+    has_bitwise: bool,
 }
 
 impl BlockFeatures {
     fn observe(&mut self, kind: &MachineInstKind) {
         match kind {
             MachineInstKind::Load { .. } => self.load_count += 1,
-            MachineInstKind::Store { .. } => self.has_store = true,
+            MachineInstKind::Store { .. } => self.store_count += 1,
             MachineInstKind::Move { .. } => self.has_move = true,
             MachineInstKind::IntBinary { op, .. } => {
+                self.has_bitwise |= matches!(
+                    op,
+                    MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor
+                );
                 self.has_address_add |= *op == MachineIntBinaryOp::Add;
                 self.may_fuse_isel |= matches!(
                     op,
@@ -117,8 +125,10 @@ pub(crate) struct BlockOptCtx {
     first_fp_reg: u16,
     total_reg_count: usize,
     cp_scratch: copy_propagate::CopyPropagateScratch,
+    const_scratch: deduplicate_constants::ConstantScratch,
     tracked_stores: crate::collections::Vec<TrackedStore>,
     tracked_loads: crate::collections::Vec<TrackedLoad>,
+    bit_scratch: crate::collections::Vec<u64>,
 }
 
 impl BlockOptCtx {
@@ -130,8 +140,10 @@ impl BlockOptCtx {
             first_fp_reg: config.first_fp_reg(),
             total_reg_count,
             cp_scratch: copy_propagate::CopyPropagateScratch::new(total_reg_count),
+            const_scratch: deduplicate_constants::ConstantScratch::default(),
             tracked_stores: crate::collections::Vec::new(),
             tracked_loads: crate::collections::Vec::new(),
+            bit_scratch: crate::collections::Vec::new(),
         }
     }
 }
@@ -147,11 +159,15 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     #[cfg(any(debug_assertions, test))]
     let mut unconditional_oracle = block.clone();
 
-    let features = deduplicate_constants::deduplicate_constants(block, ctx.first_fp_reg);
-    let may_forward_store = features.has_store && features.load_count != 0;
+    let features = deduplicate_constants::deduplicate_constants(
+        block,
+        ctx.first_fp_reg,
+        &mut ctx.const_scratch,
+    );
+    let may_forward_store = features.store_count != 0 && features.load_count != 0;
     let may_reuse_load = features.load_count > 1;
     let may_fuse_indexed =
-        features.has_address_add && (features.has_store || features.load_count != 0);
+        features.has_address_add && (features.store_count != 0 || features.load_count != 0);
 
     if may_forward_store {
         forward_stored_values::forward_stored_values(block, ctx.config, &mut ctx.tracked_stores);
@@ -177,6 +193,20 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     if features.may_fuse_isel {
         fuse_isel::fuse_isel(block, ctx.config);
     }
+    // Earlier local passes can remove stores or rewrite their addresses,
+    // but cannot introduce a store. One store can only die at a register return.
+    if features.store_count > 1
+        || (features.store_count != 0
+            && eliminate_overwritten_frame_stores::has_gp_register_return(block))
+    {
+        eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores(
+            block,
+            ctx.config.gp_unit_bytes,
+        );
+    }
+    if features.has_bitwise {
+        simplify_demanded_bits::simplify_demanded_bits(block, ctx.config, &mut ctx.bit_scratch);
+    }
     if ctx.config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
     }
@@ -195,6 +225,7 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
         let _ = deduplicate_constants::deduplicate_constants(
             &mut unconditional_oracle,
             ctx.first_fp_reg,
+            &mut ctx.const_scratch,
         );
         forward_stored_values::forward_stored_values(
             &mut unconditional_oracle,
@@ -219,6 +250,15 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
             &mut ctx.tracked_stores,
         );
         fuse_isel::fuse_isel(&mut unconditional_oracle, ctx.config);
+        eliminate_overwritten_frame_stores::eliminate_overwritten_frame_stores(
+            &mut unconditional_oracle,
+            ctx.config.gp_unit_bytes,
+        );
+        simplify_demanded_bits::simplify_demanded_bits(
+            &mut unconditional_oracle,
+            ctx.config,
+            &mut ctx.bit_scratch,
+        );
         if ctx.config.is_32bit_gp_target() {
             fuse_smull_sign_ext::fuse_smull_sign_ext(
                 &mut unconditional_oracle,
@@ -273,6 +313,14 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         config,
     );
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
+    // Dead cached-local parameters can hide otherwise unused physical lanes.
+    // Reuse frame words only after those parameters and edge arguments vanish.
+    cache_loop_frame_words::cache_loop_frame_words(
+        &mut program.blocks,
+        &loop_graph,
+        entry,
+        &mut ctx,
+    );
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
     // After compare-branch fusion: the fold reads loop bounds from
     // `Branch { IntCompare }` latch terminators. The passes since
@@ -282,7 +330,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     // Memmove recognition deliberately matches the still-explicit
     // ZeroExtend32 memory sequence, so it must precede the irreversible
     // relaxation below.
-    recognize_memmove::recognize_memmove(program);
+    recognize_memmove::recognize_memmove(program, config);
     // Run this exactly once after every materialized MachineIR rewrite. The
     // fold may have emitted new ZeroExtend32 forms, and clean block parameters
     // (including loop-carried values) can now use the direct indexed form.

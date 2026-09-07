@@ -47,15 +47,20 @@ pub(super) fn reuse_loop_context_loads(blocks: &mut [MachineBlock], entry: Machi
         }
 
         let target = blocks[block_index].id;
+        // This transform requires a self edge. Reject other blocks before
+        // searching the whole function for entry predecessors; context loads
+        // at ordinary block entries are much more common than self loops.
+        if !terminator_targets(&blocks[block_index].terminator, target) {
+            continue;
+        }
         let mut predecessors = collections::Vec::new();
         for (predecessor_index, block) in blocks.iter().enumerate() {
             if terminator_targets(&block.terminator, target) {
                 predecessors.push(predecessor_index);
             }
         }
-        let has_self_edge = predecessors.contains(&block_index);
         let has_entry_edge = predecessors.iter().any(|&index| index != block_index);
-        if !has_self_edge || !has_entry_edge {
+        if !has_entry_edge {
             continue;
         }
         if !predecessors

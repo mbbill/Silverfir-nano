@@ -4,9 +4,10 @@ use crate::{
     error::WasmError,
     vm::jit::machine::machine_ir::{
         MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
-        MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineResultDst,
-        MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator,
-        MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+        MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineIntWidth,
+        MachineMemWidth, MachineResultDst, MachineResultSrc, MachineReturnValue,
+        MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+        MACHINE_FP_REG,
     },
 };
 
@@ -15,6 +16,7 @@ use super::{
     backend::{PendingJumpTable, X86_64Backend},
     enc::{self, Cc},
     fusion::map_int_cond,
+    jump_table::{plan_direct_table, IndexSet},
     reg::X86Reg,
 };
 
@@ -34,6 +36,30 @@ fn scalar_fp_width(ty: MachineStorageType) -> Result<MachineFloatWidth, WasmErro
 }
 
 impl<'a> X86_64Backend<'a> {
+    /// Only equality at the producer's width consumes the same ZF. Signed
+    /// and unsigned ordering still need CMP, even after a matching ALU op.
+    fn lower_branch_compare(
+        &mut self,
+        width: MachineIntWidth,
+        kind: MachineCompareKind,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    ) -> Result<(), WasmError> {
+        if matches!(kind, MachineCompareKind::Eq | MachineCompareKind::Ne) {
+            let reg = match (lhs, rhs) {
+                (MachineValue::Reg(reg), MachineValue::Imm64(0))
+                | (MachineValue::Imm64(0), MachineValue::Reg(reg)) => Some(reg),
+                _ => None,
+            };
+            if let Some(reg) = reg {
+                if self.int_flags_current(width, self.map_gp_reg(reg)?) {
+                    return Ok(());
+                }
+            }
+        }
+        self.lower_cmp_values(width, lhs, rhs)
+    }
+
     // ── Main terminator dispatch ─────────────────────────────────────────────
 
     pub(super) fn lower_terminator_dispatch(
@@ -161,7 +187,7 @@ impl<'a> X86_64Backend<'a> {
                     // upper half that may remain in a GpWord carrier. Skip
                     // the test when EFLAGS already carries this register's
                     // 32-bit result, letting the ALU op and jcc macro-fuse.
-                    if !self.flags32_current(reg) {
+                    if !self.int_flags_current(MachineIntWidth::I32, reg) {
                         enc::test_rr_32(&mut self.core.text, reg, reg);
                     }
                     if else_fallthrough {
@@ -190,7 +216,21 @@ impl<'a> X86_64Backend<'a> {
                 lhs,
                 rhs,
             } => {
-                self.lower_cmp_values(width, lhs, rhs)?;
+                if let Some(plan) = self.narrow_equality {
+                    let loaded = self.map_gp_reg(plan.loaded)?;
+                    let source = self.map_gp_reg(plan.source)?;
+                    match plan.width {
+                        MachineMemWidth::U8 => {
+                            enc::cmp_rr_8(&mut self.core.text, loaded, source);
+                        }
+                        MachineMemWidth::U16 => {
+                            enc::cmp_rr_16(&mut self.core.text, loaded, source);
+                        }
+                        _ => unreachable!("validated narrow equality width"),
+                    }
+                } else {
+                    self.lower_branch_compare(width, kind, lhs, rhs)?;
+                }
                 let cc = map_int_cond(kind, sign);
                 if else_fallthrough {
                     if let Some(label) = then_label {
@@ -253,7 +293,7 @@ impl<'a> X86_64Backend<'a> {
                     // upper half that may remain in a GpWord carrier. Skip
                     // the test when EFLAGS already carries this register's
                     // 32-bit result.
-                    if !self.flags32_current(reg) {
+                    if !self.int_flags_current(MachineIntWidth::I32, reg) {
                         enc::test_rr_32(&mut self.core.text, reg, reg);
                     }
                     self.emit_jcc(Cc::NE, trap_label);
@@ -271,7 +311,7 @@ impl<'a> X86_64Backend<'a> {
                 lhs,
                 rhs,
             } => {
-                self.lower_cmp_values(width, lhs, rhs)?;
+                self.lower_branch_compare(width, kind, lhs, rhs)?;
                 self.emit_jcc(map_int_cond(kind, sign), trap_label);
             }
             MachineBranchCond::TestBits {
@@ -315,7 +355,7 @@ impl<'a> X86_64Backend<'a> {
                     let reg = self.map_gp_reg(reg)?;
                     // Same flags reuse as lower_branch: skip the test when
                     // EFLAGS already carries this register's 32-bit result.
-                    if !self.flags32_current(reg) {
+                    if !self.int_flags_current(MachineIntWidth::I32, reg) {
                         enc::test_rr_32(&mut self.core.text, reg, reg);
                     }
                     let cc = match jump_when {
@@ -337,7 +377,7 @@ impl<'a> X86_64Backend<'a> {
                 lhs,
                 rhs,
             } => {
-                self.lower_cmp_values(width, lhs, rhs)?;
+                self.lower_branch_compare(width, kind, lhs, rhs)?;
                 let cc = match jump_when {
                     TemplateBranchSense::IfTrue => map_int_cond(kind, sign).invert(),
                     TemplateBranchSense::IfFalse => map_int_cond(kind, sign),
@@ -802,6 +842,59 @@ impl<'a> X86_64Backend<'a> {
         }
         if entries.len() == 1 {
             let label = self.core.emit_edge(entries[0].target, &entries[0].args)?;
+            self.emit_jmp(label);
+            return Ok(());
+        }
+        if let Some(plan) = plan_direct_table(entries) {
+            if !plan.cases.is_empty() {
+                let index_scratch = self.gp_scratch.scoped_alloc().detach();
+                let range_scratch = self.gp_scratch.scoped_alloc().detach();
+                let index = self.materialize_value(*index_scratch, index)?;
+                // Every membership test has i32 semantics, including range
+                // subtraction. No test reads a stale upper carrier half.
+                for case in plan.cases {
+                    let entry = &entries[case.entry_index];
+                    let label = self.core.emit_edge(entry.target, &entry.args)?;
+                    let cc = match case.set {
+                        IndexSet::Range { first, last } if first == last => {
+                            enc::cmp_ri_32(&mut self.core.text, index, first as i32);
+                            Cc::E
+                        }
+                        IndexSet::Range { first: 0, last } => {
+                            enc::cmp_ri_32(&mut self.core.text, index, last as i32);
+                            Cc::BE
+                        }
+                        IndexSet::Range { first, last } => {
+                            enc::lea_offset(
+                                &mut self.core.text,
+                                false,
+                                *range_scratch,
+                                index,
+                                -(first as i32),
+                            );
+                            enc::cmp_ri_32(
+                                &mut self.core.text,
+                                *range_scratch,
+                                (last - first) as i32,
+                            );
+                            Cc::BE
+                        }
+                        IndexSet::Mask { mask, expected: 0 } => {
+                            enc::test_ri_32(&mut self.core.text, index, mask as i32);
+                            Cc::E
+                        }
+                        IndexSet::Mask { mask, expected } => {
+                            enc::mov_rr_32(&mut self.core.text, *range_scratch, index);
+                            enc::and_ri_32(&mut self.core.text, *range_scratch, mask as i32);
+                            enc::cmp_ri_32(&mut self.core.text, *range_scratch, expected as i32);
+                            Cc::E
+                        }
+                    };
+                    self.emit_jcc(cc, label);
+                }
+            }
+            let entry = &entries[plan.default_index];
+            let label = self.core.emit_edge(entry.target, &entry.args)?;
             self.emit_jmp(label);
             return Ok(());
         }

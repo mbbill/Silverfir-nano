@@ -128,47 +128,56 @@ pub(super) fn compute_block_entry_cache_params(
     // bank-relative; `cell_meta` selects the register bank at every read.
     let mut entry_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
     let mut exit_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
-    let mut visited = collections::vec![false; program.blocks.len()];
-    let mut fp_visited = collections::vec![false; program.blocks.len()];
+    // Without any cached cell in a bank, neither entry assignment nor exit
+    // simulation can contribute a layout. In particular, integer-only cache
+    // plans need no second walk over every SSA operation for the FP bank.
+    let has_gp_cells = cell_meta.iter().any(|meta| meta.bank == LayoutBank::Gp);
+    let has_fp_cells = cell_meta.iter().any(|meta| meta.bank == LayoutBank::Fp);
+    let mut visited = collections::vec![!has_gp_cells; program.blocks.len()];
+    let mut fp_visited = collections::vec![!has_fp_cells; program.blocks.len()];
     if program.entry.as_usize() < program.blocks.len() {
-        assign_bank_layouts_from_root(
-            program.entry.as_usize(),
-            LayoutBank::Gp,
-            regfile.gp_allocatable_count(),
-            program,
-            &cell_to_cached_index,
-            &idom_children,
-            &bank_cells,
-            &cell_meta,
-            &param_usage,
-            is_local_func,
-            table_dispatch_modes,
-            &call_preserve_preferences,
-            &regfile.gp_allocatable_preserved_lanes(),
-            &mut entry_layouts,
-            &mut exit_layouts,
-            lanes,
-            &mut visited,
-        )?;
-        assign_bank_layouts_from_root(
-            program.entry.as_usize(),
-            LayoutBank::Fp,
-            regfile.fp_dynamic_count(),
-            program,
-            &cell_to_cached_index,
-            &idom_children,
-            &bank_cells,
-            &cell_meta,
-            &param_usage,
-            is_local_func,
-            table_dispatch_modes,
-            &call_preserve_preferences,
-            &regfile.fp_allocatable_preserved_lanes(),
-            &mut entry_layouts,
-            &mut exit_layouts,
-            lanes,
-            &mut fp_visited,
-        )?;
+        if has_gp_cells {
+            assign_bank_layouts_from_root(
+                program.entry.as_usize(),
+                LayoutBank::Gp,
+                regfile.gp_allocatable_count(),
+                program,
+                &cell_to_cached_index,
+                &idom_children,
+                &bank_cells,
+                &cell_meta,
+                &param_usage,
+                is_local_func,
+                table_dispatch_modes,
+                &call_preserve_preferences,
+                &regfile.gp_allocatable_preserved_lanes(),
+                &mut entry_layouts,
+                &mut exit_layouts,
+                lanes,
+                &mut visited,
+            )?;
+        }
+        if has_fp_cells {
+            assign_bank_layouts_from_root(
+                program.entry.as_usize(),
+                LayoutBank::Fp,
+                regfile.fp_dynamic_count(),
+                program,
+                &cell_to_cached_index,
+                &idom_children,
+                &bank_cells,
+                &cell_meta,
+                &param_usage,
+                is_local_func,
+                table_dispatch_modes,
+                &call_preserve_preferences,
+                &regfile.fp_allocatable_preserved_lanes(),
+                &mut entry_layouts,
+                &mut exit_layouts,
+                lanes,
+                &mut fp_visited,
+            )?;
+        }
     }
 
     for block_index in 0..program.blocks.len() {
@@ -220,22 +229,24 @@ pub(super) fn compute_block_entry_cache_params(
         )?;
     }
 
-    improve_gp_layouts_for_incoming_edges(
-        program,
-        &predecessors,
-        &cell_to_cached_index,
-        &bank_cells,
-        &cell_meta,
-        &param_usage,
-        is_local_func,
-        table_dispatch_modes,
-        &call_preserve_preferences,
-        &regfile.gp_allocatable_preserved_lanes(),
-        regfile.gp_allocatable_count(),
-        &mut entry_layouts,
-        &mut exit_layouts,
-        lanes,
-    )?;
+    if has_gp_cells {
+        improve_gp_layouts_for_incoming_edges(
+            program,
+            &predecessors,
+            &cell_to_cached_index,
+            &bank_cells,
+            &cell_meta,
+            &param_usage,
+            is_local_func,
+            table_dispatch_modes,
+            &call_preserve_preferences,
+            &regfile.gp_allocatable_preserved_lanes(),
+            regfile.gp_allocatable_count(),
+            &mut entry_layouts,
+            &mut exit_layouts,
+            lanes,
+        )?;
+    }
 
     let mut layouts = collections::vec![collections::Vec::new(); program.blocks.len()];
     for block_index in 0..program.blocks.len() {

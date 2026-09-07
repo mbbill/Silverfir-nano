@@ -231,6 +231,193 @@ fn alu_ri32(e: &mut TextEmitter, digit: u8, w: bool, dst: X86Reg, imm: i32) {
 }
 
 // ADD
+/// LEA computes a sum without overwriting either input or changing EFLAGS.
+/// A 32-bit destination truncates the effective address and clears its high half.
+pub(crate) fn lea_sum(e: &mut TextEmitter, w64: bool, dst: X86Reg, lhs: X86Reg, rhs: X86Reg) {
+    emit_rex_idx(e, w64, dst.needs_rex_ext(), rhs, lhs);
+    e.emit_u8(0x8D);
+    emit_modrm_mem_idx(e, dst.idx3(), lhs, rhs, 0);
+}
+
+/// LEA dst, [base + signed displacement], with the same width rules as lea_sum.
+pub(crate) fn lea_offset(e: &mut TextEmitter, w64: bool, dst: X86Reg, base: X86Reg, disp: i32) {
+    emit_rex(e, w64, dst, base);
+    e.emit_u8(0x8D);
+    emit_modrm_mem(e, dst, base, disp);
+}
+
+/// Variable scalar shifts with the three-register BMI2 encoding.
+#[derive(Clone, Copy)]
+pub(crate) enum Bmi2Shift {
+    Left,
+    UnsignedRight,
+    SignedRight,
+}
+
+/// BMI2 SHLX/SHRX/SARX with a register count, without RCX or a source copy.
+pub(crate) fn bmi2_shift_rrr(
+    e: &mut TextEmitter,
+    w64: bool,
+    op: Bmi2Shift,
+    dst: X86Reg,
+    src: X86Reg,
+    count: X86Reg,
+) {
+    let prefix = match op {
+        Bmi2Shift::Left => 1,
+        Bmi2Shift::UnsignedRight => 3,
+        Bmi2Shift::SignedRight => 2,
+    };
+    e.emit_u8(0xC4);
+    e.emit_u8(
+        (u8::from(!dst.needs_rex_ext()) << 7) | 0x40 | (u8::from(!src.needs_rex_ext()) << 5) | 2,
+    );
+    e.emit_u8((u8::from(w64) << 7) | ((!count.idx() & 15) << 3) | prefix);
+    e.emit_u8(0xF7);
+    emit_modrm_rr(e, dst, src);
+}
+
+/// BMI2 RORX dst, src, imm8; VEX.vvvv is reserved and encoded as all ones.
+pub(crate) fn rorx_rri(e: &mut TextEmitter, w64: bool, dst: X86Reg, src: X86Reg, count: u8) {
+    e.emit_u8(0xC4);
+    e.emit_u8(
+        (u8::from(!dst.needs_rex_ext()) << 7) | 0x40 | (u8::from(!src.needs_rex_ext()) << 5) | 3,
+    );
+    e.emit_u8((u8::from(w64) << 7) | 0x7B);
+    e.emit_u8(0xF0);
+    emit_modrm_rr(e, dst, src);
+    e.emit_u8(count);
+}
+
+/// BMI1 BEXTR dst, src, control. Uses only GP state, with VEX.L=0.
+pub(crate) fn bextr_rrr(e: &mut TextEmitter, w64: bool, dst: X86Reg, src: X86Reg, control: X86Reg) {
+    e.emit_u8(0xC4);
+    // Three-byte VEX: inverted R/X/B, 0F38 opcode map. No indexed operand.
+    e.emit_u8(
+        (u8::from(!dst.needs_rex_ext()) << 7) | 0x40 | (u8::from(!src.needs_rex_ext()) << 5) | 2,
+    );
+    e.emit_u8((u8::from(w64) << 7) | ((!control.idx() & 15) << 3));
+    e.emit_u8(0xF7);
+    emit_modrm_rr(e, dst, src);
+}
+
+#[cfg(test)]
+mod bextr_tests {
+    use super::*;
+
+    #[test]
+    fn executes_register_extracts_including_zero_and_out_of_range_controls() {
+        use crate::vm::jit::arch::x86_64::abi::{C_ARG0, C_ARG1};
+        use crate::vm::jit::runtime::code_buf::CodeBuffer;
+        use core::arch::x86_64::{__cpuid, __cpuid_count};
+
+        if __cpuid(0).eax < 7 || __cpuid_count(7, 0).ebx & (1 << 3) == 0 {
+            std::eprintln!("BEXTR execution check skipped: host has no BMI1");
+            return;
+        }
+        for wide in [false, true] {
+            let mut text = TextEmitter::new();
+            bextr_rrr(&mut text, wide, X86Reg::RAX, C_ARG0, C_ARG1);
+            ret(&mut text);
+            let bytes = text.finish();
+            let mut code = CodeBuffer::with_capacity(4096).unwrap();
+            code.begin_write();
+            code.emit_bytes(&bytes);
+            code.finish_write(0, bytes.len());
+            // The two GP argument lanes and RAX return lane match the host C
+            // ABI. The leaf function touches no callee-preserved register.
+            let extract: unsafe extern "C" fn(u64, u64) -> u64 = unsafe { code.fn_ptr(0) };
+            for raw in [0, 1, u64::MAX, 0x8000_0000_0000_0000, 0x537a_93b6_dac4_210f] {
+                let input = if wide { raw } else { u64::from(raw as u32) };
+                for start in [0u32, 1, 31, 32, 63, 64, 255] {
+                    for length in [0u32, 1, 7, 31, 32, 63, 64, 255] {
+                        let width = if wide { 64 } else { 32 };
+                        let expected = if start >= width {
+                            0
+                        } else {
+                            let n = length.min(width - start);
+                            let mask = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
+                            (input >> start) & mask
+                        };
+                        let control = 0xa5a5_0000 | u64::from((length << 8) | start);
+                        assert_eq!(unsafe { extract(raw, control) }, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encodes_both_widths_and_all_three_extended_register_fields() {
+        for (wide, dst, src, control, expected) in [
+            (
+                false,
+                X86Reg::RAX,
+                X86Reg::RDI,
+                X86Reg::RCX,
+                [0xC4, 0xE2, 0x70, 0xF7, 0xC7],
+            ),
+            (
+                true,
+                X86Reg::R10,
+                X86Reg::R13,
+                X86Reg::R9,
+                [0xC4, 0x42, 0xB0, 0xF7, 0xD5],
+            ),
+            (
+                false,
+                X86Reg::R8,
+                X86Reg::RSI,
+                X86Reg::R15,
+                [0xC4, 0x62, 0x00, 0xF7, 0xC6],
+            ),
+            (
+                true,
+                X86Reg::RDI,
+                X86Reg::R12,
+                X86Reg::RAX,
+                [0xC4, 0xC2, 0xF8, 0xF7, 0xFC],
+            ),
+        ] {
+            let mut text = TextEmitter::new();
+            bextr_rrr(&mut text, wide, dst, src, control);
+            assert_eq!(text.finish().as_slice(), &expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod lea_tests {
+    use super::*;
+
+    #[test]
+    fn sum_encodes_extended_index_and_base_displacement() {
+        let mut text = TextEmitter::new();
+        lea_sum(&mut text, true, X86Reg::R10, X86Reg::R13, X86Reg::R12);
+        // lea r10, [r13 + r12]: REX.WRXB and mandatory disp8=0 for R13.
+        assert_eq!(text.finish().as_slice(), &[0x4F, 0x8D, 0x54, 0x25, 0]);
+
+        let mut text = TextEmitter::new();
+        lea_sum(&mut text, false, X86Reg::RAX, X86Reg::RSI, X86Reg::R8);
+        // lea eax, [rsi + r8]: 32-bit result, 64-bit address inputs.
+        assert_eq!(text.finish().as_slice(), &[0x42, 0x8D, 0x04, 0x06]);
+    }
+
+    #[test]
+    fn offset_encodes_stack_base_and_signed_displacements() {
+        let mut text = TextEmitter::new();
+        lea_offset(&mut text, true, X86Reg::R9, X86Reg::RSP, -1);
+        assert_eq!(text.finish().as_slice(), &[0x4C, 0x8D, 0x4C, 0x24, 0xFF]);
+
+        let mut text = TextEmitter::new();
+        lea_offset(&mut text, false, X86Reg::RDI, X86Reg::RBP, i32::MIN);
+        assert_eq!(
+            text.finish().as_slice(),
+            &[0x8D, 0xBD, 0x00, 0x00, 0x00, 0x80]
+        );
+    }
+}
+
 pub(crate) fn add_rr_64(e: &mut TextEmitter, dst: X86Reg, src: X86Reg) {
     alu_rr(e, 0x03, true, dst, src);
 }
@@ -341,6 +528,16 @@ pub(crate) fn xor_ri_32(e: &mut TextEmitter, dst: X86Reg, imm: i32) {
 }
 
 // CMP
+pub(crate) fn cmp_rr_8(e: &mut TextEmitter, lhs: X86Reg, rhs: X86Reg) {
+    // Even a bare REX is required for SIL/DIL/BPL/SPL instead of AH/CH/DH/BH.
+    e.emit_u8(rex(false, lhs.needs_rex_ext(), false, rhs.needs_rex_ext()));
+    e.emit_u8(0x3A);
+    emit_modrm_rr(e, lhs, rhs);
+}
+pub(crate) fn cmp_rr_16(e: &mut TextEmitter, lhs: X86Reg, rhs: X86Reg) {
+    e.emit_u8(0x66);
+    alu_rr(e, 0x3B, false, lhs, rhs);
+}
 pub(crate) fn cmp_rr_64(e: &mut TextEmitter, lhs: X86Reg, rhs: X86Reg) {
     alu_rr(e, 0x3B, true, lhs, rhs);
 }
@@ -1157,6 +1354,53 @@ pub(crate) fn pop(e: &mut TextEmitter, reg: X86Reg) {
 // Branches / Calls / Return
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Emit a two-byte branch to an already-bound label if it fits rel8.
+/// The text buffer only grows, so a bound target needs no later relaxation.
+pub(crate) fn try_branch_rel8(e: &mut TextEmitter, cc: Option<Cc>, target: usize) -> bool {
+    let displacement = target as i64 - (e.len() as i64 + 2);
+    let Ok(displacement) = i8::try_from(displacement) else {
+        return false;
+    };
+    e.emit_u8(cc.map_or(0xEB, |cc| 0x70 + cc as u8));
+    e.emit_u8(displacement as u8);
+    true
+}
+
+#[cfg(test)]
+mod short_branch_tests {
+    use super::*;
+
+    #[test]
+    fn rel8_boundaries_and_declining_to_change_the_buffer() {
+        for cc in [None, Some(Cc::E), Some(Cc::NE), Some(Cc::L), Some(Cc::AE)] {
+            for displacement in [-129i64, -128, -2, 0, 127, 128] {
+                let mut text = TextEmitter::new();
+                for _ in 0..256 {
+                    text.emit_u8(0x90);
+                }
+                let target = (258 + displacement) as usize;
+                let fits = (-128..=127).contains(&displacement);
+                assert_eq!(try_branch_rel8(&mut text, cc, target), fits);
+                let bytes = text.finish();
+                if fits {
+                    let opcode = match cc {
+                        None => 0xEB,
+                        Some(Cc::E) => 0x74,
+                        Some(Cc::NE) => 0x75,
+                        Some(Cc::L) => 0x7C,
+                        Some(Cc::AE) => 0x73,
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(&bytes[256..], &[opcode, displacement as i8 as u8]);
+                    assert_eq!(258 + i64::from(bytes[257] as i8), target as i64);
+                } else {
+                    assert_eq!(bytes.len(), 256);
+                }
+            }
+        }
+    }
+}
+
 /// JMP rel32 (E9 cd). Returns offset of the rel32 field for patching.
 pub(crate) fn jmp_rel32(e: &mut TextEmitter) -> usize {
     e.emit_u8(0xE9);
@@ -1652,4 +1896,160 @@ pub(crate) fn sub_rsp_imm32(e: &mut TextEmitter, imm32: u32) {
 pub(crate) fn add_rsp_imm32(e: &mut TextEmitter, imm32: u32) {
     e.emit_bytes(&[0x48, 0x81, 0xC4]);
     e.emit_bytes(&imm32.to_le_bytes());
+}
+
+#[cfg(test)]
+mod bmi2_tests {
+    use super::*;
+    use crate::vm::jit::{
+        arch::x86_64::abi::{C_ARG0, C_ARG1},
+        runtime::code_buf::CodeBuffer,
+    };
+
+    fn supported() -> bool {
+        use core::arch::x86_64::{__cpuid, __cpuid_count};
+        let supported = __cpuid(0).eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 8) != 0;
+        if !supported {
+            std::eprintln!("BMI2 execution check skipped: host has no BMI2");
+        }
+        supported
+    }
+
+    #[test]
+    fn variable_bmi2_shifts_preserve_width_and_input_aliases() {
+        if !supported() {
+            return;
+        }
+        for wide in [false, true] {
+            for op in [
+                Bmi2Shift::Left,
+                Bmi2Shift::UnsignedRight,
+                Bmi2Shift::SignedRight,
+            ] {
+                for dst in [X86Reg::RAX, C_ARG0, C_ARG1] {
+                    let mut text = TextEmitter::new();
+                    bmi2_shift_rrr(&mut text, wide, op, dst, C_ARG0, C_ARG1);
+                    if dst != X86Reg::RAX {
+                        mov_rr_64(&mut text, X86Reg::RAX, dst);
+                    }
+                    ret(&mut text);
+                    let bytes = text.finish();
+                    let mut code = CodeBuffer::with_capacity(4096).unwrap();
+                    code.begin_write();
+                    code.emit_bytes(&bytes);
+                    code.finish_write(0, bytes.len());
+                    // Leaf uses only caller-saved C arguments and RAX.
+                    let shift: unsafe extern "C" fn(u64, u64) -> u64 = unsafe { code.fn_ptr(0) };
+                    for raw in [0, 1, u64::MAX, 1 << 31, 1 << 63, 0x1234_5678_9abc_def0] {
+                        for count in [
+                            0u64,
+                            1,
+                            7,
+                            31,
+                            32,
+                            33,
+                            63,
+                            64,
+                            65,
+                            255,
+                            0x8123_4567_89ab_cde0,
+                        ] {
+                            let amount = count as u32;
+                            let expected = if wide {
+                                match op {
+                                    Bmi2Shift::Left => raw.wrapping_shl(amount),
+                                    Bmi2Shift::UnsignedRight => raw.wrapping_shr(amount),
+                                    Bmi2Shift::SignedRight => {
+                                        (raw as i64).wrapping_shr(amount) as u64
+                                    }
+                                }
+                            } else {
+                                let raw = raw as u32;
+                                u64::from(match op {
+                                    Bmi2Shift::Left => raw.wrapping_shl(amount),
+                                    Bmi2Shift::UnsignedRight => raw.wrapping_shr(amount),
+                                    Bmi2Shift::SignedRight => {
+                                        (raw as i32).wrapping_shr(amount) as u32
+                                    }
+                                })
+                            };
+                            assert_eq!(unsafe { shift(raw, count) }, expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rorx_executes_all_immediate_counts_in_both_widths() {
+        if !supported() {
+            return;
+        }
+        for wide in [false, true] {
+            for dst in [X86Reg::RAX, C_ARG0] {
+                for count in 0..=255u8 {
+                    let mut text = TextEmitter::new();
+                    rorx_rri(&mut text, wide, dst, C_ARG0, count);
+                    if dst != X86Reg::RAX {
+                        mov_rr_64(&mut text, X86Reg::RAX, dst);
+                    }
+                    ret(&mut text);
+                    let bytes = text.finish();
+                    let mut code = CodeBuffer::with_capacity(4096).unwrap();
+                    code.begin_write();
+                    code.emit_bytes(&bytes);
+                    code.finish_write(0, bytes.len());
+                    // Leaf reads its one C argument and returns only in RAX.
+                    let rotate: unsafe extern "C" fn(u64) -> u64 = unsafe { code.fn_ptr(0) };
+                    for raw in [0, 1, u64::MAX, 1 << 31, 1 << 63, 0x1234_5678_9abc_def0] {
+                        let expected = if wide {
+                            raw.rotate_right(u32::from(count))
+                        } else {
+                            u64::from((raw as u32).rotate_right(u32::from(count)))
+                        };
+                        assert_eq!(unsafe { rotate(raw) }, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bmi2_encodings_keep_opcode_maps_prefixes_and_three_register_fields() {
+        let mut text = TextEmitter::new();
+        bmi2_shift_rrr(
+            &mut text,
+            false,
+            Bmi2Shift::Left,
+            X86Reg::R8,
+            X86Reg::R9,
+            X86Reg::R10,
+        );
+        bmi2_shift_rrr(
+            &mut text,
+            true,
+            Bmi2Shift::SignedRight,
+            X86Reg::R9,
+            X86Reg::R10,
+            X86Reg::R11,
+        );
+        bmi2_shift_rrr(
+            &mut text,
+            false,
+            Bmi2Shift::UnsignedRight,
+            X86Reg::RAX,
+            X86Reg::RSI,
+            X86Reg::RDI,
+        );
+        rorx_rri(&mut text, true, X86Reg::R8, X86Reg::R9, 13);
+        rorx_rri(&mut text, false, X86Reg::RAX, X86Reg::RSI, 255);
+        assert_eq!(
+            text.finish(),
+            [
+                0xc4, 0x42, 0x29, 0xf7, 0xc1, 0xc4, 0x42, 0xa2, 0xf7, 0xca, 0xc4, 0xe2, 0x43, 0xf7,
+                0xc6, 0xc4, 0x43, 0xfb, 0xf0, 0xc1, 0x0d, 0xc4, 0xe3, 0x7b, 0xf0, 0xc6, 0xff,
+            ]
+        );
+    }
 }
