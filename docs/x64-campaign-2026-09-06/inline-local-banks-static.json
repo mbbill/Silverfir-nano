@@ -1,0 +1,184 @@
+[
+  {
+    "arch": "arm",
+    "functions": 1285,
+    "changed": [
+      {
+        "workload": "fibonacci-rec",
+        "function": 0,
+        "total_frame_slots": [
+          12,
+          11
+        ],
+        "code_size": [
+          512,
+          512
+        ]
+      },
+      {
+        "workload": "json_parse",
+        "function": 52,
+        "total_frame_slots": [
+          19,
+          18
+        ],
+        "code_size": [
+          676,
+          684
+        ]
+      },
+      {
+        "workload": "json_parse",
+        "function": 67,
+        "total_frame_slots": [
+          19,
+          18
+        ],
+        "code_size": [
+          660,
+          668
+        ]
+      },
+      {
+        "workload": "regex_redux",
+        "function": 155,
+        "total_frame_slots": [
+          19,
+          18
+        ],
+        "code_size": [
+          660,
+          668
+        ]
+      },
+      {
+        "workload": "regex_redux",
+        "function": 196,
+        "total_frame_slots": [
+          21,
+          20
+        ],
+        "code_size": [
+          716,
+          724
+        ]
+      },
+      {
+        "workload": "reverse_complement",
+        "function": 1,
+        "total_frame_slots": [
+          19,
+          18
+        ],
+        "code_size": [
+          676,
+          684
+        ]
+      }
+    ],
+    "erc20": [
+      {
+        "function": 18,
+        "total_frame_slots": [
+          16,
+          13
+        ],
+        "code_size": [
+          528,
+          516
+        ]
+      }
+    ]
+  },
+  {
+    "arch": "x64",
+    "functions": 1285,
+    "changed": [
+      {
+        "workload": "fibonacci-rec",
+        "function": 0,
+        "total_frame_slots": [
+          12,
+          11
+        ],
+        "code_size": [
+          402,
+          394
+        ]
+      },
+      {
+        "workload": "json_parse",
+        "function": 52,
+        "total_frame_slots": [
+          19,
+          18
+        ],
+        "code_size": [
+          527,
+          527
+        ]
+      },
+      {
+        "workload": "json_parse",
+        "function": 67,
+        "total_frame_slots": [
+          19,
+          18
+        ],
+        "code_size": [
+          509,
+          509
+        ]
+      },
+      {
+        "workload": "regex_redux",
+        "function": 155,
+        "total_frame_slots": [
+          19,
+          18
+        ],
+        "code_size": [
+          509,
+          509
+        ]
+      },
+      {
+        "workload": "regex_redux",
+        "function": 196,
+        "total_frame_slots": [
+          21,
+          20
+        ],
+        "code_size": [
+          567,
+          567
+        ]
+      },
+      {
+        "workload": "reverse_complement",
+        "function": 1,
+        "total_frame_slots": [
+          19,
+          18
+        ],
+        "code_size": [
+          527,
+          527
+        ]
+      }
+    ],
+    "erc20": [
+      {
+        "function": 18,
+        "total_frame_slots": [
+          16,
+          13
+        ],
+        "code_size": [
+          400,
+          375
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,28 @@
+[
+  {
+    "variant": "cache",
+    "budget": 65536,
+    "code_arena_bytes": 32768,
+    "entry_heap_bytes": 978,
+    "error": null,
+    "ok": true,
+    "peak_heap_bytes": 7711,
+    "peak_increment_bytes": 6733,
+    "retained_heap_bytes": 2987,
+    "retained_increment_bytes": 2009,
+    "wasm": "/tmp/sf-wasmi-benchmarks/res/wat/fibonacci-rec.wat"
+  },
+  {
+    "variant": "banks",
+    "budget": 65536,
+    "code_arena_bytes": 32768,
+    "entry_heap_bytes": 978,
+    "error": null,
+    "ok": true,
+    "peak_heap_bytes": 7711,
+    "peak_increment_bytes": 6733,
+    "retained_heap_bytes": 2987,
+    "retained_increment_bytes": 2009,
+    "wasm": "/tmp/sf-wasmi-benchmarks/res/wat/fibonacci-rec.wat"
+  }
+]

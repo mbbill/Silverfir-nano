@@ -1,0 +1,164 @@
+{
+  "source": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+  "cpu": "AMD EPYC 7763",
+  "measurement_kind": "cross-run same-CPU-model projection, not a refreshed same-host three-engine result",
+  "execution_run": 34071064270,
+  "coremark_run": 34071886761,
+  "coremark_control_variant": "parent",
+  "corpus_anchor_run": 34026700835,
+  "coremark_anchor_run": 34028386243,
+  "full20_nano_throughput_percent": {
+    "v8": -1.110651266513609,
+    "wasmtime.cranelift": 9.76399576360469
+  },
+  "coremark_nano_throughput_percent": {
+    "v8": 0.37762333854307606,
+    "wasmtime.cranelift": -8.813919419626004
+  },
+  "further_nano_throughput_to_match_percent": {
+    "full20_v8": 1.1231252715667939,
+    "coremark_cranelift": 9.665860582588781
+  },
+  "all20_metrics": [
+    {
+      "metric": "execute/argon2",
+      "nano_vs_main_throughput_percent": 157.75247254154152,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": 71.63769430741358,
+      "wasmtime.cranelift_nano_throughput_percent": 63.09351712425042
+    },
+    {
+      "metric": "execute/bulk-ops",
+      "nano_vs_main_throughput_percent": -0.10859623981481346,
+      "status": "PASS",
+      "v8_nano_throughput_percent": -12.586573610165786,
+      "wasmtime.cranelift_nano_throughput_percent": -13.874784273617713
+    },
+    {
+      "metric": "execute/compression",
+      "nano_vs_main_throughput_percent": 0.9974970237873798,
+      "status": "PASS",
+      "v8_nano_throughput_percent": 3.9273023017253994,
+      "wasmtime.cranelift_nano_throughput_percent": -8.03425132692075
+    },
+    {
+      "metric": "execute/counter-global",
+      "nano_vs_main_throughput_percent": -0.04267093900469552,
+      "status": "PASS",
+      "v8_nano_throughput_percent": 0.5251697586389659,
+      "wasmtime.cranelift_nano_throughput_percent": -0.10403895886834658
+    },
+    {
+      "metric": "execute/counter-local",
+      "nano_vs_main_throughput_percent": 0.023621913298619457,
+      "status": "PASS",
+      "v8_nano_throughput_percent": 0.5747139449375549,
+      "wasmtime.cranelift_nano_throughput_percent": 0.6744119302869
+    },
+    {
+      "metric": "execute/counter-param",
+      "nano_vs_main_throughput_percent": -0.05611106659740891,
+      "status": "PASS",
+      "v8_nano_throughput_percent": 0.13817136852587453,
+      "wasmtime.cranelift_nano_throughput_percent": -0.47742655279329194
+    },
+    {
+      "metric": "execute/fibonacci-iter",
+      "nano_vs_main_throughput_percent": 1.390714052422838,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": 2.309788467517704,
+      "wasmtime.cranelift_nano_throughput_percent": 4.134703871023415
+    },
+    {
+      "metric": "execute/fibonacci-rec",
+      "nano_vs_main_throughput_percent": 2.821759207418927,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": -31.759835657227477,
+      "wasmtime.cranelift_nano_throughput_percent": 57.19611961465467
+    },
+    {
+      "metric": "execute/fibonacci-tail",
+      "nano_vs_main_throughput_percent": 71.18121912230752,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": -13.868603715095363,
+      "wasmtime.cranelift_nano_throughput_percent": 475.95190372399037
+    },
+    {
+      "metric": "execute/json_parse",
+      "nano_vs_main_throughput_percent": 2.4327828728427945,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": -2.7698676725764093,
+      "wasmtime.cranelift_nano_throughput_percent": -20.207443110352706
+    },
+    {
+      "metric": "execute/mandelbrot",
+      "nano_vs_main_throughput_percent": 0.013113616251040225,
+      "status": "RECOVERED",
+      "v8_nano_throughput_percent": 7.910913051228574,
+      "wasmtime.cranelift_nano_throughput_percent": 0.047432137263370144
+    },
+    {
+      "metric": "execute/matrix_mul",
+      "nano_vs_main_throughput_percent": 1.0622572532088175,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": 24.576073737386707,
+      "wasmtime.cranelift_nano_throughput_percent": -0.4622272590051657
+    },
+    {
+      "metric": "execute/nbody",
+      "nano_vs_main_throughput_percent": 1.513323026791489,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": -10.69512797688792,
+      "wasmtime.cranelift_nano_throughput_percent": -25.11869691437292
+    },
+    {
+      "metric": "execute/prime_sieve",
+      "nano_vs_main_throughput_percent": 6.060444348719016,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": 21.778869084472376,
+      "wasmtime.cranelift_nano_throughput_percent": -14.160562472636595
+    },
+    {
+      "metric": "execute/regex_redux",
+      "nano_vs_main_throughput_percent": -0.9168978200440545,
+      "status": "NEGLIGIBLE",
+      "v8_nano_throughput_percent": -27.409350300699266,
+      "wasmtime.cranelift_nano_throughput_percent": -34.04875786033157
+    },
+    {
+      "metric": "execute/reverse_complement",
+      "nano_vs_main_throughput_percent": 69.8107811154366,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": 41.81647447987764,
+      "wasmtime.cranelift_nano_throughput_percent": 30.856146543260966
+    },
+    {
+      "metric": "execute/sort",
+      "nano_vs_main_throughput_percent": 43.355954656350846,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": -1.8128935503049837,
+      "wasmtime.cranelift_nano_throughput_percent": 21.09956168352438
+    },
+    {
+      "metric": "execute/spectralnorm",
+      "nano_vs_main_throughput_percent": -0.04965827299076591,
+      "status": "PASS",
+      "v8_nano_throughput_percent": -2.58402026982385,
+      "wasmtime.cranelift_nano_throughput_percent": 74.3217592594805
+    },
+    {
+      "metric": "execute/tiny_keccak",
+      "nano_vs_main_throughput_percent": -4.56551570574313,
+      "status": "PLACEMENT",
+      "v8_nano_throughput_percent": -26.106921078327428,
+      "wasmtime.cranelift_nano_throughput_percent": -28.085943714638773
+    },
+    {
+      "metric": "execute/word_count",
+      "nano_vs_main_throughput_percent": 8.015383432791191,
+      "status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": -18.54006091676742,
+      "wasmtime.cranelift_nano_throughput_percent": -20.995593596183827
+    }
+  ]
+}

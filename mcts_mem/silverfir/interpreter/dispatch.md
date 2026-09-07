@@ -787,3 +787,5 @@
   tests and spectest, and the shared single-instruction executor remains
   as the native chain's slow path (sourced)
 
+
+- 2026-09-06 measurement: two isolated slow-exit experiments and their unresolved native profitability are recorded in [[dispatch.fact/slow-exit-experiments-2026-09-06]]. Keep native-handler layout and launch/CPU controls when revisiting them (sourced).

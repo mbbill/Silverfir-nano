@@ -1,0 +1,478 @@
+{
+  "run_id": 34084103483,
+  "gate_status": "FAILED: ARM startup/erc20 primary -6.958050%, independent N2 confirmation -8.01%",
+  "rows": [
+    {
+      "artifact": "sf-dev049-wasmi-performance-arm64-linux-jit-execute",
+      "platform": "arm64-linux",
+      "category": "execute",
+      "baseline_sha": "f73219f56a70b77028f0d79730c7efca29ba3439",
+      "candidate_sha": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "throughput_geomean_delta_percent": 4.770255786509593,
+      "metrics": {
+        "execute/counter-local": {
+          "delta_percent": 0.03189521117162158,
+          "status": "PASS",
+          "probability_regression": 0.2208484371608591,
+          "probability_improvement": 0.7791515628391409,
+          "baseline_geomean": 295110.1084813066,
+          "candidate_geomean": 295016.01250112953
+        },
+        "execute/counter-param": {
+          "delta_percent": -0.015617146092641056,
+          "status": "PASS",
+          "probability_regression": 0.7331745572051774,
+          "probability_improvement": 0.26682544279482256,
+          "baseline_geomean": 294995.9160249243,
+          "candidate_geomean": 295041.9931640313
+        },
+        "execute/counter-global": {
+          "delta_percent": -0.0012265229611911406,
+          "status": "PASS",
+          "probability_regression": 0.522145498464814,
+          "probability_improvement": 0.47785450153518605,
+          "baseline_geomean": 147576.98420899067,
+          "candidate_geomean": 147578.7942967883
+        },
+        "execute/fibonacci-rec": {
+          "delta_percent": 1.5530035997415492,
+          "status": "IMPROVEMENT",
+          "probability_regression": 2.4374340093485023e-13,
+          "probability_improvement": 0.9999999999997563,
+          "baseline_geomean": 3027515.9303634353,
+          "candidate_geomean": 2981217.5150387576
+        },
+        "execute/fibonacci-iter": {
+          "delta_percent": -0.01187380446310802,
+          "status": "RECOVERED",
+          "probability_regression": 0.779887872715366,
+          "probability_improvement": 0.22011212728463403,
+          "baseline_geomean": 884484.5706368155,
+          "candidate_geomean": 884589.6050768227
+        },
+        "execute/fibonacci-tail": {
+          "delta_percent": 0.001103453336089996,
+          "status": "PASS",
+          "probability_regression": 0.4830081169290253,
+          "probability_improvement": 0.5169918830709748,
+          "baseline_geomean": 471773.025420087,
+          "candidate_geomean": 471767.81968234136
+        },
+        "execute/sort": {
+          "delta_percent": -0.08211783859479914,
+          "status": "PASS",
+          "probability_regression": 0.7271202460202456,
+          "probability_improvement": 0.2728797539797544,
+          "baseline_geomean": 17870714.25583785,
+          "candidate_geomean": 17885401.36085935
+        },
+        "execute/prime_sieve": {
+          "delta_percent": 1.1039546169022145,
+          "status": "RECOVERED",
+          "probability_regression": 1.6933749983489554e-06,
+          "probability_improvement": 0.9999983066250017,
+          "baseline_geomean": 18889628.635800023,
+          "candidate_geomean": 18683372.680500586
+        },
+        "execute/matrix_mul": {
+          "delta_percent": 0.07286283971668593,
+          "status": "RECOVERED",
+          "probability_regression": 0.0396377515203569,
+          "probability_improvement": 0.9603622484796431,
+          "baseline_geomean": 38084457.583028674,
+          "candidate_geomean": 38056728.37003497
+        },
+        "execute/nbody": {
+          "delta_percent": 0.004127803520431922,
+          "status": "PASS",
+          "probability_regression": 0.42234672758314173,
+          "probability_improvement": 0.5776532724168583,
+          "baseline_geomean": 16549751.8053818,
+          "candidate_geomean": 16549068.692341669
+        },
+        "execute/argon2": {
+          "delta_percent": 151.56556657146177,
+          "status": "IMPROVEMENT",
+          "probability_regression": 3.2587607318149884e-19,
+          "probability_improvement": 1.0,
+          "baseline_geomean": 74582309.96354602,
+          "candidate_geomean": 29647264.917855833
+        },
+        "execute/tiny_keccak": {
+          "delta_percent": -0.11781108183742661,
+          "status": "RECOVERED",
+          "probability_regression": 0.9996423261821488,
+          "probability_improvement": 0.000357673817851234,
+          "baseline_geomean": 12049.087758324615,
+          "candidate_geomean": 12063.299662161886
+        },
+        "execute/mandelbrot": {
+          "delta_percent": -0.0005665784828068417,
+          "status": "PASS",
+          "probability_regression": 0.5084429400091457,
+          "probability_improvement": 0.4915570599908543,
+          "baseline_geomean": 14374787.582747737,
+          "candidate_geomean": 14374869.02766261
+        },
+        "execute/spectralnorm": {
+          "delta_percent": -0.01200817648622919,
+          "status": "PASS",
+          "probability_regression": 0.7010947861321033,
+          "probability_improvement": 0.2989052138678967,
+          "baseline_geomean": 14945679.76679126,
+          "candidate_geomean": 14947474.685931781
+        },
+        "execute/compression": {
+          "delta_percent": -0.06778855507717386,
+          "status": "PASS",
+          "probability_regression": 0.7763492398248741,
+          "probability_improvement": 0.22365076017512586,
+          "baseline_geomean": 6887318.286576055,
+          "candidate_geomean": 6891990.267194233
+        },
+        "execute/word_count": {
+          "delta_percent": -0.00445610425527091,
+          "status": "PASS",
+          "probability_regression": 0.5317634294579741,
+          "probability_improvement": 0.46823657054202594,
+          "baseline_geomean": 860361.6178240479,
+          "candidate_geomean": 860399.9581431934
+        },
+        "execute/json_parse": {
+          "delta_percent": -0.6190238146469703,
+          "status": "NEGLIGIBLE",
+          "probability_regression": 0.9999999933889839,
+          "probability_improvement": 6.611016067914477e-09,
+          "baseline_geomean": 5304109.447090173,
+          "candidate_geomean": 5337147.66214171
+        },
+        "execute/reverse_complement": {
+          "delta_percent": -0.722970247504773,
+          "status": "RECOVERED",
+          "probability_regression": 0.9994669334953116,
+          "probability_improvement": 0.0005330665046884286,
+          "baseline_geomean": 9853.517505596814,
+          "candidate_geomean": 9925.274285665422
+        },
+        "execute/regex_redux": {
+          "delta_percent": -0.09700906415084246,
+          "status": "PASS",
+          "probability_regression": 0.6674723841931525,
+          "probability_improvement": 0.33252761580684753,
+          "baseline_geomean": 20075.163686472188,
+          "candidate_geomean": 20094.657325487955
+        },
+        "execute/bulk-ops": {
+          "delta_percent": -0.04561928153199324,
+          "status": "RECOVERED",
+          "probability_regression": 0.9354494674344164,
+          "probability_improvement": 0.06455053256558363,
+          "baseline_geomean": 588427.860577538,
+          "candidate_geomean": 588696.4196545893
+        }
+      }
+    },
+    {
+      "artifact": "sf-dev049-wasmi-performance-arm64-linux-jit-startup",
+      "platform": "arm64-linux",
+      "category": "startup",
+      "baseline_sha": "f73219f56a70b77028f0d79730c7efca29ba3439",
+      "candidate_sha": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "throughput_geomean_delta_percent": -0.8612585013979861,
+      "metrics": {
+        "startup/bz2": {
+          "delta_percent": 2.2033276724484603,
+          "status": "IMPROVEMENT",
+          "probability_regression": 2.3903490882446347e-11,
+          "probability_improvement": 0.9999999999760965,
+          "baseline_geomean": 53895800.29208297,
+          "candidate_geomean": 52733899.687506706
+        },
+        "startup/pulldown-cmark": {
+          "delta_percent": 0.45283020036278565,
+          "status": "PASS",
+          "probability_regression": 0.0010259517295326678,
+          "probability_improvement": 0.9989740482704673,
+          "baseline_geomean": 117003519.38710092,
+          "candidate_geomean": 116476080.51831496
+        },
+        "startup/spidermonkey": {
+          "delta_percent": 0.025392003249532703,
+          "status": "PASS",
+          "probability_regression": 0.43272631870440803,
+          "probability_improvement": 0.567273681295592,
+          "baseline_geomean": 2540874444.12427,
+          "candidate_geomean": 2540229428.9851103
+        },
+        "startup/ffmpeg": {
+          "delta_percent": 0.4837853518239687,
+          "status": "PASS",
+          "probability_regression": 0.034410675230661915,
+          "probability_improvement": 0.9655893247693381,
+          "baseline_geomean": 9349154296.509403,
+          "candidate_geomean": 9304142219.339409
+        },
+        "startup/coremark": {
+          "delta_percent": -0.890548516469596,
+          "status": "NEGLIGIBLE",
+          "probability_regression": 0.9999997910914596,
+          "probability_improvement": 2.0890854035560125e-07,
+          "baseline_geomean": 5323124.659072102,
+          "candidate_geomean": 5370955.624708176
+        },
+        "startup/argon2": {
+          "delta_percent": -1.0817391122268027,
+          "status": "NEGLIGIBLE",
+          "probability_regression": 0.9999999958670722,
+          "probability_improvement": 4.132927777789064e-09,
+          "baseline_geomean": 16504991.03039324,
+          "candidate_geomean": 16685484.441663245
+        },
+        "startup/erc20": {
+          "delta_percent": -6.958050196253826,
+          "status": "REGRESSION",
+          "probability_regression": 0.9999999999998956,
+          "probability_improvement": 1.0436096431476471e-13,
+          "baseline_geomean": 3508044.3065659194,
+          "candidate_geomean": 3770389.930526446
+        }
+      }
+    },
+    {
+      "artifact": "sf-dev049-wasmi-performance-x64-linux-jit-execute",
+      "platform": "x64-linux",
+      "category": "execute",
+      "baseline_sha": "f73219f56a70b77028f0d79730c7efca29ba3439",
+      "candidate_sha": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "throughput_geomean_delta_percent": 16.028388419789678,
+      "metrics": {
+        "execute/counter-local": {
+          "delta_percent": -0.09036354368343201,
+          "status": "RECOVERED",
+          "probability_regression": 0.6706715414078104,
+          "probability_improvement": 0.3293284585921896,
+          "baseline_geomean": 312274.07434916653,
+          "candidate_geomean": 312556.5114889606
+        },
+        "execute/counter-param": {
+          "delta_percent": 0.09349192267825283,
+          "status": "RECOVERED",
+          "probability_regression": 0.23720569912394363,
+          "probability_improvement": 0.7627943008760564,
+          "baseline_geomean": 312224.285868951,
+          "candidate_geomean": 311932.65403323417
+        },
+        "execute/counter-global": {
+          "delta_percent": 0.04524399307695267,
+          "status": "PASS",
+          "probability_regression": 0.08622137153131876,
+          "probability_improvement": 0.9137786284686813,
+          "baseline_geomean": 156046.1018634248,
+          "candidate_geomean": 155975.53230438754
+        },
+        "execute/fibonacci-rec": {
+          "delta_percent": 54.37365068020744,
+          "status": "IMPROVEMENT",
+          "probability_regression": 5.207326768293316e-16,
+          "probability_improvement": 0.9999999999999994,
+          "baseline_geomean": 4326338.563394958,
+          "candidate_geomean": 2802511.014238551
+        },
+        "execute/fibonacci-iter": {
+          "delta_percent": 1.373107423525632,
+          "status": "IMPROVEMENT",
+          "probability_regression": 4.224468381385473e-07,
+          "probability_improvement": 0.9999995775531618,
+          "baseline_geomean": 632238.1674312224,
+          "candidate_geomean": 623674.447296758
+        },
+        "execute/fibonacci-tail": {
+          "delta_percent": 70.89715972055404,
+          "status": "IMPROVEMENT",
+          "probability_regression": 2.7123356445307554e-20,
+          "probability_improvement": 1.0,
+          "baseline_geomean": 624048.2703920532,
+          "candidate_geomean": 365160.1181742737
+        },
+        "execute/sort": {
+          "delta_percent": 42.7933491501073,
+          "status": "IMPROVEMENT",
+          "probability_regression": 5.031100047622874e-20,
+          "probability_improvement": 1.0,
+          "baseline_geomean": 47888169.6196388,
+          "candidate_geomean": 33536694.74430328
+        },
+        "execute/prime_sieve": {
+          "delta_percent": 7.4006131696185165,
+          "status": "IMPROVEMENT",
+          "probability_regression": 3.196376730401881e-14,
+          "probability_improvement": 0.999999999999968,
+          "baseline_geomean": 24916222.22614176,
+          "candidate_geomean": 23199329.585568935
+        },
+        "execute/matrix_mul": {
+          "delta_percent": 0.849415872635623,
+          "status": "IMPROVEMENT",
+          "probability_regression": 8.111500283568676e-10,
+          "probability_improvement": 0.99999999918885,
+          "baseline_geomean": 58848046.83730653,
+          "candidate_geomean": 58352392.354584046
+        },
+        "execute/nbody": {
+          "delta_percent": 1.805366128814151,
+          "status": "IMPROVEMENT",
+          "probability_regression": 4.514584213362949e-11,
+          "probability_improvement": 0.9999999999548541,
+          "baseline_geomean": 15172361.612407563,
+          "candidate_geomean": 14903302.438115075
+        },
+        "execute/argon2": {
+          "delta_percent": 160.56531827576043,
+          "status": "IMPROVEMENT",
+          "probability_regression": 1.5768934115856297e-18,
+          "probability_improvement": 1.0,
+          "baseline_geomean": 158080062.22632685,
+          "candidate_geomean": 60668113.190347224
+        },
+        "execute/tiny_keccak": {
+          "delta_percent": -4.531419782558384,
+          "status": "PLACEMENT",
+          "probability_regression": 0.9999999999966753,
+          "probability_improvement": 3.3246738695424938e-12,
+          "baseline_geomean": 22230.99632129169,
+          "candidate_geomean": 23286.191405232836
+        },
+        "execute/mandelbrot": {
+          "delta_percent": 0.03434207054972479,
+          "status": "PASS",
+          "probability_regression": 0.32701676544121705,
+          "probability_improvement": 0.672983234558783,
+          "baseline_geomean": 17380446.558752567,
+          "candidate_geomean": 17374479.80264109
+        },
+        "execute/spectralnorm": {
+          "delta_percent": 0.002222092346201645,
+          "status": "PASS",
+          "probability_regression": 0.4947150183269607,
+          "probability_improvement": 0.5052849816730394,
+          "baseline_geomean": 17338178.560390506,
+          "candidate_geomean": 17337793.29861256
+        },
+        "execute/compression": {
+          "delta_percent": 0.5688025388833803,
+          "status": "IMPROVEMENT",
+          "probability_regression": 2.3512800480005612e-11,
+          "probability_improvement": 0.9999999999764873,
+          "baseline_geomean": 11039176.531276854,
+          "candidate_geomean": 10976740.552328598
+        },
+        "execute/word_count": {
+          "delta_percent": 8.11073177637101,
+          "status": "IMPROVEMENT",
+          "probability_regression": 4.4617774548041563e-13,
+          "probability_improvement": 0.9999999999995538,
+          "baseline_geomean": 1299319.696672315,
+          "candidate_geomean": 1201841.5520116745
+        },
+        "execute/json_parse": {
+          "delta_percent": 3.150251486121611,
+          "status": "PASS",
+          "probability_regression": 0.0046627335475684555,
+          "probability_improvement": 0.9953372664524316,
+          "baseline_geomean": 8263783.851766812,
+          "candidate_geomean": 8011404.463593249
+        },
+        "execute/reverse_complement": {
+          "delta_percent": 68.66264784480069,
+          "status": "IMPROVEMENT",
+          "probability_regression": 4.0469001164201834e-16,
+          "probability_improvement": 0.9999999999999996,
+          "baseline_geomean": 34323.76785911175,
+          "candidate_geomean": 20350.544888098535
+        },
+        "execute/regex_redux": {
+          "delta_percent": -0.8254562269124915,
+          "status": "NEGLIGIBLE",
+          "probability_regression": 0.9999999999991536,
+          "probability_improvement": 8.464340339742193e-13,
+          "baseline_geomean": 35442.53461198705,
+          "candidate_geomean": 35737.53229768307
+        },
+        "execute/bulk-ops": {
+          "delta_percent": -0.5674419746631372,
+          "status": "RECOVERED",
+          "probability_regression": 0.9428406883714405,
+          "probability_improvement": 0.05715931162855947,
+          "baseline_geomean": 778465.2053939633,
+          "candidate_geomean": 782907.7526051358
+        }
+      }
+    },
+    {
+      "artifact": "sf-dev049-wasmi-performance-x64-linux-jit-startup",
+      "platform": "x64-linux",
+      "category": "startup",
+      "baseline_sha": "f73219f56a70b77028f0d79730c7efca29ba3439",
+      "candidate_sha": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "throughput_geomean_delta_percent": -2.4818727706809534,
+      "metrics": {
+        "startup/bz2": {
+          "delta_percent": 1.9839081216491619,
+          "status": "PASS",
+          "probability_regression": 0.007210477558138379,
+          "probability_improvement": 0.9927895224418616,
+          "baseline_geomean": 42935439.27685541,
+          "candidate_geomean": 42100209.79549136
+        },
+        "startup/pulldown-cmark": {
+          "delta_percent": -2.987726396681669,
+          "status": "RECOVERED",
+          "probability_regression": 0.9997455176009798,
+          "probability_improvement": 0.0002544823990201506,
+          "baseline_geomean": 96635452.91988419,
+          "candidate_geomean": 99611574.2169134
+        },
+        "startup/spidermonkey": {
+          "delta_percent": -1.013129138834444,
+          "status": "RECOVERED",
+          "probability_regression": 0.9906380516439357,
+          "probability_improvement": 0.009361948356064298,
+          "baseline_geomean": 2166915650.842828,
+          "candidate_geomean": 2189094000.033642
+        },
+        "startup/ffmpeg": {
+          "delta_percent": 0.12859614551809012,
+          "status": "RECOVERED",
+          "probability_regression": 0.164730677891888,
+          "probability_improvement": 0.835269322108112,
+          "baseline_geomean": 7542118995.8937645,
+          "candidate_geomean": 7532432577.934786
+        },
+        "startup/coremark": {
+          "delta_percent": -3.0139846576980043,
+          "status": "NOISY-FLOOR",
+          "probability_regression": 0.9999999842592784,
+          "probability_improvement": 1.5740721615031816e-08,
+          "baseline_geomean": 5059267.3685690835,
+          "candidate_geomean": 5216491.625842083
+        },
+        "startup/argon2": {
+          "delta_percent": -5.146692831077574,
+          "status": "NOISY-FLOOR",
+          "probability_regression": 0.9999999982159009,
+          "probability_improvement": 1.7840990906847765e-09,
+          "baseline_geomean": 15214971.650504678,
+          "candidate_geomean": 16040528.374417864
+        },
+        "startup/erc20": {
+          "delta_percent": -7.030217336797892,
+          "status": "NOISY-FLOOR",
+          "probability_regression": 0.9999999606248973,
+          "probability_improvement": 3.9375102733885115e-08,
+          "baseline_geomean": 3641801.9291811106,
+          "candidate_geomean": 3917188.816471822
+        }
+      }
+    }
+  ]
+}

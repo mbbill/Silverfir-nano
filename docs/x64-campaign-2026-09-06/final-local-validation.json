@@ -1,0 +1,15 @@
+{
+  "selected_source": "fc26a6a9d12d8fcc3964c3a52045ad72f5e9ae71",
+  "source_files_exactly_matched": 51,
+  "local_arm_release_tests": {
+    "passed": 635,
+    "failed": 0,
+    "ignored": 4,
+    "compiler_warnings": 0
+  },
+  "ci_helper_tests": 25,
+  "daily_performance_workflow_changed": false,
+  "temporary_profiling_workflows_included": false,
+  "competitor_standings_manual_only": true,
+  "native_pr_ci": "Pending PR submission; known accepted ERC20 regression remains visible."
+}

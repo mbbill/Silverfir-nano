@@ -1,0 +1,142 @@
+{
+  "candidate": "fc26a6a9d12d8fcc3964c3a52045ad72f5e9ae71",
+  "parent": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+  "host": "Apple M1 Pro",
+  "tests": {
+    "arm_total": 635,
+    "x64_rosetta_total": 622,
+    "ignored_each": 4,
+    "unguarded": 18,
+    "x64_rosetta_spec": 260,
+    "warning_audits": 8,
+    "warnings": 0,
+    "errors": 0
+  },
+  "code_identity_vs_parent": {
+    "arm64": {
+      "execution20_plus_coremark_functions": 1285,
+      "erc20_functions": 38,
+      "all_function_dumps_identical": true
+    },
+    "x64": {
+      "execution20_plus_coremark_functions": 1285,
+      "erc20_functions": 38,
+      "all_function_dumps_identical": true
+    }
+  },
+  "heap_note": "Requested live allocation peak during serial instantiation. Excludes parsing/import setup/engine creation, mmap, allocator overhead; not RSS or total allocation traffic. Two repeats. No peak improvement observed.",
+  "heap": [
+    {
+      "workload": "argon2",
+      "limited_peak_increment_bytes": 621347,
+      "cache_peak_increment_bytes": 621347
+    },
+    {
+      "workload": "bulk-ops",
+      "limited_peak_increment_bytes": 9116,
+      "cache_peak_increment_bytes": 9116
+    },
+    {
+      "workload": "compression",
+      "limited_peak_increment_bytes": 885138,
+      "cache_peak_increment_bytes": 885138
+    },
+    {
+      "workload": "coremark",
+      "limited_peak_increment_bytes": 198155,
+      "cache_peak_increment_bytes": 198155
+    },
+    {
+      "workload": "counter-global",
+      "limited_peak_increment_bytes": 5907,
+      "cache_peak_increment_bytes": 5907
+    },
+    {
+      "workload": "counter-local",
+      "limited_peak_increment_bytes": 4663,
+      "cache_peak_increment_bytes": 4663
+    },
+    {
+      "workload": "counter-param",
+      "limited_peak_increment_bytes": 4982,
+      "cache_peak_increment_bytes": 4982
+    },
+    {
+      "workload": "erc20",
+      "limited_peak_increment_bytes": 202647,
+      "cache_peak_increment_bytes": 202647
+    },
+    {
+      "workload": "fibonacci-iter",
+      "limited_peak_increment_bytes": 6600,
+      "cache_peak_increment_bytes": 6600
+    },
+    {
+      "workload": "fibonacci-rec",
+      "limited_peak_increment_bytes": 12648,
+      "cache_peak_increment_bytes": 12648
+    },
+    {
+      "workload": "fibonacci-tail",
+      "limited_peak_increment_bytes": 5819,
+      "cache_peak_increment_bytes": 5819
+    },
+    {
+      "workload": "json_parse",
+      "limited_peak_increment_bytes": 598618,
+      "cache_peak_increment_bytes": 598618
+    },
+    {
+      "workload": "mandelbrot",
+      "limited_peak_increment_bytes": 367284,
+      "cache_peak_increment_bytes": 367284
+    },
+    {
+      "workload": "matrix_mul",
+      "limited_peak_increment_bytes": 370314,
+      "cache_peak_increment_bytes": 370314
+    },
+    {
+      "workload": "nbody",
+      "limited_peak_increment_bytes": 352606,
+      "cache_peak_increment_bytes": 352606
+    },
+    {
+      "workload": "prime_sieve",
+      "limited_peak_increment_bytes": 367029,
+      "cache_peak_increment_bytes": 367029
+    },
+    {
+      "workload": "regex_redux",
+      "limited_peak_increment_bytes": 6435430,
+      "cache_peak_increment_bytes": 6435430
+    },
+    {
+      "workload": "reverse_complement",
+      "limited_peak_increment_bytes": 437994,
+      "cache_peak_increment_bytes": 437994
+    },
+    {
+      "workload": "sort",
+      "limited_peak_increment_bytes": 371580,
+      "cache_peak_increment_bytes": 371580
+    },
+    {
+      "workload": "spectralnorm",
+      "limited_peak_increment_bytes": 369062,
+      "cache_peak_increment_bytes": 369062
+    },
+    {
+      "workload": "tiny_keccak",
+      "limited_peak_increment_bytes": 369857,
+      "cache_peak_increment_bytes": 369857
+    },
+    {
+      "workload": "word_count",
+      "limited_peak_increment_bytes": 387022,
+      "cache_peak_increment_bytes": 387022
+    }
+  ],
+  "native_startup_run": 34086840052,
+  "status": "Startup performance pending; parent dev gate remains failed on ARM ERC20"
+}

@@ -1,0 +1,412 @@
+{
+  "run": 34087297901,
+  "status": "Native differential completed; no regression verdict, all positive and negative points retained; not merged.",
+  "jobs": [
+    {
+      "id": 101633675586,
+      "name": "Nano interpreter full20 / arm64-linux / draw 1",
+      "status": "completed",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:34:06Z",
+          "completed_at": "2026-09-07T05:34:08Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:34:08Z",
+          "completed_at": "2026-09-07T05:34:10Z"
+        },
+        {
+          "name": "Audit and test the measurement tools",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:34:10Z",
+          "completed_at": "2026-09-07T05:34:11Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T05:34:11Z",
+          "completed_at": "2026-09-07T05:34:13Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T05:34:13Z",
+          "completed_at": "2026-09-07T05:34:14Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T05:34:14Z",
+          "completed_at": "2026-09-07T05:34:19Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T05:34:19Z",
+          "completed_at": "2026-09-07T05:34:25Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-07T05:34:25Z",
+          "completed_at": "2026-09-07T05:34:28Z"
+        },
+        {
+          "name": "Save and audit source identities",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T05:34:28Z",
+          "completed_at": "2026-09-07T05:34:29Z"
+        },
+        {
+          "name": "Validate candidate on the native CPU before timing",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T05:34:29Z",
+          "completed_at": "2026-09-07T05:36:07Z"
+        },
+        {
+          "name": "Install suite system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T05:36:07Z",
+          "completed_at": "2026-09-07T05:36:21Z"
+        },
+        {
+          "name": "Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T05:36:21Z",
+          "completed_at": "2026-09-07T05:36:23Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:36:23Z",
+          "completed_at": "2026-09-07T05:36:23Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T05:36:23Z",
+          "completed_at": "2026-09-07T05:36:23Z"
+        },
+        {
+          "name": "Compare every execution group with the standard dev differential",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T05:36:23Z",
+          "completed_at": "2026-09-07T05:49:33Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:49:33Z",
+          "completed_at": "2026-09-07T05:49:34Z"
+        },
+        {
+          "name": "Post Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T05:49:34Z",
+          "completed_at": "2026-09-07T05:49:34Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T05:49:34Z",
+          "completed_at": "2026-09-07T05:49:38Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T05:49:38Z",
+          "completed_at": "2026-09-07T05:49:38Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T05:49:38Z",
+          "completed_at": "2026-09-07T05:49:38Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T05:49:38Z",
+          "completed_at": "2026-09-07T05:49:38Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T05:49:38Z",
+          "completed_at": "2026-09-07T05:49:38Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T05:49:38Z",
+          "completed_at": "2026-09-07T05:49:38Z"
+        }
+      ],
+      "errors": [],
+      "audits": [
+        "2026-09-07T05:36:07.8293241Z full20-out/correctness-interp.log: 0 errors, 0 warnings",
+        "2026-09-07T05:36:07.8293787Z full20-out/correctness-spec-build.log: 0 errors, 0 warnings",
+        "2026-09-07T05:36:07.8294179Z full20-out/correctness-spec.log: 0 errors, 0 warnings",
+        "2026-09-07T05:49:33.2908712Z full20-out/measurement.log: 0 errors, 0 warnings"
+      ],
+      "spec": [
+        "2026-09-07T05:36:07.7892733Z [2026-09-07T05:36:07Z INFO  sf_nano_spectest::summary] Total:   175",
+        "2026-09-07T05:36:07.7893192Z [2026-09-07T05:36:07Z INFO  sf_nano_spectest::summary] Passed:  175 (100.0%)"
+      ]
+    },
+    {
+      "id": 101633675877,
+      "name": "Nano interpreter full20 / x64-linux / draw 1",
+      "status": "completed",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:34:03Z",
+          "completed_at": "2026-09-07T05:34:06Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:34:06Z",
+          "completed_at": "2026-09-07T05:34:08Z"
+        },
+        {
+          "name": "Audit and test the measurement tools",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:34:08Z",
+          "completed_at": "2026-09-07T05:34:08Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T05:34:08Z",
+          "completed_at": "2026-09-07T05:34:10Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T05:34:10Z",
+          "completed_at": "2026-09-07T05:34:11Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T05:34:11Z",
+          "completed_at": "2026-09-07T05:34:14Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T05:34:14Z",
+          "completed_at": "2026-09-07T05:34:22Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-07T05:34:22Z",
+          "completed_at": "2026-09-07T05:34:23Z"
+        },
+        {
+          "name": "Save and audit source identities",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T05:34:23Z",
+          "completed_at": "2026-09-07T05:34:23Z"
+        },
+        {
+          "name": "Validate candidate on the native CPU before timing",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T05:34:23Z",
+          "completed_at": "2026-09-07T05:35:43Z"
+        },
+        {
+          "name": "Install suite system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T05:35:43Z",
+          "completed_at": "2026-09-07T05:35:53Z"
+        },
+        {
+          "name": "Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T05:35:53Z",
+          "completed_at": "2026-09-07T05:35:54Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:35:54Z",
+          "completed_at": "2026-09-07T05:35:54Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T05:35:54Z",
+          "completed_at": "2026-09-07T05:35:54Z"
+        },
+        {
+          "name": "Compare every execution group with the standard dev differential",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T05:35:54Z",
+          "completed_at": "2026-09-07T05:48:42Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:48:42Z",
+          "completed_at": "2026-09-07T05:48:43Z"
+        },
+        {
+          "name": "Post Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T05:48:43Z",
+          "completed_at": "2026-09-07T05:48:43Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T05:48:43Z",
+          "completed_at": "2026-09-07T05:48:46Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T05:48:46Z",
+          "completed_at": "2026-09-07T05:48:46Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T05:48:46Z",
+          "completed_at": "2026-09-07T05:48:46Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T05:48:46Z",
+          "completed_at": "2026-09-07T05:48:46Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T05:48:46Z",
+          "completed_at": "2026-09-07T05:48:46Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T05:48:46Z",
+          "completed_at": "2026-09-07T05:48:46Z"
+        }
+      ],
+      "errors": [],
+      "audits": [
+        "2026-09-07T05:35:43.1182717Z full20-out/correctness-interp.log: 0 errors, 0 warnings",
+        "2026-09-07T05:35:43.1183108Z full20-out/correctness-spec-build.log: 0 errors, 0 warnings",
+        "2026-09-07T05:35:43.1183667Z full20-out/correctness-spec.log: 0 errors, 0 warnings",
+        "2026-09-07T05:48:42.8096054Z full20-out/measurement.log: 0 errors, 0 warnings"
+      ],
+      "spec": [
+        "2026-09-07T05:35:43.0799165Z [2026-09-07T05:35:43Z INFO  sf_nano_spectest::summary] Total:   175",
+        "2026-09-07T05:35:43.0799509Z [2026-09-07T05:35:43Z INFO  sf_nano_spectest::summary] Passed:  175 (100.0%)"
+      ]
+    }
+  ]
+}

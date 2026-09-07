@@ -1,0 +1,344 @@
+{
+  "run": 34086840052,
+  "status": "Diagnostic finished; existing dev performance failure is not fixed.",
+  "jobs": [
+    {
+      "id": 101632390761,
+      "name": "Nano JIT startup / compact inline cache / x64",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 34086840052,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Audit the measurement tool",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Prepare identical single-thread compilation probes",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11
+        },
+        {
+          "name": "Validate candidate on the native CPU before timing",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12
+        },
+        {
+          "name": "Build identical probes for every source revision",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13
+        },
+        {
+          "name": "Measure small and large compilation workloads",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14
+        },
+        {
+          "name": "Profile native compilation of the regressed startup workloads",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33
+        }
+      ],
+      "errors": [],
+      "audits": [
+        "2026-09-07T05:29:17.5583174Z startup-out/correctness-core.log: 0 errors, 0 warnings",
+        "2026-09-07T05:29:17.5583852Z startup-out/correctness-spec-build.log: 0 errors, 0 warnings",
+        "2026-09-07T05:29:17.5584460Z startup-out/correctness-spec.log: 0 errors, 0 warnings",
+        "2026-09-07T05:29:17.5585079Z startup-out/correctness-unguarded-memory.log: 0 errors, 0 warnings",
+        "2026-09-07T05:30:04.9444577Z startup-out/build-main.log: 0 errors, 0 warnings",
+        "2026-09-07T05:30:52.6684146Z startup-out/build-parent.log: 0 errors, 0 warnings",
+        "2026-09-07T05:31:40.7349757Z startup-out/build-limited.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:27.9072756Z startup-out/build-cache.log: 0 errors, 0 warnings"
+      ],
+      "spec": [
+        "2026-09-07T05:29:17.5061470Z [2026-09-07T05:29:17Z INFO  sf_nano_spectest::summary] Total:   260",
+        "2026-09-07T05:29:17.5062080Z [2026-09-07T05:29:17Z INFO  sf_nano_spectest::summary] Passed:  260 (100.0%)"
+      ]
+    },
+    {
+      "id": 101632390931,
+      "name": "Nano JIT startup / compact inline cache / arm64",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 34086840052,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Audit the measurement tool",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Prepare identical single-thread compilation probes",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11
+        },
+        {
+          "name": "Validate candidate on the native CPU before timing",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12
+        },
+        {
+          "name": "Build identical probes for every source revision",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13
+        },
+        {
+          "name": "Measure small and large compilation workloads",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14
+        },
+        {
+          "name": "Profile native compilation of the regressed startup workloads",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33
+        }
+      ],
+      "errors": [],
+      "audits": [
+        "2026-09-07T05:29:11.7099822Z startup-out/correctness-core.log: 0 errors, 0 warnings",
+        "2026-09-07T05:29:11.7100229Z startup-out/correctness-spec-build.log: 0 errors, 0 warnings",
+        "2026-09-07T05:29:11.7100625Z startup-out/correctness-spec.log: 0 errors, 0 warnings",
+        "2026-09-07T05:29:11.7101022Z startup-out/correctness-unguarded-memory.log: 0 errors, 0 warnings",
+        "2026-09-07T05:30:03.4121713Z startup-out/build-main.log: 0 errors, 0 warnings",
+        "2026-09-07T05:30:55.1270590Z startup-out/build-parent.log: 0 errors, 0 warnings",
+        "2026-09-07T05:31:47.3809523Z startup-out/build-limited.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:39.3842393Z startup-out/build-cache.log: 0 errors, 0 warnings"
+      ],
+      "spec": [
+        "2026-09-07T05:29:11.6665355Z [2026-09-07T05:29:11Z INFO  sf_nano_spectest::summary] Total:   260",
+        "2026-09-07T05:29:11.6665774Z [2026-09-07T05:29:11Z INFO  sf_nano_spectest::summary] Passed:  260 (100.0%)"
+      ]
+    }
+  ]
+}

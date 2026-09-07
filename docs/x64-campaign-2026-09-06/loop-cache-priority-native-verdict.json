@@ -1,0 +1,99 @@
+{
+  "source": "3388ae6786e74306849431b548ca84d9fd350666",
+  "parent": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+  "coremark_run": 34075452274,
+  "startup_run": 34075452287,
+  "verdict": "rejected: both native CoreMark draws regress; x64 startup is also negative in all four rows",
+  "rows": [
+    {
+      "artifact": "core1",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "workload": "coremark-out",
+      "delta": -0.5609713788080629,
+      "p_improvement": 0.005131102940412635,
+      "p_regression": 0.9948688970595874,
+      "parent_main": 5.1141682867995915
+    },
+    {
+      "artifact": "core2",
+      "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "workload": "coremark-out",
+      "delta": -0.41702486863519456,
+      "p_improvement": 0.015034673780775054,
+      "p_regression": 0.984965326219225,
+      "parent_main": 10.092680238893989
+    },
+    {
+      "artifact": "startup_arm",
+      "cpu": "Neoverse-N2",
+      "workload": "argon2-results",
+      "delta": 0.45080672859815224,
+      "p_improvement": 0.9978745262561286,
+      "p_regression": 0.0021254737438714502,
+      "parent_main": -1.331688081518632
+    },
+    {
+      "artifact": "startup_arm",
+      "cpu": "Neoverse-N2",
+      "workload": "bz2-results",
+      "delta": 0.41061686747214954,
+      "p_improvement": 0.9600054408112059,
+      "p_regression": 0.039994559188794174,
+      "parent_main": 1.557488605214809
+    },
+    {
+      "artifact": "startup_arm",
+      "cpu": "Neoverse-N2",
+      "workload": "coremark-results",
+      "delta": 0.4491044974295112,
+      "p_improvement": 0.9996879945633415,
+      "p_regression": 0.0003120054366585065,
+      "parent_main": -0.7056473589247229
+    },
+    {
+      "artifact": "startup_arm",
+      "cpu": "Neoverse-N2",
+      "workload": "ffmpeg-results",
+      "delta": 0.1644071756781368,
+      "p_improvement": 0.9449995246834957,
+      "p_regression": 0.05500047531650428,
+      "parent_main": 1.4302310084550347
+    },
+    {
+      "artifact": "startup_x64",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "workload": "argon2-results",
+      "delta": -0.5499812340194836,
+      "p_improvement": 0.20921778936906077,
+      "p_regression": 0.7907822106309392,
+      "parent_main": -2.0446505836692745
+    },
+    {
+      "artifact": "startup_x64",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "workload": "bz2-results",
+      "delta": -1.4472246468282404,
+      "p_improvement": 0.0005296890465166237,
+      "p_regression": 0.9994703109534834,
+      "parent_main": 1.1777226468240567
+    },
+    {
+      "artifact": "startup_x64",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "workload": "coremark-results",
+      "delta": -0.5676475166293867,
+      "p_improvement": 0.16499078511154286,
+      "p_regression": 0.8350092148884571,
+      "parent_main": -1.6386034809658772
+    },
+    {
+      "artifact": "startup_x64",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "workload": "ffmpeg-results",
+      "delta": -0.7404466561442187,
+      "p_improvement": 0.0011336229612773918,
+      "p_regression": 0.9988663770387226,
+      "parent_main": 0.7626536663881829
+    }
+  ]
+}

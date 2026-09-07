@@ -1,0 +1,12 @@
+{
+  "scores": {
+    "silverfir-nano.jit": 19614.25390625,
+    "v8": 21164.021484375,
+    "wasmtime.cranelift": 23297.3515625
+  },
+  "competitor_over_nano": {
+    "silverfir-nano.jit": 1.0,
+    "v8": 1.0790123134702143,
+    "wasmtime.cranelift": 1.1877765870603112
+  }
+}
