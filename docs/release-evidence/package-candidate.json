@@ -1,0 +1,87 @@
+{
+  "commit": "82ac86d14207754041a4dd1fa33e003b06a13fe0",
+  "release_approved": false,
+  "packages": [
+    {
+      "name": "sf-nano-core",
+      "version": "0.1.0",
+      "sha256": "7e0c8f03314fe012738ea15c0a3c50b82b2b40504b76ea0ec5363ebb85844fd9",
+      "bytes": 1238464,
+      "files": 315,
+      "vcs": {
+        "git": {
+          "sha1": "82ac86d14207754041a4dd1fa33e003b06a13fe0"
+        },
+        "path_in_vcs": "sf-nano-core"
+      }
+    },
+    {
+      "name": "sf-nano-tracked-alloc",
+      "version": "0.1.0",
+      "sha256": "5a0dd5757f9c0e35150c345e1cce495c73c2cf486684dbae19ff7dbe129a24ce",
+      "bytes": 11864,
+      "files": 11,
+      "vcs": {
+        "git": {
+          "sha1": "82ac86d14207754041a4dd1fa33e003b06a13fe0"
+        },
+        "path_in_vcs": "tools/tracked-alloc"
+      }
+    }
+  ],
+  "api_digest": "ae547697fc0da341801049d0329b3bbfe7a9038966d2c8a1b6ff1d15a0a224e2",
+  "api_note": "All five core profiles have exact memprof parity; two support profiles captured. Unchanged from earlier ae547697 capture. No initial human API acceptance.",
+  "adapter_sha256": "603616a8d70ca229177115b7575793a75787bb252198d8685f8a334adef881cb",
+  "adapter_note": "Byte-identical to the migrated adapter in sf-release-pinned-suite, based on CI wasmi revision 16a3d7c8fdb05506c116a9451175732d1ac77099. Local dependency manifests select 0.1.0 and patch only to extracted candidate archives; Cargo metadata confirms both runtime dependencies resolve there.",
+  "checks": [
+    {
+      "name": "consumer-jit-interp.log",
+      "sha256": "4f5458d2a677fc3015e2cdacaef974ca0c45854786d3483db3cbd415d952c73b",
+      "result": "pass",
+      "output": [
+        "    Finished `release` profile [optimized] target(s) in 49.84s",
+        "silverfir-nano.jit: numeric host calls, guarded memory, growth and errors passed",
+        "silverfir-nano.jit: upstream CoreMark completed, score 27764.281",
+        "silverfir-nano.interpreter: numeric host calls, guarded memory, growth and errors passed",
+        "silverfir-nano.interpreter: upstream CoreMark completed, score 5098.2573"
+      ]
+    },
+    {
+      "name": "consumer-interp.log",
+      "sha256": "c329f07fca20d67286428e17ad7248cc896be00f564e7ba7a9e957f9207ff120",
+      "result": "pass",
+      "output": [
+        "    Finished `release` profile [optimized] target(s) in 19.81s",
+        "silverfir-nano.interpreter: numeric host calls, guarded memory, growth and errors passed",
+        "silverfir-nano.interpreter: upstream CoreMark completed, score 5130.597"
+      ]
+    },
+    {
+      "name": "consumer-jit.log",
+      "sha256": "c4a5da27ef1753aefd7df49ae657971c45105ffbf12feda90a09b6b00851402a",
+      "result": "pass",
+      "output": [
+        "    Finished `release` profile [optimized] target(s) in 42.48s",
+        "silverfir-nano.jit: numeric host calls, guarded memory, growth and errors passed",
+        "silverfir-nano.jit: upstream CoreMark completed, score 27835.77"
+      ]
+    },
+    {
+      "name": "packaged-thumbv8m.main-none-eabihf.log",
+      "sha256": "12068e66a0dcae70c1dd56d55854e5eb4e93cf73836142b650032f183f8e187f",
+      "result": "pass",
+      "output": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.00s"
+      ]
+    },
+    {
+      "name": "packaged-riscv32imac-unknown-none-elf.log",
+      "sha256": "4cfe85f4d11154f1ee36e0adb9c53fa20fb525ce54937c935f6dadd15c88e836",
+      "result": "pass",
+      "output": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.67s"
+      ]
+    }
+  ],
+  "scope": "Candidate packaging and downstream compatibility, not performance timing or publication. CoreMark scores are completion checks, not comparisons. Both package VCS records identify the clean source commit above. Final approved/tagged release archives still require final VCS provenance."
+}

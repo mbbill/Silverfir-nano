@@ -27,12 +27,12 @@ matching handler; that existing limitation is documented, not fixed here.
 
 | Requirement | Verified evidence | Still required |
 | --- | --- | --- |
-| Minimal API and memprof transparency | Five core API profiles have exact memprof parity; both support-crate profiles and feature/MSRV contracts are captured. Real CI evidence for `7d1f0c8c` matches the local digest. | Capture the final head and obtain explicit acceptance of its entire initial API. No snapshot update counts as approval. |
+| Minimal API and memprof transparency | Fresh `82ac86d1` capture passes five core memprof parity profiles, both support profiles and Cargo contracts. Digest `ae547697…224e2` is unchanged from the initial hosted capture. | Obtain explicit acceptance of the entire initial API for the final PR head. No snapshot update counts as approval. |
 | Human review enforcement | Workflow and policy implementation fail closed when the review environment is absent; CI demonstrates that failure. | Configure the protected environment and required main-branch gate using authenticated repository administration, then verify them. |
-| Hosted correctness | `587f5752` passes 684 core test cases and JIT 260/interpreter 175 spec files locally; exclusions are unchanged. CI at `4030fa54` passes policy, Miri and Rust 1.94. | All supported configuration gates must pass on the final revision. |
-| Single-engine and low-memory builds | The ownership follow-up moves raw conversions into JIT, shares effective growth limits with the interpreter, and removes unsafe test-only memory accessors. Native single-engine checks and local Thumb, RV32, RV64, and ARMv7 checks are warning-free after the decoder/IR SIMD capability cleanup. | Verify the final head on the hosted platform matrix. Earlier hosted warning failures remain failures until replaced by final-head evidence. |
-| Startup and execution performance | All eight Linux wasmi primary jobs complete at `4030fa54`; [complete printed tables](release-evidence/linux-release-wasmi-primary.json) retain noisy-floor results. All four [startup confirmations](release-evidence/linux-release-startup-confirmation.json) are complete: seven interpreter regressions on each architecture, two JIT regressions on x64 and four on ARM64. | Resolve regressions under the unchanged gates. Validator optimizations reduce safe loading cost but do not establish a passing full-startup result. The [validation audit](release-evidence/benchmark-validation-audit.md) distinguishes checked, unchecked and deferred competitors. |
-| Packages and downstream integration | Clean `7d1f0c8c` archives pass Cargo verification; an independent unpacked-package consumer builds the actual wasmi adapter and exercises both engines. CI adapter migration is fixed at `4030fa54`. | Regenerate and verify exact archives from the final clean reviewed revision. |
+| Hosted correctness | All 12 jobs in [run 34151036775](https://github.com/mbbill/Silverfir-nano/actions/runs/34151036775) pass at `68412439`, including the previously failing x64 and bare/cross targets. The validator follow-up `82ac86d1` passes 689 core cases and JIT 260/interpreter 175 spec files locally. | Verify the validator follow-up in final-head CI. |
+| Single-engine and low-memory builds | The complete `68412439` hosted matrix passes without suppressions. Unpacked `82ac86d1` packages also pass JIT-only, interpreter-only and dual-engine adapter execution, Thumb interpreter and RV32 dual-engine no_std compilation. | Retain these configurations in final-head CI; validation evidence does not establish memory use for every possible module. |
+| Startup and execution performance | All eight `68412439` Linux wasmi primary tables are recorded in [the evidence](release-evidence/linux-release-wasmi-primary.json). Four execution tables show no confirmed regression; both interpreter startup confirmations fail all seven cases; JIT startup confirmations remain pending. Bounded validator scratch reuse reduces local parse-plus-validation medians by 0.65–5.38%. | Measure the final revision. Reduce startup overhead where practical, report unavoidable full-validation cost for review, and resolve any confirmed execution regression. No threshold is relaxed. The [validation audit](release-evidence/benchmark-validation-audit.md) separates checked, unchecked and deferred competitors. |
+| Packages and downstream integration | Clean `82ac86d1` archives pass Cargo verification and independent unpacked-package checks through the actual migrated wasmi adapter. [Package hashes and checks](release-evidence/package-candidate.json) cover three engine feature configurations and two bare targets. | Produce the final approved/tagged archives with exact VCS provenance before publication; these remain candidate packages. |
 | Publication | Package names, metadata, licenses and dependency versions are prepared. | Explicit approval of the final package set/version and actual publication; then verify registry-based integration. |
 
 ## Ownership follow-up and remaining design work
@@ -55,7 +55,7 @@ primitives, and the already capability-gated machine IR. Unsupported targets
 still reject SIMD in the shared decoder; impossible non-SIMD lowering stubs
 are removed. The primitive semantics and ordering for SIMD-capable builds are
 unchanged. Local core/spec and cross-compilation checks pass without warning
-suppressions; hosted final-head validation is still pending.
+suppressions; hosted correctness at `68412439` also passes the full matrix.
 
 The added resource-growth tests exposed old x64 memory64/table64 truncation
 and interpreter table64 growth semantics. Separate fixes preserve full deltas,
@@ -63,11 +63,13 @@ check limits and overflow, and return the correctly typed -1 on failure. Tests
 reproduce the old failures and pass after the fixes on local x64/ARM64. The adjacent bulk-memory/table audit found additional old truncation defects.
 Those fixes preserve each source/destination index width and check overflow;
 ARM64's memory32 fast path now requires explicit module-type evidence. Local
-x64/ARM64 bulk-index tests pass; final-head execution performance must still
-be measured.
+x64/ARM64 bulk-index tests and hosted correctness at `68412439` pass. Its
+Linux wasmi execution primaries show no confirmed regression; the later
+validator-only follow-up still needs hosted measurements.
 
-Remote administration also remains unavailable through the current authorized
-tools; the requested authentication choice has not been answered. The exact
+The connector cannot administer repository settings. A fresh attempt to use
+the management UI is blocked by the Mac lock screen; manual unlock has been
+requested. The protected review environment is still unconfigured. The exact
 settings and review procedure are in [the API policy](PUBLIC_API_POLICY.md).
 Approval of those settings is separate from acceptance of an API and from
 permission to publish crates.
