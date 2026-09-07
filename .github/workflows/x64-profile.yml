@@ -1,5 +1,5 @@
-# Isolated Nano-only campaign measurement; no main, PR or dev trigger.
-name: x64-nano-coremark-loop-carry-confirm
+# Isolated Nano-only full-corpus validation; no main, PR or dev trigger.
+name: nano-loop-cache-full-corpus
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,19 +12,29 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano CoreMark confirmation / draw ${{ matrix.draw }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
+    name: Nano full20 / ${{ matrix.platform }} / draw ${{ matrix.draw }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        draw: [1, 2]
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+            draw: 1
+          - platform: x64-linux
+            runner: ubuntu-latest
+            draw: 2
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            draw: 1
     steps:
       - uses: actions/checkout@v7
-      - name: Audit and test the measurement tool
+      - name: Audit and test the measurement tools
         run: |
           python3 -m ci.lint_policy
-          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare ci.test_x64_warning_audit
+          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_wasmi_performance ci.test_x64_warning_audit
+          mkdir -p full20-out
       - uses: actions/checkout@v7
         with:
           ref: 42396c9dba2da406348f4238b4f4dd673af25cd2
@@ -40,83 +50,114 @@ jobs:
           repository: wasmi-labs/wasmi-benchmarks
           ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
           path: wasmi-benchmarks
+          submodules: recursive
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@v2.9.1
         with:
-          shared-key: x64-nano-probes
-      - name: Prepare identical probe manifests
+          shared-key: nano-loop-cache-full20-${{ matrix.platform }}
+          workspaces: ". -> wasmi-target"
+      - name: Save and audit source identities
         run: |
-          python3 - <<'PYCODE'
-          import json, os, shutil
-          from pathlib import Path
-          Path('coremark-out').mkdir()
-          for name in ['parent', 'carry']:
-              dest = Path(os.environ['RUNNER_TEMP']) / ('probe-' + name)
-              shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
-              manifest = dest / 'Cargo.toml'
-              source = Path('source-' + name).resolve() / 'sf-nano-core'
-              manifest.write_text(manifest.read_text().replace('"../../sf-nano-core"', json.dumps(str(source))))
-          PYCODE
-      - name: Save and audit the source variants
-        run: |
+          lscpu > full20-out/cpu.txt
+          rustc --version > full20-out/rustc.txt
           for name in parent carry; do
+            git -C "source-$name" rev-parse HEAD > "full20-out/$name-source.txt"
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
+          git -C wasmi-benchmarks submodule status --recursive > full20-out/submodules.txt
       - name: Validate candidate on the native CPU before timing
         working-directory: source-carry
         env:
           CARGO_TERM_COLOR: never
         run: |
-          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../coremark-out/correctness-core.log
-          if grep -q "BMI2 execution check skipped" ../coremark-out/correctness-core.log; then
+          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../full20-out/correctness-core.log
+          if [[ "$(uname -m)" == "x86_64" ]] && grep -q "BMI2 execution check skipped" ../full20-out/correctness-core.log; then
             echo "Native BMI2 execution validation was skipped" >&2
             exit 1
           fi
           cargo test --locked -p sf-nano-core --no-default-features --features jit,interp \
-            --test memory_length --test call_status --test integer_division --test integer_sums --test jump_table_membership 2>&1 | tee ../coremark-out/correctness-unguarded-memory.log
+            --test memory_length --test call_status --test integer_division --test integer_sums --test jump_table_membership \
+            2>&1 | tee ../full20-out/correctness-unguarded-memory.log
           cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
-            2>&1 | tee ../coremark-out/correctness-spec-build.log
+            2>&1 | tee ../full20-out/correctness-spec-build.log
           target/release/sf-nano-spectest --backend jit --log-level info \
-            2>&1 | tee ../coremark-out/correctness-spec.log
-          (cd .. && python3 -m ci.x64_warning_audit coremark-out/correctness-*.log)
-      - name: Build every Nano revision before measuring
+            2>&1 | tee ../full20-out/correctness-spec.log
+          (cd .. && python3 -m ci.x64_warning_audit full20-out/correctness-*.log)
+      - name: Install suite system dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libfontconfig1-dev
+      - uses: actions/cache@v6
+        id: cargo-criterion-cache
+        with:
+          path: ~/.cargo/bin/cargo-criterion
+          key: cargo-criterion-1.1.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rust-toolchain.outputs.cachekey }}
+      - name: Install pinned cargo-criterion
+        if: steps.cargo-criterion-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 1.1.0 cargo-criterion
+      - name: Verify cargo-criterion
+        run: cargo criterion --version | grep -F '1.1.0'
+      - name: Compare every execution group with the standard dev differential
         env:
           CARGO_TERM_COLOR: never
         run: |
-          for name in parent carry; do
-            cargo build --release --locked --manifest-path "$RUNNER_TEMP/probe-$name/Cargo.toml" \
-              --target-dir probe-target 2>&1 | tee "coremark-out/build-$name.log"
-            python3 -m ci.x64_warning_audit "coremark-out/build-$name.log"
-            cp probe-target/release/sf-x64-probe "coremark-out/$name"
-            git -C "source-$name" rev-parse HEAD > "coremark-out/$name-source.txt"
-          done
-      - name: Compare the exact CoreMark module
+          status=0
+          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
+            --suite wasmi-benchmarks \
+            --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
+            --baseline-source source-parent --candidate-source source-carry \
+            --baseline-sha 42396c9dba2da406348f4238b4f4dd673af25cd2 \
+            --candidate-sha 937ed3e09fcd959c47acf16e77cf5672c854580b \
+            --platform ${{ matrix.platform }} --engine jit --category execute \
+            --toolchain 1.98.1 \
+            --pilot-probability 80 --regression-probability 99.99 --improvement-probability 99.99 \
+            --minimum-effect-percent 1.0 --family-jobs 3 --family-metric-count 20 \
+            --max-confirmation-runs 2 \
+            --target-root wasmi-target --out-dir full20-out/results \
+            2>&1 | tee full20-out/measurement.log || status=$?
+          if [[ -f full20-out/results/summary.md ]]; then
+            cat full20-out/results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python3 -m ci.x64_warning_audit full20-out/measurement.log
+          exit "$status"
+      - name: Build ARM64 CoreMark probes before timing
+        if: matrix.platform == 'arm64-linux'
         run: |
-          lscpu > coremark-out/cpu.txt
-          rustc --version > coremark-out/rustc.txt
-          sha256sum wasmi-benchmarks/res/wasm/coremark.wasm > coremark-out/wasm-sha256.txt
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import json, os, shutil
+          for name in ['parent', 'carry']:
+              dest = Path(os.environ['RUNNER_TEMP']) / ('core-probe-' + name)
+              shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
+              manifest = dest / 'Cargo.toml'
+              source = Path('source-' + name).resolve() / 'sf-nano-core'
+              manifest.write_text(manifest.read_text().replace('"../../sf-nano-core"', json.dumps(str(source))))
+          PYCODE
+          for name in parent carry; do
+            cargo build --release --locked --manifest-path "$RUNNER_TEMP/core-probe-$name/Cargo.toml" \
+              --target-dir core-probe-target 2>&1 | tee "full20-out/core-build-$name.log"
+            python3 -m ci.x64_warning_audit "full20-out/core-build-$name.log"
+            cp core-probe-target/release/sf-x64-probe "full20-out/core-$name"
+          done
+      - name: Check exact CoreMark on ARM64
+        if: matrix.platform == 'arm64-linux'
+        run: |
           taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_coremark_compare \
-            --variant parent="$PWD/coremark-out/parent" \
-            --variant carry="$PWD/coremark-out/carry" \
-            --wasm wasmi-benchmarks/res/wasm/coremark.wasm --rounds 12 --out-dir coremark-out
-      - name: Capture the native code of every revision
-        run: |
-          for name in parent carry; do
-            SF_NATIVE_DUMP_DIR="$PWD/native-out/$name" \
-              "coremark-out/$name" wasmi-benchmarks/res/wasm/coremark.wasm coremark-dump
-          done
+            --variant parent="$PWD/full20-out/core-parent" \
+            --variant carry="$PWD/full20-out/core-carry" \
+            --wasm wasmi-benchmarks/res/wasm/coremark.wasm \
+            --mode coremark --rounds 6 --out-dir full20-out/coremark
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-coremark-loop-carry-confirm-${{ matrix.draw }}
+          name: nano-loop-cache-full20-${{ matrix.platform }}-${{ matrix.draw }}
           path: |
-            coremark-out/*.log
-            coremark-out/*.json
-            coremark-out/*.txt
-            coremark-out/*.md
-            native-out/
+            full20-out/
+            !full20-out/core-parent
+            !full20-out/core-carry
           if-no-files-found: error
           retention-days: 30
