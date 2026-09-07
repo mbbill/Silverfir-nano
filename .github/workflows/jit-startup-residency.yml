@@ -1,5 +1,5 @@
 # Temporary Nano-only compilation-cost isolation. No PR/main/dev trigger.
-name: jit-startup-limited-call-inlining
+name: jit-startup-compact-inline-cache
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,7 +12,7 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano JIT startup / limited call inlining / ${{ matrix.platform }}
+    name: Nano JIT startup / compact inline cache / ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     strategy:
@@ -49,6 +49,11 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
+          ref: fc26a6a9d12d8fcc3964c3a52045ad72f5e9ae71
+          path: source-cache
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
           repository: wasmi-labs/wasmi-benchmarks
           ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
           path: wasmi-benchmarks
@@ -66,7 +71,7 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           import json, os, shutil
-          for name in ['main', 'parent', 'limited']:
+          for name in ['main', 'parent', 'limited', 'cache']:
               dest = Path(os.environ['RUNNER_TEMP']) / ('startup-' + name)
               shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
               manifest = dest / 'Cargo.toml'
@@ -75,11 +80,11 @@ jobs:
               # Match normal JIT features; debug exporters would add startup work.
               manifest.write_text(code.replace(', "jit-debug"', ''))
           PYCODE
-          for name in main parent limited; do
+          for name in main parent limited cache; do
             (cd "source-$name" && python3 -m ci.lint_policy)
           done
       - name: Validate candidate on the native CPU before timing
-        working-directory: source-limited
+        working-directory: source-cache
         run: |
           cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../startup-out/correctness-core.log
           if [ "$(uname -m)" = x86_64 ] && grep -q "BMI2 execution check skipped" ../startup-out/correctness-core.log; then
@@ -96,12 +101,12 @@ jobs:
       - name: Build identical probes for every source revision
         run: |
           RUSTFLAGS="${RUSTFLAGS:-}"
-          for name in main parent limited; do
+          for name in main parent limited cache; do
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$PWD/source-$name=/nano-source"
             RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$RUNNER_TEMP/startup-$name=/nano-probe"
           done
           export RUSTFLAGS
-          for name in main parent limited; do
+          for name in main parent limited cache; do
             cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
               --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
             python3 -m ci.x64_warning_audit "startup-out/build-$name.log"
@@ -113,7 +118,7 @@ jobs:
           lscpu > startup-out/cpu.txt
           rustc --version > startup-out/rustc.txt
           test "$(git -C wasmi-benchmarks/res/rust rev-parse HEAD)" = 32e233bd1922425448851ffbd0fdc04e8c6e0f76
-          for workload in coremark argon2 bz2 ffmpeg; do
+          for workload in coremark argon2 bz2 ffmpeg pulldown-cmark spidermonkey erc20; do
             wasm="wasmi-benchmarks/res/wasm/$workload.wasm"
             if [ "$workload" = argon2 ]; then
               wasm="wasmi-benchmarks/res/rust/cases/argon2/out.wasm"
@@ -123,6 +128,7 @@ jobs:
               --variant main="$PWD/startup-out/main" \
               --variant parent="$PWD/startup-out/parent" \
               --variant limited="$PWD/startup-out/limited" \
+              --variant cache="$PWD/startup-out/cache" \
               --wasm "$wasm" \
               --rounds 6 --seconds 2 --out-dir "startup-out/$workload-results"
             sha256sum "$wasm" > "startup-out/$workload-sha256.txt"
@@ -133,12 +139,12 @@ jobs:
           sudo apt-get install -y -qq linux-tools-common linux-tools-generic
           PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
           sudo sysctl -w kernel.perf_event_paranoid=1
-          for workload in coremark argon2; do
-            wasm="wasmi-benchmarks/res/wasm/coremark.wasm"
+          for workload in erc20; do
+            wasm="wasmi-benchmarks/res/wasm/$workload.wasm"
             if [ "$workload" = argon2 ]; then
               wasm="wasmi-benchmarks/res/rust/cases/argon2/out.wasm"
             fi
-            for name in main parent limited; do
+            for name in main parent limited cache; do
               taskset -c 1 setarch "$(uname -m)" -R "$PERF_BIN" record \
                 -e cpu-clock:u -F 999 -k mono -o "startup-out/$workload-$name-perf.data" -- \
                 "$PWD/startup-out/$name" "$wasm" startup 0 10
@@ -149,7 +155,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-startup-limited-inline-${{ matrix.platform }}
+          name: nano-startup-inline-cache-${{ matrix.platform }}
           path: |
             startup-out/**/*.log
             startup-out/**/*.json
