@@ -1,0 +1,161 @@
+# Temporary Nano-only compilation-cost isolation. No PR/main/dev trigger.
+name: jit-startup-residency
+on:
+  push:
+    branches: ["codex/x64-profiling"]
+    paths: [".github/workflows/jit-startup-residency.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  compare:
+    name: Nano JIT startup / residency / ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            runner: ubuntu-latest
+          - platform: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v7
+      - name: Audit the measurement tool
+        run: |
+          python3 -m ci.lint_policy
+          python3 -m py_compile ci/x64_startup_compare.py
+          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_x64_coremark_compare ci.test_x64_warning_audit
+      - uses: actions/checkout@v7
+        with:
+          ref: f73219f56a70b77028f0d79730c7efca29ba3439
+          path: source-main
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: c76c3765b33281a2713e7fecf369b6415dcf8c7c
+          path: source-parent
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: f61a0be1cfa410fe53ccfced0f3cabbb0fd00663
+          path: source-scratch
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: jit-startup-residency-${{ matrix.platform }}
+      - name: Prepare identical single-thread compilation probes
+        run: |
+          mkdir startup-out
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import json, os, shutil
+          for name in ['main', 'parent', 'scratch']:
+              dest = Path(os.environ['RUNNER_TEMP']) / ('startup-' + name)
+              shutil.copytree('ci/x64-probe', dest, ignore=shutil.ignore_patterns('target'))
+              manifest = dest / 'Cargo.toml'
+              source = Path('source-' + name).resolve() / 'sf-nano-core'
+              code = manifest.read_text().replace('"../../sf-nano-core"', json.dumps(str(source)))
+              # Match normal JIT features; debug exporters would add startup work.
+              manifest.write_text(code.replace(', "jit-debug"', ''))
+          PYCODE
+          for name in main parent scratch; do
+            (cd "source-$name" && python3 -m ci.lint_policy)
+          done
+      - name: Validate candidate on the native CPU before timing
+        working-directory: source-scratch
+        run: |
+          cargo test --locked -p sf-nano-core -- --nocapture 2>&1 | tee ../startup-out/correctness-core.log
+          if [ "$(uname -m)" = x86_64 ] && grep -q "BMI2 execution check skipped" ../startup-out/correctness-core.log; then
+            echo "Native BMI2 execution validation was skipped" >&2
+            exit 1
+          fi
+          cargo test --locked -p sf-nano-core --no-default-features --features jit,interp \
+            --test memory_length --test call_status --test integer_division --test integer_sums --test jump_table_membership 2>&1 | tee ../startup-out/correctness-unguarded-memory.log
+          cargo build --release --locked -p sf-nano-spectest --no-default-features --features jit \
+            2>&1 | tee ../startup-out/correctness-spec-build.log
+          target/release/sf-nano-spectest --backend jit --log-level info \
+            2>&1 | tee ../startup-out/correctness-spec.log
+          (cd .. && python3 -m ci.x64_warning_audit startup-out/correctness-*.log)
+      - name: Build identical probes for every source revision
+        run: |
+          RUSTFLAGS="${RUSTFLAGS:-}"
+          for name in main parent scratch; do
+            RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$PWD/source-$name=/nano-source"
+            RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$RUNNER_TEMP/startup-$name=/nano-probe"
+          done
+          export RUSTFLAGS
+          for name in main parent scratch; do
+            cargo build --release --locked --manifest-path "$RUNNER_TEMP/startup-$name/Cargo.toml" \
+              --target-dir startup-target 2>&1 | tee "startup-out/build-$name.log"
+            python3 -m ci.x64_warning_audit "startup-out/build-$name.log"
+            cp startup-target/release/sf-x64-probe "startup-out/$name"
+            git -C "source-$name" rev-parse HEAD > "startup-out/$name-source.txt"
+          done
+      - name: Measure small and large compilation workloads
+        run: |
+          lscpu > startup-out/cpu.txt
+          rustc --version > startup-out/rustc.txt
+          test "$(git -C wasmi-benchmarks/res/rust rev-parse HEAD)" = 32e233bd1922425448851ffbd0fdc04e8c6e0f76
+          for workload in coremark argon2 bz2 ffmpeg; do
+            wasm="wasmi-benchmarks/res/wasm/$workload.wasm"
+            if [ "$workload" = argon2 ]; then
+              wasm="wasmi-benchmarks/res/rust/cases/argon2/out.wasm"
+            fi
+            test -f "$wasm"
+            taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.x64_startup_compare \
+              --variant main="$PWD/startup-out/main" \
+              --variant parent="$PWD/startup-out/parent" \
+              --variant scratch="$PWD/startup-out/scratch" \
+              --wasm "$wasm" \
+              --rounds 6 --seconds 2 --out-dir "startup-out/$workload-results"
+            sha256sum "$wasm" > "startup-out/$workload-sha256.txt"
+          done
+      - name: Profile native compilation of the regressed startup workloads
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common linux-tools-generic
+          PERF_BIN="$(ls -d /usr/lib/linux-tools/*/perf | head -n1)"
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          for workload in coremark argon2; do
+            wasm="wasmi-benchmarks/res/wasm/coremark.wasm"
+            if [ "$workload" = argon2 ]; then
+              wasm="wasmi-benchmarks/res/rust/cases/argon2/out.wasm"
+            fi
+            for name in main parent scratch; do
+              taskset -c 1 setarch "$(uname -m)" -R "$PERF_BIN" record \
+                -e cpu-clock:u -F 999 -k mono -o "startup-out/$workload-$name-perf.data" -- \
+                "$PWD/startup-out/$name" "$wasm" startup 0 10
+              "$PERF_BIN" report -i "startup-out/$workload-$name-perf.data" --stdio --no-children \
+                --percent-limit 0.1 > "startup-out/$workload-$name-profile.txt"
+            done
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nano-startup-residency-${{ matrix.platform }}
+          path: |
+            startup-out/**/*.log
+            startup-out/**/*.json
+            startup-out/**/*.txt
+            startup-out/**/*.md
+            startup-out/**/*.patch
+            startup-out/*.data
+          if-no-files-found: error
+          retention-days: 30
