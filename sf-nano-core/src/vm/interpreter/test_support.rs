@@ -4,20 +4,6 @@ use crate::vm::imports::{Import, ImportValue, ImportedFunction};
 use crate::vm::value::RefValue;
 use alloc::string::ToString;
 
-// The instance-table Miri fixtures inspect memory inside a scoped token
-// materialization. Production embedding access uses MemoryView guards instead.
-impl super::InterpInstance {
-    pub(crate) fn memory(&self) -> Option<&[u8]> {
-        let memory = self.shared_memory_at(0)?;
-        Some(unsafe { core::slice::from_raw_parts(memory.memory_ptr(), memory.memory_len()) })
-    }
-
-    pub(crate) fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        let memory = self.shared_memory_at(0)?;
-        Some(unsafe { core::slice::from_raw_parts_mut(memory.memory_ptr(), memory.memory_len()) })
-    }
-}
-
 impl Import {
     pub(crate) fn linked_func_typed_with_context_and_index(
         module: &str,

@@ -375,19 +375,6 @@ impl From<Value> for [u8; 16] {
 }
 
 impl Value {
-    pub(crate) fn value_type(&self) -> ValueType {
-        match self {
-            Value::I32(_) => ValueType::I32,
-            Value::I64(_) => ValueType::I64,
-            Value::F32(_) => ValueType::F32,
-            Value::F64(_) => ValueType::F64,
-            #[cfg(sf_has_simd)]
-            Value::V128(_) => ValueType::V128,
-            Value::Ref(_, ref_type) => ValueType::Ref(*ref_type),
-            Value::Unknown => ValueType::Unknown,
-        }
-    }
-
     pub(crate) fn default_for_type(value_type: ValueType) -> Self {
         match value_type {
             ValueType::I32 => Value::I32(0),
@@ -400,34 +387,6 @@ impl Value {
             ValueType::V128 => Value::Unknown,
             ValueType::Ref(ref_type) => Value::Ref(RefValue::null(), ref_type),
             ValueType::Unknown => Value::Unknown,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn to_raw(&self) -> u64 {
-        match *self {
-            Value::I32(v) => v as u32 as u64,
-            Value::I64(v) => v as u64,
-            Value::F32(v) => f32::to_bits(v) as u64,
-            Value::F64(v) => f64::to_bits(v),
-            #[cfg(sf_has_simd)]
-            Value::V128(_) => panic!("v128 cannot be encoded as a scalar raw value"),
-            Value::Ref(r, _) => r.encoded() as u64,
-            Value::Unknown => 0,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn from_raw(raw: u64, ty: ValueType) -> Self {
-        match ty {
-            ValueType::I32 => Value::I32(raw as i32),
-            ValueType::I64 => Value::I64(raw as i64),
-            ValueType::F32 => Value::F32(f32::from_bits(raw as u32)),
-            ValueType::F64 => Value::F64(f64::from_bits(raw)),
-            ValueType::Ref(ref_type) => Value::Ref(RefValue::new(raw as usize), ref_type),
-            #[cfg(sf_has_simd)]
-            ValueType::V128 => panic!("v128 cannot be decoded from a scalar raw value"),
-            _ => Value::Unknown,
         }
     }
 }
@@ -465,11 +424,11 @@ mod tests {
 
     #[cfg(sf_has_simd)]
     #[test]
-    fn v128_values_report_their_type_and_default() {
+    fn v128_values_convert_and_default() {
         let bytes = [0xAB; 16];
         let value = Value::from(bytes);
 
-        assert_eq!(value.value_type(), ValueType::V128);
+        assert_eq!(value, Value::V128(bytes));
         assert_eq!(<[u8; 16]>::from(value), bytes);
         assert_eq!(
             Value::default_for_type(ValueType::V128),

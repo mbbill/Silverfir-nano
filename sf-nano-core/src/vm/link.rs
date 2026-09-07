@@ -1421,7 +1421,11 @@ mod instance_table_tests {
                 let mut reentered = InterpInstanceAccess::checked_out(token);
                 let reference = reentered.with_instance_mut(|instance| {
                     assert_eq!(instance.instance_backref().self_id(), id);
-                    instance.memory_mut().expect("re-entered instance memory")[0] = 0x44;
+                    instance
+                        .shared_memory_at(0)
+                        .expect("re-entered instance memory")
+                        .backing_mut()
+                        .data[0] = 0x44;
                     instance
                         .function_handle_at(0)
                         .expect("registered host function")
@@ -1708,7 +1712,7 @@ mod instance_table_tests {
             );
             first_a
                 .with_instance_mut(|a| {
-                    a.memory_mut().expect("A memory")[0] = 0x11;
+                    a.shared_memory_at(0).expect("A memory").backing_mut().data[0] = 0x11;
                     assert_eq!(a.instance_backref().self_id(), a_id);
                 })
                 .expect("first A materialization");
@@ -1720,7 +1724,7 @@ mod instance_table_tests {
             let mut b_access = InterpInstanceAccess::checked_out(b_token);
             b_access
                 .with_instance_mut(|b| {
-                    b.memory_mut().expect("B memory")[0] = 0x22;
+                    b.shared_memory_at(0).expect("B memory").backing_mut().data[0] = 0x22;
                     let a_token = b
                         .instance_backref()
                         .checkout(a_id)
@@ -1728,15 +1732,32 @@ mod instance_table_tests {
                     let mut reentered_a = InterpInstanceAccess::checked_out(a_token);
                     reentered_a
                         .with_instance_mut(|a| {
-                            assert_eq!(a.memory().expect("re-entered A memory")[0], 0x11);
-                            a.memory_mut().expect("re-entered A memory")[0] = 0x33;
+                            assert_eq!(
+                                a.shared_memory_at(0)
+                                    .expect("re-entered A memory")
+                                    .backing
+                                    .borrow()
+                                    .data[0],
+                                0x11
+                            );
+                            a.shared_memory_at(0)
+                                .expect("re-entered A memory")
+                                .backing_mut()
+                                .data[0] = 0x33;
                         })
                         .expect("re-entered A materialization");
                     drop(reentered_a);
 
                     // Keep using B after the nested A scope so Miri observes
                     // that these are distinct live instance allocations.
-                    assert_eq!(b.memory().expect("B memory after A re-entry")[0], 0x22);
+                    assert_eq!(
+                        b.shared_memory_at(0)
+                            .expect("B memory after A re-entry")
+                            .backing
+                            .borrow()
+                            .data[0],
+                        0x22
+                    );
                 })
                 .expect("B materialization");
             drop(b_access);
@@ -1746,7 +1767,14 @@ mod instance_table_tests {
             );
             final_a
                 .with_instance_mut(|a| {
-                    assert_eq!(a.memory().expect("final A memory")[0], 0x33);
+                    assert_eq!(
+                        a.shared_memory_at(0)
+                            .expect("final A memory")
+                            .backing
+                            .borrow()
+                            .data[0],
+                        0x33
+                    );
                 })
                 .expect("final A materialization");
             drop(final_a);
@@ -1767,7 +1795,15 @@ mod instance_table_tests {
                 .expect("host callback re-enters the same interpreter slot");
             outer
                 .with_instance(|instance| {
-                    assert_eq!(instance.memory().expect("post-callback memory")[0], 0x44);
+                    assert_eq!(
+                        instance
+                            .shared_memory_at(0)
+                            .expect("post-callback memory")
+                            .backing
+                            .borrow()
+                            .data[0],
+                        0x44
+                    );
                 })
                 .expect("post-callback materialization");
             drop(outer);
