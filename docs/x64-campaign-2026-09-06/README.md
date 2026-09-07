@@ -115,3 +115,13 @@ Routine PR/main/dev CI remains the existing Nano differential gate. The
 V8/Cranelift standings workflow is manual-only. Temporary profiling workflows
 are not included in this PR. Repository/API/crates.io publication remains a
 separate later stage; this change does not publish a release.
+
+## PR CI follow-up
+
+The initial PR correctness run failed. [Investigation and repairs](PR_CI_AUDIT.md)
+record the reproduced workspace-container assertions, baseline nightly
+dependency warnings and RV32 linker inputs. The later local workspace test
+result is 683 passed / 4 ignored, with no compiler warnings. Historical
+selected-source equality and test results above describe the initial PR;
+subsequent test and CI/toolchain repairs do not change the JIT optimization
+policy. Remote final validation remains pending.

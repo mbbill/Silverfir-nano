@@ -76,8 +76,8 @@ fn shifts_and_rotates_match_scalar_widths_with_live_inputs() {
                     };
                     let result = instance.invoke(op, &[value(raw), value(amount)]).unwrap();
                     assert_eq!(
-                        result,
-                        vec![value(expected), value(raw), value(amount)],
+                        result.as_slice(),
+                        [value(expected), value(raw), value(amount)],
                         "{ty}.{op}({raw:x}, {amount:x})"
                     );
                 }
@@ -102,8 +102,8 @@ fn shifts_and_rotates_match_scalar_widths_with_live_inputs() {
                         .invoke(&format!("{op}{amount}"), &[value(raw)])
                         .unwrap();
                     assert_eq!(
-                        result,
-                        vec![value(expected), value(raw)],
+                        result.as_slice(),
+                        [value(expected), value(raw)],
                         "{ty}.{op}({raw:x}, {amount})"
                     );
                 }

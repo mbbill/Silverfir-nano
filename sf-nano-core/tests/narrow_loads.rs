@@ -77,7 +77,7 @@ fn narrow_read_loops_match_memory_and_preserve_the_last_write_before_trapping() 
             );
             if success {
                 assert_eq!(
-                    actual.unwrap(),
+                    actual.unwrap().as_slice(),
                     vec![Value::I64(sum)],
                     "{name}({start}, {count})"
                 );
@@ -180,7 +180,7 @@ fn narrow_equality_search_preserves_high_bits_branch_direction_and_traps() {
                             "{name}({start}, {count}, {needle}): {actual:?}"
                         );
                         if success {
-                            assert_eq!(actual.unwrap(), vec![Value::I32(p as i32)]);
+                            assert_eq!(actual.unwrap().as_slice(), vec![Value::I32(p as i32)]);
                         }
                         assert_eq!(instance.memory().unwrap(), expected.as_slice());
                     }
