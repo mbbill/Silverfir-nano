@@ -1696,8 +1696,27 @@ mod tests {
     #[cfg(feature = "memprof")]
     #[test]
     fn empty_world_after_free_has_no_live_tracked_bytes() {
-        static TRACKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let tracking_guard = TRACKING.lock().unwrap_or_else(|poison| poison.into_inner());
+        // Tracking is process-wide. Other tests do not take a shared lock,
+        // so run this zero-live-bytes assertion in its own test process.
+        const CHILD: &str = "SF_NANO_EMPTY_WORLD_TRACKING_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "vm::instance::tests::empty_world_after_free_has_no_live_tracked_bytes",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .expect("run isolated allocation test");
+            assert!(
+                output.status.success(),
+                "isolated allocation test failed:\n{}\n{}",
+                std::string::String::from_utf8_lossy(&output.stdout),
+                std::string::String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let failed_wasm = wat::parse_str(
             r#"
             (module
@@ -1758,6 +1777,5 @@ mod tests {
             tracked_alloc::set_tracking_enabled(false);
             tracked_alloc::reset_tracking();
         }
-        drop(tracking_guard);
     }
 }
