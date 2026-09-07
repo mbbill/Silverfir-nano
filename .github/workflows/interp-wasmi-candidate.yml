@@ -1,0 +1,124 @@
+# Isolated Nano-only full-corpus validation; no main, PR or dev trigger.
+name: nano-interpreter-memory-size
+on:
+  push:
+    branches: ["codex/x64-profiling"]
+    paths: [".github/workflows/interp-wasmi-candidate.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  compare:
+    name: Nano interpreter full20 / ${{ matrix.platform }} / draw ${{ matrix.draw }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+            draw: 1
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            draw: 1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Audit and test the measurement tools
+        run: |
+          python3 -m ci.lint_policy
+          env -u GITHUB_STEP_SUMMARY python3 -m unittest ci.test_wasmi_performance ci.test_x64_warning_audit
+          mkdir -p full20-out
+      - uses: actions/checkout@v7
+        with:
+          ref: 049874d05c0dd25d1cadf80a290085df6a0526f7
+          path: source-parent
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 6a382ad600e8031ee45dd96fc9eaaec810127084
+          path: source-size
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: nano-interp-memory-size-${{ matrix.platform }}
+          workspaces: ". -> wasmi-target"
+      - name: Save and audit source identities
+        run: |
+          lscpu > full20-out/cpu.txt
+          rustc --version > full20-out/rustc.txt
+          for name in parent size; do
+            git -C "source-$name" rev-parse HEAD > "full20-out/$name-source.txt"
+            (cd "source-$name" && python3 -m ci.lint_policy)
+          done
+          git -C wasmi-benchmarks submodule status --recursive > full20-out/submodules.txt
+      - name: Validate candidate on the native CPU before timing
+        working-directory: source-size
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          cargo test --locked -p sf-nano-core --no-default-features --features interp \
+            --lib --test memory_length -- --nocapture 2>&1 | tee ../full20-out/correctness-interp.log
+          cargo build --release --locked -p sf-nano-spectest \
+            2>&1 | tee ../full20-out/correctness-spec-build.log
+          target/release/sf-nano-spectest --interp --log-level info \
+            2>&1 | tee ../full20-out/correctness-spec.log
+          (cd .. && python3 -m ci.x64_warning_audit full20-out/correctness-*.log)
+      - name: Install suite system dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libfontconfig1-dev
+      - uses: actions/cache@v6
+        id: cargo-criterion-cache
+        with:
+          path: ~/.cargo/bin/cargo-criterion
+          key: cargo-criterion-1.1.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rust-toolchain.outputs.cachekey }}
+      - name: Install pinned cargo-criterion
+        if: steps.cargo-criterion-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 1.1.0 cargo-criterion
+      - name: Verify cargo-criterion
+        run: cargo criterion --version | grep -F '1.1.0'
+      - name: Compare every execution group with the standard dev differential
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          status=0
+          taskset -c 1 setarch "$(uname -m)" -R python3 -m ci.wasmi_performance \
+            --suite wasmi-benchmarks \
+            --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
+            --baseline-source source-parent --candidate-source source-size \
+            --baseline-sha 049874d05c0dd25d1cadf80a290085df6a0526f7 \
+            --candidate-sha 6a382ad600e8031ee45dd96fc9eaaec810127084 \
+            --platform ${{ matrix.platform }} --engine interp --category execute \
+            --toolchain 1.98.1 \
+            --pilot-probability 80 --regression-probability 99.99 --improvement-probability 99.99 \
+            --minimum-effect-percent 1.0 --family-jobs 2 --family-metric-count 20 \
+            --max-confirmation-runs 2 \
+            --target-root wasmi-target --out-dir full20-out/results \
+            2>&1 | tee full20-out/measurement.log || status=$?
+          if [[ -f full20-out/results/summary.md ]]; then
+            cat full20-out/results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python3 -m ci.x64_warning_audit full20-out/measurement.log
+          exit "$status"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nano-interp-memory-size-${{ matrix.platform }}-${{ matrix.draw }}
+          path: full20-out/
+          if-no-files-found: error
+          retention-days: 30
