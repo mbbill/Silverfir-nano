@@ -304,7 +304,6 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     let entry = program.entry;
     let loop_graph = hoist_loop_address_bases::analyze_loop_graph(&program.blocks, entry);
     hoist_loop_address_bases::hoist_loop_address_bases(program, config, &loop_graph);
-    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks, &loop_graph, entry);
     reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks, entry);
     promote_self_loop_globals::promote_self_loop_globals(
         &mut program.blocks,
@@ -321,6 +320,9 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         entry,
         &mut ctx,
     );
+    // Give words read or updated inside the loop priority over values that
+    // merely pass through it to avoid a reload on an exit.
+    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks, &loop_graph, entry);
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
     // After compare-branch fusion: the fold reads loop bounds from
     // `Branch { IntCompare }` latch terminators. The passes since

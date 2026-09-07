@@ -152,28 +152,30 @@ fn try_cache_word(
             }
         }
     }
-    // Require repeated static reads as well as a loop. This avoids paying
-    // entry setup and write-through copies for a lone cheap reload.
+    // Repeated reads or a read/write recurrence can amortize the entry load.
+    // A lone read-only reload still does not justify taking another lane.
     candidates.retain(|(word, count)| {
-        *count >= 2
-            && nodes.iter().all(|&index| {
-                blocks[index].ops.iter().all(|inst| match inst.kind {
-                    MachineInstKind::Store {
-                        ty, addr, width, ..
-                    } => {
-                        !store_may_alias(word.addr, word.width, addr, width)
-                            || (addr == word.addr
-                                && width == word.width
-                                && ty == MachineStorageType::GpWord)
-                    }
-                    // Indexed stores must be in guest memory, not a variable
-                    // offset within the frame or another runtime address space.
-                    MachineInstKind::IndexedStore { base, .. } => {
-                        super::helpers::unknown_store_may_alias(base)
-                    }
-                    _ => true,
-                })
+        let mut updated = false;
+        let unaliased = nodes.iter().all(|&index| {
+            blocks[index].ops.iter().all(|inst| match inst.kind {
+                MachineInstKind::Store {
+                    ty, addr, width, ..
+                } => {
+                    let exact = addr == word.addr
+                        && width == word.width
+                        && ty == MachineStorageType::GpWord;
+                    updated |= exact;
+                    !store_may_alias(word.addr, word.width, addr, width) || exact
+                }
+                // Indexed stores must be in guest memory, not a variable
+                // offset within the frame or another runtime address space.
+                MachineInstKind::IndexedStore { base, .. } => {
+                    super::helpers::unknown_store_may_alias(base)
+                }
+                _ => true,
             })
+        });
+        unaliased && (*count >= 2 || updated)
     });
     let Some((word, _)) = candidates
         .into_iter()
@@ -495,9 +497,222 @@ mod tests {
         );
     }
 
+    // Execute the small loop fixtures independently of the optimizer and
+    // compare every published store, including values observed by narrow loads.
+    fn published_values(
+        blocks: &[MachineBlock],
+        iterations: u64,
+        seed: u64,
+    ) -> collections::Vec<(i32, u64)> {
+        let mut regs = [0u64; 16];
+        regs[4] = iterations;
+        regs[5] = seed;
+        let mut memory = [0u8; 32];
+        let mut published = collections::Vec::new();
+        let value = |value: MachineValue, regs: &[u64; 16]| match value {
+            MachineValue::Reg(reg) => regs[usize::from(reg.0)],
+            MachineValue::Imm64(value) => value,
+            MachineValue::ReservedReg(reg) => panic!("fixture reads a reserved lane: {reg:?}"),
+        };
+        let mut current = 0;
+        for _ in 0..1024 {
+            let block = &blocks[current];
+            for inst in &block.ops {
+                match inst.kind {
+                    MachineInstKind::Move { dst, src, .. } => {
+                        regs[usize::from(dst.0)] = value(src, &regs);
+                    }
+                    MachineInstKind::Load {
+                        dst,
+                        addr,
+                        width,
+                        extension: MachineLoadExtension::None,
+                        ..
+                    } => {
+                        assert_eq!(addr.base, MACHINE_FP_REG);
+                        let start = usize::try_from(addr.offset).unwrap();
+                        let end = start + width.bytes() as usize;
+                        let mut bytes = [0u8; 8];
+                        bytes[..end - start].copy_from_slice(&memory[start..end]);
+                        regs[usize::from(dst.0)] = u64::from_le_bytes(bytes);
+                    }
+                    MachineInstKind::Store {
+                        addr, width, src, ..
+                    } => {
+                        assert_eq!(addr.base, MACHINE_FP_REG);
+                        let start = usize::try_from(addr.offset).unwrap();
+                        let count = width.bytes() as usize;
+                        let stored = value(src, &regs);
+                        memory[start..start + count]
+                            .copy_from_slice(&stored.to_le_bytes()[..count]);
+                        published.push((addr.offset, stored));
+                    }
+                    MachineInstKind::IntBinary {
+                        width,
+                        op: MachineIntBinaryOp::Add,
+                        dst,
+                        lhs,
+                        rhs,
+                    } => {
+                        let sum = value(lhs, &regs).wrapping_add(value(rhs, &regs));
+                        regs[usize::from(dst.0)] = match width {
+                            MachineIntWidth::I32 => u64::from(sum as u32),
+                            MachineIntWidth::I64 => sum,
+                        };
+                    }
+                    _ => panic!("unsupported fixture instruction: {:?}", inst.kind),
+                }
+            }
+            let edge = match &block.terminator {
+                MachineTerminator::Jump(edge) => edge,
+                MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(cond),
+                    then_edge,
+                    else_edge,
+                } => {
+                    if value(*cond, &regs) != 0 {
+                        then_edge
+                    } else {
+                        else_edge
+                    }
+                }
+                MachineTerminator::Return => return published,
+                other => panic!("unsupported fixture terminator: {other:?}"),
+            };
+            let next = blocks
+                .iter()
+                .position(|block| block.id == edge.target)
+                .unwrap();
+            let args: collections::Vec<_> =
+                edge.args.iter().map(|&arg| value(arg, &regs)).collect();
+            assert_eq!(args.len(), blocks[next].params.len());
+            for (param, arg) in blocks[next].params.iter().zip(args) {
+                regs[usize::from(param.reg.0)] = arg;
+            }
+            current = next;
+        }
+        panic!("fixture did not terminate");
+    }
+
+    #[test]
+    fn single_read_updated_word_preserves_publication_and_narrow_observers() {
+        for (width, offset) in [
+            (MachineMemWidth::U8, 16),
+            (MachineMemWidth::U16, 18),
+            (MachineMemWidth::U32, 16),
+            (MachineMemWidth::U32, 20),
+        ] {
+            for observe_after_store in [false, true] {
+                let mut blocks = loop_blocks();
+                blocks[0]
+                    .params
+                    .push(MachineBlockParam::gp_word(MachineReg(5)));
+                blocks[0].ops[0] = store(5);
+                if let MachineInstKind::IntBinary { width, .. } = &mut blocks[1].ops[1].kind {
+                    *width = MachineIntWidth::I64;
+                }
+                let mut observe = load(6);
+                if let MachineInstKind::Load {
+                    width: load_width,
+                    addr,
+                    ..
+                } = &mut observe.kind
+                {
+                    *load_width = width;
+                    addr.offset = offset;
+                }
+                let mut publish_observation = store(6);
+                if let MachineInstKind::Store { addr, .. } = &mut publish_observation.kind {
+                    addr.offset = 24;
+                }
+                blocks[2].ops = if observe_after_store {
+                    collections::vec![store(5), observe, publish_observation, add(4, 4, u64::MAX)]
+                } else {
+                    collections::vec![observe, publish_observation, store(5), add(4, 4, u64::MAX)]
+                };
+                let before = blocks.clone();
+                run(&mut blocks, MachineBlockId(0), 5);
+                assert_eq!(blocks[1].params.last().unwrap().reg, MachineReg(7));
+                assert!(!blocks[1]
+                    .ops
+                    .iter()
+                    .any(|inst| loaded_word(&inst.kind, 8).is_some()));
+                for iterations in [1, 2, 17] {
+                    for seed in [0, u32::MAX as u64, 0x1234_5678_ffff_ffff, u64::MAX] {
+                        assert_eq!(
+                            published_values(&blocks, iterations, seed),
+                            published_values(&before, iterations, seed)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn single_read_readonly_word_does_not_claim_a_lane() {
+        let mut blocks = loop_blocks();
+        blocks[2].ops = collections::vec![add(4, 4, u64::MAX)];
+        let before = blocks.clone();
+        run(&mut blocks, MachineBlockId(0), 5);
+        assert_eq!(blocks, before);
+    }
+
+    #[test]
+    fn updated_word_takes_priority_without_losing_exit_only_value() {
+        let mut original = loop_blocks();
+        let mut seed_exit = store(4);
+        if let MachineInstKind::Store { addr, .. } = &mut seed_exit.kind {
+            addr.offset = 0;
+        }
+        original[0].ops.push(seed_exit);
+        let mut exit_load = load(7);
+        if let MachineInstKind::Load { addr, .. } = &mut exit_load.kind {
+            addr.offset = 0;
+        }
+        original[3].ops.insert(0, exit_load.clone());
+        let mut publish_exit = store(7);
+        if let MachineInstKind::Store { addr, .. } = &mut publish_exit.kind {
+            addr.offset = 24;
+        }
+        original[3].ops.push(publish_exit);
+        let graph = analyze_loop_graph(&original, MachineBlockId(0));
+
+        let mut exit_first = original.clone();
+        super::super::reuse_loop_frame_values::reuse_loop_frame_values(
+            &mut exit_first,
+            &graph,
+            MachineBlockId(0),
+        );
+        run(&mut exit_first, MachineBlockId(0), 5);
+        assert!(exit_first[1]
+            .ops
+            .iter()
+            .any(|inst| loaded_word(&inst.kind, 8).is_some()));
+        assert!(!exit_first[3].ops.contains(&exit_load));
+
+        let mut updated_first = original.clone();
+        run(&mut updated_first, MachineBlockId(0), 5);
+        super::super::reuse_loop_frame_values::reuse_loop_frame_values(
+            &mut updated_first,
+            &graph,
+            MachineBlockId(0),
+        );
+        assert!(!updated_first[1]
+            .ops
+            .iter()
+            .any(|inst| loaded_word(&inst.kind, 8).is_some()));
+        assert!(updated_first[3].ops.contains(&exit_load));
+        for iterations in [1, 2, 17] {
+            let expected = published_values(&original, iterations, 0);
+            assert_eq!(published_values(&exit_first, iterations, 0), expected);
+            assert_eq!(published_values(&updated_first, iterations, 0), expected);
+        }
+    }
+
     #[test]
     fn rejects_aliases_calls_live_lanes_and_ambiguous_entries() {
-        for case in 0..8 {
+        for case in 0..7 {
             let mut blocks = loop_blocks();
             let mut entry = MachineBlockId(0);
             let mut budget = 5;
@@ -528,11 +743,6 @@ mod tests {
                     .insert(0, add(MACHINE_FP_REG.0, MACHINE_FP_REG.0, 8)),
                 5 => entry = MachineBlockId(1),
                 6 => {
-                    if let MachineInstKind::Load { width, .. } = &mut blocks[2].ops[0].kind {
-                        *width = MachineMemWidth::U32;
-                    }
-                }
-                7 => {
                     // The only spare loop lane holds an existing entry argument.
                     blocks[0].terminator = MachineTerminator::Jump(edge(1, &[7]));
                 }
