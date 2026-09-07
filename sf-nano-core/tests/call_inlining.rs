@@ -138,3 +138,125 @@ fn wrapper_calls_keep_memory_and_host_failure_before_continuation() {
         );
     }
 }
+
+#[test]
+fn structured_callees_preserve_return_floor_loop_and_function_branches() {
+    let mut instance = instance(
+        r#"(module
+        (func $early (param i32) (result i32)
+            (i64.const 123456789)
+            (if (i32.eqz (local.get 0)) (then (return (i32.const 41))))
+            drop (i32.const 33))
+        (func $sum (param $n i32) (result i32) (local $sum i32)
+            (block $done (loop $again
+                (br_if $done (i32.eqz (local.get $n)))
+                (local.set $sum (i32.add (local.get $sum) (local.get $n)))
+                (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+                (br $again)))
+            (local.get $sum))
+        (func $switch (param i32) (result i64)
+            (block (result i64)
+                (block (result i64)
+                    (i64.const 17) (local.get 0) (br_table 0 1 2))
+                (i64.const 3) i64.add)
+            (i64.const 7) i64.add)
+        (func (export "run") (param $n i32) (param $choice i32) (param $older i64)
+            (result i64)
+            (local.get $older)
+            (call $early (local.get $n)) i64.extend_i32_s i64.add
+            (call $sum (local.get $n)) i64.extend_i32_s i64.add
+            (call $switch (local.get $choice)) i64.add))"#,
+    );
+    for n in [0i32, 1, 2, 7, 19] {
+        for choice in [0, 1, 2, -1, 9] {
+            for older in [i64::MIN, -1, 0x1234_5678_9abc_def0, i64::MAX] {
+                let expected = older
+                    .wrapping_add(if n == 0 { 41 } else { 33 })
+                    .wrapping_add(i64::from(n * (n + 1) / 2))
+                    .wrapping_add(match choice {
+                        0 => 27,
+                        1 => 24,
+                        _ => 17,
+                    });
+                assert_eq!(
+                    instance
+                        .invoke(
+                            "run",
+                            &[Value::I32(n), Value::I32(choice), Value::I64(older)]
+                        )
+                        .unwrap()
+                        .as_slice(),
+                    &[Value::I64(expected)]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn bounded_recursive_expansion_preserves_both_call_results() {
+    let mut instance = instance(
+        r#"(module
+        (func $tree (export "run") (param $n i64) (result i64)
+            (if (i64.le_s (local.get $n) (i64.const 1))
+                (then (return (i64.add (local.get $n) (i64.const 2)))))
+            (i64.add
+                (i64.mul (call $tree (i64.sub (local.get $n) (i64.const 1))) (i64.const 3))
+                (call $tree (i64.sub (local.get $n) (i64.const 2))))))"#,
+    );
+    for n in [-99, -3, -1, 0, 1, 2, 3, 8, 12, 17] {
+        let expected = if n <= 1 {
+            n + 2
+        } else {
+            let (mut a, mut b) = (2i64, 3i64);
+            for _ in 2..=n {
+                (a, b) = (b, b.wrapping_mul(3).wrapping_add(a));
+            }
+            b
+        };
+        assert_eq!(
+            instance.invoke("run", &[Value::I64(n)]).unwrap().as_slice(),
+            &[Value::I64(expected)]
+        );
+    }
+    assert!(instance.invoke("run", &[Value::I64(1_000_000)]).is_err());
+    assert_eq!(
+        instance.invoke("run", &[Value::I64(2)]).unwrap().as_slice(),
+        &[Value::I64(11)]
+    );
+}
+
+#[test]
+fn inlined_loop_parameters_keep_their_backedge_values() {
+    let mut instance = instance(
+        r#"(module
+        (func $loop (param $n i32) (param $value i64) (result i64)
+            (local.get $value) (local.get $n)
+            (loop (param i64 i32) (result i64)
+                (local.set $n)
+                (i64.const 5) i64.add
+                (local.get $n) (i32.const 1) i32.sub (local.tee $n)
+                (local.get $n) (br_if 0)
+                drop))
+        (func (export "run") (param i32) (param i64) (param i64) (result i64)
+            (local.get 2)
+            (call $loop (local.get 0) (local.get 1)) i64.add))"#,
+    );
+    for n in [1i32, 2, 3, 7, 31] {
+        for value in [i64::MIN, -1, 0, i64::MAX] {
+            let older = 0x1234_5678_9abc_def0i64;
+            assert_eq!(
+                instance
+                    .invoke(
+                        "run",
+                        &[Value::I32(n), Value::I64(value), Value::I64(older)]
+                    )
+                    .unwrap()
+                    .as_slice(),
+                &[Value::I64(
+                    older.wrapping_add(value).wrapping_add(i64::from(n) * 5)
+                )]
+            );
+        }
+    }
+}
