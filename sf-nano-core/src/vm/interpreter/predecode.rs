@@ -316,6 +316,7 @@ pub(crate) fn predecode_function(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
+    global_cells: &[u64],
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
     let mut code = Vec::new();
@@ -324,6 +325,7 @@ pub(crate) fn predecode_function(
         module,
         tag_identities,
         function_handles,
+        global_cells,
         func_index,
         false,
         &mut code,
@@ -344,6 +346,7 @@ pub(crate) fn predecode_functions(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
+    global_cells: &[u64],
 ) -> Result<UnlinkedPredecodedFunctions, WasmError> {
     let local_count = module.functions().iter().filter(|f| !f.is_import()).count();
     if local_count == 0 {
@@ -377,6 +380,7 @@ pub(crate) fn predecode_functions(
                 module,
                 tag_identities,
                 function_handles,
+                global_cells,
                 func_index,
                 false,
                 &mut code,
@@ -579,6 +583,7 @@ fn predecode_function_into(
     module: &Module,
     tag_identities: &[TagIdentity],
     function_handles: &[RefValue],
+    global_cells: &[u64],
     func_index: usize,
     _disable_fast: bool,
     code: &mut Vec<Instr>,
@@ -587,6 +592,11 @@ fn predecode_function_into(
     if tag_identities.len() != module.tags().len() {
         return Err(WasmError::invalid(
             "interp: runtime tag table does not match module",
+        ));
+    }
+    if global_cells.len() != module.globals().len() {
+        return Err(WasmError::invalid(
+            "interp: runtime global table does not match module",
         ));
     }
     if function_handles.len() != module.functions().len() {
@@ -647,6 +657,7 @@ fn predecode_function_into(
             module,
             tag_identities,
             function_handles,
+            global_cells,
             code: FunctionCodeBuilder {
                 arena: code,
                 start: code_start,
@@ -953,6 +964,9 @@ struct Predecoder<'m, 'code> {
     /// Frame-form identities for `ref.func`: local indices for this
     /// instance's functions and absolute handles for linked imports.
     function_handles: &'m [RefValue],
+    /// Stable addresses of each global's actual storage cell. Native global
+    /// instructions carry these in b; Rust still uses the semantic index.
+    global_cells: &'m [u64],
     code: FunctionCodeBuilder<'code>,
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
@@ -4019,7 +4033,13 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     } else {
                         0
                     };
-                    let idx = self.emit(Op::GlobalGet, flags, g as u64, 0, dst);
+                    let idx = self.emit(
+                        Op::GlobalGet,
+                        flags,
+                        g as u64,
+                        self.global_cells[g as usize],
+                        dst,
+                    );
                     self.push_result_temp(idx);
                 }
                 Opcode::GLOBAL_SET => {
@@ -4037,7 +4057,13 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     if self.global_needs_conversion(g as u64) {
                         flags |= FLAG_GLOBAL_CONVERT;
                     }
-                    self.emit(Op::GlobalSet, flags, a, 0, g as u64);
+                    self.emit(
+                        Op::GlobalSet,
+                        flags,
+                        a,
+                        self.global_cells[g as usize],
+                        g as u64,
+                    );
                 }
                 Opcode::MEMORY_SIZE => {
                     let m = match *imm {
@@ -4383,6 +4409,7 @@ mod tests {
             &module,
             &tag_identities,
             &function_handles,
+            &vec![0; module.globals().len()],
             func,
             disable_fast,
             &mut code,
@@ -4407,9 +4434,14 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        predecode_functions(&module, &tag_identities, &function_handles)
-            .expect("predecode module")
-            .publish_for_test()
+        predecode_functions(
+            &module,
+            &tag_identities,
+            &function_handles,
+            &vec![0; module.globals().len()],
+        )
+        .expect("predecode module")
+        .publish_for_test()
     }
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
@@ -4582,9 +4614,14 @@ mod tests {
             .collect();
         let function_handles: StdVec<RefValue> =
             (0..module.functions().len()).map(RefValue::new).collect();
-        let shared = predecode_functions(&module, &tag_identities, &function_handles)
-            .expect("shared predecode")
-            .publish_for_test();
+        let shared = predecode_functions(
+            &module,
+            &tag_identities,
+            &function_handles,
+            &vec![0; module.globals().len()],
+        )
+        .expect("shared predecode")
+        .publish_for_test();
         for (index, shared) in shared.iter().enumerate() {
             let mut code = Vec::new();
             let mut fresh_scratch = PredecodeScratch::default();
@@ -4592,6 +4629,7 @@ mod tests {
                 &module,
                 &tag_identities,
                 &function_handles,
+                &vec![0; module.globals().len()],
                 index,
                 false,
                 &mut code,
@@ -4639,6 +4677,7 @@ mod tests {
                 &module,
                 &[],
                 &function_handles,
+                &[],
                 func_index,
                 false,
                 &mut code,
@@ -5703,7 +5742,7 @@ mod tests {
                 .expect("wat");
         let module = Module::new("t", &bin).expect("module");
         let function_handles = [RefValue::new(0)];
-        match predecode_function(&module, &[], &function_handles, 0) {
+        match predecode_function(&module, &[], &function_handles, &[], 0) {
             Ok(_) => panic!("SIMD must be refused"),
             Err(err) => assert!(
                 std::format!("{err:?}").contains("SIMD"),

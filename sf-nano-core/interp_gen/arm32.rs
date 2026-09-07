@@ -684,7 +684,7 @@ impl Isa for Arm32 {
                 }
             }
             GlobalGet => {
-                a.ins(&format!("ldr {T0}, [{PC}, #8]"));
+                a.ins(&format!("ldr {T0}, [{PC}, #16]"));
                 let rd = self.dst_target(v.d);
                 a.ins(&format!("ldr {rd}, [{T0}]"));
                 a.ins(&format!("ldr {}, [{T0}, #4]", self.dst_hi(v.d)));
@@ -692,7 +692,7 @@ impl Isa for Arm32 {
             }
             GlobalSet => {
                 let (x, xh) = self.pair(a, v.a, 8, T0, T1);
-                a.ins(&format!("ldr {T2}, [{PC}, #24]"));
+                a.ins(&format!("ldr {T2}, [{PC}, #16]"));
                 a.ins(&format!("str {x}, [{T2}]"));
                 a.ins(&format!("str {xh}, [{T2}, #4]"));
             }

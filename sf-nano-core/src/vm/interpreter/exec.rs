@@ -1288,9 +1288,6 @@ impl InterpInstance {
             }
         }
 
-        // Predecode every local function eagerly; imports are dispatched at
-        // the slow boundary, so import-free modules remain entirely local.
-        let funcs = predecode_functions(&module, &tags, &function_handles)?;
         let import_names = module
             .functions()
             .iter()
@@ -1440,6 +1437,25 @@ impl InterpInstance {
                 }
             }
         }
+
+        // Globals have their final storage now. Resolve their addresses once
+        // during predecode, like function/tag identities, so linking does not
+        // add global-specific work to every instruction in the module.
+        // Shared cells retain their Rc owner; the private Cell array never
+        // grows again. Both outlive the instance's instruction arena.
+        let funcs = {
+            let global_cells: Vec<u64> = globals
+                .iter()
+                .zip(&shared_globals)
+                .map(|(local, shared)| {
+                    shared
+                        .as_ref()
+                        .map_or_else(|| local.as_ptr(), GlobalInst::raw_ptr)
+                        as u64
+                })
+                .collect();
+            predecode_functions(&module, &tags, &function_handles, &global_cells)?
+        };
 
         // Tables (any reference type) + active element segments.
         let mut tables = Vec::new();
@@ -1731,21 +1747,7 @@ impl InterpInstance {
         }
 
         let engine = NativeEngine::new();
-        // Raw cell addresses are stable for the lifetime of the linked code.
-        // Shared globals retain their Rc owner; private cells stay in the
-        // fixed Cell array. No native access may bypass reference conversion.
-        let mut scratch = LinkScratch::with_globals(
-            self.globals
-                .iter()
-                .zip(&self.shared_globals)
-                .map(|(local, shared)| {
-                    shared
-                        .as_ref()
-                        .map_or_else(|| local.as_ptr(), GlobalInst::raw_ptr)
-                        as u64
-                })
-                .collect(),
-        );
+        let mut scratch = LinkScratch::default();
         #[cfg(test)]
         let test_code = Some(unlinked.clone_code_for_oracle());
         #[cfg(not(test))]

@@ -442,22 +442,13 @@ impl LinkPlan {
 
 /// Per-function working buffers the linker reuses across a module.
 ///
-/// Reuse per-function branch offsets, and resolve module-global indices to
-/// stable storage cells. The address table is needed only while linking;
-/// native cells retain the resolved addresses directly.
+/// Every one of these is sized by the function being linked and dead the
+/// moment it is done, so a module with 14 k functions otherwise pays 14 k
+/// allocation/free pairs for each of them. The linker owns their contents
+/// only inside one `link` call; nothing here outlives it.
 #[derive(Default)]
 pub(super) struct LinkScratch {
     table_byte_off: Vec<u64>,
-    global_cells: Vec<u64>,
-}
-
-impl LinkScratch {
-    pub(super) fn with_globals(global_cells: Vec<u64>) -> Self {
-        Self {
-            table_byte_off: Vec::new(),
-            global_cells,
-        }
-    }
 }
 
 /// One instruction's link state while it waits for its immediate successor.
@@ -1347,7 +1338,6 @@ impl NativeEngine {
                     br_base,
                     func,
                     table_byte_off,
-                    &scratch.global_cells,
                 );
                 #[cfg(sf_has_apple_arm64_interp_supers)]
                 super_window.push(
@@ -1385,7 +1375,6 @@ impl NativeEngine {
                 br_base,
                 func,
                 table_byte_off,
-                &scratch.global_cells,
             );
             #[cfg(sf_has_apple_arm64_interp_supers)]
             super_window.push(
@@ -1471,7 +1460,6 @@ impl NativeEngine {
         br_base: u64,
         func: &F,
         table_byte_off: &[u64],
-        global_cells: &[u64],
     ) {
         let fl = state.flags;
         let mut h = Some(state.handler).filter(|&h| h != 0);
@@ -1494,22 +1482,6 @@ impl NativeEngine {
                     c: (table.len() - 1) as u64,
                 }
             }
-            Some(h) if ins.op == Op::GlobalGet => DCell {
-                h: h as u64,
-                a: global_cells[ins.a as usize],
-                b: 0,
-                c: ins.c * 8,
-            },
-            Some(h) if ins.op == Op::GlobalSet => DCell {
-                h: h as u64,
-                a: if fl & FLAG_A_CONST != 0 {
-                    ins.a
-                } else {
-                    ins.a * 8
-                },
-                b: 0,
-                c: global_cells[ins.c as usize],
-            },
             Some(h) => {
                 let a = if fl & FLAG_A_CONST != 0 {
                     ins.a
@@ -1959,7 +1931,6 @@ mod tests {
         resolved: &[ResolvedCell],
         cells_base: u64,
         br_base: u64,
-        global_cells: &[u64],
     ) -> Vec<DCell> {
         let mut table_byte_off = Vec::with_capacity(func.br_tables.len());
         let mut flat_len = 0usize;
@@ -1986,17 +1957,12 @@ mod tests {
                     });
                 }
                 Some(handler) => {
-                    let mut a = if flags & FLAG_A_CONST != 0 {
+                    let a = if flags & FLAG_A_CONST != 0 {
                         ins.a
                     } else {
                         ins.a * 8
                     };
                     let (b, mut c) = transform_bc(ins, flags);
-                    if ins.op == Op::GlobalGet {
-                        a = global_cells[ins.a as usize];
-                    } else if ins.op == Op::GlobalSet {
-                        c = global_cells[ins.c as usize];
-                    }
                     if c_is_branch_target(ins.op) {
                         c += cells_base;
                     }
@@ -2035,8 +2001,7 @@ mod tests {
         let streaming = engine.resolve_streaming_for_test(&func.code, &pin);
         assert_eq!(streaming, reference, "resolved flags/handlers differ");
 
-        let global_cells = vec![0x1000, 0x2000, 0x3000, 0x4000];
-        let mut link_scratch = LinkScratch::with_globals(global_cells.clone());
+        let mut link_scratch = LinkScratch::default();
         let mut call_indirect_types = Vec::new();
         let mut plan = LinkPlan::for_functions(core::iter::once(func));
         let linked = engine.link(
@@ -2061,7 +2026,6 @@ mod tests {
             &reference,
             linked.cell_base(),
             plan.br_flat.as_ptr() as u64,
-            &global_cells,
         );
         assert_eq!(cells, expected_cells.as_slice(), "dispatch cells differ");
 
@@ -2103,7 +2067,7 @@ mod tests {
         let expected_heads: Vec<u32> = arena.iter().copied().map(Instr::packed_head).collect();
         let mut in_place = LinkPlan::from_instr_arena(arena, 1, expected_flat.len());
         assert_eq!(in_place.cells.as_ptr() as usize, allocation);
-        let mut in_place_scratch = LinkScratch::with_globals(global_cells);
+        let mut in_place_scratch = LinkScratch::default();
         let mut in_place_types = Vec::new();
         let in_place_linked = engine.link_in_place(
             func,

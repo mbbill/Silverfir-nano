@@ -245,8 +245,8 @@ enum BcShape {
     BranchRawB,
     /// Fused compare-and-branch: b = operand, c = target cell.
     BranchScaledB,
-    /// b stays raw, c = global index scaled to a byte offset.
-    GlobalIndex,
+    /// b carries a resolved global cell address, c keeps its slot/index scaling.
+    GlobalCell,
     /// b = second source slot, c = two packed destination slots.
     PackedPairDst,
     /// b = second operand-pack base slot, c stays raw.
@@ -547,7 +547,7 @@ pub(crate) fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
         BcShape::StoreOffset => (scaled_b, ins.c),
         BcShape::BranchRawB => (ins.b, ins.c * CELL as u64),
         BcShape::BranchScaledB => (scaled_b, ins.c * CELL as u64),
-        BcShape::GlobalIndex => (ins.b, ins.c * 8),
+        BcShape::GlobalCell => (ins.b, ins.c * 8),
         BcShape::PackedPairDst => (ins.b * 8, packed_slots),
         // MemoryFillCopy: a and b are two operand-pack base slots. The
         // linker scales a uniformly; scale the second pack here.
@@ -573,13 +573,13 @@ const fn compute_bc_shape(op: Op) -> BcShape {
         Fam::Load => BcShape::LoadOffset,
         Fam::Store => BcShape::StoreOffset,
         _ => match op {
-            GlobalSet => BcShape::GlobalIndex,
+            GlobalGet | GlobalSet => BcShape::GlobalCell,
             MovPair => BcShape::PackedPairDst,
             MemoryFillCopy => BcShape::OperandPackB,
             Return => BcShape::RawBoth,
             Select => BcShape::PackedCondDst,
             MovSlot => BcShape::MirroredDst,
-            // Plain value ops, GlobalGet included, and every op with no
+            // Plain value ops and every op with no
             // native form at all.
             _ => BcShape::Plain,
         },
@@ -1045,7 +1045,7 @@ mod tests {
                 Fam::Load => (ins.b, ins.c * 8),
                 Fam::Store => (scaled_b(ins), ins.c),
                 _ => match ins.op {
-                    GlobalSet => (ins.b, ins.c * 8),
+                    GlobalGet | GlobalSet => (ins.b, ins.c * 8),
                     MovPair => (
                         ins.b * 8,
                         ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8,
