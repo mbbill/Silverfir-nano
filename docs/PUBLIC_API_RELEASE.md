@@ -1075,3 +1075,32 @@ Cargo's aggregate warning tally is not double counted. All 141 CI tests pass;
 a real interp-only identity build reports all three warnings and preserves
 the exact compiled-runtime fingerprint. Lint policy and diff checks also pass.
 This logging correction is local while the existing CI measurements finish.
+
+### Inline validator control signatures (2026-09-07)
+
+The validator formerly allocated an Rc<FunctionType> for every empty block and
+an additional result vector for every single-result block. Its private control
+signature now stores these two forms inline; indexed/multi-value signatures
+continue sharing the module's canonical function type. All block/ref-type bounds
+checks and control-stack rules remain unchanged. This is a validator-only
+representation change, with no engine, public API or profiling changes. Inline
+signatures trade some control-frame storage for eliminating those per-block
+allocations; the indexed form still uses shared ownership.
+
+Six alternating before/after process pairs on all seven startup input modules
+show safe Module::new elapsed improvements of 1.45% to 5.74%. These local
+measurements cover validated module construction, not complete instantiation or
+the remaining CI startup regression. Samples and source/binary/input hashes are
+in [the signature evidence](release-evidence/arm64-validator-signature.md).
+Core tests pass 684 cases without compiler warnings. Full spec runs explicitly
+report JIT 260/260 and interpreter 175/175 with existing exclusions unchanged.
+Formatting, diff and lint-policy checks pass. The single-engine ownership
+warnings are separate unresolved gates; this change does not suppress them.
+
+The existing 4030fa54 CI run has now completed all four wasmi execution primary
+jobs. Neither JIT execution suite identifies a confirmed regression; ARM64
+tiny_keccak is classified NEGLIGIBLE. The interpreter suites still carry their
+three compiler warnings. Their numeric tables contain NOISY-FLOOR results
+(x64 bulk-ops and ARM64 fibonacci-tail), which must not be described as proof
+that those workloads are unchanged. Startup and independent-runner confirmation
+are still pending. No V8 or Cranelift comparison was added.
