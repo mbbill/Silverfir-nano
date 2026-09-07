@@ -1234,3 +1234,32 @@ formatting, diff and lint-policy checks pass. The separately running hosted
 candidate is still e9abb91d; its API capture and memprof parity succeed, while
 the protected review-environment step still fails. This cleanup does not claim
 to resolve that administration requirement or the remaining non-SIMD warnings.
+
+### Existing 64-bit resource-growth defects exposed by the new boundary test
+
+Correctness run 34147924450 at e9abb91d failed on x64 Linux and Windows in
+`resource_growth`, with memory64 growth returning 2 instead of -1 for a delta
+of 2^48. The x64 backend's unconditional u32 argument store already exists in
+main 0983d9e4 (blame a1906ede7); the release changes through e9abb91d do not
+modify that backend file. The test exposed an existing defect.
+
+The same truncation affected x64 table64 growth. Both helpers now receive the
+full raw delta; the existing runtime selects its interpretation from the
+resource's index width. Extending the table test to table64 also exposed the
+interpreter's unconditional u32 delta and failure sentinel. TableState now
+retains its index width, and growth uses checked addition, the declared and
+host representation limits, and the correct width's -1 on failure. Zero growth
+keeps its no-allocation path. These are correctness changes, separate from API
+visibility and file-organization cleanup.
+
+On x64 macOS through Rosetta, the expanded tests reproduce both JIT failures
+before the backend fix; after it, the table test reproduces the interpreter
+failure. With both fixes, resource growth, export linking, and memory-length
+suites pass all 10 tests without warnings. Native ARM64 resource-growth and
+export-linking suites pass all 5 tests. Formatting and lint policy pass.
+Rosetta supplies functional evidence only, not performance evidence; hosted
+Linux/Windows validation is still required for the final head.
+
+Inspection also found unconditional u32 argument conversions in adjacent bulk
+memory/table operations. Those require a separate width-and-bounds audit;
+this growth fix does not claim to settle them or the non-SIMD warning cluster.

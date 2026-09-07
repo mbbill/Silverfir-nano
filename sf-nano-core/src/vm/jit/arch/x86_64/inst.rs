@@ -3182,7 +3182,9 @@ impl<'a> X86_64Backend<'a> {
         let dst_gp = self.map_gp_reg(dst)?;
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
-        self.emit_io_store_u32_value(preserved_io::ARG0, delta)?;
+        // The runtime applies the selected memory's index width. Truncating
+        // here would turn large memory64 requests into smaller successful ones.
+        self.emit_io_store_value(preserved_io::ARG0, delta)?;
         self.emit_preserved_call_and_close(op::MEMORY_GROW, Some(dst_gp));
         Ok(())
     }
@@ -3438,7 +3440,8 @@ impl<'a> X86_64Backend<'a> {
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, table_idx);
         self.emit_io_store_value(preserved_io::ARG0, init_val)?;
-        self.emit_io_store_u32_value(preserved_io::ARG1, delta)?;
+        // As for memory.grow, table64 must retain the complete delta.
+        self.emit_io_store_value(preserved_io::ARG1, delta)?;
         self.emit_preserved_call_and_close(op::TABLE_GROW, Some(dst_gp));
         Ok(())
     }
