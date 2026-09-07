@@ -16,8 +16,15 @@ use super::{
 };
 
 const MAX_CALLEE_OPS: usize = 32;
-const MAX_ADDED_OPS: usize = 256;
-const MAX_ADDED_LOCALS: u16 = 64;
+// Bound the whole expanded caller, not just each callee. These limits keep
+// the semantic body, canonical frame and Algorithm4's regions × locals
+// tables small together. The bytecode prefilter in build.rs also bounds
+// variable-sized operands before any candidate body is decoded.
+const MAX_FUNCTION_OPS: usize = 128;
+const MAX_FUNCTION_LOCALS: u16 = 8;
+const MAX_FRAME_SLOTS: u16 = 32;
+const MAX_REGION_LOCALS: usize = 32;
+const MAX_CANDIDATE_BODIES: usize = 8;
 
 struct InlineBody {
     program: SemanticProgram,
@@ -32,7 +39,9 @@ pub(crate) fn inline_small_calls(
     call_scratch_slots: u16,
     mut resolve: impl FnMut(u32) -> Option<SemanticProgram>,
 ) {
-    if caller.local_types.len() != usize::from(caller.local_count)
+    if caller.ops.len() > MAX_FUNCTION_OPS
+        || caller.local_count > MAX_FUNCTION_LOCALS
+        || caller.local_types.len() != usize::from(caller.local_count)
         || !caller
             .ops
             .iter()
@@ -41,7 +50,15 @@ pub(crate) fn inline_small_calls(
         return;
     }
 
-    let original_locals = caller.local_count;
+    let mut region_count = 1 + loop_count(caller);
+    if !within_caller_resources(
+        caller.local_count,
+        caller.max_stack_height,
+        call_scratch_slots,
+        region_count,
+    ) {
+        return;
+    }
     let original_stack = caller.max_stack_height;
     let mut added_ops = 0;
     let mut bodies = BTreeMap::new();
@@ -55,6 +72,11 @@ pub(crate) fn inline_small_calls(
         else {
             continue;
         };
+        // Negative candidates consume cache space too. A caller with many
+        // distinct calls must not decode and retain an unbounded callee set.
+        if bodies.len() == MAX_CANDIDATE_BODIES && !bodies.contains_key(&callee) {
+            continue;
+        }
         let body = bodies.entry(callee).or_insert_with(|| {
             let program = resolve(callee)?;
             if !within_body_limits(&program) {
@@ -96,12 +118,9 @@ pub(crate) fn inline_small_calls(
             continue;
         };
         let stack_height = caller.max_stack_height.max(stack_height);
-        if added_ops + extra_ops > MAX_ADDED_OPS
-            || local_count - original_locals > MAX_ADDED_LOCALS
-            || local_count
-                .checked_add(call_scratch_slots)
-                .and_then(|n| n.checked_add(stack_height))
-                .is_none()
+        let next_regions = region_count + loop_count(body);
+        if caller.ops.len() + added_ops + extra_ops > MAX_FUNCTION_OPS
+            || !within_caller_resources(local_count, stack_height, call_scratch_slots, next_regions)
         {
             continue;
         }
@@ -110,6 +129,7 @@ pub(crate) fn inline_small_calls(
         caller.max_stack_height = stack_height;
         caller.local_types.extend_from_slice(&body.local_types);
         added_ops += extra_ops;
+        region_count = next_regions;
     }
     if expansions.is_empty() {
         return;
@@ -143,6 +163,22 @@ pub(crate) fn inline_small_calls(
     for index in caller_ops {
         relocate_targets(&mut caller.ops[index].kind, &offsets);
     }
+}
+
+fn loop_count(body: &SemanticProgram) -> usize {
+    body.ops
+        .iter()
+        .filter(|op| matches!(op.kind, SemanticOpKind::Loop { .. }))
+        .count()
+}
+
+fn within_caller_resources(locals: u16, stack: u16, scratch: u16, regions: usize) -> bool {
+    locals <= MAX_FUNCTION_LOCALS
+        && regions * usize::from(locals.max(1)) <= MAX_REGION_LOCALS
+        && locals
+            .checked_add(scratch)
+            .and_then(|n| n.checked_add(stack))
+            .is_some_and(|slots| slots <= MAX_FRAME_SLOTS)
 }
 
 fn within_body_limits(body: &SemanticProgram) -> bool {
@@ -589,5 +625,126 @@ mod tests {
         let mut caller = wrapper.clone();
         inline_small_calls(&mut caller, 3, |_| Some(wrapper.clone()));
         assert_eq!(caller, wrapper);
+    }
+
+    fn prepend(body: &mut SemanticProgram, prefix: collections::Vec<SemanticOp>) {
+        let offset = prefix.len();
+        for op in &mut body.ops {
+            map_targets(&mut op.kind, |target| target + offset);
+        }
+        body.op_result_types = core::mem::take(&mut body.op_result_types)
+            .into_iter()
+            .map(|(index, types)| (index + offset, types))
+            .collect();
+        body.ops.splice(0..0, prefix);
+    }
+
+    fn prepend_loops(body: &mut SemanticProgram, count: usize) {
+        let mut prefix = collections::Vec::new();
+        for _ in 0..count {
+            prefix.push(SemanticOp {
+                kind: SemanticOpKind::Loop {
+                    params: 0,
+                    results: 0,
+                },
+            });
+            prefix.push(SemanticOp {
+                kind: SemanticOpKind::End,
+            });
+        }
+        prepend(body, prefix);
+    }
+
+    #[test]
+    fn large_callers_are_rejected_before_resolving_any_callee() {
+        let body = recursive_body();
+        let mut many_locals = body.clone();
+        many_locals.local_count = 9;
+        many_locals.local_types.resize(9, ValueType::I64);
+        let mut many_ops = body.clone();
+        prepend(
+            &mut many_ops,
+            collections::vec![SemanticOp { kind: SemanticOpKind::Primitive(PrimitiveOpKind::Nop) }; 128],
+        );
+        let mut large_frame = body.clone();
+        large_frame.max_stack_height = 32;
+        let mut many_regions = body.clone();
+        prepend_loops(&mut many_regions, 32);
+        for mut caller in [many_locals, many_ops, large_frame, many_regions] {
+            caller.validate().unwrap();
+            let before = caller.clone();
+            inline_small_calls(&mut caller, 3, |_| {
+                panic!("over-budget caller decoded a callee")
+            });
+            assert_eq!(caller, before);
+        }
+    }
+
+    #[test]
+    fn separately_small_functions_cannot_exceed_the_combined_resource_limit() {
+        let caller = recursive_body();
+        let mut callee = caller.clone();
+        callee.local_count = 8;
+        callee.local_types.resize(8, ValueType::I64);
+        let mut local_limited = caller.clone();
+        inline_small_calls(&mut local_limited, 3, |_| Some(callee.clone()));
+        assert_eq!(local_limited, caller);
+
+        let mut regional = caller;
+        regional.local_count = 3;
+        regional.local_types.resize(3, ValueType::I64);
+        prepend_loops(&mut regional, 3);
+        regional.validate().unwrap();
+        let mut region_limited = regional.clone();
+        let mut resolutions = 0;
+        inline_small_calls(&mut region_limited, 3, |_| {
+            resolutions += 1;
+            Some(regional.clone())
+        });
+        // Each input has 4 regions × 3 locals; expansion would have 7 × 6.
+        assert_eq!(resolutions, 1);
+        assert_eq!(region_limited, regional);
+    }
+
+    #[test]
+    fn negative_candidate_cache_has_a_decode_bound() {
+        let mut caller = recursive_body();
+        caller.ops.clear();
+        caller.op_result_types.clear();
+        caller.results = 0;
+        caller.result_types.clear();
+        for callee in 0..12 {
+            caller.ops.push(SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 0 },
+            });
+            caller
+                .op_result_types
+                .insert(caller.ops.len(), collections::vec![ValueType::I64]);
+            caller.ops.push(SemanticOp {
+                kind: SemanticOpKind::CallDirect {
+                    callee,
+                    params: 1,
+                    results: 1,
+                },
+            });
+            caller.ops.push(SemanticOp {
+                kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
+            });
+        }
+        caller.ops.push(SemanticOp {
+            kind: SemanticOpKind::End,
+        });
+        caller.ops.push(SemanticOp {
+            kind: SemanticOpKind::ReturnVoid,
+        });
+        caller.validate().unwrap();
+        let before = caller.clone();
+        let mut decoded = collections::Vec::new();
+        inline_small_calls(&mut caller, 3, |callee| {
+            decoded.push(callee);
+            None
+        });
+        assert_eq!(decoded, (0..8).collect::<collections::Vec<_>>());
+        assert_eq!(caller, before);
     }
 }
