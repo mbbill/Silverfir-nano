@@ -47,6 +47,7 @@ mod hoist_loop_address_bases;
 mod promote_self_loop_globals;
 mod recognize_memmove;
 mod relax_index_extends;
+mod reuse_gp_temporaries;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
@@ -331,6 +332,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     // ZeroExtend32 memory sequence, so it must precede the irreversible
     // relaxation below.
     recognize_memmove::recognize_memmove(program, config);
+    reuse_gp_temporaries::reuse_gp_temporaries(&mut program.blocks, config);
     // Run this exactly once after every materialized MachineIR rewrite. The
     // fold may have emitted new ZeroExtend32 forms, and clean block parameters
     // (including loop-carried values) can now use the direct indexed form.
