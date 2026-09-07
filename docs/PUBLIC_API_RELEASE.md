@@ -1212,3 +1212,25 @@ approval on every ownership cleanup was too broad: the policy explicitly
 requires individual approval for new suppressions, while these retained fixes
 settle ownership without adding any. The remaining SIMD representation boundary
 is still unresolved and the release remains a draft.
+
+### Remove displaced shared-type implementations
+
+The interpreter-only `module_view.rs` was not an actual module-view abstraction:
+it scattered generic shared-type methods into an engine directory. It has been
+removed. Interpreter consumers now use the existing shared definition/signature
+interfaces and perform their element/tag-specific handling where it is needed.
+Call predecoding only needs signature arities, so it borrows the existing type
+and copies those counts instead of cloning an Rc merely to keep it across a
+mutable decoder call. The single-use heap-memory factory in `memory.rs` has
+also been inlined into interpreter instantiation, removing that extra file and
+the displaced inherent implementation on shared MemInst. Shared backing types
+and JIT allocation behavior remain unchanged. No new cfgs or suppressions were
+introduced; the existing guard-page field cfg moved with its initializer.
+
+The follow-up passes 588 tests across the core unit suite and the export-linking,
+resource-growth and call-status integration suites, with no warnings. Native
+pure-JIT library and pure-interpreter test-compilation checks are warning-free;
+formatting, diff and lint-policy checks pass. The separately running hosted
+candidate is still e9abb91d; its API capture and memprof parity succeed, while
+the protected review-environment step still fails. This cleanup does not claim
+to resolve that administration requirement or the remaining non-SIMD warnings.

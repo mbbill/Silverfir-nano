@@ -35,8 +35,6 @@ mod exec;
 mod exports;
 mod fmath;
 mod instr;
-mod memory;
-mod module_view;
 #[cfg(test)]
 mod test_support;
 // The variant layout describes the generated handler set. The build script

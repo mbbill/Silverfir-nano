@@ -54,7 +54,7 @@ pub(super) fn bind(
     for func in module.functions() {
         let FunctionDef::Import {
             module: m, name: n, ..
-        } = func.def()
+        } = &func.def
         else {
             continue;
         };
