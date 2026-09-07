@@ -16,8 +16,8 @@
 //! Fourteen usable registers is the tightest budget of any backend here,
 //! and a wasm value is eight bytes, so the accumulator and the pinned local
 //! are register PAIRS — which uses four of them. What gets pushed out to
-//! `EnterState` as a result: the cell array base, the globals base, the
-//! return-stack cursor and limit, and the value-stack limit. All five are
+//! `EnterState` as a result: the cell array base, return-stack cursor and
+//! limit, and the value-stack limit. All four are
 //! read by cold handlers only.
 //!
 //! Two scope decisions, both about the same budget:
@@ -56,7 +56,6 @@ const T3: &str = "r3";
 
 /// State-block offsets for the roles that do not get a register here.
 const S_CODE: u32 = 40;
-const S_GLOBALS: u32 = 48;
 const S_RET_CURSOR: u32 = 56;
 const S_DISPATCHES: u32 = 80;
 
@@ -686,8 +685,6 @@ impl Isa for Arm32 {
             }
             GlobalGet => {
                 a.ins(&format!("ldr {T0}, [{PC}, #8]"));
-                a.ins(&format!("ldr {T1}, [{STATE}, #{S_GLOBALS}]"));
-                a.ins(&format!("add {T0}, {T1}, {T0}"));
                 let rd = self.dst_target(v.d);
                 a.ins(&format!("ldr {rd}, [{T0}]"));
                 a.ins(&format!("ldr {}, [{T0}, #4]", self.dst_hi(v.d)));
@@ -696,8 +693,6 @@ impl Isa for Arm32 {
             GlobalSet => {
                 let (x, xh) = self.pair(a, v.a, 8, T0, T1);
                 a.ins(&format!("ldr {T2}, [{PC}, #24]"));
-                a.ins(&format!("ldr {T3}, [{STATE}, #{S_GLOBALS}]"));
-                a.ins(&format!("add {T2}, {T3}, {T2}"));
                 a.ins(&format!("str {x}, [{T2}]"));
                 a.ins(&format!("str {xh}, [{T2}, #4]"));
             }

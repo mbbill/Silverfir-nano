@@ -12,9 +12,9 @@
 //! ```
 //!
 //! x86-64 has four fewer usable GPRs than arm64, so three chain roles that
-//! arm64 pins live in `EnterState` instead: the globals base and the
-//! return-stack cursor/limit and value-stack limit. All three are read by
-//! cold handlers only (globals, calls, returns), and moving them out is
+//! arm64 pins live in `EnterState` instead: the return-stack cursor/limit
+//! and value-stack limit. All three are read by cold call/return handlers,
+//! and moving them out is
 //! what leaves five scratch registers — enough for `idiv`'s fixed
 //! `rdx:rax` pair and `shl`'s fixed `cl` without spilling.
 //!
@@ -56,7 +56,6 @@ const FL0R: u32 = 4;
 const FL1R: u32 = 5;
 
 /// State-block offsets for the roles that do not get a register here.
-const S_GLOBALS: u32 = 48;
 const S_RET_CURSOR: u32 = 56;
 const S_RET_LIMIT: u32 = 64;
 const S_STACK_LIMIT: u32 = 72;
@@ -672,7 +671,7 @@ impl Isa for X86_64 {
         a.ins("mov rdx, rcx");
         a.ins("shr rdx, 32");
         a.ins(&format!("jnz {}", st.slow)); // upper 32 bits are nonzero
-        a.ins("cmp rcx, [r15 + 136]"); // info length
+        a.ins("cmp rcx, [r15 + 48]"); // info length
         a.ins(&format!("jae {}", st.slow)); // function index out of bounds
         a.ins("mov rdx, [r15 + 128]"); // info base
         a.ins("lea rax, [rcx + rcx*2]"); // fi*3
@@ -974,17 +973,15 @@ impl Isa for X86_64 {
                 }
             }
             GlobalGet => {
-                a.ins("mov rax, [rbx + 8]"); // index*8
-                a.ins(&format!("mov rcx, [r15 + {S_GLOBALS}]"));
+                a.ins("mov rax, [rbx + 8]"); // storage cell address
                 let rd = self.dst_target(dc);
-                a.ins(&format!("mov {}, [rcx + rax]", q(rd)));
+                a.ins(&format!("mov {}, [rax]", q(rd)));
                 self.finish(a, dc, rd);
             }
             GlobalSet => {
                 let ra = self.src(a, v.a, 8, RAX);
-                a.ins("mov rdx, [rbx + 24]"); // index*8
-                a.ins(&format!("mov rcx, [r15 + {S_GLOBALS}]"));
-                a.ins(&format!("mov [rcx + rdx], {}", q(ra)));
+                a.ins("mov rdx, [rbx + 24]"); // storage cell address
+                a.ins(&format!("mov [rdx], {}", q(ra)));
             }
             I32_Eqz | I64_Eqz => {
                 let w32 = v.op == I32_Eqz;

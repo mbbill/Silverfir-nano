@@ -30,14 +30,19 @@
   only where a throw's handler is in the same function; crossing a call
   needs the native chain's return stack unwound and is rejected by name.
 
+- Native numeric global accesses link directly to their actual storage cell:
+  private globals retain a fixed `Cell<u64>` array, shared ones retain their
+  `GlobalInst` owner. Imports and exports do not change handler eligibility.
+  Reachable reference globals retain the Rust storage/frame conversion path.
+
 - A memory or table index packs into the static offset's high bits, except
   where a 64-bit offset needs all of them -- those carry a side-table index
   instead, and never reach a native handler.
 
 - A memory, table or global that is imported or exported IS the substrate's
-  shared entity; a purely private one is a private array the dispatch chain
-  indexes directly. Accesses to a shared entity are denied a native handler
-  (`TableEntries`).
+  shared entity; a purely private one is a private array. Shared table
+  accesses are denied a native handler (`TableEntries`); numeric globals
+  have the same native handlers for either storage form.
 
 - A function reference leaving this instance is named by the EMBEDDER, not
   by the engine: a local index means nothing to whoever reads it, and

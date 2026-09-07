@@ -46,12 +46,12 @@ pub(crate) const FLAG_ADDR64: u16 = 1 << 6;
 /// Such a table IS the shared entity, whose elements are `RefValue` rather
 /// than 8-byte slots, so no generated handler may index it.
 pub(crate) const FLAG_SHARED_TABLE: u16 = 1 << 7;
-/// This global access targets a global another instance can reach.
+/// This global access needs reference conversion between storage and frame.
 ///
-/// A shared global lives in an `Rc`-owned cell, not in this instance's
-/// contiguous array, so the generated handlers -- which index that array by
-/// byte offset -- cannot reach it.
-pub(crate) const FLAG_SHARED_GLOBAL: u16 = 1 << 8;
+/// Reachable reference globals can carry absolute world identities, while a
+/// frame uses instance-local handles. Numeric globals share the same raw-bit
+/// representation everywhere and link directly to their actual storage cell.
+pub(crate) const FLAG_GLOBAL_CONVERT: u16 = 1 << 8;
 /// Predecode proved that this cell cannot use a generated native handler.
 ///
 /// This caches instruction-local eligibility that would otherwise be
