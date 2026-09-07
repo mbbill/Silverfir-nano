@@ -661,12 +661,14 @@ setup remain open. This section does not assert release readiness.
 
 Downloaded upstream wasmi-benchmarks at
 `b361a36b09340781db6681582804e0e61f35f9af`, whose adapter uses Nano tag `0.5`.
-`docs/wasmi-benchmarks-release.patch` is the proposed upstream migration for the
-candidate registry version `0.1.0`. It replaces the dependency declaration,
+The independent downstream consumer was adapted for the candidate registry
+version `0.1.0`. The adaptation replaces the dependency declaration,
 `WasmError::Trap` with `WasmError::trap`, and Option memory access with guarded
 Result views. Configuration, single-threaded compilation, instantiation and
-the named invocation used by the timed benchmarks are unchanged. This patch
-has not been sent upstream and the package version is not approved/published.
+the named invocation used by the timed benchmarks are unchanged. The final
+registry dependency change belongs in wasmi-benchmarks after the package/version
+is approved and published; it has not been sent upstream. The unused proposed
+upstream patch was removed from this repository's documentation directory.
 
 Fresh Cargo package verification builds the two archives: helper 11 files /
 11.6 KiB compressed, core 313 files / approximately 1.2 MiB compressed. An
