@@ -1339,6 +1339,7 @@ fn invert_cmp(op: Op) -> Option<Op> {
 /// should implement next is exactly the question that needs answering.
 fn unsupported_opcode(op: WasmOpcode) -> WasmError {
     match op {
+        #[cfg(sf_has_simd)]
         WasmOpcode::FD(_) => WasmError::invalid("interp: SIMD is not supported"),
         WasmOpcode::FB(_) => WasmError::invalid("interp: GC is not supported"),
         _ => WasmError::invalid("interp: opcode not yet supported by the interpreter"),
@@ -3328,7 +3329,8 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     self.fb_op(fb, &op.imm)?;
                     continue;
                 }
-                other => return Err(unsupported_opcode(other)),
+                #[cfg(sf_has_simd)]
+                other @ WasmOpcode::FD(_) => return Err(unsupported_opcode(other)),
             };
             // Borrowed, not cloned: the decoded op outlives the iteration
             // and nothing in the body touches the stream again.

@@ -4,6 +4,10 @@
 //! structure such as locals, calls, returns, structured control, and branch
 //! targets. The semantic layer wraps these leaf ops in a larger function-body
 //! IR instead of duplicating the common non-structural Wasm operation set.
+//!
+//! SIMD leaves exist only when the target supports SIMD, matching decoded
+//! operations and machine IR. Their semantics are shared by all SIMD backends;
+//! unsupported targets reject the Wasm prefix before constructing a leaf.
 
 use crate::value_type::ValueType;
 
@@ -150,48 +154,91 @@ macro_rules! for_each_primitive_op {
             I64Const { value: u64 } => (0, 1),
             F32Const { value: u32 } => (0, 1),
             F64Const { value: u64 } => (0, 1),
+            #[cfg(sf_has_simd)]
             V128Const { value: [u8; 16] } => (0, 1),
+            #[cfg(sf_has_simd)]
             V128Not => (1, 1),
+            #[cfg(sf_has_simd)]
             V128And => (2, 1),
+            #[cfg(sf_has_simd)]
             V128AndNot => (2, 1),
+            #[cfg(sf_has_simd)]
             V128Or => (2, 1),
+            #[cfg(sf_has_simd)]
             V128Xor => (2, 1),
+            #[cfg(sf_has_simd)]
             V128Bitselect => (3, 1),
+            #[cfg(sf_has_simd)]
             V128AnyTrue => (1, 1),
+            #[cfg(sf_has_simd)]
             I8x16AllTrue => (1, 1),
+            #[cfg(sf_has_simd)]
             I16x8AllTrue => (1, 1),
+            #[cfg(sf_has_simd)]
             I32x4AllTrue => (1, 1),
+            #[cfg(sf_has_simd)]
             I64x2AllTrue => (1, 1),
+            #[cfg(sf_has_simd)]
             I8x16Bitmask => (1, 1),
+            #[cfg(sf_has_simd)]
             I16x8Bitmask => (1, 1),
+            #[cfg(sf_has_simd)]
             I32x4Bitmask => (1, 1),
+            #[cfg(sf_has_simd)]
             I64x2Bitmask => (1, 1),
+            #[cfg(sf_has_simd)]
             I8x16Splat => (1, 1),
+            #[cfg(sf_has_simd)]
             I16x8Splat => (1, 1),
+            #[cfg(sf_has_simd)]
             I32x4Splat => (1, 1),
+            #[cfg(sf_has_simd)]
             I64x2Splat => (1, 1),
+            #[cfg(sf_has_simd)]
             F32x4Splat => (1, 1),
+            #[cfg(sf_has_simd)]
             F64x2Splat => (1, 1),
+            #[cfg(sf_has_simd)]
             I8x16ExtractLaneS { lane: u8 } => (1, 1),
+            #[cfg(sf_has_simd)]
             I8x16ExtractLaneU { lane: u8 } => (1, 1),
+            #[cfg(sf_has_simd)]
             I16x8ExtractLaneS { lane: u8 } => (1, 1),
+            #[cfg(sf_has_simd)]
             I16x8ExtractLaneU { lane: u8 } => (1, 1),
+            #[cfg(sf_has_simd)]
             I32x4ExtractLane { lane: u8 } => (1, 1),
+            #[cfg(sf_has_simd)]
             I64x2ExtractLane { lane: u8 } => (1, 1),
+            #[cfg(sf_has_simd)]
             F32x4ExtractLane { lane: u8 } => (1, 1),
+            #[cfg(sf_has_simd)]
             F64x2ExtractLane { lane: u8 } => (1, 1),
+            #[cfg(sf_has_simd)]
             SimdReplaceLane { opcode: u32, lane: u8 } => (2, 1),
+            #[cfg(sf_has_simd)]
             I8x16Shuffle { lanes: [u8; 16] } => (2, 1),
+            #[cfg(sf_has_simd)]
             I32x4Add => (2, 1),
+            #[cfg(sf_has_simd)]
             I64x2Add => (2, 1),
+            #[cfg(sf_has_simd)]
             SimdUnaryV128 { opcode: u32 } => (1, 1),
+            #[cfg(sf_has_simd)]
             SimdBinaryV128 { opcode: u32 } => (2, 1),
+            #[cfg(sf_has_simd)]
             SimdTernaryV128 { opcode: u32 } => (3, 1),
+            #[cfg(sf_has_simd)]
             SimdShiftV128 { opcode: u32 } => (2, 1),
+            #[cfg(sf_has_simd)]
             SimdMemLoadV128 { opcode: u32, offset: u32, memidx: u32 } => (1, 1),
+            #[cfg(sf_has_simd)]
             SimdMemLoadLaneV128 { opcode: u32, lane: u8, offset: u32, memidx: u32 } => (2, 1),
+            #[cfg(sf_has_simd)]
             SimdMemStoreLaneV128 { opcode: u32, lane: u8, offset: u32, memidx: u32 } => (2, 0),
+            #[cfg(sf_has_simd)]
             V128Load { offset: u32, memidx: u32 } => (1, 1),
+            #[cfg(sf_has_simd)]
             V128Store { offset: u32, memidx: u32 } => (2, 0),
             I32Load { offset: u32, memidx: u32 } => (1, 1),
             I64Load { offset: u32, memidx: u32 } => (1, 1),
@@ -278,6 +325,7 @@ macro_rules! for_each_primitive_op {
 
 macro_rules! define_primitive_ops {
     ($(
+        $(#[$attr:meta])*
         $name:ident $( { $($field:ident : $ty:ty),* $(,)? } )? => ($pops:expr, $pushes:expr),
     )* ) => {
         /// Pure reusable Wasm leaf operations shared across compiler layers.
@@ -288,7 +336,7 @@ macro_rules! define_primitive_ops {
         /// `PrimitiveOpKind` instead of expanding this enum into a whole-function IR.
         #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
         pub(crate) enum PrimitiveOpKind {
-            $( $name $( { $($field : $ty),* } )?, )*
+            $( $(#[$attr])* $name $( { $($field : $ty),* } )?, )*
         }
 
         /// Stack effect of every op with table-constant arity. The two ops
@@ -299,7 +347,7 @@ macro_rules! define_primitive_ops {
             match kind {
                 // `field: _` binds nothing, so constant arms create no
                 // unused variables.
-                $( PrimitiveOpKind::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
+                $( $(#[$attr])* PrimitiveOpKind::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
             }
         }
 
@@ -488,6 +536,7 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         PrimitiveOpKind::I64Const { .. } => ValueType::I64,
         PrimitiveOpKind::F32Const { .. } => ValueType::F32,
         PrimitiveOpKind::F64Const { .. } => ValueType::F64,
+        #[cfg(sf_has_simd)]
         PrimitiveOpKind::V128Const { .. }
         | PrimitiveOpKind::V128Not
         | PrimitiveOpKind::V128And
@@ -512,14 +561,19 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         | PrimitiveOpKind::SimdMemLoadV128 { .. }
         | PrimitiveOpKind::SimdMemLoadLaneV128 { .. }
         | PrimitiveOpKind::V128Load { .. } => ValueType::V128,
+        #[cfg(sf_has_simd)]
         PrimitiveOpKind::I8x16ExtractLaneS { .. }
         | PrimitiveOpKind::I8x16ExtractLaneU { .. }
         | PrimitiveOpKind::I16x8ExtractLaneS { .. }
         | PrimitiveOpKind::I16x8ExtractLaneU { .. }
         | PrimitiveOpKind::I32x4ExtractLane { .. } => ValueType::I32,
+        #[cfg(sf_has_simd)]
         PrimitiveOpKind::I64x2ExtractLane { .. } => ValueType::I64,
+        #[cfg(sf_has_simd)]
         PrimitiveOpKind::F32x4ExtractLane { .. } => ValueType::F32,
+        #[cfg(sf_has_simd)]
         PrimitiveOpKind::F64x2ExtractLane { .. } => ValueType::F64,
+        #[cfg(sf_has_simd)]
         PrimitiveOpKind::V128AnyTrue
         | PrimitiveOpKind::I8x16AllTrue
         | PrimitiveOpKind::I16x8AllTrue
@@ -549,9 +603,11 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         PrimitiveOpKind::F64Load { .. } => ValueType::F64,
 
         // Stores — no result
-        PrimitiveOpKind::V128Store { .. }
-        | PrimitiveOpKind::SimdMemStoreLaneV128 { .. }
-        | PrimitiveOpKind::I32Store { .. }
+        #[cfg(sf_has_simd)]
+        PrimitiveOpKind::V128Store { .. } | PrimitiveOpKind::SimdMemStoreLaneV128 { .. } => {
+            return None
+        }
+        PrimitiveOpKind::I32Store { .. }
         | PrimitiveOpKind::I64Store { .. }
         | PrimitiveOpKind::F32Store { .. }
         | PrimitiveOpKind::F64Store { .. }

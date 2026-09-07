@@ -2,10 +2,11 @@
 //! lower_leaf_special, lower_edge.
 
 use crate::collections;
+#[cfg(sf_has_simd)]
+use crate::opcodes::OpcodeFD;
 
 use crate::{
     error::WasmError,
-    opcodes::OpcodeFD,
     vm::{
         jit::machine::machine_ir::{
             MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth, MachineInst,
@@ -880,12 +881,6 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    #[cfg(not(sf_has_simd))]
-    #[inline]
-    fn simd_lowering_disabled(&self) -> WasmError {
-        WasmError::internal("SIMD lowering requested without sf_has_simd".into())
-    }
-
     #[cfg(sf_has_simd)]
     fn lower_v128_const(&mut self, results: &[SsaValue], value: [u8; 16]) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
@@ -893,15 +888,6 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::V128Const { dst, bytes: value },
         });
         Ok(())
-    }
-
-    #[cfg(not(sf_has_simd))]
-    fn lower_v128_const(
-        &mut self,
-        _results: &[SsaValue],
-        _value: [u8; 16],
-    ) -> Result<(), WasmError> {
-        Err(self.simd_lowering_disabled())
     }
 
     #[cfg(sf_has_simd)]
@@ -925,16 +911,6 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
-    }
-
-    #[cfg(not(sf_has_simd))]
-    fn lower_simd_unary(
-        &mut self,
-        _args: &[SsaOperand],
-        _results: &[SsaValue],
-        _opcode: u32,
-    ) -> Result<(), WasmError> {
-        Err(self.simd_lowering_disabled())
     }
 
     #[cfg(sf_has_simd)]
@@ -961,16 +937,6 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
-    }
-
-    #[cfg(not(sf_has_simd))]
-    fn lower_simd_binary(
-        &mut self,
-        _args: &[SsaOperand],
-        _results: &[SsaValue],
-        _opcode: u32,
-    ) -> Result<(), WasmError> {
-        Err(self.simd_lowering_disabled())
     }
 
     #[cfg(sf_has_simd)]
@@ -1001,16 +967,6 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    #[cfg(not(sf_has_simd))]
-    fn lower_simd_ternary(
-        &mut self,
-        _args: &[SsaOperand],
-        _results: &[SsaValue],
-        _opcode: u32,
-    ) -> Result<(), WasmError> {
-        Err(self.simd_lowering_disabled())
-    }
-
     #[cfg(sf_has_simd)]
     fn lower_simd_shift(
         &mut self,
@@ -1033,16 +989,6 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
-    }
-
-    #[cfg(not(sf_has_simd))]
-    fn lower_simd_shift(
-        &mut self,
-        _args: &[SsaOperand],
-        _results: &[SsaValue],
-        _opcode: u32,
-    ) -> Result<(), WasmError> {
-        Err(self.simd_lowering_disabled())
     }
 
     #[cfg(sf_has_simd)]
@@ -1070,17 +1016,6 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    #[cfg(not(sf_has_simd))]
-    fn lower_simd_extract_lane(
-        &mut self,
-        _args: &[SsaOperand],
-        _results: &[SsaValue],
-        _opcode: u32,
-        _lane: u8,
-    ) -> Result<(), WasmError> {
-        Err(self.simd_lowering_disabled())
-    }
-
     #[cfg(sf_has_simd)]
     fn lower_simd_replace_lane(
         &mut self,
@@ -1106,17 +1041,6 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    #[cfg(not(sf_has_simd))]
-    fn lower_simd_replace_lane(
-        &mut self,
-        _args: &[SsaOperand],
-        _results: &[SsaValue],
-        _opcode: u32,
-        _lane: u8,
-    ) -> Result<(), WasmError> {
-        Err(self.simd_lowering_disabled())
-    }
-
     #[cfg(sf_has_simd)]
     fn lower_simd_shuffle(
         &mut self,
@@ -1138,16 +1062,6 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
-    }
-
-    #[cfg(not(sf_has_simd))]
-    fn lower_simd_shuffle(
-        &mut self,
-        _args: &[SsaOperand],
-        _results: &[SsaValue],
-        _lanes: [u8; 16],
-    ) -> Result<(), WasmError> {
-        Err(self.simd_lowering_disabled())
     }
 
     fn lower_struct_get(
@@ -1476,95 +1390,133 @@ impl<'a> BlockLowerContext<'a> {
             P::F64Const { value } => {
                 self.lower_float_const(results, MachineFloatWidth::F64, *value)
             }
+            #[cfg(sf_has_simd)]
             P::V128Const { value } => self.lower_v128_const(results, *value),
+            #[cfg(sf_has_simd)]
             P::V128Not => self.lower_simd_unary(args, results, OpcodeFD::V128_NOT as u32),
+            #[cfg(sf_has_simd)]
             P::V128And => self.lower_simd_binary(args, results, OpcodeFD::V128_AND as u32),
+            #[cfg(sf_has_simd)]
             P::V128AndNot => self.lower_simd_binary(args, results, OpcodeFD::V128_ANDNOT as u32),
+            #[cfg(sf_has_simd)]
             P::V128Or => self.lower_simd_binary(args, results, OpcodeFD::V128_OR as u32),
+            #[cfg(sf_has_simd)]
             P::V128Xor => self.lower_simd_binary(args, results, OpcodeFD::V128_XOR as u32),
+            #[cfg(sf_has_simd)]
             P::V128Bitselect => {
                 self.lower_simd_ternary(args, results, OpcodeFD::V128_BITSELECT as u32)
             }
+            #[cfg(sf_has_simd)]
             P::V128AnyTrue => self.lower_simd_unary(args, results, OpcodeFD::V128_ANY_TRUE as u32),
+            #[cfg(sf_has_simd)]
             P::I8x16AllTrue => {
                 self.lower_simd_unary(args, results, OpcodeFD::I8X16_ALL_TRUE as u32)
             }
+            #[cfg(sf_has_simd)]
             P::I16x8AllTrue => {
                 self.lower_simd_unary(args, results, OpcodeFD::I16X8_ALL_TRUE as u32)
             }
+            #[cfg(sf_has_simd)]
             P::I32x4AllTrue => {
                 self.lower_simd_unary(args, results, OpcodeFD::I32X4_ALL_TRUE as u32)
             }
+            #[cfg(sf_has_simd)]
             P::I64x2AllTrue => {
                 self.lower_simd_unary(args, results, OpcodeFD::I64X2_ALL_TRUE as u32)
             }
+            #[cfg(sf_has_simd)]
             P::I8x16Bitmask => self.lower_simd_unary(args, results, OpcodeFD::I8X16_BITMASK as u32),
+            #[cfg(sf_has_simd)]
             P::I16x8Bitmask => self.lower_simd_unary(args, results, OpcodeFD::I16X8_BITMASK as u32),
+            #[cfg(sf_has_simd)]
             P::I32x4Bitmask => self.lower_simd_unary(args, results, OpcodeFD::I32X4_BITMASK as u32),
+            #[cfg(sf_has_simd)]
             P::I64x2Bitmask => self.lower_simd_unary(args, results, OpcodeFD::I64X2_BITMASK as u32),
+            #[cfg(sf_has_simd)]
             P::I8x16Splat => self.lower_simd_unary(args, results, OpcodeFD::I8X16_SPLAT as u32),
+            #[cfg(sf_has_simd)]
             P::I16x8Splat => self.lower_simd_unary(args, results, OpcodeFD::I16X8_SPLAT as u32),
+            #[cfg(sf_has_simd)]
             P::I32x4Splat => self.lower_simd_unary(args, results, OpcodeFD::I32X4_SPLAT as u32),
+            #[cfg(sf_has_simd)]
             P::I64x2Splat => self.lower_simd_unary(args, results, OpcodeFD::I64X2_SPLAT as u32),
+            #[cfg(sf_has_simd)]
             P::F32x4Splat => self.lower_simd_unary(args, results, OpcodeFD::F32X4_SPLAT as u32),
+            #[cfg(sf_has_simd)]
             P::F64x2Splat => self.lower_simd_unary(args, results, OpcodeFD::F64X2_SPLAT as u32),
+            #[cfg(sf_has_simd)]
             P::I8x16ExtractLaneS { lane } => self.lower_simd_extract_lane(
                 args,
                 results,
                 OpcodeFD::I8X16_EXTRACT_LANE_S as u32,
                 *lane,
             ),
+            #[cfg(sf_has_simd)]
             P::I8x16ExtractLaneU { lane } => self.lower_simd_extract_lane(
                 args,
                 results,
                 OpcodeFD::I8X16_EXTRACT_LANE_U as u32,
                 *lane,
             ),
+            #[cfg(sf_has_simd)]
             P::I16x8ExtractLaneS { lane } => self.lower_simd_extract_lane(
                 args,
                 results,
                 OpcodeFD::I16X8_EXTRACT_LANE_S as u32,
                 *lane,
             ),
+            #[cfg(sf_has_simd)]
             P::I16x8ExtractLaneU { lane } => self.lower_simd_extract_lane(
                 args,
                 results,
                 OpcodeFD::I16X8_EXTRACT_LANE_U as u32,
                 *lane,
             ),
+            #[cfg(sf_has_simd)]
             P::I32x4ExtractLane { lane } => self.lower_simd_extract_lane(
                 args,
                 results,
                 OpcodeFD::I32X4_EXTRACT_LANE as u32,
                 *lane,
             ),
+            #[cfg(sf_has_simd)]
             P::I64x2ExtractLane { lane } => self.lower_simd_extract_lane(
                 args,
                 results,
                 OpcodeFD::I64X2_EXTRACT_LANE as u32,
                 *lane,
             ),
+            #[cfg(sf_has_simd)]
             P::F32x4ExtractLane { lane } => self.lower_simd_extract_lane(
                 args,
                 results,
                 OpcodeFD::F32X4_EXTRACT_LANE as u32,
                 *lane,
             ),
+            #[cfg(sf_has_simd)]
             P::F64x2ExtractLane { lane } => self.lower_simd_extract_lane(
                 args,
                 results,
                 OpcodeFD::F64X2_EXTRACT_LANE as u32,
                 *lane,
             ),
+            #[cfg(sf_has_simd)]
             P::SimdReplaceLane { opcode, lane } => {
                 self.lower_simd_replace_lane(args, results, *opcode, *lane)
             }
+            #[cfg(sf_has_simd)]
             P::I8x16Shuffle { lanes } => self.lower_simd_shuffle(args, results, *lanes),
+            #[cfg(sf_has_simd)]
             P::SimdUnaryV128 { opcode } => self.lower_simd_unary(args, results, *opcode),
+            #[cfg(sf_has_simd)]
             P::SimdBinaryV128 { opcode } => self.lower_simd_binary(args, results, *opcode),
+            #[cfg(sf_has_simd)]
             P::SimdTernaryV128 { opcode } => self.lower_simd_ternary(args, results, *opcode),
+            #[cfg(sf_has_simd)]
             P::SimdShiftV128 { opcode } => self.lower_simd_shift(args, results, *opcode),
+            #[cfg(sf_has_simd)]
             P::I32x4Add => self.lower_simd_binary(args, results, OpcodeFD::I32X4_ADD as u32),
+            #[cfg(sf_has_simd)]
             P::I64x2Add => self.lower_simd_binary(args, results, OpcodeFD::I64X2_ADD as u32),
 
             P::RefNull => self.lower_const(results, self.gp_word_max_imm()),

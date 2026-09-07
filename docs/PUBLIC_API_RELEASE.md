@@ -1263,3 +1263,38 @@ Linux/Windows validation is still required for the final head.
 Inspection also found unconditional u32 argument conversions in adjacent bulk
 memory/table operations. Those require a separate width-and-bounds audit;
 this growth fix does not claim to settle them or the non-SIMD warning cluster.
+
+### Complete the SIMD capability boundary
+
+The earlier decoder-only experiment exposed unreachable SIMD semantic
+primitives on non-SIMD JIT targets. Further inspection found that machine IR
+already gates this instruction family with sf_has_simd; its lowering layer
+retained nine non-SIMD helper stubs that could only report an internal error.
+The retained fix now applies that same capability boundary through decoded
+Immediate/WasmOpcode variants, JIT SIMD decoding, and the semantic primitive
+family. It removes the unreachable stubs and the validator's redundant
+non-SIMD dispatch arm. Unsupported SIMD still fails in the shared decoder,
+before reading SIMD immediate payloads; the existing rejection test remains.
+
+The roughly 500-line SIMD decoder family and its four immediate readers live
+in decode/simd.rs. The 259 primitive variants retain their original order and
+stack-effect entries on SIMD-capable builds; no per-backend semantic variants
+are introduced. Scalar runtime types and public signatures remain unchanged.
+No lint suppression, reason attribute, or engine cfg in shared code was added.
+
+Validation: native ARM64 core tests pass 686/686 (4 existing ignored tests),
+JIT spec files 260/260, interpreter spec files 175/175, and native single-engine
+checks have no warnings. Local x64/Rosetta core unit tests also pass without
+warnings. Thumb interp, RV32 interp and dual-engine, ARMv7 dual-engine, and
+RV64 dual-engine library/test compilation pass without warnings. The RV64
+test compile uses the existing CI panic=unwind override. Cross compilation is
+not execution evidence; hosted final-head runs are still required.
+
+At hosted e9abb91d, correctness run 34147924450 is terminal: ARM64 Linux/macOS,
+Miri, MSRV and policy pass; x64 Linux/Windows fail the newly added memory64
+growth test; five low-target jobs fail the original two SIMD decoding warnings.
+Both failure classes are addressed locally above, not retroactively passing.
+The x64 interpreter Fibonacci execution pilot in performance run 34147924398
+flagged -35.78%; independent job 101827918583 measured 4.979 ms baseline and
+4.978 ms candidate (+0.02%, PASS). That regression was not reproduced. Four
+startup confirmations are still running at this checkpoint.

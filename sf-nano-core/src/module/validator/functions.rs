@@ -15,8 +15,6 @@ use crate::{
 };
 use tracked_alloc::rc::Rc;
 
-#[cfg(not(sf_has_simd))]
-use crate::op_decoder::simd_opcode_error;
 #[cfg(sf_has_simd)]
 use crate::opcodes::OpcodeFD;
 
@@ -245,8 +243,6 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
                 }
                 #[cfg(sf_has_simd)]
                 WasmOpcode::FD(op) => self.on_op_fd(op, &decoded.imm)?,
-                #[cfg(not(sf_has_simd))]
-                WasmOpcode::FD(_) => self.on_op_fd()?,
             }
         }
         Ok(())
@@ -1915,11 +1911,6 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
         }
-    }
-
-    #[cfg(not(sf_has_simd))]
-    fn on_op_fd(&mut self) -> Result<(), WasmError> {
-        Err(simd_opcode_error())
     }
 
     #[cfg(sf_has_simd)]
