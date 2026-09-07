@@ -15,7 +15,7 @@ use super::helpers::{inst_defines, inst_uses_value, store_may_alias, terminator_
 use super::hoist_loop_address_bases::{
     block_index_for_id, block_mentions_reg, visit_edges, visit_edges_mut, LoopGraph,
 };
-use super::{optimize_block, BlockOptCtx};
+use super::{copy_propagate, forward_stored_values, fuse_isel, BlockOptCtx};
 
 // Bound work per edge, including in very large generated basic blocks. A miss
 // leaves the load intact; this is an analysis budget, not a semantic limit.
@@ -244,15 +244,20 @@ pub(super) fn forward_frame_values_across_edges(
                 || addr.offset % i32::from(ctx.config.gp_unit_bytes) != 0
                 || width.bytes() != u32::from(ctx.config.gp_unit_bytes)
                 || !(MACHINE_FIXED_REG_COUNT..gp_end).contains(&dst.0)
-                || blocks[target].ops[..index]
-                    .iter()
-                    .any(|inst| changes_frame(&inst.kind, addr, width))
             {
                 continue;
             }
             let Some(value) = available_store(&blocks[source], addr, width, gp_end) else {
                 continue;
             };
+            // A target prefix only needs checking when its predecessor can
+            // supply this frame word. Most loads have no matching store.
+            if blocks[target].ops[..index]
+                .iter()
+                .any(|inst| changes_frame(&inst.kind, addr, width))
+            {
+                continue;
+            }
             let existing = existing_parameter(&blocks[source], &blocks[target], value, index);
             let carry = existing.or_else(|| {
                 // Prefer the load's destination when its prior contents are
@@ -315,7 +320,17 @@ pub(super) fn forward_frame_values_across_edges(
                 dst,
                 src: MachineValue::Reg(carry),
             };
-            optimize_block(ctx, &mut blocks[target]);
+            // Resolve the introduced register copy before forwarding local
+            // frame words: the copy can hide their matching store operands.
+            // Copy propagation can also expose instruction-selection pairs.
+            // Keep this cleanup limited to those consequences of the rewrite.
+            copy_propagate::copy_propagate(&mut blocks[target], ctx.config, &mut ctx.cp_scratch);
+            forward_stored_values::forward_stored_values(
+                &mut blocks[target],
+                ctx.config,
+                &mut ctx.tracked_stores,
+            );
+            fuse_isel::fuse_isel(&mut blocks[target], ctx.config);
             break;
         }
     }
