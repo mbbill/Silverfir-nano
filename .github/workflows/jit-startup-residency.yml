@@ -1,5 +1,5 @@
 # Temporary Nano-only compilation-cost isolation. No PR/main/dev trigger.
-name: jit-startup-frame-forwarding
+name: jit-startup-frame-forwarding-lean
 on:
   push:
     branches: ["codex/x64-profiling"]
@@ -12,7 +12,7 @@ defaults:
     shell: bash
 jobs:
   compare:
-    name: Nano JIT startup / frame forwarding / ${{ matrix.platform }}
+    name: Nano JIT startup / frame forwarding cleanup / ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     strategy:
@@ -44,7 +44,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
-          ref: 178cc0896f8d0e5d63034518664b78c692336b33
+          ref: a09afd24b9668bb3fce885c26730feafd8baf880
           path: source-forward
           persist-credentials: false
       - uses: actions/checkout@v7
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: nano-startup-frame-forwarding-${{ matrix.platform }}
+          name: nano-startup-frame-forwarding-lean-${{ matrix.platform }}
           path: |
             startup-out/**/*.log
             startup-out/**/*.json
