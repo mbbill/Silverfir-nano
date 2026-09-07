@@ -181,6 +181,17 @@ struct SlotDp {
     force_value: collections::Vec<[[f64; 2]; 2]>,
 }
 
+/// Extraction finishes one region before visiting its children. Its temporary
+/// rows and backtracking decisions can therefore be reused throughout a bank's
+/// region tree, independent of the persistent slot DP and selected states.
+#[derive(Default)]
+struct ExtractionScratch {
+    values: collections::Vec<f64>,
+    next_values: collections::Vec<f64>,
+    take: collections::Vec<bool>,
+    order: collections::Vec<usize>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StructuredFrame {
     Loop(usize),
@@ -712,16 +723,16 @@ fn solve_bank(
         );
     }
 
-    let parent_selection = collections::vec![false; cell_meta.len()];
     extract_feasible_states(
         0,
-        &parent_selection,
+        None,
         &slots,
         regions,
         cell_meta,
         &capacities,
         &slot_dps,
         selected,
+        &mut ExtractionScratch::default(),
     );
 }
 
@@ -758,13 +769,14 @@ fn compute_slot_dp(
 
 fn extract_feasible_states(
     region_id: usize,
-    parent_selection: &[bool],
+    parent_region: Option<usize>,
     bank_slots: &[usize],
     regions: &RegionTree,
     cell_meta: &[CellMeta],
     capacities: &[usize],
     slot_dps: &[SlotDp],
     selected: &mut [collections::Vec<bool>],
+    scratch: &mut ExtractionScratch,
 ) {
     let cap = capacities[region_id];
     let neg_inf = f64::NEG_INFINITY;
@@ -772,9 +784,18 @@ fn extract_feasible_states(
     // Backtracking needs every take/not-take decision, but the value DP reads
     // only the immediately preceding row. Keep the decisions dense and roll
     // two value rows instead of materializing and zeroing a full value matrix.
-    let mut values = collections::vec![neg_inf; row_len];
-    let mut next_values = collections::vec![neg_inf; row_len];
-    let mut take = collections::vec![false; (bank_slots.len() + 1) * row_len];
+    let ExtractionScratch {
+        values,
+        next_values,
+        take,
+        order,
+    } = scratch;
+    values.clear();
+    values.resize(row_len, neg_inf);
+    next_values.resize(row_len, neg_inf);
+    take.resize((bank_slots.len() + 1) * row_len, false);
+    // Every cell of next_values and every nonzero decision row is overwritten
+    // before it is read, including when sibling regions have different caps.
 
     values[0] = 0.0;
 
@@ -785,13 +806,10 @@ fn extract_feasible_states(
     // potential so a tie commits continuity to the slot with the most to lose
     // downstream, then by slot index for determinism.
     let parent_state_for = |slot_index: usize| {
-        if region_id == 0 {
-            0
-        } else {
-            usize::from(parent_selection[slot_index])
-        }
+        parent_region.map_or(0, |parent| usize::from(selected[parent][slot_index]))
     };
-    let mut order = (0..bank_slots.len()).collect::<collections::Vec<_>>();
+    order.clear();
+    order.extend(0..bank_slots.len());
     order.sort_unstable_by(|&a, &b| {
         let pot_a = slot_dps[a].force_value[region_id][parent_state_for(bank_slots[a])][1];
         let pot_b = slot_dps[b].force_value[region_id][parent_state_for(bank_slots[b])][1];
@@ -821,7 +839,7 @@ fn extract_feasible_states(
             next_values[used] = best;
             take[(row + 1) * row_len + used] = choose_resident;
         }
-        core::mem::swap(&mut values, &mut next_values);
+        core::mem::swap(values, next_values);
     }
 
     let mut used = 0usize;
@@ -841,16 +859,16 @@ fn extract_feasible_states(
     }
 
     for &child in &regions.nodes[region_id].children {
-        let parent_snapshot = selected[region_id].clone();
         extract_feasible_states(
             child,
-            &parent_snapshot,
+            Some(region_id),
             bank_slots,
             regions,
             cell_meta,
             capacities,
             slot_dps,
             selected,
+            scratch,
         );
     }
 }
@@ -1144,6 +1162,92 @@ mod tests {
     fn nomination_config(gp_preserved: u8, overhead: u8) -> BackendConfig {
         BackendConfig::with_volatility(8, 8, gp_preserved, 1, 8, 0, 4, 4, false, 3)
             .with_preserved_lane_save_overhead(overhead)
+    }
+
+    #[test]
+    fn extraction_handles_zero_and_changing_capacities_in_nested_sibling_regions() {
+        let regions = RegionTree {
+            nodes: collections::vec![
+                RegionNode {
+                    children: collections::vec![1, 2],
+                    gp_capacity: 3,
+                    ..RegionNode::default()
+                },
+                RegionNode {
+                    children: collections::vec![3],
+                    gp_capacity: 0,
+                    fp_capacity: 1,
+                    ..RegionNode::default()
+                },
+                RegionNode {
+                    gp_capacity: 1,
+                    fp_capacity: 1,
+                    ..RegionNode::default()
+                },
+                RegionNode {
+                    gp_capacity: 2,
+                    ..RegionNode::default()
+                },
+            ],
+            owner_by_block: collections::Vec::new(),
+        };
+        let meta = collections::vec![
+            CellMeta {
+                bank: Bank::Gp,
+                units: 1,
+                is_ref: false
+            },
+            CellMeta {
+                bank: Bank::Gp,
+                units: 2,
+                is_ref: false
+            },
+            CellMeta {
+                bank: Bank::Gp,
+                units: 1,
+                is_ref: false
+            },
+            CellMeta {
+                bank: Bank::Fp,
+                units: 1,
+                is_ref: false
+            },
+        ];
+        let benefit = collections::vec![
+            collections::vec![5.0, 9.0, 4.0, 7.0],
+            collections::vec![9.0, 1.0, 12.0, 7.0],
+            collections::vec![2.0, 20.0, 3.0, 7.0],
+            collections::vec![12.0, 3.0, 4.0, 7.0],
+        ];
+        let taxes = collections::vec![collections::vec![0.0; 4]; 4];
+        let params = Algorithm4Params {
+            edge_cost_scale: 0.0,
+            ..Algorithm4Params::default()
+        };
+        let mut selected = collections::vec![collections::vec![false; 4]; 4];
+        for bank in [Bank::Gp, Bank::Fp] {
+            solve_bank(
+                bank,
+                &regions,
+                &meta,
+                &benefit,
+                &taxes,
+                &params,
+                &mut selected,
+            );
+        }
+        // With zero edge cost each region independently chooses the maximum
+        // benefit that fits. The two-unit local cannot fit in the one-unit
+        // sibling, and solving FP must retain the already chosen GP states.
+        assert_eq!(
+            selected,
+            collections::vec![
+                collections::vec![true, true, false, false],
+                collections::vec![false, false, false, true],
+                collections::vec![false, false, true, true],
+                collections::vec![true, false, true, false],
+            ]
+        );
     }
 
     #[test]
