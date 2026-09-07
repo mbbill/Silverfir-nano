@@ -3,7 +3,6 @@ use crate::discovery::interpreter_excluded;
 use crate::discovery::{find_wast_files, should_skip_test};
 use crate::summary::print_summary;
 use crate::types::TestStats;
-#[cfg(feature = "jit")]
 use crate::wast_test_runner::{TestResult, WastTestRunner};
 use log::{error, info, warn};
 use sf_nano_core::{reset_native_runtime_state, target_has_simd, Config, Engine, Tier};
@@ -152,19 +151,11 @@ pub(crate) fn run() {
 
     info!("Using testsuite from: {}", testsuite_dir.display());
 
-    #[cfg(feature = "jit")]
     if !run_wast_tests_with_large_stack(engine, testsuite_dir, args.filters) {
-        std::process::exit(1);
-    }
-    #[cfg(not(feature = "jit"))]
-    {
-        let _ = (testsuite_dir, args.filters);
-        eprintln!("the wast suite runs on the jit engine; pass --interp for the interpreter suite");
         std::process::exit(1);
     }
 }
 
-#[cfg(feature = "jit")]
 fn run_wast_tests_with_large_stack(
     engine: Engine,
     testsuite_dir: PathBuf,
@@ -182,12 +173,10 @@ fn run_wast_tests_with_large_stack(
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-#[cfg(feature = "jit")]
 /// The interpreter and JIT stacks are sized per engine now, but this
 /// thread is spawned before one exists, so the sizing constant is local.
 const WASM_STACK_BYTES_FOR_STACK_SIZING: usize = 2 * 1024 * 1024;
 
-#[cfg(feature = "jit")]
 fn recommended_worker_stack_size() -> usize {
     // Sized by sf-nano-core's configured Wasm operand/call stack —
     // the worker OS thread must be large enough to hold everything the
@@ -261,7 +250,6 @@ fn print_engine(tier: Tier) {
     }
 }
 
-#[cfg(feature = "jit")]
 enum WastInput {
     File(PathBuf),
     Embedded {
@@ -270,7 +258,6 @@ enum WastInput {
     },
 }
 
-#[cfg(feature = "jit")]
 impl WastInput {
     fn path(&self) -> &Path {
         match self {
@@ -287,7 +274,6 @@ impl WastInput {
     }
 }
 
-#[cfg(feature = "jit")]
 fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> bool {
     let start_time = Instant::now();
 

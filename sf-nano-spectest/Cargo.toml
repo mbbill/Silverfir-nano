@@ -11,9 +11,7 @@ name = "sf-nano-spectest"
 path = "src/main.rs"
 
 [features]
-# The wast runner drives the JIT's entity model directly, so it is gated on
-# `jit`; `interp` brings the separate `--interp` suite. Either feature alone
-# is a valid build -- interp-only offers `--interp` and nothing else.
+# The same WAST runner supports either engine independently or both together.
 default = ["jit", "interp"]
 jit = ["sf-nano-core/jit", "sf-nano-core/guard-pages"]
 interp = ["sf-nano-core/interp"]
