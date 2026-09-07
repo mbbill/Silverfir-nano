@@ -72,22 +72,30 @@ impl<'a> Validator<'a> {
         // only valid for a function declared outside all bodies, and that
         // declared set is exactly the escapable set the runtime registers.
         let declared_functions = self.module.escapable_functions()?;
-        self.module
-            .functions()
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| !f.is_import())
-            .try_for_each(|(_func_idx, f)| {
-                let spec = f.spec().ok_or_else(|| {
+        {
+            // The scratch buffers belong to this validation pass, and are
+            // dropped before validating the remaining module initializers.
+            let mut reusable = None;
+            for function in self.module.functions().iter().filter(|f| !f.is_import()) {
+                let spec = function.spec().ok_or_else(|| {
                     WasmError::invalid("Function validation failed: not a local function")
                 })?;
-                let code = spec.code();
-                let mut validator = FunctionValidator::new(self.module, spec, &declared_functions)?;
-                let mut decoder = op_decoder::Decoder::new(code);
-                decoder.add_handler(&mut validator);
+                let validator = match &mut reusable {
+                    Some(validator) => {
+                        FunctionValidator::reset(validator, spec)?;
+                        validator
+                    }
+                    empty @ None => empty.insert(FunctionValidator::new(
+                        self.module,
+                        spec,
+                        &declared_functions,
+                    )?),
+                };
+                let mut decoder = op_decoder::Decoder::new(spec.code());
+                decoder.add_handler(validator);
                 decoder.decode_function()?;
-                Ok::<_, WasmError>(())
-            })?;
+            }
+        }
 
         // Phase 3: Export name uniqueness
         let mut name_pool = BTreeSet::new();

@@ -1348,3 +1348,38 @@ reproduce independently (+0.02%, PASS). User guidance is to continue reducing
 startup validation cost while preserving complete validation; any unavoidable
 startup cost requires review, and execution regressions are not acceptable.
 No threshold, measurement floor or warning policy was relaxed.
+
+
+### Bounded validator scratch reuse
+
+Reuse operand/control stacks and local-initialization buffers only during one
+module's function-body validation pass. Reset all function state, including
+non-defaultable local initialization, for each body; retain no validation
+scratch in the returned Module. Combined buffer capacity above 4 KiB is freed
+before starting another function. This is a scratch reuse bound, not a Wasm
+complexity or compiler-memory limit. No validation rule or runtime path changes.
+
+The first unbounded experiment reduced allocations but retained independent
+large stack peaks. A two-function stress module added 196,608 peak bytes; that
+version is rejected. The bounded version adds zero on the stress case and
+0–655 peak bytes on the seven measured modules, with identical final retained
+memory. [Measurements and diagnostic harness](release-evidence/arm64-validator-scratch.json)
+retain the rejected experiment, raw timing samples, binary/input hashes and
+memory accounting. Checked Module::new medians fall 0.65–5.38% locally on ARM64;
+this is parse plus full validation, not complete engine startup. The four-pair
+sample includes one positive CoreMark outlier and is not a hosted gate result.
+
+The new malformed multi-function fixtures reject inherited results, unreachable
+state, local indices/types, and non-defaultable initialization facts. Native
+core validation passes 689 cases; JIT spec files pass 260/260 and interpreter
+files 175/175. Compiler warning, formatting and suppression-policy audits pass.
+
+For the preceding pushed revision 68412439, hosted correctness run 34151036775
+passes all 12 jobs, including all five previously warning-failing targets and
+both x64 growth-test failures. Performance run 34151036770 has completed all
+four Linux wasmi execution primaries (20 cases each) without a confirmed
+execution regression. The complete printed rows, including RECOVERED,
+NEGLIGIBLE and noisy estimates, are appended to the existing primary evidence.
+Startup still reports regressions; remaining startup confirmations are pending.
+The public API workflow still fails its protected-human-environment check.
+No overall green or release approval is claimed, and no gate is relaxed.

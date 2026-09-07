@@ -1,6 +1,27 @@
 use sf_nano_core::{Config, Engine, Instance, Module, RuntimeWorld, Tier, Value};
 
 #[test]
+fn each_function_has_independent_validation_state() {
+    for (name, wat) in [
+        ("previous results", "(module (func (result i32) i32.const 7) (func (result i32)))"),
+        ("previous unreachable", "(module (func unreachable) (func i32.add drop))"),
+        ("previous locals", "(module (func (param i32 i32) local.get 1 drop) (func local.get 1 drop))"),
+        ("previous parameter type", "(module (func (param i32) local.get 0 drop) (func (param f32) (result i32) local.get 0))"),
+        ("previous initialization", "(module (type $t (func)) (func (param (ref $t)) (local (ref $t)) local.get 0 local.set 1) (func (local (ref $t)) local.get 0 drop))"),
+    ] {
+        let bytes = wat::parse_str(wat).expect("encodable fixture");
+        assert!(Module::new(name, &bytes).is_err(), "{name}");
+    }
+    let bytes = wat::parse_str(
+        "(module (func (param i32) (result i32) local.get 0)
+         (func (param f64) (result f64) local.get 0)
+         (func) (func (result i64) i64.const 9))",
+    )
+    .unwrap();
+    Module::new("independent signatures", &bytes).expect("each function is valid");
+}
+
+#[test]
 fn safe_loading_rejects_invalid_code_before_instantiation() {
     let cases = [
         ("wrong result", "(module (func (result i32) f32.const 1))"),

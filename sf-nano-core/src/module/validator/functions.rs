@@ -285,23 +285,25 @@ impl<'a> FunctionValidator<'a> {
         function: &'a FunctionSpec,
         declared_functions: &'a [bool],
     ) -> Result<Self, WasmError> {
-        let mut context = Context::new(
-            module.types().clone(),
-            function.func_type().params(),
-            function.locals(),
-        );
-
-        context.push_ctrl(
-            FrameType::Function,
-            ControlSignature::Indexed(function.func_type_rc()),
-        )?;
-
-        Ok(FunctionValidator {
+        let mut validator = FunctionValidator {
             module,
             function,
             declared_functions,
-            context,
-        })
+            context: Context::new(module.types().clone()),
+        };
+        validator.reset(function)?;
+        Ok(validator)
+    }
+
+    /// Start an independent function check while retaining scratch capacity.
+    pub(super) fn reset(&mut self, function: &'a FunctionSpec) -> Result<(), WasmError> {
+        self.function = function;
+        self.context
+            .reset(function.func_type().params(), function.locals());
+        self.context.push_ctrl(
+            FrameType::Function,
+            ControlSignature::Indexed(function.func_type_rc()),
+        )
     }
 
     fn get_block_type(&self, block_type: BlockType) -> Result<ControlSignature, WasmError> {
@@ -2414,34 +2416,43 @@ struct Context {
 }
 
 impl Context {
-    fn new(types: TypeContext, params: &[ValueType], locals: &[ValueType]) -> Self {
-        let mut all_locals = collections::Vec::new();
-        all_locals.extend_from_slice(params);
-        all_locals.extend_from_slice(locals);
-
-        let num_locals = all_locals.len();
-        let num_params = params.len();
-
-        let mut locals_init = collections::vec![false; num_locals];
-        for slot in locals_init.iter_mut().take(num_params) {
-            *slot = true;
-        }
-        for (slot, local) in locals_init
-            .iter_mut()
-            .zip(all_locals.iter())
-            .skip(num_params)
-        {
-            *slot = local.is_defaultable();
-        }
-
+    fn new(types: TypeContext) -> Self {
         Context {
             types,
             control_frames: collections::Vec::new(),
-            all_locals,
+            all_locals: collections::Vec::new(),
             val_stack: collections::Vec::new(),
-            locals_init,
+            locals_init: collections::Vec::new(),
             inits: collections::Vec::new(),
         }
+    }
+
+    fn reset(&mut self, params: &[ValueType], locals: &[ValueType]) {
+        // Reuse small scratch buffers, but do not accumulate the independent
+        // capacity peaks of arbitrarily large functions. This limits retained
+        // scratch between functions; it does not limit validation complexity.
+        const MAX_RETAINED_SCRATCH_BYTES: usize = 4 * 1024;
+        let scratch_bytes = self.control_frames.capacity() * core::mem::size_of::<ControlFrame>()
+            + self.all_locals.capacity() * core::mem::size_of::<ValueType>()
+            + self.val_stack.capacity() * core::mem::size_of::<ValueType>()
+            + self.locals_init.capacity() * core::mem::size_of::<bool>()
+            + self.inits.capacity() * core::mem::size_of::<u32>();
+        if scratch_bytes > MAX_RETAINED_SCRATCH_BYTES {
+            *self = Self::new(self.types.clone());
+        }
+        self.control_frames.clear();
+        self.val_stack.clear();
+        self.inits.clear();
+        self.all_locals.clear();
+        self.all_locals.extend_from_slice(params);
+        self.all_locals.extend_from_slice(locals);
+
+        // Initialization facts are function-local, including non-defaultable
+        // reference locals. Retaining capacity must never retain those facts.
+        self.locals_init.clear();
+        self.locals_init.resize(params.len(), true);
+        self.locals_init
+            .extend(locals.iter().map(ValueType::is_defaultable));
     }
 
     fn push_vals(&mut self, vals: &[ValueType]) -> Result<(), WasmError> {
