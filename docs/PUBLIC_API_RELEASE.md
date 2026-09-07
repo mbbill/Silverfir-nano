@@ -1125,3 +1125,35 @@ no new warning categories or test failures; they fail the already reported
 ownership/capability clusters. Main and the remote PR head were rechecked over
 normal Git SSH and remain 0983d9e4 and 4030fa54 respectively. The local validator
 signature and warning-display commits have not interrupted the active run.
+
+### Interpreter startup confirmation and Fibonacci sample audit (2026-09-07)
+
+Independent x64 interpreter startup job 101811485362 fails the cross-run gate
+for all seven workloads. CoreMark is 136.479 to 234.215 us on this runner;
+ERC20 is 128.244 to 207.041 us. This reproduces the primary startup regression,
+not merely a compiler warning or a single-run observation. ARM64 interpreter
+job 101811485428 also fails all seven rows: CoreMark is 105.804 to 203.524 us
+and ERC20 is 103.614 to 185.326 us. Both tables and exact job links are in
+[the confirmation evidence](release-evidence/linux-release-startup-confirmation.json).
+The two JIT startup confirmation jobs are still running at this point.
+
+The ARM64 interpreter fibonacci-tail NOISY-FLOOR row was inspected from the
+actual artifact, whose archive digest matches GitHub's SHA-256 metadata.
+The pilot's baseline/candidate means are 6.531881/6.547102 ms; the reversed
+process order yields 6.099505/6.503400 ms. The baseline gets 6.62% faster between
+pairs while the candidate changes by only -0.67%. The current printed -6.21%
+performance ratio comes from that second pair, not a stable loss across both.
+Main already certifies a 5.44% identical-binary floor for this row; the existing
+1.5 multiplier makes its effective elapsed gate 8.16%. Neither the calibration
+file nor classification policy changed in this branch. The floor explains why
+the row does not enter an independent-runner confirmation, but does not prove
+absence of a source regression. The raw metric, process orders and provenance
+are retained in [the sample audit](release-evidence/arm64-interp-fibonacci-tail-ci.json).
+The artifact also identifies the actual measured candidate as PR merge commit
+8427c328, corresponding to PR head 4030fa54 on unchanged base 0983d9e4.
+
+Independent x64 JIT startup job 101811485364 subsequently confirms both
+selected regressions: bz2 is 53.014 to 54.932 ms (-3.49% in the performance
+ratio), and spidermonkey is 2.761 to 2.885 s (-4.30%). Its cross-run verdict
+fails. Only ARM64 JIT startup confirmation remains live; the performance
+workflow cannot pass with the three already confirmed failing suites.
