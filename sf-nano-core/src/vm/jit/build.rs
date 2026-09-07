@@ -269,6 +269,11 @@ impl CodegenModuleView for StreamingCompiledModule {
         self.backend
     }
 
+    #[cfg(sf_backend_arm64)]
+    fn memory0_is64(&self) -> Option<bool> {
+        self.abi.memory0_is64
+    }
+
     fn runtime_for(&self, id: MachineFuncId) -> Option<&MachineFunctionAbi> {
         self.abi.functions.get(id.0 as usize)
     }
@@ -510,6 +515,8 @@ fn build_static_summaries(
     backend: BackendConfig,
 ) -> Result<(MachineModuleAbi, collections::Vec<bool>), WasmError> {
     let mut abi = MachineModuleAbi {
+        #[cfg(sf_backend_arm64)]
+        memory0_is64: module.memories.first().map(|memory| memory.limits.is64),
         functions: (0..module.functions.len())
             .map(|index| MachineFunctionAbi {
                 id: MachineFuncId(index as u32),
@@ -1570,6 +1577,10 @@ pub(crate) fn ensure_module_compiled(store: &JitInstance) -> Result<(), WasmErro
         module.table_dispatch_modes(),
         store.self_absolute_range(),
     )?;
+    #[cfg(sf_backend_arm64)]
+    {
+        lowered.abi.memory0_is64 = module.memories.first().map(|memory| memory.limits.is64);
+    }
     let module_opt_phase = phase_span("module_opt");
     optimize_module(&mut lowered.module);
     if backend.is_32bit_gp_target() {

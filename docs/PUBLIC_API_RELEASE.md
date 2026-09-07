@@ -1298,3 +1298,53 @@ The x64 interpreter Fibonacci execution pilot in performance run 34147924398
 flagged -35.78%; independent job 101827918583 measured 4.979 ms baseline and
 4.978 ms candidate (+0.02%, PASS). That regression was not reproduced. Four
 startup confirmations are still running at this checkpoint.
+
+### Preserve bulk-operation index widths
+
+The adjacent audit reproduced old truncation defects in x64 JIT and interpreter
+memory64/table64 fill, copy and init. A high address such as 2^32 could become
+zero, allowing even an out-of-bounds zero-length operation to succeed. The new
+external tests cover both tiers, all four source/destination width combinations,
+normal and overflowing operands, in-place and cross-resource copying, and
+unchanged destination contents on traps. i32.wrap_i64 producers verify that
+32-bit indices continue ignoring their unused high bits. Memory and tables
+are small; the tests do not allocate large resources.
+
+The x64 helper calls now preserve full index operands. Existing JIT helpers
+interpret each resource's width, mixed copies use a 32-bit length if either
+resource is 32-bit, and segment source offsets/lengths remain i32. Interpreter
+slow paths do the same with u64 slots and checked bound sums. The memory32
+fill-copy fusion stays restricted to memory32 as before.
+
+The ARM64 memory0 inline bulk path also assumed i32 operands. Its ABI metadata
+now carries an optional memory0 index-width fact for that backend. Production
+streaming and whole-module compilation populate it from the module; standalone
+MachineIR has no such evidence. Only proven memory32 uses the existing inline
+path, with unchanged staging and bounds instructions; memory64 uses the full
+width helper. No new runtime instance field or public API is added by this
+compilation metadata. Shared helper index normalization remains necessary for
+32-bit producer values with unused high bits.
+
+An exploratory budget=0 bulk test was rejected with the existing documented
+compiler-budget exhaustion: TemplateScanner does not support the FC bulk-op
+family. It was not a regression and did not reach code generation. The retained
+suite instead exercises finite-budget streaming with enough room for these
+small functions (64 KiB) and unrestricted compilation. It does not claim new
+template-JIT bulk support. Both modes pass on local ARM64 and x64/Rosetta.
+
+Native ARM64 core tests pass 688 cases without warnings, followed by the
+expanded finite/unrestricted bulk suite. JIT spec files pass 260/260 and
+interpreter files 175/175. Pure-JIT, pure-interpreter, RV64 dual-engine, RV32
+dual-engine and Thumb interpreter checks pass without warnings. Full x64 core
+validation passes 675 cases (4 existing ignored tests) without warnings. These are correctness results,
+not performance measurements or a substitute for final-head hosted CI.
+
+Performance run 34147924398 at e9abb91d is now terminal. All four independent
+startup confirmations fail; exact rows are appended to the existing startup
+evidence JSON without replacing the prior run. JIT confirmations flag three
+x64 cases and two ARM64 cases; interpreter confirmations flag six x64 and
+seven ARM64 cases. The x64 interpreter execution Fibonacci pilot does not
+reproduce independently (+0.02%, PASS). User guidance is to continue reducing
+startup validation cost while preserving complete validation; any unavoidable
+startup cost requires review, and execution regressions are not acceptable.
+No threshold, measurement floor or warning policy was relaxed.

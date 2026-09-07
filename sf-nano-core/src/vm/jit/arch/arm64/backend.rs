@@ -1352,6 +1352,10 @@ mod tests {
             self.backend
         }
 
+        fn memory0_is64(&self) -> Option<bool> {
+            None
+        }
+
         fn runtime_for(
             &self,
             _id: crate::vm::jit::machine::machine_ir::MachineFuncId,

@@ -3375,9 +3375,9 @@ impl<'a> X86_64Backend<'a> {
         use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
-        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_u32_value(preserved_io::ARG1, val)?;
-        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_io_store_value(preserved_io::ARG2, len)?;
         self.emit_preserved_call_and_close(op::MEMORY_FILL, None);
         Ok(())
     }
@@ -3394,9 +3394,9 @@ impl<'a> X86_64Backend<'a> {
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, dst_mem);
         self.emit_io_store_imm(preserved_io::IMM1, src_mem);
-        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
-        self.emit_io_store_u32_value(preserved_io::ARG1, src)?;
-        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_io_store_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_value(preserved_io::ARG1, src)?;
+        self.emit_io_store_value(preserved_io::ARG2, len)?;
         self.emit_preserved_call_and_close(op::MEMORY_COPY, None);
         Ok(())
     }
@@ -3413,7 +3413,7 @@ impl<'a> X86_64Backend<'a> {
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
         self.emit_io_store_imm(preserved_io::IMM1, data_idx);
-        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_u32_value(preserved_io::ARG1, src)?;
         self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
         self.emit_preserved_call_and_close(op::MEMORY_INIT, None);
@@ -3456,9 +3456,9 @@ impl<'a> X86_64Backend<'a> {
         use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, table_idx);
-        self.emit_io_store_u32_value(preserved_io::ARG0, start)?;
+        self.emit_io_store_value(preserved_io::ARG0, start)?;
         self.emit_io_store_value(preserved_io::ARG1, val)?;
-        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_io_store_value(preserved_io::ARG2, len)?;
         self.emit_preserved_call_and_close(op::TABLE_FILL, None);
         Ok(())
     }
@@ -3475,9 +3475,9 @@ impl<'a> X86_64Backend<'a> {
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, dst_tbl);
         self.emit_io_store_imm(preserved_io::IMM1, src_tbl);
-        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
-        self.emit_io_store_u32_value(preserved_io::ARG1, src)?;
-        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_io_store_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_value(preserved_io::ARG1, src)?;
+        self.emit_io_store_value(preserved_io::ARG2, len)?;
         self.emit_preserved_call_and_close(op::TABLE_COPY, None);
         Ok(())
     }
@@ -3494,7 +3494,7 @@ impl<'a> X86_64Backend<'a> {
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, table_idx);
         self.emit_io_store_imm(preserved_io::IMM1, elem_idx);
-        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_u32_value(preserved_io::ARG1, src)?;
         self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
         self.emit_preserved_call_and_close(op::TABLE_INIT, None);

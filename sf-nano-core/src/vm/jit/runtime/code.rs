@@ -19,6 +19,9 @@ pub(crate) type NativeRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut 
 
 pub(crate) trait CodegenModuleView: core::fmt::Debug {
     fn backend(&self) -> BackendConfig;
+    #[cfg(sf_backend_arm64)]
+    fn memory0_is64(&self) -> Option<bool>;
+
     fn runtime_for(&self, id: MachineFuncId) -> Option<&MachineFunctionAbi>;
     fn const_ptr(&self, id: MachineConstId) -> Option<*const u8>;
 }
@@ -177,6 +180,11 @@ impl CodegenModuleView for CompiledNativeModule {
     #[inline]
     fn backend(&self) -> BackendConfig {
         self.backend
+    }
+
+    #[cfg(sf_backend_arm64)]
+    fn memory0_is64(&self) -> Option<bool> {
+        self.abi.as_ref().and_then(|abi| abi.memory0_is64)
     }
 
     #[inline]
