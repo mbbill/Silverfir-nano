@@ -310,6 +310,48 @@ pub(super) fn linker_test_function(
     }
 }
 
+/// Instance identities and storage addresses needed only while decoding.
+/// Validate the tables once, then share one binding record across all bodies.
+struct RuntimeBindings<'a> {
+    /// Module tag indices can alias one identity; matching signatures alone
+    /// do not make two tags identical.
+    tag_identities: &'a [TagIdentity],
+    /// Frame-form handles for local functions and linked imports.
+    function_handles: &'a [RefValue],
+    /// Stable cell addresses carried in global instructions' unused b field.
+    global_cells: &'a [u64],
+}
+
+impl<'a> RuntimeBindings<'a> {
+    fn new(
+        module: &Module,
+        tag_identities: &'a [TagIdentity],
+        function_handles: &'a [RefValue],
+        global_cells: &'a [u64],
+    ) -> Result<Self, WasmError> {
+        if tag_identities.len() != module.tags().len() {
+            return Err(WasmError::invalid(
+                "interp: runtime tag table does not match module",
+            ));
+        }
+        if global_cells.len() != module.globals().len() {
+            return Err(WasmError::invalid(
+                "interp: runtime global table does not match module",
+            ));
+        }
+        if function_handles.len() != module.functions().len() {
+            return Err(WasmError::invalid(
+                "interp: runtime function table does not match module",
+            ));
+        }
+        Ok(Self {
+            tag_identities,
+            function_handles,
+            global_cells,
+        })
+    }
+}
+
 /// Predecode one local (non-import) function of a parsed module.
 #[cfg(test)]
 pub(crate) fn predecode_function(
@@ -319,13 +361,12 @@ pub(crate) fn predecode_function(
     global_cells: &[u64],
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
+    let bindings = RuntimeBindings::new(module, tag_identities, function_handles, global_cells)?;
     let mut code = Vec::new();
     let mut scratch = PredecodeScratch::default();
     let parts = predecode_function_into(
         module,
-        tag_identities,
-        function_handles,
-        global_cells,
+        &bindings,
         func_index,
         false,
         &mut code,
@@ -357,6 +398,7 @@ pub(crate) fn predecode_functions(
             parts: funcs,
         });
     }
+    let bindings = RuntimeBindings::new(module, tag_identities, function_handles, global_cells)?;
     let body_bytes = module
         .functions()
         .iter()
@@ -378,9 +420,7 @@ pub(crate) fn predecode_functions(
         } else {
             let decoded = predecode_function_into(
                 module,
-                tag_identities,
-                function_handles,
-                global_cells,
+                &bindings,
                 func_index,
                 false,
                 &mut code,
@@ -581,29 +621,12 @@ impl PredecodedFunctionParts {
 
 fn predecode_function_into(
     module: &Module,
-    tag_identities: &[TagIdentity],
-    function_handles: &[RefValue],
-    global_cells: &[u64],
+    bindings: &RuntimeBindings<'_>,
     func_index: usize,
     _disable_fast: bool,
     code: &mut Vec<Instr>,
     scratch: &mut PredecodeScratch,
 ) -> Result<PredecodedFunctionParts, WasmError> {
-    if tag_identities.len() != module.tags().len() {
-        return Err(WasmError::invalid(
-            "interp: runtime tag table does not match module",
-        ));
-    }
-    if global_cells.len() != module.globals().len() {
-        return Err(WasmError::invalid(
-            "interp: runtime global table does not match module",
-        ));
-    }
-    if function_handles.len() != module.functions().len() {
-        return Err(WasmError::invalid(
-            "interp: runtime function table does not match module",
-        ));
-    }
     let func = module
         .functions()
         .get(func_index)
@@ -655,9 +678,7 @@ fn predecode_function_into(
         let mut p = Predecoder {
             types: module.types(),
             module,
-            tag_identities,
-            function_handles,
-            global_cells,
+            bindings,
             code: FunctionCodeBuilder {
                 arena: code,
                 start: code_start,
@@ -957,16 +978,8 @@ impl PredecodeScratch {
 struct Predecoder<'m, 'code> {
     types: &'m TypeContext,
     module: &'m Module,
-    /// Runtime identities resolved by the linker. Module tag indices are
-    /// aliases for these handles, not identities themselves: two imports may
-    /// name one tag, while two same-signature tags remain distinct.
-    tag_identities: &'m [TagIdentity],
-    /// Frame-form identities for `ref.func`: local indices for this
-    /// instance's functions and absolute handles for linked imports.
-    function_handles: &'m [RefValue],
-    /// Stable addresses of each global's actual storage cell. Native global
-    /// instructions carry these in b; Rust still uses the semantic index.
-    global_cells: &'m [u64],
+    /// Resolved instance identities and global storage cells.
+    bindings: &'m RuntimeBindings<'m>,
     code: FunctionCodeBuilder<'code>,
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
@@ -1395,6 +1408,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                         .tag_idx
                         .ok_or(WasmError::invalid("interp: typed catch has no tag"))?;
                     let tag = self
+                        .bindings
                         .tag_identities
                         .get(tag_idx as usize)
                         .copied()
@@ -3813,13 +3827,14 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                 }
                 Opcode::REF_FUNC => {
                     if let Immediate::FunctionIndex(i) = *imm {
-                        let handle =
-                            self.function_handles
-                                .get(i as usize)
-                                .copied()
-                                .ok_or_else(|| {
-                                    WasmError::invalid("ref.func: function identity missing")
-                                })?;
+                        let handle = self
+                            .bindings
+                            .function_handles
+                            .get(i as usize)
+                            .copied()
+                            .ok_or_else(|| {
+                                WasmError::invalid("ref.func: function identity missing")
+                            })?;
                         self.stack
                             .push(Desc::ConstV(ref_to_machine_raw(handle, SLOT_GP_UNIT_BYTES)));
                     }
@@ -4037,7 +4052,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         Op::GlobalGet,
                         flags,
                         g as u64,
-                        self.global_cells[g as usize],
+                        self.bindings.global_cells[g as usize],
                         dst,
                     );
                     self.push_result_temp(idx);
@@ -4061,7 +4076,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         Op::GlobalSet,
                         flags,
                         a,
-                        self.global_cells[g as usize],
+                        self.bindings.global_cells[g as usize],
                         g as u64,
                     );
                 }
@@ -4407,9 +4422,13 @@ mod tests {
         let mut scratch = PredecodeScratch::default();
         let parts = predecode_function_into(
             &module,
-            &tag_identities,
-            &function_handles,
-            &vec![0; module.globals().len()],
+            &RuntimeBindings::new(
+                &module,
+                &tag_identities,
+                &function_handles,
+                &vec![0; module.globals().len()],
+            )
+            .expect("bindings"),
             func,
             disable_fast,
             &mut code,
@@ -4627,9 +4646,13 @@ mod tests {
             let mut fresh_scratch = PredecodeScratch::default();
             let fresh = predecode_function_into(
                 &module,
-                &tag_identities,
-                &function_handles,
-                &vec![0; module.globals().len()],
+                &RuntimeBindings::new(
+                    &module,
+                    &tag_identities,
+                    &function_handles,
+                    &vec![0; module.globals().len()],
+                )
+                .expect("bindings"),
                 index,
                 false,
                 &mut code,
@@ -4675,9 +4698,7 @@ mod tests {
         for func_index in 0..FUNCTION_COUNT {
             let parts = predecode_function_into(
                 &module,
-                &[],
-                &function_handles,
-                &[],
+                &RuntimeBindings::new(&module, &[], &function_handles, &[]).expect("bindings"),
                 func_index,
                 false,
                 &mut code,
