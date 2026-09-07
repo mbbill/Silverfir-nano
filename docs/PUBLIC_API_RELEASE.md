@@ -1383,3 +1383,31 @@ NEGLIGIBLE and noisy estimates, are appended to the existing primary evidence.
 Startup still reports regressions; remaining startup confirmations are pending.
 The public API workflow still fails its protected-human-environment check.
 No overall green or release approval is claimed, and no gate is relaxed.
+
+
+### Refresh candidate packages and API evidence at 82ac86d1
+
+The clean candidate archives pass Cargo package verification: core contains
+315 files, the allocator support package 11. An independent consumer resolves
+both dependencies exclusively to extracted archives; its adapter source is
+byte-identical to the migrated pinned CI adapter. Dual-engine, JIT-only and
+interpreter-only executions pass numeric host calls, guarded memory access,
+growth, trap/error paths and upstream CoreMark. These scores are completion
+checks, not performance comparisons. Unpacked-package no_std checks pass for
+Thumb interpreter and RV32 dual-engine builds. All builds are warning-free.
+[Candidate hashes, provenance and check outputs](release-evidence/package-candidate.json)
+record this exact revision, not a published/tagged release.
+
+Fresh API capture still has digest
+ae547697fc0da341801049d0329b3bbfe7a9038966d2c8a1b6ff1d15a0a224e2.
+All five core memprof comparisons, two support profiles and feature contracts
+are unchanged from the earlier capture. API acceptance and protected GitHub
+review-environment setup remain outstanding. Nothing has been published.
+
+
+At run 34151036770, independent interpreter startup confirmations 101837641319
+and 101837641400 fail all seven cases. Their exact rows are appended to the
+existing confirmation evidence; two JIT startup confirmations remain live.
+A fresh management-UI query reports the Mac locked, so manual unlock is
+requested before configuring the protected API environment. The GitHub
+connector's lack of administration access is unchanged.
