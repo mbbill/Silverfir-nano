@@ -1,0 +1,5297 @@
+{
+  "run_id": 34084103483,
+  "candidate": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+  "verdict": "FAILED: confirmed ARM startup/erc20 regression; dev soft-fail is not a pass",
+  "note": "All 34 actual jobs/steps/logs audited. Primary -6.96%, second N2 confirmation -8.01%. Full workflow conclusion does not override failed Cross-run verdict.",
+  "audited": [
+    {
+      "job": 101624746834,
+      "name": "resolve refs and build dev branch",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:42:35Z",
+          "completed_at": "2026-09-07T04:42:36Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:42:36Z",
+          "completed_at": "2026-09-07T04:42:38Z"
+        },
+        {
+          "name": "Resolve baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:42:38Z",
+          "completed_at": "2026-09-07T04:42:38Z"
+        },
+        {
+          "name": "Test CI implementation",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:42:38Z",
+          "completed_at": "2026-09-07T04:42:38Z"
+        },
+        {
+          "name": "Surface lint suppression debt",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:42:38Z",
+          "completed_at": "2026-09-07T04:42:39Z"
+        },
+        {
+          "name": "Mark lint suppression debt as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:42:39Z",
+          "completed_at": "2026-09-07T04:42:39Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:42:39Z",
+          "completed_at": "2026-09-07T04:42:48Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-07T04:42:48Z",
+          "completed_at": "2026-09-07T04:42:50Z"
+        },
+        {
+          "name": "cargo build (workspace)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:42:50Z",
+          "completed_at": "2026-09-07T04:43:04Z"
+        },
+        {
+          "name": "Surface architecture-sensitive warnings",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:04Z",
+          "completed_at": "2026-09-07T04:43:17Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:17Z",
+          "completed_at": "2026-09-07T04:43:17Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21,
+          "started_at": "2026-09-07T04:43:17Z",
+          "completed_at": "2026-09-07T04:43:17Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22,
+          "started_at": "2026-09-07T04:43:17Z",
+          "completed_at": "2026-09-07T04:43:18Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-07T04:43:18Z",
+          "completed_at": "2026-09-07T04:43:18Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:42:38.7035679Z | score | 100.00 | 104.00 | +4.00% (+4.00%..+4.00%) | 0.00% | <0.000001% | >99.999999% | 4+6 | >99.999999% | 6 | **IMPROVEMENT** |",
+        "2026-09-07T04:42:38.7075702Z | score | 100.00 | 98.15 | -1.85% (-2.00%..+0.50%) | 0.63% | >99.999999% | <0.000001% | 4+16 | >99.999999% | 6 | **REGRESSION** |",
+        "2026-09-07T04:42:38.7112654Z | score | 100.00 | 98.00 | -2.00% (-2.00%..-2.00%) | 0.00% | >99.999999% | <0.000001% | 4+6 | >99.999999% | 6 | **REGRESSION** |",
+        "2026-09-07T04:42:38.7121000Z [build comparison] identical_binaries=false",
+        "2026-09-07T04:42:38.7534327Z | execute/counter-local | 100.00ns | 102.00ns | -1.96% (-1.96%..-1.96%) | 0.00% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "2026-09-07T04:42:38.7656453Z - schedule: one 10-sample adjacent A/B pilot; the compiled runtime is identical, so confirmation is skipped",
+        "2026-09-07T04:42:38.7665461Z > **Identical compiled runtime:** this engine's sf-nano-core artifact is byte-identical, so apparent regressions are runner drift and are reported as UNSTABLE, not failures."
+      ]
+    },
+    {
+      "job": 101624876918,
+      "name": "arm64-linux / interp",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:29Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:29Z",
+          "completed_at": "2026-09-07T04:43:31Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:31Z",
+          "completed_at": "2026-09-07T04:43:44Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@nightly",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:44Z",
+          "completed_at": "2026-09-07T04:43:44Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:44Z",
+          "completed_at": "2026-09-07T04:43:46Z"
+        },
+        {
+          "name": "Install QEMU user-static",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:46Z",
+          "completed_at": "2026-09-07T04:43:46Z"
+        },
+        {
+          "name": "Cache Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:46Z",
+          "completed_at": "2026-09-07T04:43:46Z"
+        },
+        {
+          "name": "Install Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:46Z",
+          "completed_at": "2026-09-07T04:43:46Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:46Z",
+          "completed_at": "2026-09-07T04:44:20Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:44:20Z",
+          "completed_at": "2026-09-07T04:44:20Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T04:44:20Z",
+          "completed_at": "2026-09-07T04:44:20Z"
+        },
+        {
+          "name": "Run benchmark suite",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T04:44:20Z",
+          "completed_at": "2026-09-07T04:51:12Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T04:51:12Z",
+          "completed_at": "2026-09-07T04:51:14Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T04:51:14Z",
+          "completed_at": "2026-09-07T04:51:14Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T04:51:14Z",
+          "completed_at": "2026-09-07T04:51:14Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T04:51:14Z",
+          "completed_at": "2026-09-07T04:51:14Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T04:51:14Z",
+          "completed_at": "2026-09-07T04:51:14Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T04:51:14Z",
+          "completed_at": "2026-09-07T04:51:14Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:44:20.8742808Z [build comparison] identical_binaries=true",
+        "2026-09-07T04:51:12.8693305Z > **Byte-identical executables:** measured differences are runner drift. They remain visible, but cannot fail the gate or claim an improvement."
+      ]
+    },
+    {
+      "job": 101624876925,
+      "name": "arm64-darwin / jit",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:28Z",
+          "completed_at": "2026-09-07T04:43:30Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:30Z",
+          "completed_at": "2026-09-07T04:43:30Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:30Z",
+          "completed_at": "2026-09-07T04:43:33Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:33Z",
+          "completed_at": "2026-09-07T04:43:34Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:34Z",
+          "completed_at": "2026-09-07T04:43:44Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@nightly",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:44Z",
+          "completed_at": "2026-09-07T04:43:44Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:44Z",
+          "completed_at": "2026-09-07T04:43:47Z"
+        },
+        {
+          "name": "Install QEMU user-static",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:47Z",
+          "completed_at": "2026-09-07T04:43:47Z"
+        },
+        {
+          "name": "Cache Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:47Z",
+          "completed_at": "2026-09-07T04:43:47Z"
+        },
+        {
+          "name": "Install Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:47Z",
+          "completed_at": "2026-09-07T04:43:47Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:47Z",
+          "completed_at": "2026-09-07T04:45:57Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:45:57Z",
+          "completed_at": "2026-09-07T04:45:57Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T04:45:57Z",
+          "completed_at": "2026-09-07T04:45:59Z"
+        },
+        {
+          "name": "Run benchmark suite",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T04:45:59Z",
+          "completed_at": "2026-09-07T04:51:57Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T04:51:57Z",
+          "completed_at": "2026-09-07T04:51:58Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T04:51:58Z",
+          "completed_at": "2026-09-07T04:51:58Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T04:51:58Z",
+          "completed_at": "2026-09-07T04:51:59Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T04:51:59Z",
+          "completed_at": "2026-09-07T04:51:59Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T04:51:59Z",
+          "completed_at": "2026-09-07T04:51:59Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T04:51:59Z",
+          "completed_at": "2026-09-07T04:52:00Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:45:57.4314000Z [build comparison] identical_binaries=false",
+        "2026-09-07T04:51:57.6721260Z | funcref-direct | 891,879,420.0 | 2,624,493,840.7 | +194.27% (+146.97%..+241.18%) | 12.80% | 0.000002% | 99.999998% | 4+8 | 99.932711% | 10 | **IMPROVEMENT** |"
+      ]
+    },
+    {
+      "job": 101624876928,
+      "name": "wasmi / x64-linux / jit / execute",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:23Z",
+          "completed_at": "2026-09-07T04:43:24Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:24Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:31Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:31Z",
+          "completed_at": "2026-09-07T04:43:40Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:40Z",
+          "completed_at": "2026-09-07T04:43:50Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:50Z",
+          "completed_at": "2026-09-07T04:43:50Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Compare wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T05:01:06Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T05:01:06Z",
+          "completed_at": "2026-09-07T05:01:08Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:01:08Z",
+          "completed_at": "2026-09-07T05:01:08Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-07T05:01:08Z",
+          "completed_at": "2026-09-07T05:01:08Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-07T05:01:08Z",
+          "completed_at": "2026-09-07T05:01:08Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-09-07T05:01:08Z",
+          "completed_at": "2026-09-07T05:01:08Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T05:01:08Z",
+          "completed_at": "2026-09-07T05:01:09Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T05:01:09Z",
+          "completed_at": "2026-09-07T05:01:09Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T05:01:09Z",
+          "completed_at": "2026-09-07T05:01:09Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:01:06.6662174Z | execute/fibonacci-rec | 4.326ms | 2.803ms | +54.37% (+51.87%..+56.69%) | 1.16% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6663011Z | execute/fibonacci-iter | 632.238us | 623.674us | +1.37% (+0.85%..+1.88%) | 0.36% | 0.000042% | 99.999958% | 10 | 1 | 99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6663808Z | execute/fibonacci-tail | 624.048us | 365.160us | +70.90% (+69.51%..+71.99%) | 0.48% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6664599Z | execute/sort | 47.888ms | 33.537ms | +42.79% (+41.92%..+43.51%) | 0.34% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6665329Z | execute/prime_sieve | 24.916ms | 23.199ms | +7.40% (+6.99%..+7.85%) | 0.30% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6666359Z | execute/matrix_mul | 58.848ms | 58.352ms | +0.85% (+0.72%..+1.06%) | 0.11% | <0.000001% | >99.999999% | 10 | 1 | 99.991001% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6667125Z | execute/nbody | 15.172ms | 14.903ms | +1.81% (+0.90%..+3.19%) | 0.63% | <0.000001% | >99.999999% | 20 | 2 | 99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6667880Z | execute/argon2 | 158.080ms | 60.668ms | +160.57% (+156.64%..+167.52%) | 1.34% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6675108Z | execute/compression | 11.039ms | 10.977ms | +0.57% (+0.04%..+0.96%) | 0.19% | <0.000001% | >99.999999% | 20 | 2 | 99.999242% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6675976Z | execute/word_count | 1.299ms | 1.202ms | +8.11% (+7.17%..+8.88%) | 0.44% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T05:01:06.6678425Z | execute/reverse_complement | 34.324us | 20.351us | +68.66% (+62.97%..+70.36%) | 1.36% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |"
+      ]
+    },
+    {
+      "job": 101624876929,
+      "name": "wasmi / x64-linux / interp / execute",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:24Z",
+          "completed_at": "2026-09-07T04:43:25Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:28Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:28Z",
+          "completed_at": "2026-09-07T04:43:32Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:32Z",
+          "completed_at": "2026-09-07T04:43:40Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:40Z",
+          "completed_at": "2026-09-07T04:43:50Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:50Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:54Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:54Z",
+          "completed_at": "2026-09-07T04:43:54Z"
+        },
+        {
+          "name": "Compare wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:43:54Z",
+          "completed_at": "2026-09-07T04:54:11Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T04:54:11Z",
+          "completed_at": "2026-09-07T04:54:13Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T04:54:13Z",
+          "completed_at": "2026-09-07T04:54:13Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-07T04:54:13Z",
+          "completed_at": "2026-09-07T04:54:13Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-07T04:54:13Z",
+          "completed_at": "2026-09-07T04:54:13Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-09-07T04:54:13Z",
+          "completed_at": "2026-09-07T04:54:13Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T04:54:13Z",
+          "completed_at": "2026-09-07T04:54:14Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T04:54:14Z",
+          "completed_at": "2026-09-07T04:54:14Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T04:54:14Z",
+          "completed_at": "2026-09-07T04:54:14Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:54:11.4412695Z - schedule: one 10-sample adjacent A/B pilot; the compiled runtime is identical, so confirmation is skipped",
+        "2026-09-07T04:54:11.4418721Z > **Identical compiled runtime:** this engine's sf-nano-core artifact is byte-identical, so apparent regressions are runner drift and are reported as UNSTABLE, not failures."
+      ]
+    },
+    {
+      "job": 101624876932,
+      "name": "wasmi / x64-linux / jit / startup",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:23Z",
+          "completed_at": "2026-09-07T04:43:24Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:24Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:31Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:31Z",
+          "completed_at": "2026-09-07T04:43:39Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:39Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Compare wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T05:00:15Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T05:00:15Z",
+          "completed_at": "2026-09-07T05:00:15Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:00:15Z",
+          "completed_at": "2026-09-07T05:00:15Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-07T05:00:15Z",
+          "completed_at": "2026-09-07T05:00:16Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-07T05:00:16Z",
+          "completed_at": "2026-09-07T05:00:16Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-09-07T05:00:16Z",
+          "completed_at": "2026-09-07T05:00:16Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T05:00:16Z",
+          "completed_at": "2026-09-07T05:00:16Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T05:00:16Z",
+          "completed_at": "2026-09-07T05:00:16Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T05:00:16Z",
+          "completed_at": "2026-09-07T05:00:16Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:43:31.0390268Z ##[start-action display=Construct rustup command line;id=rust-toolchain.flags]",
+        "2026-09-07T04:43:31.0504672Z ##[end-action id=rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=11]",
+        "2026-09-07T04:44:11.1158598Z    Compiling bitflags v1.3.2",
+        "2026-09-07T04:44:37.7528442Z    Compiling bitflags v2.13.1",
+        "2026-09-07T04:47:00.2287734Z    Compiling bitflags v1.3.2",
+        "2026-09-07T04:47:27.0717261Z    Compiling bitflags v2.13.1"
+      ]
+    },
+    {
+      "job": 101624876933,
+      "name": "wasmi / x64-linux / interp / startup",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:23Z",
+          "completed_at": "2026-09-07T04:43:24Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:24Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:31Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:31Z",
+          "completed_at": "2026-09-07T04:43:40Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:40Z",
+          "completed_at": "2026-09-07T04:43:50Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:50Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Compare wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T04:50:22Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T04:50:22Z",
+          "completed_at": "2026-09-07T04:50:23Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T04:50:23Z",
+          "completed_at": "2026-09-07T04:50:23Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-07T04:50:23Z",
+          "completed_at": "2026-09-07T04:50:24Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-07T04:50:24Z",
+          "completed_at": "2026-09-07T04:50:24Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-09-07T04:50:24Z",
+          "completed_at": "2026-09-07T04:50:24Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T04:50:24Z",
+          "completed_at": "2026-09-07T04:50:24Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T04:50:24Z",
+          "completed_at": "2026-09-07T04:50:24Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T04:50:24Z",
+          "completed_at": "2026-09-07T04:50:24Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:50:22.6907897Z - schedule: one 10-sample adjacent A/B pilot; the compiled runtime is identical, so confirmation is skipped",
+        "2026-09-07T04:50:22.6911166Z > **Identical compiled runtime:** this engine's sf-nano-core artifact is byte-identical, so apparent regressions are runner drift and are reported as UNSTABLE, not failures."
+      ]
+    },
+    {
+      "job": 101624876936,
+      "name": "wasmi / arm64-linux / jit / startup",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:28Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:28Z",
+          "completed_at": "2026-09-07T04:43:32Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:32Z",
+          "completed_at": "2026-09-07T04:43:40Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:40Z",
+          "completed_at": "2026-09-07T04:43:59Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:59Z",
+          "completed_at": "2026-09-07T04:43:59Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:59Z",
+          "completed_at": "2026-09-07T04:43:59Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:59Z",
+          "completed_at": "2026-09-07T04:44:00Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:44:00Z",
+          "completed_at": "2026-09-07T04:44:00Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:44:00Z",
+          "completed_at": "2026-09-07T04:44:01Z"
+        },
+        {
+          "name": "Compare wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:44:01Z",
+          "completed_at": "2026-09-07T05:02:00Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T05:02:00Z",
+          "completed_at": "2026-09-07T05:02:01Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:02:01Z",
+          "completed_at": "2026-09-07T05:02:01Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-07T05:02:01Z",
+          "completed_at": "2026-09-07T05:02:01Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-07T05:02:01Z",
+          "completed_at": "2026-09-07T05:02:01Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-09-07T05:02:01Z",
+          "completed_at": "2026-09-07T05:02:01Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T05:02:01Z",
+          "completed_at": "2026-09-07T05:02:01Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T05:02:01Z",
+          "completed_at": "2026-09-07T05:02:02Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T05:02:02Z",
+          "completed_at": "2026-09-07T05:02:02Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:44:00.9920393Z   CACHE_ON_FAILURE: false",
+        "2026-09-07T04:44:01.0110291Z Model name:                              Neoverse-N2",
+        "2026-09-07T04:44:01.0205873Z   CACHE_ON_FAILURE: false",
+        "2026-09-07T04:57:03.1611807Z [pilot 1] startup/erc20: baseline",
+        "2026-09-07T04:57:03.1613166Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/erc20",
+        "2026-09-07T04:57:10.2651607Z [pilot 1] startup/erc20: candidate",
+        "2026-09-07T04:57:10.2654743Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/erc20",
+        "2026-09-07T05:01:45.8622429Z [confirmation 1] startup/erc20: candidate",
+        "2026-09-07T05:01:45.8623906Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/erc20",
+        "2026-09-07T05:01:53.0633177Z [confirmation 1] startup/erc20: baseline",
+        "2026-09-07T05:01:53.0634376Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/erc20",
+        "2026-09-07T05:02:00.1774476Z | startup/erc20 | 3.508ms | 3.770ms | -6.96% (-7.53%..-6.50%) | 0.35% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "2026-09-07T05:02:00.2217105Z   CACHE_ON_FAILURE: false"
+      ]
+    },
+    {
+      "job": 101624876942,
+      "name": "x64-windows / jit",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:28Z",
+          "completed_at": "2026-09-07T04:43:30Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:30Z",
+          "completed_at": "2026-09-07T04:43:31Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:31Z",
+          "completed_at": "2026-09-07T04:43:37Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:37Z",
+          "completed_at": "2026-09-07T04:43:41Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:41Z",
+          "completed_at": "2026-09-07T04:44:02Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@nightly",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:44:02Z",
+          "completed_at": "2026-09-07T04:44:02Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:44:02Z",
+          "completed_at": "2026-09-07T04:44:05Z"
+        },
+        {
+          "name": "Install QEMU user-static",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:44:05Z",
+          "completed_at": "2026-09-07T04:44:05Z"
+        },
+        {
+          "name": "Cache Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T04:44:05Z",
+          "completed_at": "2026-09-07T04:44:05Z"
+        },
+        {
+          "name": "Install Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T04:44:05Z",
+          "completed_at": "2026-09-07T04:44:05Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:44:05Z",
+          "completed_at": "2026-09-07T04:46:10Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:46:10Z",
+          "completed_at": "2026-09-07T04:46:10Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T04:46:10Z",
+          "completed_at": "2026-09-07T04:46:10Z"
+        },
+        {
+          "name": "Run benchmark suite",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T04:46:10Z",
+          "completed_at": "2026-09-07T04:57:42Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T04:57:42Z",
+          "completed_at": "2026-09-07T04:57:43Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T04:57:43Z",
+          "completed_at": "2026-09-07T04:57:43Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T04:57:43Z",
+          "completed_at": "2026-09-07T04:57:43Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T04:57:43Z",
+          "completed_at": "2026-09-07T04:57:45Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T04:57:45Z",
+          "completed_at": "2026-09-07T04:57:47Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T04:57:47Z",
+          "completed_at": "2026-09-07T04:57:47Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:46:10.7720420Z [build comparison] identical_binaries=false\r",
+        "2026-09-07T04:57:42.8514295Z | coremark | 27,324.3 | 28,416.5 | +4.00% (+2.97%..+4.59%) | 0.45% | <0.000001% | >99.999999% | 4+10 | 99.618370% | 14 | **IMPROVEMENT** |\r",
+        "2026-09-07T04:57:42.8518053Z | funcref-direct | 728,927,036.3 | 3,646,978,637.6 | +400.32% (+399.00%..+401.04%) | 0.15% | <0.000001% | >99.999999% | 4+6 | 99.999997% | 6 | **IMPROVEMENT** |\r"
+      ]
+    },
+    {
+      "job": 101624876947,
+      "name": "wasmi / arm64-linux / jit / execute",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:28Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:28Z",
+          "completed_at": "2026-09-07T04:43:31Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:31Z",
+          "completed_at": "2026-09-07T04:43:37Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:37Z",
+          "completed_at": "2026-09-07T04:43:51Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:51Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T04:43:52Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:52Z",
+          "completed_at": "2026-09-07T04:43:53Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:53Z",
+          "completed_at": "2026-09-07T04:43:53Z"
+        },
+        {
+          "name": "Compare wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:43:53Z",
+          "completed_at": "2026-09-07T04:58:54Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T04:58:54Z",
+          "completed_at": "2026-09-07T04:58:55Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T04:58:55Z",
+          "completed_at": "2026-09-07T04:58:55Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-07T04:58:55Z",
+          "completed_at": "2026-09-07T04:58:55Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-07T04:58:55Z",
+          "completed_at": "2026-09-07T04:58:56Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-09-07T04:58:56Z",
+          "completed_at": "2026-09-07T04:58:56Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T04:58:56Z",
+          "completed_at": "2026-09-07T04:58:56Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T04:58:56Z",
+          "completed_at": "2026-09-07T04:58:56Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T04:58:56Z",
+          "completed_at": "2026-09-07T04:58:56Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:43:31.3823506Z ##[start-action display=Construct rustup command line;id=rust-toolchain.flags]",
+        "2026-09-07T04:43:31.3992160Z ##[end-action id=rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=16]",
+        "2026-09-07T04:44:15.0181984Z    Compiling bitflags v1.3.2",
+        "2026-09-07T04:44:52.6534355Z    Compiling bitflags v2.13.1",
+        "2026-09-07T04:47:57.7897786Z    Compiling bitflags v1.3.2",
+        "2026-09-07T04:48:35.7423432Z    Compiling bitflags v2.13.1",
+        "2026-09-07T04:58:54.7427261Z | execute/fibonacci-rec | 3.028ms | 2.981ms | +1.55% (+1.45%..+1.74%) | 0.08% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |",
+        "2026-09-07T04:58:54.7433207Z | execute/argon2 | 74.582ms | 29.647ms | +151.57% (+144.61%..+153.53%) | 1.08% | <0.000001% | >99.999999% | 10 | 1 | >99.999999% | **IMPROVEMENT** |"
+      ]
+    },
+    {
+      "job": 101624876952,
+      "name": "wasmi / arm64-linux / interp / execute",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:29Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:29Z",
+          "completed_at": "2026-09-07T04:43:31Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:31Z",
+          "completed_at": "2026-09-07T04:43:37Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:37Z",
+          "completed_at": "2026-09-07T04:43:43Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:43Z",
+          "completed_at": "2026-09-07T04:43:57Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:57Z",
+          "completed_at": "2026-09-07T04:43:58Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:58Z",
+          "completed_at": "2026-09-07T04:43:58Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:58Z",
+          "completed_at": "2026-09-07T04:43:59Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:59Z",
+          "completed_at": "2026-09-07T04:44:01Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:44:01Z",
+          "completed_at": "2026-09-07T04:44:01Z"
+        },
+        {
+          "name": "Compare wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:44:01Z",
+          "completed_at": "2026-09-07T04:54:54Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T04:54:54Z",
+          "completed_at": "2026-09-07T04:54:56Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T04:54:56Z",
+          "completed_at": "2026-09-07T04:54:56Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-07T04:54:56Z",
+          "completed_at": "2026-09-07T04:54:56Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-07T04:54:56Z",
+          "completed_at": "2026-09-07T04:54:56Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-09-07T04:54:56Z",
+          "completed_at": "2026-09-07T04:54:56Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T04:54:56Z",
+          "completed_at": "2026-09-07T04:54:56Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T04:54:56Z",
+          "completed_at": "2026-09-07T04:54:57Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T04:54:57Z",
+          "completed_at": "2026-09-07T04:54:57Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:54:54.6064769Z - schedule: one 10-sample adjacent A/B pilot; the compiled runtime is identical, so confirmation is skipped",
+        "2026-09-07T04:54:54.6067421Z > **Identical compiled runtime:** this engine's sf-nano-core artifact is byte-identical, so apparent regressions are runner drift and are reported as UNSTABLE, not failures."
+      ]
+    },
+    {
+      "job": 101624876953,
+      "name": "x64-windows / interp",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:23Z",
+          "completed_at": "2026-09-07T04:43:25Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:33Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:33Z",
+          "completed_at": "2026-09-07T04:43:36Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:36Z",
+          "completed_at": "2026-09-07T04:43:57Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@nightly",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:57Z",
+          "completed_at": "2026-09-07T04:43:57Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:57Z",
+          "completed_at": "2026-09-07T04:44:01Z"
+        },
+        {
+          "name": "Install QEMU user-static",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:44:01Z",
+          "completed_at": "2026-09-07T04:44:01Z"
+        },
+        {
+          "name": "Cache Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T04:44:01Z",
+          "completed_at": "2026-09-07T04:44:01Z"
+        },
+        {
+          "name": "Install Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T04:44:01Z",
+          "completed_at": "2026-09-07T04:44:01Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:44:01Z",
+          "completed_at": "2026-09-07T04:44:43Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:44:43Z",
+          "completed_at": "2026-09-07T04:44:43Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T04:44:43Z",
+          "completed_at": "2026-09-07T04:44:43Z"
+        },
+        {
+          "name": "Run benchmark suite",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T04:44:43Z",
+          "completed_at": "2026-09-07T04:52:36Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T04:52:36Z",
+          "completed_at": "2026-09-07T04:52:37Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T04:52:37Z",
+          "completed_at": "2026-09-07T04:52:37Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T04:52:37Z",
+          "completed_at": "2026-09-07T04:52:37Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T04:52:37Z",
+          "completed_at": "2026-09-07T04:52:39Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T04:52:39Z",
+          "completed_at": "2026-09-07T04:52:40Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T04:52:40Z",
+          "completed_at": "2026-09-07T04:52:40Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:44:43.4305594Z [build comparison] identical_binaries=false\r"
+      ]
+    },
+    {
+      "job": 101624876972,
+      "name": "x64-linux / jit",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:23Z",
+          "completed_at": "2026-09-07T04:43:25Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:25Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:29Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:29Z",
+          "completed_at": "2026-09-07T04:43:38Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@nightly",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:38Z",
+          "completed_at": "2026-09-07T04:43:38Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:38Z",
+          "completed_at": "2026-09-07T04:43:40Z"
+        },
+        {
+          "name": "Install QEMU user-static",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:40Z",
+          "completed_at": "2026-09-07T04:43:40Z"
+        },
+        {
+          "name": "Cache Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:40Z",
+          "completed_at": "2026-09-07T04:43:40Z"
+        },
+        {
+          "name": "Install Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:40Z",
+          "completed_at": "2026-09-07T04:43:40Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:40Z",
+          "completed_at": "2026-09-07T04:45:01Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:45:01Z",
+          "completed_at": "2026-09-07T04:45:01Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T04:45:01Z",
+          "completed_at": "2026-09-07T04:45:01Z"
+        },
+        {
+          "name": "Run benchmark suite",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T04:45:01Z",
+          "completed_at": "2026-09-07T04:59:53Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T04:59:53Z",
+          "completed_at": "2026-09-07T04:59:55Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T04:59:55Z",
+          "completed_at": "2026-09-07T04:59:55Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T04:59:55Z",
+          "completed_at": "2026-09-07T04:59:55Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T04:59:55Z",
+          "completed_at": "2026-09-07T04:59:55Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T04:59:55Z",
+          "completed_at": "2026-09-07T04:59:56Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T04:59:56Z",
+          "completed_at": "2026-09-07T04:59:56Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:43:29.3737754Z ##[start-action display=Construct rustup command line;id=__dtolnay_rust-toolchain.flags]",
+        "2026-09-07T04:43:29.3862621Z ##[end-action id=__dtolnay_rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=12]",
+        "2026-09-07T04:59:53.8842899Z | coremark | 21,578.5 | 21,783.2 | +0.95% (+0.69%..+1.14%) | 0.16% | 0.000001% | 99.999999% | 4+10 | 99.845849% | 12 | **IMPROVEMENT** |",
+        "2026-09-07T04:59:53.8843692Z | sha256 | 113.50 | 118.06 | +4.01% (+3.79%..+4.38%) | 0.19% | 0.000003% | 99.999997% | 4+6 | 99.990766% | 8 | **IMPROVEMENT** |",
+        "2026-09-07T04:59:53.8846249Z | lz4-decompress | 1,301.8 | 1,351.5 | +3.82% (+3.34%..+4.38%) | 0.29% | <0.000001% | >99.999999% | 4+12 | 99.984600% | 8 | **IMPROVEMENT** |",
+        "2026-09-07T04:59:53.8848109Z | funcref-direct | 401,313,973.1 | 3,154,750,216.7 | +686.11% (+646.53%..+701.02%) | 2.92% | <0.000001% | >99.999999% | 4+6 | 99.999973% | 6 | **IMPROVEMENT** |",
+        "2026-09-07T04:59:53.8850413Z | lua-json | 10,833.7 | 11,188.0 | +3.27% (+1.00%..+6.93%) | 1.46% | 0.000002% | 99.999998% | 4+18 | 99.782615% | 12 | **IMPROVEMENT** |",
+        "2026-09-07T04:59:53.8855947Z | sqlite | 45,489.3 | 46,179.3 | +1.52% (+1.00%..+2.28%) | 0.42% | 0.000004% | 99.999996% | 4+12 | 99.495343% | 14 | **IMPROVEMENT** |"
+      ]
+    },
+    {
+      "job": 101624876991,
+      "name": "wasmi / arm64-linux / interp / startup",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:28Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:28Z",
+          "completed_at": "2026-09-07T04:43:31Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:31Z",
+          "completed_at": "2026-09-07T04:43:37Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:37Z",
+          "completed_at": "2026-09-07T04:43:54Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:54Z",
+          "completed_at": "2026-09-07T04:43:55Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:55Z",
+          "completed_at": "2026-09-07T04:43:55Z"
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:55Z",
+          "completed_at": "2026-09-07T04:43:55Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:55Z",
+          "completed_at": "2026-09-07T04:43:56Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:56Z",
+          "completed_at": "2026-09-07T04:43:56Z"
+        },
+        {
+          "name": "Compare wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:43:56Z",
+          "completed_at": "2026-09-07T04:51:30Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T04:51:30Z",
+          "completed_at": "2026-09-07T04:51:31Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T04:51:31Z",
+          "completed_at": "2026-09-07T04:51:31Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-07T04:51:31Z",
+          "completed_at": "2026-09-07T04:51:31Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-07T04:51:31Z",
+          "completed_at": "2026-09-07T04:51:31Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-09-07T04:51:31Z",
+          "completed_at": "2026-09-07T04:51:32Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-09-07T04:51:32Z",
+          "completed_at": "2026-09-07T04:51:32Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 28,
+          "started_at": "2026-09-07T04:51:32Z",
+          "completed_at": "2026-09-07T04:51:32Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 29,
+          "started_at": "2026-09-07T04:51:32Z",
+          "completed_at": "2026-09-07T04:51:32Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:51:30.7226182Z - schedule: one 10-sample adjacent A/B pilot; the compiled runtime is identical, so confirmation is skipped",
+        "2026-09-07T04:51:30.7228655Z > **Identical compiled runtime:** this engine's sf-nano-core artifact is byte-identical, so apparent regressions are runner drift and are reported as UNSTABLE, not failures."
+      ]
+    },
+    {
+      "job": 101624877013,
+      "name": "x64-linux / interp",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:23Z",
+          "completed_at": "2026-09-07T04:43:24Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:24Z",
+          "completed_at": "2026-09-07T04:43:24Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:24Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:36Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@nightly",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:36Z",
+          "completed_at": "2026-09-07T04:43:36Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:36Z",
+          "completed_at": "2026-09-07T04:43:37Z"
+        },
+        {
+          "name": "Install QEMU user-static",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:37Z",
+          "completed_at": "2026-09-07T04:43:37Z"
+        },
+        {
+          "name": "Cache Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:37Z",
+          "completed_at": "2026-09-07T04:43:37Z"
+        },
+        {
+          "name": "Install Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:37Z",
+          "completed_at": "2026-09-07T04:43:37Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:37Z",
+          "completed_at": "2026-09-07T04:44:10Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:44:10Z",
+          "completed_at": "2026-09-07T04:44:10Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T04:44:10Z",
+          "completed_at": "2026-09-07T04:44:10Z"
+        },
+        {
+          "name": "Run benchmark suite",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T04:44:10Z",
+          "completed_at": "2026-09-07T04:54:30Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T04:54:30Z",
+          "completed_at": "2026-09-07T04:54:31Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T04:54:31Z",
+          "completed_at": "2026-09-07T04:54:31Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T04:54:31Z",
+          "completed_at": "2026-09-07T04:54:31Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T04:54:31Z",
+          "completed_at": "2026-09-07T04:54:31Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T04:54:31Z",
+          "completed_at": "2026-09-07T04:54:32Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T04:54:32Z",
+          "completed_at": "2026-09-07T04:54:32Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:44:09.9971744Z [build comparison] identical_binaries=true",
+        "2026-09-07T04:54:30.6046052Z > **Byte-identical executables:** measured differences are runner drift. They remain visible, but cannot fail the gate or claim an improvement."
+      ]
+    },
+    {
+      "job": 101624877066,
+      "name": "arm64-linux / jit",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:25Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:26Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:26Z",
+          "completed_at": "2026-09-07T04:43:27Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:27Z",
+          "completed_at": "2026-09-07T04:43:28Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:28Z",
+          "completed_at": "2026-09-07T04:43:35Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@nightly",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:35Z",
+          "completed_at": "2026-09-07T04:43:35Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:35Z",
+          "completed_at": "2026-09-07T04:43:36Z"
+        },
+        {
+          "name": "Install QEMU user-static",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:36Z",
+          "completed_at": "2026-09-07T04:43:36Z"
+        },
+        {
+          "name": "Cache Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:36Z",
+          "completed_at": "2026-09-07T04:43:36Z"
+        },
+        {
+          "name": "Install Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:36Z",
+          "completed_at": "2026-09-07T04:43:36Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:36Z",
+          "completed_at": "2026-09-07T04:45:05Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:45:05Z",
+          "completed_at": "2026-09-07T04:45:05Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T04:45:05Z",
+          "completed_at": "2026-09-07T04:45:05Z"
+        },
+        {
+          "name": "Run benchmark suite",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T04:45:05Z",
+          "completed_at": "2026-09-07T04:57:18Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T04:57:18Z",
+          "completed_at": "2026-09-07T04:57:19Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T04:57:19Z",
+          "completed_at": "2026-09-07T04:57:19Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T04:57:19Z",
+          "completed_at": "2026-09-07T04:57:19Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T04:57:19Z",
+          "completed_at": "2026-09-07T04:57:20Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T04:57:20Z",
+          "completed_at": "2026-09-07T04:57:20Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T04:57:20Z",
+          "completed_at": "2026-09-07T04:57:20Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:45:04.9926423Z [build comparison] identical_binaries=false",
+        "2026-09-07T04:57:18.9311276Z | funcref-exported-table | 289,054,075.1 | 293,987,176.3 | +1.71% (+1.59%..+1.80%) | 0.09% | 0.000004% | 99.999996% | 4+6 | 99.999966% | 6 | **IMPROVEMENT** |",
+        "2026-09-07T04:57:18.9312135Z | funcref-direct | 1,131,131,283.0 | 3,384,392,432.1 | +199.20% (+199.13%..+199.25%) | 0.02% | <0.000001% | >99.999999% | 4+6 | >99.999999% | 6 | **IMPROVEMENT** |",
+        "2026-09-07T04:57:18.9315585Z | c-ray | 3,268.7 | 3,272.7 | +0.12% (+0.01%..+0.26%) | 0.07% | 0.000002% | 99.999998% | 4+22 | 99.216353% | 16 | **IMPROVEMENT** |"
+      ]
+    },
+    {
+      "job": 101624877126,
+      "name": "arm64-darwin / interp",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T04:43:30Z",
+          "completed_at": "2026-09-07T04:43:32Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 2,
+          "started_at": "2026-09-07T04:43:32Z",
+          "completed_at": "2026-09-07T04:43:32Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T04:43:32Z",
+          "completed_at": "2026-09-07T04:43:34Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T04:43:34Z",
+          "completed_at": "2026-09-07T04:43:36Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T04:43:36Z",
+          "completed_at": "2026-09-07T04:43:45Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@nightly",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T04:43:45Z",
+          "completed_at": "2026-09-07T04:43:45Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T04:43:45Z",
+          "completed_at": "2026-09-07T04:43:48Z"
+        },
+        {
+          "name": "Install QEMU user-static",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T04:43:48Z",
+          "completed_at": "2026-09-07T04:43:48Z"
+        },
+        {
+          "name": "Cache Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T04:43:48Z",
+          "completed_at": "2026-09-07T04:43:48Z"
+        },
+        {
+          "name": "Install Zig",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T04:43:48Z",
+          "completed_at": "2026-09-07T04:43:48Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T04:43:48Z",
+          "completed_at": "2026-09-07T04:44:36Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T04:44:36Z",
+          "completed_at": "2026-09-07T04:44:36Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T04:44:36Z",
+          "completed_at": "2026-09-07T04:44:37Z"
+        },
+        {
+          "name": "Run benchmark suite",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14,
+          "started_at": "2026-09-07T04:44:37Z",
+          "completed_at": "2026-09-07T04:52:23Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T04:52:23Z",
+          "completed_at": "2026-09-07T04:52:24Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T04:52:24Z",
+          "completed_at": "2026-09-07T04:52:24Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T04:52:24Z",
+          "completed_at": "2026-09-07T04:52:24Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T04:52:24Z",
+          "completed_at": "2026-09-07T04:52:25Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T04:52:25Z",
+          "completed_at": "2026-09-07T04:52:25Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T04:52:25Z",
+          "completed_at": "2026-09-07T04:52:26Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T04:44:36.4018520Z [build comparison] identical_binaries=false"
+      ]
+    },
+    {
+      "job": 101627616225,
+      "name": "confirm / arm64-darwin / jit",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:03:56Z",
+          "completed_at": "2026-09-07T05:03:58Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:03:58Z",
+          "completed_at": "2026-09-07T05:03:59Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:03:59Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:04:00Z",
+          "completed_at": "2026-09-07T05:04:00Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:04:00.1376480Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627616226,
+      "name": "confirm / arm64-linux / interp",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:02:09Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:02:11Z",
+          "completed_at": "2026-09-07T05:02:11Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:02:11.8506947Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627616243,
+      "name": "confirm / x64-linux / jit",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:02:32Z",
+          "completed_at": "2026-09-07T05:02:34Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:02:34Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:35Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:02:35.7251575Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627616257,
+      "name": "confirm / x64-linux / interp",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:02:25Z",
+          "completed_at": "2026-09-07T05:02:26Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:02:26Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:02:27Z",
+          "completed_at": "2026-09-07T05:02:27Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:02:27.0944843Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627616277,
+      "name": "confirm / x64-windows / interp",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:02:16Z",
+          "completed_at": "2026-09-07T05:02:18Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:02:18Z",
+          "completed_at": "2026-09-07T05:02:19Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:02:19Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:02:20Z",
+          "completed_at": "2026-09-07T05:02:20Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:02:20.3926725Z primary flagged rows: none\r"
+      ]
+    },
+    {
+      "job": 101627616279,
+      "name": "confirm / x64-windows / jit",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:02:35Z",
+          "completed_at": "2026-09-07T05:02:36Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:02:36Z",
+          "completed_at": "2026-09-07T05:02:37Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:02:37Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:02:38Z",
+          "completed_at": "2026-09-07T05:02:38Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:02:38.8359126Z primary flagged rows: none\r"
+      ]
+    },
+    {
+      "job": 101627616296,
+      "name": "confirm / arm64-linux / jit",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:02:29Z",
+          "completed_at": "2026-09-07T05:02:30Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:02:30Z",
+          "completed_at": "2026-09-07T05:02:30Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:02:30Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:02:31Z",
+          "completed_at": "2026-09-07T05:02:31Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:02:31.0088942Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627616346,
+      "name": "confirm / arm64-darwin / interp",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:04:08Z",
+          "completed_at": "2026-09-07T05:04:11Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:04:11Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Enable Git long paths",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Build baseline and candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Build the Darwin ASLR pin shim",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:04:12Z",
+          "completed_at": "2026-09-07T05:04:12Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:04:12.2561700Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627982131,
+      "name": "wasmi-confirm / arm64-linux / jit / execute",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:02:46Z",
+          "completed_at": "2026-09-07T05:02:49Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:02:49Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-07T05:02:50Z",
+          "completed_at": "2026-09-07T05:02:50Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:02:50.9016255Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627982140,
+      "name": "wasmi-confirm / x64-linux / interp / startup",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:02:57Z",
+          "completed_at": "2026-09-07T05:02:59Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:02:59Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-07T05:03:00Z",
+          "completed_at": "2026-09-07T05:03:00Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:03:00.5280777Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627982157,
+      "name": "wasmi-confirm / x64-linux / jit / startup",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:04:17Z",
+          "completed_at": "2026-09-07T05:04:19Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:04:19Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-07T05:04:20Z",
+          "completed_at": "2026-09-07T05:04:20Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:04:20.2987093Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627982159,
+      "name": "wasmi-confirm / x64-linux / interp / execute",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:03:06Z",
+          "completed_at": "2026-09-07T05:03:07Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:03:07Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-07T05:03:08Z",
+          "completed_at": "2026-09-07T05:03:08Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:03:08.2178512Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627982168,
+      "name": "wasmi-confirm / arm64-linux / interp / execute",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:04:50Z",
+          "completed_at": "2026-09-07T05:04:52Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:04:52Z",
+          "completed_at": "2026-09-07T05:04:52Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:04:52Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-07T05:04:53Z",
+          "completed_at": "2026-09-07T05:04:53Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:04:52.9998177Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627982175,
+      "name": "wasmi-confirm / arm64-linux / jit / startup",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:03:15Z",
+          "completed_at": "2026-09-07T05:03:17Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:03:17Z",
+          "completed_at": "2026-09-07T05:03:18Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:03:18Z",
+          "completed_at": "2026-09-07T05:03:18Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T05:03:18Z",
+          "completed_at": "2026-09-07T05:03:20Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-07T05:03:20Z",
+          "completed_at": "2026-09-07T05:03:22Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-09-07T05:03:22Z",
+          "completed_at": "2026-09-07T05:03:27Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-07T05:03:27Z",
+          "completed_at": "2026-09-07T05:03:33Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-07T05:03:33Z",
+          "completed_at": "2026-09-07T05:03:47Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T05:03:47Z",
+          "completed_at": "2026-09-07T05:03:48Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:03:48Z",
+          "completed_at": "2026-09-07T05:03:48Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-07T05:03:48Z",
+          "completed_at": "2026-09-07T05:03:50Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-07T05:03:50Z",
+          "completed_at": "2026-09-07T05:03:50Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 13,
+          "started_at": "2026-09-07T05:03:50Z",
+          "completed_at": "2026-09-07T05:11:36Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 14,
+          "started_at": "2026-09-07T05:11:36Z",
+          "completed_at": "2026-09-07T05:11:36Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-09-07T05:11:36Z",
+          "completed_at": "2026-09-07T05:11:37Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-09-07T05:11:37Z",
+          "completed_at": "2026-09-07T05:11:37Z"
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 28,
+          "started_at": "2026-09-07T05:11:37Z",
+          "completed_at": "2026-09-07T05:11:37Z"
+        },
+        {
+          "name": "Post Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 29,
+          "started_at": "2026-09-07T05:11:37Z",
+          "completed_at": "2026-09-07T05:11:37Z"
+        },
+        {
+          "name": "Post Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 30,
+          "started_at": "2026-09-07T05:11:37Z",
+          "completed_at": "2026-09-07T05:11:37Z"
+        },
+        {
+          "name": "Post Checkout baseline",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31,
+          "started_at": "2026-09-07T05:11:37Z",
+          "completed_at": "2026-09-07T05:11:37Z"
+        },
+        {
+          "name": "Post Checkout candidate",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32,
+          "started_at": "2026-09-07T05:11:37Z",
+          "completed_at": "2026-09-07T05:11:37Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33,
+          "started_at": "2026-09-07T05:11:37Z",
+          "completed_at": "2026-09-07T05:11:37Z"
+        }
+      ],
+      "issues": [
+        "2026-09-07T05:11:36.2532914Z ##[error]Process completed with exit code 1."
+      ],
+      "summary": [
+        "2026-09-07T05:03:18.8837545Z primary flagged rows: startup/erc20",
+        "2026-09-07T05:03:50.6855462Z   CACHE_ON_FAILURE: false",
+        "2026-09-07T05:03:50.6938522Z Model name:                              Neoverse-N2",
+        "2026-09-07T05:03:50.7021690Z   CACHE_ON_FAILURE: false",
+        "2026-09-07T05:03:50.7023350Z   FLAGGED: startup/erc20",
+        "2026-09-07T05:11:07.6501402Z [pilot 1] startup/erc20: baseline",
+        "2026-09-07T05:11:07.6502703Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/erc20",
+        "2026-09-07T05:11:14.7262261Z [pilot 1] startup/erc20: candidate",
+        "2026-09-07T05:11:14.7263436Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/erc20",
+        "2026-09-07T05:11:21.9274599Z [confirmation 1] startup/erc20: candidate",
+        "2026-09-07T05:11:21.9275755Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/candidate/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/erc20",
+        "2026-09-07T05:11:29.1252559Z [confirmation 1] startup/erc20: baseline",
+        "2026-09-07T05:11:29.1253733Z $ cargo +stable criterion --manifest-path /home/runner/work/Silverfir-nano/Silverfir-nano/wasmi-work/arm64-linux/jit/baseline/suite/Cargo.toml --locked --bench criterion --no-default-features --features silverfir-nano-jit --plotting-backend disabled --message-format=json startup/erc20",
+        "2026-09-07T05:11:36.1917383Z | startup/erc20 | 3.476ms | 3.779ms | -8.01% (-8.49%..-7.26%) | 0.44% | >99.999999% | <0.000001% | 10 | 1 | >99.999999% | **REGRESSION** |",
+        "2026-09-07T05:11:36.2103941Z   CACHE_ON_FAILURE: false",
+        "2026-09-07T05:11:36.2453554Z ## Cross-run confirmation",
+        "2026-09-07T05:11:36.2454447Z - **startup/erc20**: primary -6.96%, confirmation -8.01%",
+        "2026-09-07T05:11:36.2608405Z   CACHE_ON_FAILURE: false",
+        "2026-09-07T05:11:37.3066995Z   CACHE_ON_FAILURE: false"
+      ]
+    },
+    {
+      "job": 101627982202,
+      "name": "wasmi-confirm / x64-linux / jit / execute",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:04:37Z",
+          "completed_at": "2026-09-07T05:04:41Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:04:41Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-07T05:04:42Z",
+          "completed_at": "2026-09-07T05:04:42Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:04:42.3103250Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101627982240,
+      "name": "wasmi-confirm / arm64-linux / interp / startup",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:04:59Z",
+          "completed_at": "2026-09-07T05:05:01Z"
+        },
+        {
+          "name": "Fetch the primary verdict",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:05:01Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Decide whether confirmation is needed",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Checkout candidate",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 4,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Checkout baseline",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Checkout pinned wasmi-benchmarks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Install wasmi benchmark system dependency",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Restore cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Record runner CPU",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Re-measure the flagged rows on this runner",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Cross-run verdict",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Mark dev soft-fail as action required",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-09-07T05:05:02Z",
+          "completed_at": "2026-09-07T05:05:02Z"
+        }
+      ],
+      "issues": [],
+      "summary": [
+        "2026-09-07T05:05:02.4700987Z primary flagged rows: none"
+      ]
+    },
+    {
+      "job": 101629619670,
+      "name": "run report",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-07T05:12:08Z",
+          "completed_at": "2026-09-07T05:12:09Z"
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-07T05:12:09Z",
+          "completed_at": "2026-09-07T05:12:11Z"
+        },
+        {
+          "name": "Collect result artifacts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-07T05:12:11Z",
+          "completed_at": "2026-09-07T05:12:12Z"
+        },
+        {
+          "name": "Write the consolidated report",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-07T05:12:12Z",
+          "completed_at": "2026-09-07T05:12:12Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-07T05:12:12Z",
+          "completed_at": "2026-09-07T05:12:12Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-07T05:12:12Z",
+          "completed_at": "2026-09-07T05:12:12Z"
+        }
+      ],
+      "issues": [],
+      "summary": []
+    }
+  ]
+}

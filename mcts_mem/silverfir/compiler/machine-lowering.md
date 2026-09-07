@@ -187,6 +187,8 @@
   elsewhere), widening the reserved tail (costs a residency lane), or
   narrowing individual sites to one borrow (code).
 
+- 2026-09-06 (42396c9d) pitfall: simulation for an empty cache bank still walked unrelated layout state. Skipping that work preserves generated code and restored the complete dev gate after confirmed ARM startup failures; do not reintroduce empty-bank traversal when sharing GP/FP layout logic (code).
+
 ## Moves
 
 - 2026-04-09 (c329abab) replaced [[whole-module-borrowed-ssa]]: a borrowed whole-module SSA slice ties every function's prepared SSA to one lifetime so none can be freed until lowering finishes; taking ownership of the lowering inputs lets each function's SSA (and the semantic IR, now taken and dropped) be released as soon as it is lowered, cutting peak compile-time memory (code).

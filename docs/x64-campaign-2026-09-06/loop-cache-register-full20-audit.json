@@ -1,0 +1,528 @@
+{
+  "run": 34087059415,
+  "status": "FAILED: sort regression reproduced on both native x64 runners. Candidate rejected.",
+  "jobs": [
+    {
+      "id": 101633002357,
+      "name": "Nano full20 / x64-linux / draw 2",
+      "status": "completed",
+      "conclusion": "failure",
+      "run_id": 34087059415,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Audit and test the measurement tools",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Save and audit source identities",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Validate candidate on the native CPU before timing",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Install suite system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11
+        },
+        {
+          "name": "Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14
+        },
+        {
+          "name": "Compare every execution group with the standard dev differential",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 15
+        },
+        {
+          "name": "Build ARM64 CoreMark probes before timing",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16
+        },
+        {
+          "name": "Check exact CoreMark on ARM64",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 17
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18
+        },
+        {
+          "name": "Post Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 31
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 32
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 34
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 35
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 36
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 37
+        }
+      ],
+      "errors": [
+        "2026-09-07T05:48:11.3181064Z ##[error]Process completed with exit code 1."
+      ],
+      "audits": [
+        "2026-09-07T05:32:39.8755912Z full20-out/correctness-core.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:39.8757044Z full20-out/correctness-spec-build.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:39.8757589Z full20-out/correctness-spec.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:39.8758137Z full20-out/correctness-unguarded-memory.log: 0 errors, 0 warnings",
+        "2026-09-07T05:48:11.3099431Z full20-out/measurement.log: 0 errors, 0 warnings"
+      ],
+      "spec": [
+        "2026-09-07T05:32:39.8225787Z [2026-09-07T05:32:39Z INFO  sf_nano_spectest::summary] Total:   260",
+        "2026-09-07T05:32:39.8226364Z [2026-09-07T05:32:39Z INFO  sf_nano_spectest::summary] Passed:  260 (100.0%)"
+      ]
+    },
+    {
+      "id": 101633002492,
+      "name": "Nano full20 / x64-linux / draw 1",
+      "status": "completed",
+      "conclusion": "failure",
+      "run_id": 34087059415,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Audit and test the measurement tools",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Save and audit source identities",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Validate candidate on the native CPU before timing",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Install suite system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11
+        },
+        {
+          "name": "Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14
+        },
+        {
+          "name": "Compare every execution group with the standard dev differential",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 15
+        },
+        {
+          "name": "Build ARM64 CoreMark probes before timing",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16
+        },
+        {
+          "name": "Check exact CoreMark on ARM64",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 17
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18
+        },
+        {
+          "name": "Post Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 31
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 32
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 34
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 35
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 36
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 37
+        }
+      ],
+      "errors": [
+        "2026-09-07T05:47:56.4897954Z ##[error]Process completed with exit code 1."
+      ],
+      "audits": [
+        "2026-09-07T05:32:40.3515627Z full20-out/correctness-core.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:40.3516577Z full20-out/correctness-spec-build.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:40.3517021Z full20-out/correctness-spec.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:40.3517459Z full20-out/correctness-unguarded-memory.log: 0 errors, 0 warnings",
+        "2026-09-07T05:47:56.4813526Z full20-out/measurement.log: 0 errors, 0 warnings"
+      ],
+      "spec": [
+        "2026-09-07T05:32:40.3005222Z [2026-09-07T05:32:40Z INFO  sf_nano_spectest::summary] Total:   260",
+        "2026-09-07T05:32:40.3005718Z [2026-09-07T05:32:40Z INFO  sf_nano_spectest::summary] Passed:  260 (100.0%)"
+      ]
+    },
+    {
+      "id": 101633002500,
+      "name": "Nano full20 / arm64-linux / draw 1",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 34087059415,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Audit and test the measurement tools",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Save and audit source identities",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Validate candidate on the native CPU before timing",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Install suite system dependency",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11
+        },
+        {
+          "name": "Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12
+        },
+        {
+          "name": "Install pinned cargo-criterion",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13
+        },
+        {
+          "name": "Verify cargo-criterion",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 14
+        },
+        {
+          "name": "Compare every execution group with the standard dev differential",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15
+        },
+        {
+          "name": "Build ARM64 CoreMark probes before timing",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16
+        },
+        {
+          "name": "Check exact CoreMark on ARM64",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17
+        },
+        {
+          "name": "Run actions/upload-artifact@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18
+        },
+        {
+          "name": "Post Run actions/cache@v6",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 31
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2.9.1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 32
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 34
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 35
+        },
+        {
+          "name": "Post Run actions/checkout@v7",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 36
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 37
+        }
+      ],
+      "errors": [],
+      "audits": [
+        "2026-09-07T05:32:48.1639243Z full20-out/correctness-core.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:48.1639625Z full20-out/correctness-spec-build.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:48.1639972Z full20-out/correctness-spec.log: 0 errors, 0 warnings",
+        "2026-09-07T05:32:48.1640346Z full20-out/correctness-unguarded-memory.log: 0 errors, 0 warnings",
+        "2026-09-07T05:49:04.4880188Z full20-out/measurement.log: 0 errors, 0 warnings",
+        "2026-09-07T05:50:01.0893496Z full20-out/core-build-parent.log: 0 errors, 0 warnings",
+        "2026-09-07T05:50:57.7771252Z full20-out/core-build-carry.log: 0 errors, 0 warnings"
+      ],
+      "spec": [
+        "2026-09-07T05:32:48.1220500Z [2026-09-07T05:32:48Z INFO  sf_nano_spectest::summary] Total:   260",
+        "2026-09-07T05:32:48.1220906Z [2026-09-07T05:32:48Z INFO  sf_nano_spectest::summary] Passed:  260 (100.0%)"
+      ]
+    }
+  ]
+}

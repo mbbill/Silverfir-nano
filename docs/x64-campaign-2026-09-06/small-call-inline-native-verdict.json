@@ -1,0 +1,99 @@
+{
+  "source": "7fbc510b0fc6edd06d2bd926c6ba0e49d4b3f4ee",
+  "parent": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+  "coremark_run": 34079252500,
+  "startup_run": 34079252501,
+  "verdict": "rejected: CoreMark gain is small and weakly supported, while both architectures have substantial CoreMark startup regression",
+  "rows": [
+    {
+      "artifact": "core1",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "workload": "coremark-out",
+      "delta": 0.17254277108608465,
+      "p_improvement": 0.8149311307027516,
+      "p_regression": 0.18506886929724842,
+      "parent_main": 5.468110131843279
+    },
+    {
+      "artifact": "core2",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "workload": "coremark-out",
+      "delta": 0.11345815118684896,
+      "p_improvement": 0.7887642573076579,
+      "p_regression": 0.21123574269234213,
+      "parent_main": 5.561483490945286
+    },
+    {
+      "artifact": "startup_arm",
+      "cpu": "Neoverse-N2",
+      "workload": "argon2-results",
+      "delta": -0.9811973363331771,
+      "p_improvement": 9.383806309115617e-05,
+      "p_regression": 0.9999061619369088,
+      "parent_main": -0.8818817416421275
+    },
+    {
+      "artifact": "startup_arm",
+      "cpu": "Neoverse-N2",
+      "workload": "bz2-results",
+      "delta": -0.36835679937322957,
+      "p_improvement": 0.0026056660227737893,
+      "p_regression": 0.9973943339772262,
+      "parent_main": 1.6751986333727833
+    },
+    {
+      "artifact": "startup_arm",
+      "cpu": "Neoverse-N2",
+      "workload": "coremark-results",
+      "delta": -8.210068710778714,
+      "p_improvement": 1.226574397605873e-11,
+      "p_regression": 0.9999999999877343,
+      "parent_main": -0.385275501651886
+    },
+    {
+      "artifact": "startup_arm",
+      "cpu": "Neoverse-N2",
+      "workload": "ffmpeg-results",
+      "delta": -1.3651505241235908,
+      "p_improvement": 1.2058225238864573e-05,
+      "p_regression": 0.9999879417747611,
+      "parent_main": 1.369286078410168
+    },
+    {
+      "artifact": "startup_x64",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "workload": "argon2-results",
+      "delta": -0.6894544696386872,
+      "p_improvement": 0.009211074044653378,
+      "p_regression": 0.9907889259553466,
+      "parent_main": -1.8604159800022848
+    },
+    {
+      "artifact": "startup_x64",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "workload": "bz2-results",
+      "delta": -0.030149255237016555,
+      "p_improvement": 0.43501467246176206,
+      "p_regression": 0.5649853275382379,
+      "parent_main": 0.9369907966543755
+    },
+    {
+      "artifact": "startup_x64",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "workload": "coremark-results",
+      "delta": -7.1195275219922545,
+      "p_improvement": 3.276065897006575e-06,
+      "p_regression": 0.999996723934103,
+      "parent_main": -1.9119287489126273
+    },
+    {
+      "artifact": "startup_x64",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "workload": "ffmpeg-results",
+      "delta": -1.3608127840474538,
+      "p_improvement": 1.6233785845587434e-06,
+      "p_regression": 0.9999983766214154,
+      "parent_main": -0.08525001045326304
+    }
+  ]
+}

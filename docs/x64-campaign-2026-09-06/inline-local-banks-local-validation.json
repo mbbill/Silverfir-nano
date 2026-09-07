@@ -1,0 +1,129 @@
+{
+  "candidate": "b5be4dadef33a7bf7334b1d8d1119d7bd1403778",
+  "parent": "fc26a6a9d12d8fcc3964c3a52045ad72f5e9ae71",
+  "status": "Shelved at user-requested JIT wrap-up. Local source commit only; not pushed; no native timing; not retained.",
+  "tests": {
+    "ARM_total": 637,
+    "x64_Rosetta_total": 624,
+    "ignored_each": 4,
+    "unguarded": 19,
+    "JIT_spec": 260,
+    "warning_audits": 8,
+    "errors": 0,
+    "warnings": 0
+  },
+  "static_note": "Six functions change per ISA in all20+CoreMark; residual direct-call targets unchanged in all1285. One additional ERC20 function shrinks. No extra call sites admitted despite reduced physical locals.",
+  "heap_note": "Requested live heap during serial Instance::new, two identical repeats; not RSS/total allocation traffic. Fibonacci peak increases 12648 to13418 despite smaller frame. Other21 unchanged. Finite64KiB compiler budget/32KiB code arena stays6733 for both variants.",
+  "heap": [
+    {
+      "workload": "argon2",
+      "cache_peak_increment_bytes": 621347,
+      "banks_peak_increment_bytes": 621347
+    },
+    {
+      "workload": "bulk-ops",
+      "cache_peak_increment_bytes": 9116,
+      "banks_peak_increment_bytes": 9116
+    },
+    {
+      "workload": "compression",
+      "cache_peak_increment_bytes": 885138,
+      "banks_peak_increment_bytes": 885138
+    },
+    {
+      "workload": "coremark",
+      "cache_peak_increment_bytes": 198155,
+      "banks_peak_increment_bytes": 198155
+    },
+    {
+      "workload": "counter-global",
+      "cache_peak_increment_bytes": 5907,
+      "banks_peak_increment_bytes": 5907
+    },
+    {
+      "workload": "counter-local",
+      "cache_peak_increment_bytes": 4663,
+      "banks_peak_increment_bytes": 4663
+    },
+    {
+      "workload": "counter-param",
+      "cache_peak_increment_bytes": 4982,
+      "banks_peak_increment_bytes": 4982
+    },
+    {
+      "workload": "erc20",
+      "cache_peak_increment_bytes": 202647,
+      "banks_peak_increment_bytes": 202647
+    },
+    {
+      "workload": "fibonacci-iter",
+      "cache_peak_increment_bytes": 6600,
+      "banks_peak_increment_bytes": 6600
+    },
+    {
+      "workload": "fibonacci-rec",
+      "cache_peak_increment_bytes": 12648,
+      "banks_peak_increment_bytes": 13418
+    },
+    {
+      "workload": "fibonacci-tail",
+      "cache_peak_increment_bytes": 5819,
+      "banks_peak_increment_bytes": 5819
+    },
+    {
+      "workload": "json_parse",
+      "cache_peak_increment_bytes": 598618,
+      "banks_peak_increment_bytes": 598618
+    },
+    {
+      "workload": "mandelbrot",
+      "cache_peak_increment_bytes": 367284,
+      "banks_peak_increment_bytes": 367284
+    },
+    {
+      "workload": "matrix_mul",
+      "cache_peak_increment_bytes": 370314,
+      "banks_peak_increment_bytes": 370314
+    },
+    {
+      "workload": "nbody",
+      "cache_peak_increment_bytes": 352606,
+      "banks_peak_increment_bytes": 352606
+    },
+    {
+      "workload": "prime_sieve",
+      "cache_peak_increment_bytes": 367029,
+      "banks_peak_increment_bytes": 367029
+    },
+    {
+      "workload": "regex_redux",
+      "cache_peak_increment_bytes": 6435430,
+      "banks_peak_increment_bytes": 6435430
+    },
+    {
+      "workload": "reverse_complement",
+      "cache_peak_increment_bytes": 437994,
+      "banks_peak_increment_bytes": 437994
+    },
+    {
+      "workload": "sort",
+      "cache_peak_increment_bytes": 371580,
+      "banks_peak_increment_bytes": 371580
+    },
+    {
+      "workload": "spectralnorm",
+      "cache_peak_increment_bytes": 369062,
+      "banks_peak_increment_bytes": 369062
+    },
+    {
+      "workload": "tiny_keccak",
+      "cache_peak_increment_bytes": 369857,
+      "banks_peak_increment_bytes": 369857
+    },
+    {
+      "workload": "word_count",
+      "cache_peak_increment_bytes": 387022,
+      "banks_peak_increment_bytes": 387022
+    }
+  ]
+}

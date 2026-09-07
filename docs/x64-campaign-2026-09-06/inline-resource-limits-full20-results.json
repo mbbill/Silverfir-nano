@@ -1,0 +1,636 @@
+{
+  "run_id": 34082432990,
+  "note": "Same-host Nano differential; standard complete 20 execution rows, Fibonacci input 30. Candidate not retained; startup remains a separate open gate. No new competitor measurements.",
+  "results": [
+    {
+      "artifact": "nano-inline-limited-full20-arm64-linux-1",
+      "cpu": "Neoverse-N2",
+      "baseline_sha": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+      "candidate_sha": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "metric_count": 20,
+      "throughput_geomean_delta_percent": 0.0697348449966468,
+      "metrics": {
+        "execute/counter-local": {
+          "delta_percent": 0.007205560013673636,
+          "status": "PASS",
+          "probability_regression": 0.4186797241779572,
+          "probability_improvement": 0.5813202758220428,
+          "baseline_geomean": 295081.59892186493,
+          "candidate_geomean": 295060.3381721215,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/counter-param": {
+          "delta_percent": 0.0020148579431218676,
+          "status": "PASS",
+          "probability_regression": 0.4834824450439753,
+          "probability_improvement": 0.5165175549560247,
+          "baseline_geomean": 295076.3192014991,
+          "candidate_geomean": 295070.3739526316,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/counter-global": {
+          "delta_percent": 0.0036238108498898663,
+          "status": "PASS",
+          "probability_regression": 0.45898893130314367,
+          "probability_improvement": 0.5410110686968563,
+          "baseline_geomean": 147584.68855718404,
+          "candidate_geomean": 147579.34056102872,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/fibonacci-rec": {
+          "delta_percent": 1.5144526968177066,
+          "status": "IMPROVEMENT",
+          "probability_regression": 6.650704679466819e-13,
+          "probability_improvement": 0.999999999999335,
+          "baseline_geomean": 3027988.7780266544,
+          "candidate_geomean": 2982815.4490179005,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/fibonacci-iter": {
+          "delta_percent": 0.007436184074651096,
+          "status": "PASS",
+          "probability_regression": 0.34606170375896717,
+          "probability_improvement": 0.6539382962410328,
+          "baseline_geomean": 884710.8573754585,
+          "candidate_geomean": 884645.0735393815,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/fibonacci-tail": {
+          "delta_percent": 0.01734269226956579,
+          "status": "PASS",
+          "probability_regression": 0.21737680476110344,
+          "probability_improvement": 0.7826231952388966,
+          "baseline_geomean": 471789.64563770813,
+          "candidate_geomean": 471707.83879881486,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/sort": {
+          "delta_percent": -0.2266518121922596,
+          "status": "RECOVERED",
+          "probability_regression": 0.9865105006120048,
+          "probability_improvement": 0.013489499387995152,
+          "baseline_geomean": 17801323.919899136,
+          "candidate_geomean": 17841762.598154936,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/prime_sieve": {
+          "delta_percent": 0.33538925103645373,
+          "status": "PASS",
+          "probability_regression": 0.054011827784063694,
+          "probability_improvement": 0.9459881722159363,
+          "baseline_geomean": 18745598.261809587,
+          "candidate_geomean": 18682937.696995966,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/matrix_mul": {
+          "delta_percent": -0.05553165074652586,
+          "status": "RECOVERED",
+          "probability_regression": 0.9745714781819202,
+          "probability_improvement": 0.025428521818079752,
+          "baseline_geomean": 37971488.635940656,
+          "candidate_geomean": 37992586.54641118,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/nbody": {
+          "delta_percent": -0.006789706262393061,
+          "status": "PASS",
+          "probability_regression": 0.6380271195773581,
+          "probability_improvement": 0.36197288042264186,
+          "baseline_geomean": 16548712.166485585,
+          "candidate_geomean": 16549835.851726852,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/argon2": {
+          "delta_percent": -0.16099302370344257,
+          "status": "RECOVERED",
+          "probability_regression": 0.9811834073975061,
+          "probability_improvement": 0.01881659260249391,
+          "baseline_geomean": 29351896.899891894,
+          "candidate_geomean": 29399227.605359223,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/tiny_keccak": {
+          "delta_percent": 0.08176278544082699,
+          "status": "PASS",
+          "probability_regression": 0.0035835157207985088,
+          "probability_improvement": 0.9964164842792015,
+          "baseline_geomean": 12064.769633102416,
+          "candidate_geomean": 12054.913200287414,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/mandelbrot": {
+          "delta_percent": 0.004078771936986352,
+          "status": "RECOVERED",
+          "probability_regression": 0.4538259789755178,
+          "probability_improvement": 0.5461740210244822,
+          "baseline_geomean": 14375887.809121251,
+          "candidate_geomean": 14375301.473358942,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/spectralnorm": {
+          "delta_percent": -0.0028914232342490327,
+          "status": "PASS",
+          "probability_regression": 0.5511110952610504,
+          "probability_improvement": 0.4488889047389496,
+          "baseline_geomean": 14942960.017241145,
+          "candidate_geomean": 14943392.093952099,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/compression": {
+          "delta_percent": -0.006714892729374839,
+          "status": "PASS",
+          "probability_regression": 0.5379351876954311,
+          "probability_improvement": 0.46206481230456886,
+          "baseline_geomean": 6886945.605638838,
+          "candidate_geomean": 6887408.087703765,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/word_count": {
+          "delta_percent": 0.1001385554999892,
+          "status": "PASS",
+          "probability_regression": 0.0665706768573894,
+          "probability_improvement": 0.9334293231426106,
+          "baseline_geomean": 861013.6623598841,
+          "candidate_geomean": 860152.3182532863,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/json_parse": {
+          "delta_percent": -0.07984555610538217,
+          "status": "RECOVERED",
+          "probability_regression": 0.8869390979742366,
+          "probability_improvement": 0.11306090202576335,
+          "baseline_geomean": 5315619.290322417,
+          "candidate_geomean": 5319866.9676868245,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/reverse_complement": {
+          "delta_percent": 0.04710361540512717,
+          "status": "PASS",
+          "probability_regression": 0.20420202226127698,
+          "probability_improvement": 0.795797977738723,
+          "baseline_geomean": 9935.26661476432,
+          "candidate_geomean": 9930.588948338642,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/regex_redux": {
+          "delta_percent": -0.08438986174880975,
+          "status": "PASS",
+          "probability_regression": 0.643252027465154,
+          "probability_improvement": 0.356747972534846,
+          "baseline_geomean": 20066.95452725107,
+          "candidate_geomean": 20083.903305484317,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/bulk-ops": {
+          "delta_percent": -0.09000773290421442,
+          "status": "RECOVERED",
+          "probability_regression": 0.9838850883158384,
+          "probability_improvement": 0.01611491168416157,
+          "baseline_geomean": 588442.9419058812,
+          "candidate_geomean": 588973.0632074904,
+          "pair_count": 10,
+          "process_pairs": 1
+        }
+      }
+    },
+    {
+      "artifact": "nano-inline-limited-full20-x64-linux-1",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "baseline_sha": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+      "candidate_sha": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "metric_count": 20,
+      "throughput_geomean_delta_percent": 2.124525846971426,
+      "metrics": {
+        "execute/counter-local": {
+          "delta_percent": 0.22312219978387338,
+          "status": "PASS",
+          "probability_regression": 0.2475797311866586,
+          "probability_improvement": 0.7524202688133415,
+          "baseline_geomean": 313315.66956951126,
+          "candidate_geomean": 312618.1490783636,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/counter-param": {
+          "delta_percent": 0.28954560052384265,
+          "status": "PASS",
+          "probability_regression": 0.11595180653090148,
+          "probability_improvement": 0.8840481934690985,
+          "baseline_geomean": 312969.72314592183,
+          "candidate_geomean": 312066.14933978446,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/counter-global": {
+          "delta_percent": -0.029234437862408667,
+          "status": "PASS",
+          "probability_regression": 0.5949062138880531,
+          "probability_improvement": 0.4050937861119469,
+          "baseline_geomean": 156226.46612714295,
+          "candidate_geomean": 156272.15141214375,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/fibonacci-rec": {
+          "delta_percent": 50.49920421262188,
+          "status": "IMPROVEMENT",
+          "probability_regression": 5.855825262299894e-19,
+          "probability_improvement": 1.0,
+          "baseline_geomean": 4207370.718342252,
+          "candidate_geomean": 2795609.9438228076,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/fibonacci-iter": {
+          "delta_percent": 0.0018371540338183038,
+          "status": "PASS",
+          "probability_regression": 0.4896749220051517,
+          "probability_improvement": 0.5103250779948483,
+          "baseline_geomean": 624037.2909505143,
+          "candidate_geomean": 624025.8266348673,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/fibonacci-tail": {
+          "delta_percent": -0.5121747931066418,
+          "status": "PASS",
+          "probability_regression": 0.917153015076653,
+          "probability_improvement": 0.08284698492334697,
+          "baseline_geomean": 364954.23510883935,
+          "candidate_geomean": 366833.0615830489,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/sort": {
+          "delta_percent": 0.16824670333526032,
+          "status": "RECOVERED",
+          "probability_regression": 0.15587058285774935,
+          "probability_improvement": 0.8441294171422506,
+          "baseline_geomean": 33740658.056202434,
+          "candidate_geomean": 33683985.86044024,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/prime_sieve": {
+          "delta_percent": 0.03279405525634899,
+          "status": "PASS",
+          "probability_regression": 0.39450664203714014,
+          "probability_improvement": 0.6054933579628599,
+          "baseline_geomean": 23362602.272890005,
+          "candidate_geomean": 23354943.239898864,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/matrix_mul": {
+          "delta_percent": 0.2552777051653048,
+          "status": "RECOVERED",
+          "probability_regression": 0.09832765976591318,
+          "probability_improvement": 0.9016723402340868,
+          "baseline_geomean": 58589002.21162314,
+          "candidate_geomean": 58439818.38434874,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/nbody": {
+          "delta_percent": 0.009422766172218482,
+          "status": "PASS",
+          "probability_regression": 0.4544932715262831,
+          "probability_improvement": 0.545506728473717,
+          "baseline_geomean": 14919695.077231703,
+          "candidate_geomean": 14918289.361708248,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/argon2": {
+          "delta_percent": 1.5322438600799273,
+          "status": "PASS",
+          "probability_regression": 0.0364660221172531,
+          "probability_improvement": 0.9635339778827469,
+          "baseline_geomean": 63748707.25266911,
+          "candidate_geomean": 62786662.4719927,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/tiny_keccak": {
+          "delta_percent": -0.1606459337163963,
+          "status": "RECOVERED",
+          "probability_regression": 0.9947527437306924,
+          "probability_improvement": 0.005247256269307554,
+          "baseline_geomean": 23284.153327033895,
+          "candidate_geomean": 23321.618558925653,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/mandelbrot": {
+          "delta_percent": -0.032105546700211283,
+          "status": "RECOVERED",
+          "probability_regression": 0.8448874174095244,
+          "probability_improvement": 0.15511258259047556,
+          "baseline_geomean": 17377307.99703246,
+          "candidate_geomean": 17382888.86853596,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/spectralnorm": {
+          "delta_percent": 0.015762803408784266,
+          "status": "PASS",
+          "probability_regression": 0.4256367824865258,
+          "probability_improvement": 0.5743632175134742,
+          "baseline_geomean": 17328595.29776515,
+          "candidate_geomean": 17325864.255843602,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/compression": {
+          "delta_percent": -0.02931148039700645,
+          "status": "PASS",
+          "probability_regression": 0.6109405899145983,
+          "probability_improvement": 0.3890594100854017,
+          "baseline_geomean": 10985378.263433987,
+          "candidate_geomean": 10988599.184529867,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/word_count": {
+          "delta_percent": -0.03100629477587242,
+          "status": "PASS",
+          "probability_regression": 0.6557273835947721,
+          "probability_improvement": 0.3442726164052279,
+          "baseline_geomean": 1200685.0298338865,
+          "candidate_geomean": 1201057.433242067,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/json_parse": {
+          "delta_percent": 0.4025827596262837,
+          "status": "PASS",
+          "probability_regression": 0.31052235979518306,
+          "probability_improvement": 0.6894776402048169,
+          "baseline_geomean": 8329873.639370606,
+          "candidate_geomean": 8296473.467533355,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/reverse_complement": {
+          "delta_percent": -0.17425007863834308,
+          "status": "PASS",
+          "probability_regression": 0.5975116455500584,
+          "probability_improvement": 0.4024883544499416,
+          "baseline_geomean": 20563.705263519856,
+          "candidate_geomean": 20599.60008286343,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/regex_redux": {
+          "delta_percent": 0.13715773267203601,
+          "status": "PASS",
+          "probability_regression": 0.2897724801082872,
+          "probability_improvement": 0.7102275198917127,
+          "baseline_geomean": 35819.835888713016,
+          "candidate_geomean": 35770.773506811856,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/bulk-ops": {
+          "delta_percent": -0.9131039148026935,
+          "status": "RECOVERED",
+          "probability_regression": 0.9935693544297927,
+          "probability_improvement": 0.006430645570207338,
+          "baseline_geomean": 776149.7067649548,
+          "candidate_geomean": 783302.0686182374,
+          "pair_count": 10,
+          "process_pairs": 1
+        }
+      }
+    },
+    {
+      "artifact": "nano-inline-limited-full20-x64-linux-2",
+      "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "baseline_sha": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+      "candidate_sha": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "metric_count": 20,
+      "throughput_geomean_delta_percent": 1.0104042904164157,
+      "metrics": {
+        "execute/counter-local": {
+          "delta_percent": 0.4734588991637805,
+          "status": "RECOVERED",
+          "probability_regression": 0.013620222595049579,
+          "probability_improvement": 0.9863797774049504,
+          "baseline_geomean": 332943.4160319419,
+          "candidate_geomean": 331374.4940005372,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/counter-param": {
+          "delta_percent": -0.5532997156059315,
+          "status": "PASS",
+          "probability_regression": 0.7762504880114274,
+          "probability_improvement": 0.22374951198857262,
+          "baseline_geomean": 337702.1930673266,
+          "candidate_geomean": 339581.0942963197,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/counter-global": {
+          "delta_percent": 0.07192093710692346,
+          "status": "PASS",
+          "probability_regression": 0.38852849871451395,
+          "probability_improvement": 0.6114715012854861,
+          "baseline_geomean": 168934.66310973596,
+          "candidate_geomean": 168813.25103762886,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/fibonacci-rec": {
+          "delta_percent": 23.03662770142338,
+          "status": "IMPROVEMENT",
+          "probability_regression": 8.820453360140991e-15,
+          "probability_improvement": 0.9999999999999912,
+          "baseline_geomean": 4271760.700058015,
+          "candidate_geomean": 3471942.2824432612,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/fibonacci-iter": {
+          "delta_percent": -2.173057081157714,
+          "status": "NEGLIGIBLE",
+          "probability_regression": 0.9999999742287067,
+          "probability_improvement": 2.5771293321597e-08,
+          "baseline_geomean": 653657.9445822081,
+          "candidate_geomean": 668177.8302368968,
+          "pair_count": 20,
+          "process_pairs": 2
+        },
+        "execute/fibonacci-tail": {
+          "delta_percent": -2.0023793101962473,
+          "status": "PASS",
+          "probability_regression": 0.9999933680833404,
+          "probability_improvement": 6.631916659616266e-06,
+          "baseline_geomean": 379384.8793492624,
+          "candidate_geomean": 387136.82707679755,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/sort": {
+          "delta_percent": -0.1320442451584666,
+          "status": "PASS",
+          "probability_regression": 0.580584794850052,
+          "probability_improvement": 0.419415205149948,
+          "baseline_geomean": 31643024.910677105,
+          "candidate_geomean": 31684862.94878732,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/prime_sieve": {
+          "delta_percent": 0.3449625109692201,
+          "status": "PASS",
+          "probability_regression": 0.22369015966440708,
+          "probability_improvement": 0.7763098403355929,
+          "baseline_geomean": 25888491.835717298,
+          "candidate_geomean": 25799493.25596419,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/matrix_mul": {
+          "delta_percent": 0.7262426736441195,
+          "status": "RECOVERED",
+          "probability_regression": 0.015441277819535483,
+          "probability_improvement": 0.9845587221804645,
+          "baseline_geomean": 39179682.34412474,
+          "candidate_geomean": 38897194.32012174,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/nbody": {
+          "delta_percent": -0.007602710186919127,
+          "status": "PASS",
+          "probability_regression": 0.505590219974199,
+          "probability_improvement": 0.49440978002580105,
+          "baseline_geomean": 9707899.17314957,
+          "candidate_geomean": 9708637.29270604,
+          "pair_count": 20,
+          "process_pairs": 2
+        },
+        "execute/argon2": {
+          "delta_percent": -0.4082691737740479,
+          "status": "PASS",
+          "probability_regression": 0.8999062230136989,
+          "probability_improvement": 0.10009377698630106,
+          "baseline_geomean": 34050962.33018879,
+          "candidate_geomean": 34190551.813586935,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/tiny_keccak": {
+          "delta_percent": 0.019045291540010143,
+          "status": "PASS",
+          "probability_regression": 0.48489898404323695,
+          "probability_improvement": 0.515101015956763,
+          "baseline_geomean": 18010.522186086437,
+          "candidate_geomean": 18007.092682787094,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/mandelbrot": {
+          "delta_percent": -0.018434708334049817,
+          "status": "PASS",
+          "probability_regression": 0.5268849800681974,
+          "probability_improvement": 0.4731150199318026,
+          "baseline_geomean": 18498621.017856654,
+          "candidate_geomean": 18502031.813457265,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/spectralnorm": {
+          "delta_percent": 0.1767769962356241,
+          "status": "PASS",
+          "probability_regression": 0.3007049852691445,
+          "probability_improvement": 0.6992950147308554,
+          "baseline_geomean": 19763160.560980015,
+          "candidate_geomean": 19728285.49048106,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/compression": {
+          "delta_percent": -0.0266133803835693,
+          "status": "PASS",
+          "probability_regression": 0.5483729225945363,
+          "probability_improvement": 0.4516270774054637,
+          "baseline_geomean": 11178516.581578417,
+          "candidate_geomean": 11181492.35467133,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/word_count": {
+          "delta_percent": 0.07604174502249145,
+          "status": "PASS",
+          "probability_regression": 0.42225741355263885,
+          "probability_improvement": 0.5777425864473611,
+          "baseline_geomean": 1089160.2117914543,
+          "candidate_geomean": 1088332.624672003,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/json_parse": {
+          "delta_percent": 3.849122573891569,
+          "status": "PASS",
+          "probability_regression": 0.005984534365478071,
+          "probability_improvement": 0.9940154656345219,
+          "baseline_geomean": 5590516.371188756,
+          "candidate_geomean": 5383306.312685448,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/reverse_complement": {
+          "delta_percent": -0.2167569994680169,
+          "status": "PASS",
+          "probability_regression": 0.6650609811043326,
+          "probability_improvement": 0.33493901889566735,
+          "baseline_geomean": 16072.11875876699,
+          "candidate_geomean": 16107.03187776861,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/regex_redux": {
+          "delta_percent": 0.0788803381656552,
+          "status": "PASS",
+          "probability_regression": 0.4559859443902816,
+          "probability_improvement": 0.5440140556097184,
+          "baseline_geomean": 28338.003487634356,
+          "candidate_geomean": 28315.667992967603,
+          "pair_count": 10,
+          "process_pairs": 1
+        },
+        "execute/bulk-ops": {
+          "delta_percent": -0.7756967724490702,
+          "status": "RECOVERED",
+          "probability_regression": 0.9333521003131571,
+          "probability_improvement": 0.06664789968684293,
+          "baseline_geomean": 467364.81893414276,
+          "candidate_geomean": 471018.4941912218,
+          "pair_count": 10,
+          "process_pairs": 1
+        }
+      }
+    }
+  ]
+}

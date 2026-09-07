@@ -368,3 +368,5 @@
   reverted. Terminators have few non-edge operands and parameter lists are
   short enough that reverse lookup plus duplicate expansion costs more than
   the established small repeated match (sourced).
+
+- 2026-09-06 (42396c9d) measurement: late frame caching is profitable only under the retained eligibility and pressure bounds; single-read widening, pass reordering and GP reuse produced contrary full-corpus evidence. See [[loop-frame-cache]] before changing cache priority or claiming fewer moves imply faster execution (sourced).

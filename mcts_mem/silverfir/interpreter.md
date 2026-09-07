@@ -102,3 +102,5 @@
   the historical fusion set cost ~2.9 MB and its coverage was
   app-dependent; an interpreter aimed at small deployments must not be
   bigger than the JIT (sourced).
+
+- 2026-09-06 statement: the user requests a wider wasmi-benchmark lead through general interpreter optimizations and explicitly excludes benchmark-specific fusion instructions. The parallel investigation below supplies candidate evidence only; no interpreter optimization from this campaign is selected into the JIT wrap-up (sourced).

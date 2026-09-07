@@ -1,0 +1,85 @@
+{
+  "parent": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+  "candidate": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+  "note": "Debug native code structure, excludes offset-only changes; no execution or startup timing inference. Compact cache fc26 produces exactly the same function dumps as 049.",
+  "architectures": [
+    {
+      "arch": "arm",
+      "total_functions": 38,
+      "changed": [
+        {
+          "function": 18,
+          "total_frame_slots": [
+            7,
+            16
+          ],
+          "code_size": [
+            356,
+            528
+          ]
+        },
+        {
+          "function": 20,
+          "total_frame_slots": [
+            9,
+            15
+          ],
+          "code_size": [
+            580,
+            660
+          ]
+        },
+        {
+          "function": 32,
+          "total_frame_slots": [
+            8,
+            15
+          ],
+          "code_size": [
+            348,
+            408
+          ]
+        }
+      ]
+    },
+    {
+      "arch": "x64",
+      "total_functions": 38,
+      "changed": [
+        {
+          "function": 18,
+          "total_frame_slots": [
+            7,
+            16
+          ],
+          "code_size": [
+            242,
+            400
+          ]
+        },
+        {
+          "function": 20,
+          "total_frame_slots": [
+            9,
+            15
+          ],
+          "code_size": [
+            438,
+            530
+          ]
+        },
+        {
+          "function": 32,
+          "total_frame_slots": [
+            8,
+            15
+          ],
+          "code_size": [
+            230,
+            264
+          ]
+        }
+      ]
+    }
+  ]
+}

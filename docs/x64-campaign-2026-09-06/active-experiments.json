@@ -1,0 +1,51 @@
+{
+  "retained": "fc26a6a9d12d8fcc3964c3a52045ad72f5e9ae71",
+  "experiments": [
+    {
+      "candidate": "fc26a6a9d12d8fcc3964c3a52045ad72f5e9ae71",
+      "parent": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "run": 34086840052,
+      "description": "Compact bounded inline cache; complete 7 startup cases on x64/ARM, four source variants including main and retained; code identity verified on all20 plus CoreMark and ERC20.",
+      "status": "Selected by explicit user decision on 2026-09-06: accept ERC20 startup increase of approximately 0.29–0.41 ms; full final PR CI remains to be observed."
+    },
+    {
+      "candidate": "937ed3e09fcd959c47acf16e77cf5672c854580b",
+      "parent": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+      "run": 34087059415,
+      "description": "Loop cache and register reuse; all20 on two x64 and one ARM runner, plus ARM CoreMark. x64 CoreMark independently confirmed +0.53685/+0.54323% in run34085878383.",
+      "status": "Rejected after replicated sort regression (-33.10/-25.96%) on native x64. All three jobs finished and audited."
+    },
+    {
+      "candidate": "6a382ad600e8031ee45dd96fc9eaaec810127084",
+      "parent": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+      "run": 34087297901,
+      "description": "Agent interpreter memory.size native fast path; all20 x64/ARM Nano differentials. Local final timings contaminated by external CPU load; no performance conclusion.",
+      "status": "First native all20 diagnostic complete: x64 +0.15985%, ARM +0.20278% aggregate point estimates. Benefit uncertain; not retained."
+    }
+  ],
+  "ci_policy": "Temporary workflows trigger only their own changed files on codex/x64-profiling; daily PR/main unchanged. No competitor rebuilds.",
+  "phase": "JIT exploration closed; final source selected, memory and PR integration only.",
+  "shelved": [
+    {
+      "sha": "b5be4dadef33a7bf7334b1d8d1119d7bd1403778",
+      "branch": "codex/jit-inline-local-banks",
+      "status": "Local commit only; full correctness and heap measurements complete; no native performance evidence."
+    },
+    {
+      "sha": "4d144428173cb56e25cfee6057b262c38c7791cc",
+      "branch": "codex/interp-native-aware-load-fusion",
+      "status": "Agent completed local correctness, cross-compilation and dynamic census; clean local commit, not pushed, no native timing."
+    }
+  ],
+  "last_full_gate_pass": "42396c9dba2da406348f4238b4f4dd673af25cd2",
+  "historical_failed_dev": {
+    "sha": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+    "run": 34084103483,
+    "reason": "Confirmed ARM64 ERC20 startup regression: -8.01% throughput, +0.303 ms per instance vs main."
+  },
+  "user_decision": {
+    "date": "2026-09-06",
+    "quote": "是，保留。",
+    "scope": "Bounded inlining with compact cache; accepts measured ERC20 startup tradeoff, does not change regression thresholds or warning policy."
+  }
+}

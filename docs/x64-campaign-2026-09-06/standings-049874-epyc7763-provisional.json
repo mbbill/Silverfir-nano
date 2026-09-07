@@ -1,0 +1,158 @@
+{
+  "source": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+  "candidate_status": "Not yet accepted; full dev run34084103483 pending",
+  "cpu": "AMD EPYC 7763",
+  "measurement_kind": "provisional cross-run same-CPU-model projection from frozen competitors and two Nano differential steps; NOT a new same-host three-engine result",
+  "corpus_anchor_run": 34026700835,
+  "differential_runs": [
+    34071064270,
+    34082432990
+  ],
+  "full20_nano_throughput_percent": {
+    "v8": 0.990278507231017,
+    "wasmtime.cranelift": 12.09596022427109
+  },
+  "all20_metrics": [
+    {
+      "metric": "execute/argon2",
+      "delta_vs_423_percent": 1.5322438600799273,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": 74.26760234002168,
+      "wasmtime.cranelift_nano_throughput_percent": 65.59250752657515
+    },
+    {
+      "metric": "execute/bulk-ops",
+      "delta_vs_423_percent": -0.9131039148026935,
+      "differential_status": "RECOVERED",
+      "v8_nano_throughput_percent": -13.384749028594534,
+      "wasmtime.cranelift_nano_throughput_percent": -14.661196990047575
+    },
+    {
+      "metric": "execute/compression",
+      "delta_vs_423_percent": -0.02931148039700645,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": 3.896839670884078,
+      "wasmtime.cranelift_nano_throughput_percent": -8.061207849315021
+    },
+    {
+      "metric": "execute/counter-global",
+      "delta_vs_423_percent": -0.029234437862408667,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": 0.49578179034979186,
+      "wasmtime.cranelift_nano_throughput_percent": -0.1332429815259717
+    },
+    {
+      "metric": "execute/counter-local",
+      "delta_vs_423_percent": 0.22312219978387338,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": 0.7991184591178202,
+      "wasmtime.cranelift_nano_throughput_percent": 0.8990388928052262
+    },
+    {
+      "metric": "execute/counter-param",
+      "delta_vs_423_percent": 0.28954560052384265,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": 0.4281170381684518,
+      "wasmtime.cranelift_nano_throughput_percent": -0.18926331984880918
+    },
+    {
+      "metric": "execute/fibonacci-iter",
+      "delta_vs_423_percent": 0.0018371540338183038,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": 2.3116680559235103,
+      "wasmtime.cranelift_nano_throughput_percent": 4.13661698593617
+    },
+    {
+      "metric": "execute/fibonacci-rec",
+      "delta_vs_423_percent": 50.49920421262188,
+      "differential_status": "IMPROVEMENT",
+      "v8_nano_throughput_percent": 2.7009042892579993,
+      "wasmtime.cranelift_nano_throughput_percent": 136.5789090731765
+    },
+    {
+      "metric": "execute/fibonacci-tail",
+      "delta_vs_423_percent": -0.5121747931066418,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": -14.309747015817443,
+      "wasmtime.cranelift_nano_throughput_percent": 473.0020232526982
+    },
+    {
+      "metric": "execute/json_parse",
+      "delta_vs_423_percent": 0.4025827596262837,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": -2.378435922664379,
+      "wasmtime.cranelift_nano_throughput_percent": -19.886212032849993
+    },
+    {
+      "metric": "execute/mandelbrot",
+      "delta_vs_423_percent": -0.032105546700211283,
+      "differential_status": "RECOVERED",
+      "v8_nano_throughput_percent": 7.876267662644287,
+      "wasmtime.cranelift_nano_throughput_percent": 0.015311362216174906
+    },
+    {
+      "metric": "execute/matrix_mul",
+      "delta_vs_423_percent": 0.2552777051653048,
+      "differential_status": "RECOVERED",
+      "v8_nano_throughput_percent": 24.89408867960856,
+      "wasmtime.cranelift_nano_throughput_percent": -0.20812951697929405
+    },
+    {
+      "metric": "execute/nbody",
+      "delta_vs_423_percent": 0.009422766172218482,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": -10.686712987616787,
+      "wasmtime.cranelift_nano_throughput_percent": -25.111641024276455
+    },
+    {
+      "metric": "execute/prime_sieve",
+      "delta_vs_423_percent": 0.03279405525634899,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": 21.818805314090504,
+      "wasmtime.cranelift_nano_throughput_percent": -14.13241224006212
+    },
+    {
+      "metric": "execute/regex_redux",
+      "delta_vs_423_percent": 0.13715773267203601,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": -27.3097866114398,
+      "wasmtime.cranelift_nano_throughput_percent": -33.95830063194375
+    },
+    {
+      "metric": "execute/reverse_complement",
+      "delta_vs_423_percent": -0.17425007863834308,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": 41.56935916157434,
+      "wasmtime.cranelift_nano_throughput_percent": 30.628129605006226
+    },
+    {
+      "metric": "execute/sort",
+      "delta_vs_423_percent": 0.16824670333526032,
+      "differential_status": "RECOVERED",
+      "v8_nano_throughput_percent": -1.6476969806030861,
+      "wasmtime.cranelift_nano_throughput_percent": 21.30330770381037
+    },
+    {
+      "metric": "execute/spectralnorm",
+      "delta_vs_423_percent": 0.015762803408784266,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": -2.568664780450247,
+      "wasmtime.cranelift_nano_throughput_percent": 74.34923725569129
+    },
+    {
+      "metric": "execute/tiny_keccak",
+      "delta_vs_423_percent": -0.1606459337163963,
+      "differential_status": "RECOVERED",
+      "v8_nano_throughput_percent": -26.225627304912948,
+      "wasmtime.cranelift_nano_throughput_percent": -28.201470721831722
+    },
+    {
+      "metric": "execute/word_count",
+      "delta_vs_423_percent": -0.03100629477587242,
+      "differential_status": "PASS",
+      "v8_nano_throughput_percent": -18.565318625603812,
+      "wasmtime.cranelift_nano_throughput_percent": -21.02008993531932
+    }
+  ],
+  "coremark_note": "unchanged generated code; no new claimed CoreMark gain"
+}

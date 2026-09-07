@@ -41,6 +41,8 @@
   more locals after inlining gets worse local-cache allocation, eroding the
   inlining win — so enabling it is not worth the footprint cost (sourced).
 
+- 2026-09-06 (049874d0) correction: the historical 2026-06-14 disabled-inlining statement is superseded for unlimited-budget 64-bit GP configurations only. [[bounded-inlining]] records whole-caller limits, the retained small-memory exclusions and the accepted startup tradeoff (code).
+
 ## Moves
 
 - 2026-03-12 (2ea0bb68) replaced [[semantic-ir.alt/generic-control-side-channels]]:

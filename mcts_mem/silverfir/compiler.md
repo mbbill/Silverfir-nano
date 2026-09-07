@@ -84,6 +84,8 @@
   have, which weighs against optimizations a whole-module compiler would take
   for free (sourced).
 
+- 2026-09-06 (fc26a6a9) measurement: the x64 execution campaign retains bounded semantic inlining and small late native rewrites; the historical small-function footprint constraint remains in force. Measured ranking limits, retained mechanisms and rejected directions are in [[compiler.fact/x64-execution-2026-09-06]] (sourced).
+
 ## Moves
 
 - 2026-03-07 (bc6c91c8) replaced [[compiler.alt/fast-interpreter]]: the

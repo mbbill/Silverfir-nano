@@ -1,0 +1,302 @@
+{
+  "run": 34087297901,
+  "parent": "049874d05c0dd25d1cadf80a290085df6a0526f7",
+  "candidate": "6a382ad600e8031ee45dd96fc9eaaec810127084",
+  "status": "Native differential finished without regression verdict; small overall point estimates, most target effects need stronger confirmation before retention. Not merged.",
+  "platforms": [
+    {
+      "arch": "x64",
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "all20_geomean_throughput_change_percent": 0.1598488888274079,
+      "metrics": [
+        {
+          "workload": "execute/counter-local",
+          "delta_percent": 0.01876184235359773,
+          "status": "PASS",
+          "probability_improvement": 0.5135985177010923,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/counter-param",
+          "delta_percent": -0.012490031688613538,
+          "status": "PASS",
+          "probability_improvement": 0.3467389227943307,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/counter-global",
+          "delta_percent": -2.0090831098884947,
+          "status": "PASS",
+          "probability_improvement": 0.12327314485628582,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/fibonacci-rec",
+          "delta_percent": 1.5272171789489186,
+          "status": "RECOVERED",
+          "probability_improvement": 0.9999995187264359,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/fibonacci-iter",
+          "delta_percent": 0.2917721465500511,
+          "status": "PASS",
+          "probability_improvement": 0.9932097049302079,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/fibonacci-tail",
+          "delta_percent": 0.4474169098118845,
+          "status": "PASS",
+          "probability_improvement": 0.9562639771520415,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/sort",
+          "delta_percent": 0.6540218946278199,
+          "status": "PASS",
+          "probability_improvement": 0.745715231700312,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/prime_sieve",
+          "delta_percent": -0.14529020788014607,
+          "status": "RECOVERED",
+          "probability_improvement": 0.3446081472937459,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/matrix_mul",
+          "delta_percent": -1.2076393578838287,
+          "status": "PASS",
+          "probability_improvement": 0.26504686458103865,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/nbody",
+          "delta_percent": 0.057296583794428244,
+          "status": "RECOVERED",
+          "probability_improvement": 0.5180269838485281,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/argon2",
+          "delta_percent": 0.5297343401217559,
+          "status": "PASS",
+          "probability_improvement": 0.7299309224497453,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/tiny_keccak",
+          "delta_percent": 1.2518676302232232,
+          "status": "RECOVERED",
+          "probability_improvement": 0.973701035050637,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/mandelbrot",
+          "delta_percent": -3.1874598843668416,
+          "status": "RECOVERED",
+          "probability_improvement": 0.00213461181766772,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/spectralnorm",
+          "delta_percent": 1.2789525800337396,
+          "status": "RECOVERED",
+          "probability_improvement": 0.9071484089193818,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/compression",
+          "delta_percent": -0.27461433867100427,
+          "status": "PASS",
+          "probability_improvement": 0.4347981769879392,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/word_count",
+          "delta_percent": 1.8260352549014855,
+          "status": "PASS",
+          "probability_improvement": 0.9674279467644433,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/json_parse",
+          "delta_percent": 1.9764814970467688,
+          "status": "PASS",
+          "probability_improvement": 0.9971575610186098,
+          "process_pairs": 2
+        },
+        {
+          "workload": "execute/reverse_complement",
+          "delta_percent": 0.672094704772848,
+          "status": "RECOVERED",
+          "probability_improvement": 0.660388885332107,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/regex_redux",
+          "delta_percent": 1.7603062595464916,
+          "status": "RECOVERED",
+          "probability_improvement": 0.9050995315687531,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/bulk-ops",
+          "delta_percent": -2.073258702432938,
+          "status": "PASS",
+          "probability_improvement": 3.683164884193957e-12,
+          "process_pairs": 1
+        }
+      ]
+    },
+    {
+      "arch": "arm64",
+      "cpu": "Neoverse-N2",
+      "all20_geomean_throughput_change_percent": 0.20278145698429062,
+      "metrics": [
+        {
+          "workload": "execute/counter-local",
+          "delta_percent": 0.21483428189996287,
+          "status": "RECOVERED",
+          "probability_improvement": 0.9985930371060915,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/counter-param",
+          "delta_percent": -0.19076860450325156,
+          "status": "RECOVERED",
+          "probability_improvement": 0.021545605120566802,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/counter-global",
+          "delta_percent": -0.060353002398818495,
+          "status": "RECOVERED",
+          "probability_improvement": 0.21594549041433675,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/fibonacci-rec",
+          "delta_percent": -0.8185800291202743,
+          "status": "PASS",
+          "probability_improvement": 3.8086776621426566e-08,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/fibonacci-iter",
+          "delta_percent": 0.6226889306369022,
+          "status": "RECOVERED",
+          "probability_improvement": 0.999170552108555,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/fibonacci-tail",
+          "delta_percent": -6.0838402749277956,
+          "status": "NOISY-FLOOR",
+          "probability_improvement": 3.971267759084185e-13,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/sort",
+          "delta_percent": 6.8781251133902765,
+          "status": "PASS",
+          "probability_improvement": 0.9964939429989187,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/prime_sieve",
+          "delta_percent": 0.5159828263070648,
+          "status": "PASS",
+          "probability_improvement": 0.5725114404277277,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/matrix_mul",
+          "delta_percent": 3.912145224579823,
+          "status": "PASS",
+          "probability_improvement": 0.7893675900818231,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/nbody",
+          "delta_percent": -4.253502180429022,
+          "status": "PASS",
+          "probability_improvement": 0.17547195163611173,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/argon2",
+          "delta_percent": 0.6929186401209781,
+          "status": "PASS",
+          "probability_improvement": 0.6241588664241925,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/tiny_keccak",
+          "delta_percent": 0.1399670043395226,
+          "status": "PASS",
+          "probability_improvement": 0.5653136654599411,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/mandelbrot",
+          "delta_percent": 0.733017378129059,
+          "status": "PASS",
+          "probability_improvement": 0.6045520188194311,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/spectralnorm",
+          "delta_percent": -0.6372582644759164,
+          "status": "PASS",
+          "probability_improvement": 0.4074867910489398,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/compression",
+          "delta_percent": -0.491039381471803,
+          "status": "PASS",
+          "probability_improvement": 0.25357791726968504,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/word_count",
+          "delta_percent": 0.20789825279034496,
+          "status": "PASS",
+          "probability_improvement": 0.5943697471268428,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/json_parse",
+          "delta_percent": 0.8335861297549013,
+          "status": "PASS",
+          "probability_improvement": 0.9467666260556887,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/reverse_complement",
+          "delta_percent": -0.43765966594416494,
+          "status": "PASS",
+          "probability_improvement": 0.37307021596566325,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/regex_redux",
+          "delta_percent": 2.928505286203464,
+          "status": "RECOVERED",
+          "probability_improvement": 0.9664972447026574,
+          "process_pairs": 1
+        },
+        {
+          "workload": "execute/bulk-ops",
+          "delta_percent": -0.006129850173911052,
+          "status": "RECOVERED",
+          "probability_improvement": 0.2475024517198391,
+          "process_pairs": 1
+        }
+      ]
+    }
+  ]
+}
