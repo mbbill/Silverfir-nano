@@ -1292,14 +1292,10 @@ impl InterpInstance {
             };
             memories.push(MemoryState {
                 inst,
-                // In u64 throughout: memory64's page cap does not fit a
-                // 32-bit `usize`, which is what `Limits::max` yields on the
-                // bare-metal targets.
-                max_pages: limits.max().map(|m| m as u64).unwrap_or(if limits.is64 {
-                    1u64 << 48
-                } else {
-                    65536
-                }),
+                // Preserve the resource's explicit or default limit. Growth
+                // still checks the Wasm page cap and byte-size overflow in u64,
+                // including for memory64 on a 32-bit host.
+                max_pages: limits.effective_max() as u64,
                 is64: limits.is64,
             });
         }
@@ -1530,7 +1526,7 @@ impl InterpInstance {
             };
             tables.push(TableState {
                 entries,
-                max: limits.max().unwrap_or(u32::MAX as usize) as u64,
+                max: limits.effective_max() as u64,
             });
         }
         // Every element segment's function indices must name a function the

@@ -1246,7 +1246,14 @@ pub(super) fn do_memory_grow(
     let delta_pages = decode_memory_grow_delta(delta_raw, is_64);
 
     let old_pages = mem.current_pages();
-    let effective_max = mem.limits.get_max().min(runtime_cap);
+    // Host imports may omit a maximum and therefore carry no module-default
+    // cap. Their memory index width still imposes the same Wasm page ceiling.
+    let address_cap = if is_64 {
+        crate::constants::MAX_MEM_PAGES_64
+    } else {
+        crate::constants::MAX_MEM_PAGES
+    };
+    let effective_max = mem.limits.effective_max().min(runtime_cap).min(address_cap);
     let result = match old_pages.checked_add(delta_pages) {
         None => error_value,
         Some(new_pages) if new_pages > effective_max => error_value,
@@ -1433,9 +1440,17 @@ pub(super) fn do_table_grow(
     };
     let mut elements = table.elements_mut();
     let old_len = elements.len();
+    // An unspecified host maximum does not permit a table32 to outgrow its
+    // index space. Module-defined tables already carry this default cap.
+    let address_cap = if is_64 {
+        crate::constants::MAX_TABLE_SIZE_64
+    } else {
+        crate::constants::MAX_TABLE_SIZE
+    };
+    let effective_max = table.limits.effective_max().min(address_cap);
     let result = match old_len.checked_add(delta) {
         None => error_value,
-        Some(new_len) if new_len > table.limits.get_max() => error_value,
+        Some(new_len) if new_len > effective_max => error_value,
         Some(_) if elements.try_reserve(delta).is_err() => error_value,
         Some(new_len) => {
             elements.resize_with(new_len, || fill);

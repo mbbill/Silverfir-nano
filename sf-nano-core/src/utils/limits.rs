@@ -53,7 +53,7 @@ impl Limits {
     }
 
     /// Returns the effective maximum (explicit max or default max).
-    pub(crate) fn get_max(&self) -> usize {
+    pub(crate) fn effective_max(&self) -> usize {
         self.max
             .unwrap_or_else(|| self.default_max.unwrap_or(usize::MAX))
     }
