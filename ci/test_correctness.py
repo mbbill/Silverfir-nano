@@ -220,7 +220,9 @@ class CoveragePlanTests(unittest.TestCase):
         correctness.run_native_wasitest(runner)
         wasi_calls = list(cargo.call_args_list)
 
-        self.assertEqual(len(spectest_calls), 2)
+        self.assertEqual(
+            [call.kwargs["features"] for call in spectest_calls], ["jit", "interp"]
+        )
         self.assertEqual(len(wasi_calls), 3)
         self.assertTrue(
             all(call.kwargs["profile"] == "release" for call in spectest_calls + wasi_calls)
@@ -247,6 +249,7 @@ class CoveragePlanTests(unittest.TestCase):
         )
 
         self.assertEqual(len(cargo.call_args_list), 3)
+        self.assertEqual(cargo.call_args_list[-1].kwargs["features"], "interp")
         self.assertTrue(
             all(call.kwargs["profile"] == "release" for call in cargo.call_args_list)
         )
@@ -294,11 +297,6 @@ class CoveragePlanTests(unittest.TestCase):
                 "--nocapture",
             ),
         )
-
-    def test_interpreter_wast_runtime_keeps_pure_interp_compile_coverage(self) -> None:
-        self.assertEqual(correctness.INTERP.features, "interp")
-        self.assertEqual(correctness.spectest_features(correctness.INTERP), "jit,interp")
-        self.assertEqual(correctness.spectest_features(correctness.JIT), "jit")
 
     def test_bare_targets_are_explicitly_separate_from_qemu_user(self) -> None:
         self.assertEqual(
