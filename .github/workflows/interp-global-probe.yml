@@ -1,0 +1,23 @@
+name: interp-global-probe
+on:
+  push:
+    branches: [codex/interp-global-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Record CPU
+        run: lscpu
+      - name: Compare isolated handler variants
+        run: python3 ci/global_probe/run.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: global-probe-results
+          path: global-probe-results.json
