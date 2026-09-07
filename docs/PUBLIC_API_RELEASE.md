@@ -994,3 +994,51 @@ memory, growth, error paths and upstream CoreMark complete under both engines,
 without warnings (`/tmp/sf-release-final-wasmi-consumer.log`). This confirms
 packaged downstream use in the tested dual-engine configuration, not the
 unresolved single-engine/bare-metal gates or registry publication.
+
+### First draft CI and nested adapter-copy fix (2026-09-07)
+
+Draft PR [43](https://github.com/mbbill/Silverfir-nano/pull/43) starts from
+7d1f0c8c. The real x64 Linux API capture completes all core parity and support
+profiles; its evidence digest is
+`ae547697fc0da341801049d0329b3bbfe7a9038966d2c8a1b6ff1d15a0a224e2`,
+identical to the local ARM64-host/x64-target capture. The subsequent environment
+check returns HTTP 404, so the workflow remains failed and human review is not
+complete. The [uploaded evidence](https://github.com/mbbill/Silverfir-nano/actions/runs/34140029191/artifacts/10025576234)
+is still available for the exact head.
+
+Correctness CI confirms the interpreter-only raw Value helpers and the
+non-SIMD immediate/opcode warning clusters. It also exposes `Limits.default_max`
+and `get_max`: their only readers are the two JIT memory/table grow helpers.
+A local pure-interpreter check reproduces these warnings. The proposed
+ownership change keeps declared limits/range validation shared and derives the
+same effective caps in JIT grow; this additional decision has been presented
+for author approval under AGENTS.md. No suppressions or engine cfgs were added.
+
+All eight wasmi primary jobs fail building the unmodified adapter, before any
+timing evidence. Their confirmation jobs have no selected measurements and do
+not turn the failed primaries into passes. Although git apply returned success,
+the copied suite lived below the runtime checkout without its own .git. Git
+discovery selected the parent repository and silently skipped the suite-relative
+patch paths outside the current-directory prefix. Standalone-copy validation
+had not exercised this CI directory arrangement.
+
+The migration helper now sets a per-command Git discovery ceiling at the suite
+parent, so patches apply to the standalone copied tree. A regression test first
+reproduces the silent no-op, then passes with the fix, also checking parent-file
+isolation, repeat application and drift rejection. The actual pinned upstream
+adapter copied below this worktree now matches the independently tested adapter
+byte-for-byte after migration; the main baseline still receives no migration.
+All 140 CI unit tests pass. No runtime source or benchmark timing boundary changes.
+
+The separate x64 Linux CLI JIT performance job completes without a confirmed
+regression: CoreMark is 19,237.5 versus 19,232.8, or -0.02% with pilot interval
+-0.59%..+0.38%. This covers that configured CLI suite, not the failed wasmi jobs,
+the single-engine warning gates or a new V8 comparison. Logs for this audit are
+`/tmp/sf-release-ci-job-*.log` and `/tmp/sf-release-ci-adapter-{before,after}.log`.
+
+Both packages also pass verification from clean commit 7d1f0c8c. Compared with
+the independently tested unpacked packages, their only changes are clean VCS
+metadata and the corresponding support-package checksum in core's lockfile.
+Source and dependency selections are identical. The local checksum manifest is
+`/tmp/sf-release-clean-package-evidence.json`; these packages are not approved
+for publication and will be regenerated for the final reviewed revision.
