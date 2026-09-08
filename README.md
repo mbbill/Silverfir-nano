@@ -42,7 +42,9 @@ optimizing JIT and an interpreter behind one API
 2. **Small** — pick an engine and pay for what you use. Measured on real
    RP2350 firmware, flash is 337 KiB with the interpreter and 1,042 KiB with
    the JIT ([details](#binary-size)); both run inside the board's 512 KB of
-   SRAM. Zero runtime dependencies, `alloc` only, `no_std` throughout.
+   SRAM. The core uses `alloc` and a small allocation helper; hosted and
+   diagnostic features may require `std`. These are the recorded firmware
+   sizes described below.
 3. **Portable** — six ISAs, from x86_64 and ARM64 down to RV32 and Thumb-2,
    and *both* engines cover all six. The compiler that competes with
    Cranelift on M4 emits Thumb-2 on a Cortex-M33 — codegen quality doesn't
@@ -59,6 +61,9 @@ optimizing JIT and an interpreter behind one API
 
 ## Performance (Apple M4)
 
+These charts are recorded measurements with dates and engine revisions in the
+linked reports, not a fresh comparison of the crates.io release.
+
 ![CoreMark on Apple M4](assets/coremark.svg)
 
 **[Full benchmark results — every chart, the method, and the caveats →](benchmarks/wasi/README.md)**
@@ -67,7 +72,9 @@ optimizing JIT and an interpreter behind one API
 
 ## Binary size
 
-Measured on real firmware, not a synthetic link: the Pico 2 demo host built
+Historical measurements recorded on 2026-07-26 (commit `6c018fa4`), before
+mandatory input validation was enabled for the release. They have not been
+remeasured for 0.1.1. Measured on real firmware: the Pico 2 demo host built
 for the RP2350's two cores, release, with the engine swapped. Flash is the
 whole loadable image — engine, ST7735 display driver, DMA, embedded-graphics,
 defmt, the RP2350 HAL, and the embedded `.wasm` guest. SRAM is a separate

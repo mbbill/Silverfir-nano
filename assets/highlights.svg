@@ -42,7 +42,7 @@
   <text class="fact" x="350" y="56" text-anchor="middle">Cranelift and V8 parity on Apple M4</text>
 
   <text class="name" x="446" y="118">Small</text>
-  <text class="fact" x="446" y="136">337 KiB interpreter</text>
+  <text class="fact" x="446" y="136">337 KiB interpreter (July 2026)</text>
   <text class="fact" x="446" y="151">firmware, in 512 KB SRAM</text>
 
   <text class="name" x="416" y="212">Portable</text>
