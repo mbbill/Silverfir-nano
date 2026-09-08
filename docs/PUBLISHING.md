@@ -16,10 +16,14 @@ Before a release:
      -p sf-nano-tracked-alloc -p sf-nano-core
    ```
 
-4. Verify an independent consumer using only the unpacked packages, including
+4. Inspect the actual archive's README, metadata, licenses and example commands.
+   Render its public documentation and inspect the crate landing page. Remove
+   draft/review placeholders, check links and scope feature claims to the tested
+   engines and targets. Passing builds do not verify publication text.
+5. Verify an independent consumer using only the unpacked packages, including
    JIT-only, interpreter-only and both engines. Check archive VCS provenance and
    contents after any release commit change.
-5. Obtain explicit approval of the concrete packages and versions. API acceptance
+6. Obtain explicit approval of the concrete packages and versions. API acceptance
    alone is not publication approval. Retain the accepted API with the release.
 
 Publish the helper first, wait for registry availability, then verify and publish

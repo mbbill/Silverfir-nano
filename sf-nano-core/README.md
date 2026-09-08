@@ -3,10 +3,21 @@
 A compact optimizing WebAssembly JIT and interpreter with a shared embedding
 API. The core supports hosted systems and `no_std` environments with an
 allocator. Available WebAssembly proposals and execution engines depend on the
-target; see the repository's [platform documentation][targets].
+target; see [engine and target support](#engine-and-target-support).
 
-This package is being prepared for its first crates.io release. Its API and
-release version are still under review.
+## Installation
+
+```toml
+[dependencies]
+sf-nano-core = "0.1"
+```
+
+For an interpreter-only build:
+
+```toml
+[dependencies]
+sf-nano-core = { version = "0.1", default-features = false, features = ["interp"] }
+```
 
 ## Embedding
 
@@ -105,16 +116,41 @@ The defaults are `jit`, `interp` and `guard-pages`. Disable defaults to select
 one engine. At least one engine must be enabled. `Config::tier` selects among
 the engines compiled into the package; the default prefers the JIT. Bare-metal
 applications must provide an allocator and configure their memory budgets;
-hosted default budgets do not apply there.
+hosted default budgets do not apply there. Disable default features for bare
+metal: `guard-pages`, `wasi`, `call-trace`, `jit-debug`, and the allocation
+profiler require `std`. There is no separate `std` feature.
+
+A bare-metal JIT embedder must also supply executable-memory allocation,
+release, write-permission and instruction-cache synchronization hooks; see
+[the bare-metal hook contract][bare-metal]. Interpreter-only builds do not need
+executable-memory hooks.
 
 WASI imports consume a context built with `WasiContextBuilder`. Separate import
 sets isolate arguments, environment and file descriptors. Reusing an import set
 intentionally shares that context. The repository's `invoke_export` example
-shows file loading, WASI setup and execution.
+shows file loading, WASI setup and execution. From a repository checkout:
+
+```sh
+cargo run --release -p sf-nano-core --features wasi --example invoke_export -- module.wasm export_name
+```
+
+That example inherits the host environment and preopens the current directory;
+choose the context explicitly when embedding untrusted guests.
 
 The `sf-nano-tracked-alloc` dependency supplies internal allocation helpers.
 Embedders ordinarily depend only on `sf-nano-core`; the helper's diagnostic
 interface is not part of this crate's embedding API.
+
+## Engine and target support
+
+Both engines have backends for x86_64, ARM64, RV64, RV32, ARMv7-A and Thumb-2.
+The interpreter does not execute SIMD or GC instructions. JIT SIMD is available
+on ARM64 with NEON and on x86_64 with SSSE3 and SSE4.1; the remaining backends
+reject SIMD modules. On x86_64, the JIT checks CPU support at runtime.
+
+For the supported Wasm feature groups, see [the compatibility table][targets].
+The host exception and result-count limitations described above apply even
+where the guest instruction set supports exception handling and multi-value.
 
 ## Diagnostics
 
@@ -132,4 +168,5 @@ do not need a process-wide runtime reset between instances.
 Licensed under either MIT or Apache-2.0, at your option. See the included
 `LICENSE-MIT` and `LICENSE-APACHE` files.
 
-[targets]: https://github.com/mbbill/Silverfir-nano#highlights
+[targets]: https://github.com/mbbill/Silverfir-nano#webassembly-compatibility
+[bare-metal]: https://github.com/mbbill/Silverfir-nano/blob/main/sf-nano-core/src/vm/jit/runtime/os/none.rs

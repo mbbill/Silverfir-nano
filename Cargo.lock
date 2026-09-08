@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "sf-nano-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "filetime",
  "sf-nano-tracked-alloc",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "sf-nano-tracked-alloc"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "sf-nano-wasitest"

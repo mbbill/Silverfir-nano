@@ -211,8 +211,12 @@ impl<'a> Caller<'a> {
 
     /// Construct an exception from host code. Use as:
     ///
-    /// ```ignore
-    /// return Err(Caller::throw(my_tag, vec![Value::I32(42)]));
+    /// ```rust
+    /// use sf_nano_core::{Caller, TagIdentity, Value, WasmError};
+    ///
+    /// fn throw_i32(tag: TagIdentity) -> Result<(), WasmError> {
+    ///     Err(Caller::throw(tag, vec![Value::I32(42)]))
+    /// }
     /// ```
     ///
     /// `tag` must be a live `TagIdentity` (obtained via

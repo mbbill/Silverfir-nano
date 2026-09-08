@@ -24,7 +24,7 @@
   </p>
 
   <p>
-    <img src="assets/highlights.svg" alt="Silverfir-nano: Fast, Small, Portable, Full Wasm 3.0, On-device JIT" width="700">
+    <img src="assets/highlights.svg" alt="Silverfir-nano: Fast, Small, Portable, Wasm 3.0 features, On-device JIT" width="700">
   </p>
 </div>
 
@@ -47,10 +47,10 @@ optimizing JIT and an interpreter behind one API
    and *both* engines cover all six. The compiler that competes with
    Cranelift on M4 emits Thumb-2 on a Cortex-M33 — codegen quality doesn't
    degrade as you step down.
-4. **Full Wasm 3.0** — GC, exception handling, SIMD and relaxed SIMD, tail
+4. **Wasm 3.0 features** — GC, exception handling, SIMD and relaxed SIMD, tail
    calls, memory64, multi-memory, typeful references, and extended constant
-   expressions. The JIT passes 100% of the official Wasm spec testsuite; the
-   interpreter passes 100% of it less SIMD and GC.
+   expressions. Feature coverage depends on the engine and target; see the
+   compatibility table and host-boundary limitations below.
 5. **On-device JIT** — verification and code generation both happen on the
    target itself. You ship a `.wasm` artifact, not a relocatable machine-code
    blob; the runtime verifies and JITs it on the chip, even on a Cortex-M.
@@ -152,7 +152,7 @@ What makes that credible is not any one trick but the shape of the compiler:
 
 Validated against the official
 [WebAssembly spec testsuite](https://github.com/WebAssembly/spec/tree/main/test).
-Both engines are Wasm 3.0; they differ in two feature groups:
+Wasm feature coverage depends on the engine and target:
 
 | | JIT | interpreter |
 |---|---|---|
@@ -165,12 +165,11 @@ Both engines are Wasm 3.0; they differ in two feature groups:
 | Tail calls | yes | yes |
 | Exception handling | yes | yes |
 | `memory64` / `table64` | yes | yes |
-| SIMD / relaxed SIMD | yes | **no** |
+| SIMD / relaxed SIMD | ARM64 / x86_64 only | **no** |
 | Garbage collection | yes | **no** |
 
-**The JIT is the full Wasm 3.0 engine. The interpreter is Wasm 3.0 less
-SIMD and GC** — and those two are out of scope by design, not pending: the
-folded stack machine works in 8-byte slots, so a `v128` lane and a GC object
+**The interpreter excludes SIMD and GC** — those two are out of scope by
+design, not pending: the folded stack machine works in 8-byte slots, so a `v128` lane and a GC object
 are representation changes rather than more handlers. Anything the
 interpreter cannot run is refused at instantiation or predecode with a named
 error rather than mis-executed, so a module outside its surface fails loudly
@@ -179,15 +178,21 @@ rather than subtly.
 Pick the JIT for speed, or for SIMD and GC. Pick the interpreter for size,
 or where runtime code generation is forbidden or impossible.
 
-Both engines run the same harness, which has no per-directive skipping —
-every directive in every file it opens is executed and asserted. The JIT
-passes all 257 files. The interpreter passes all 174, which is every file
-the JIT runs except the 66 SIMD and 17 GC ones listed out of scope above.
+Both engines run the same harness, which executes every directive in each
+selected file. The interpreter excludes SIMD and GC files; targets without
+SIMD also exclude SIMD files. The harness reports the selected files and result
+counts for each build.
 
 ```bash
-cargo run --release -p sf-nano-spectest              # JIT:         257/257
-cargo run --release -p sf-nano-spectest -- --interp  # interpreter: 174/174
+cargo run --release -p sf-nano-spectest
+cargo run --release -p sf-nano-spectest -- --interp
 ```
+
+JIT SIMD requires ARM64 NEON or x86_64 SSSE3 and SSE4.1. Guest exception-handling
+support does not imply identical host-callback behavior: the interpreter can
+catch host-thrown exceptions, while the current JIT propagates them to the
+embedder. Interpreter host callbacks support at most eight results. See the
+[embedding documentation](sf-nano-core/README.md) for these public contracts.
 
 The Wasm 3.0 feature groups in detail — both engines except where noted:
 
