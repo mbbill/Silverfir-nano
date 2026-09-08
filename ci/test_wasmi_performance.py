@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,6 +51,60 @@ def fake_run(value: float, version: str) -> dict:
 
 
 class WasmiPerformanceTests(unittest.TestCase):
+    def test_version_change_replaces_locked_git_with_local_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            upstream = root / "upstream"
+            source = root / "candidate"
+            core = source / "sf-nano-core"
+            suite = root / "suite"
+            for package in (upstream, core, suite):
+                (package / "src").mkdir(parents=True)
+                (package / "src/lib.rs").write_text("", encoding="utf-8")
+            def manifest(version: str) -> str:
+                return ('[package]\nname = "sf-nano-core"\n'
+                        f'version = "{version}"\nedition = "2021"\n')
+            (upstream / "Cargo.toml").write_text(manifest("0.1.0"))
+            subprocess.run(["git", "init", "-q", str(upstream)], check=True)
+            subprocess.run(["git", "add", "."], cwd=upstream, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                 "commit", "-qm", "fixture"], cwd=upstream, check=True,
+            )
+            repository = upstream.as_uri()
+            (suite / "Cargo.toml").write_text(
+                '[package]\nname = "consumer"\nversion = "0.0.0"\n'
+                'edition = "2021"\n[dependencies]\n'
+                f'sf-nano-core = {{ git = "{repository}" }}\n'
+            )
+            cargo = shutil.which("cargo")
+            self.assertIsNotNone(cargo, "Cargo is required for lockfile resolution tests")
+            env = dict(os.environ)
+            env["CARGO_HOME"] = str(root / "cargo-home")
+            def metadata() -> dict:
+                result = subprocess.run(
+                    [cargo, "+stable", "metadata", "--format-version", "1"],
+                    cwd=suite, env=env, text=True, capture_output=True, check=True,
+                )
+                return next(p for p in json.loads(result.stdout)["packages"]
+                            if p["name"] == "sf-nano-core")
+            self.assertEqual(metadata()["version"], "0.1.0")
+            (core / "Cargo.toml").write_text(manifest("0.1.1"))
+            with patch.object(wasmi_performance, "SILVERFIR_REPOSITORY", repository):
+                wasmi_performance.write_patch_config(suite / ".cargo/config.toml", source)
+            env["CARGO_NET_OFFLINE"] = "true"
+            # Reproduce the CI failure: metadata alone leaves the patch unused.
+            self.assertIsNotNone(metadata()["source"])
+            for version in ("0.1.1", "0.1.0"):
+                (core / "Cargo.toml").write_text(manifest(version))
+                wasmi_performance.refresh_nano_lockfile(
+                    suite, cargo=cargo, toolchain="stable", env=env,
+                )
+                package = metadata()
+                self.assertIsNone(package["source"])
+                self.assertEqual(package["version"], version)
+                self.assertEqual(Path(package["manifest_path"]), core / "Cargo.toml")
+
     def test_old_runtime_has_no_adapter_migration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

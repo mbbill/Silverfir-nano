@@ -499,7 +499,27 @@ def dependency_closure_packages(
     ]
 
 
+def refresh_nano_lockfile(
+    suite: Path, *, cargo: str, toolchain: str, env: dict[str, str],
+) -> None:
+    """Resolve the local patch even when its version differs from the lockfile.
+
+    Cargo can retain the pinned git package and leave a different-version path
+    patch unused. Update only Nano in this private suite copy; subsequent
+    metadata checks still enforce the exact source and builds remain locked.
+    """
+    run_process(
+        [cargo, f"+{toolchain}", "update", "--manifest-path",
+         str(suite / "Cargo.toml"), "--package", "sf-nano-core"],
+        cwd=suite, env=env, capture=True,
+    )
+
+
 def verify_resolution(context: CargoContext) -> dict[str, Any]:
+    refresh_nano_lockfile(
+        context.suite, cargo=context.cargo, toolchain=context.toolchain,
+        env=cargo_environment(context),
+    )
     command = [
         *cargo_prefix(context, "metadata"),
         "--manifest-path",
@@ -570,8 +590,8 @@ def verify_resolution(context: CargoContext) -> dict[str, Any]:
             f"{context.version}: resolved local package set omits sf-nano-core"
         )
 
-    # The first metadata call updates only this version's private lockfile for
-    # the local [patch]. Every build and measurement after this is locked.
+    # Nano was refreshed in this version's private lockfile. Require stable
+    # resolution now; every build and measurement after this is locked.
     locked_command = [*command]
     locked_command.insert(
         locked_command.index("--no-default-features"),

@@ -187,8 +187,10 @@ def prepare(
     )
 
     env = cargo_environment(target_root)
-    # The first metadata pass updates only this checked-out suite's lockfile for
-    # the candidate path patch.  Every command after it is locked.
+    wasmi_performance.refresh_nano_lockfile(
+        suite, cargo=cargo, toolchain=toolchain, env=env,
+    )
+    # Verify the candidate source before any locked build or measurement.
     result = wasmi_performance.run_process(
         metadata_command(
             suite,
