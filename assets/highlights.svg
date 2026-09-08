@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 700 308" width="700" height="308">
-  <title>Silverfir-nano — strong on every axis: fast, small, portable, full Wasm 3.0, on-device JIT</title>
+  <title>Silverfir-nano — strong on every axis: fast, small, portable, Wasm 3.0 features, on-device JIT</title>
   <style>
     text     { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
     .surface { fill: #fcfcfb; stroke: #d8d8d4; }
@@ -53,8 +53,8 @@
   <text class="fact" x="284" y="230" text-anchor="end">verified and JIT-compiled</text>
   <text class="fact" x="284" y="245" text-anchor="end">on the chip itself</text>
 
-  <text class="name" x="254" y="118" text-anchor="end">Full Wasm 3.0</text>
-  <text class="fact" x="254" y="136" text-anchor="end">257/257 spec files —</text>
+  <text class="name" x="254" y="118" text-anchor="end">Wasm 3.0 features</text>
+  <text class="fact" x="254" y="136" text-anchor="end">engine / target dependent</text>
   <text class="fact" x="254" y="151" text-anchor="end">GC, EH, SIMD, tail calls</text>
 
   <text class="note" x="350" y="279" text-anchor="middle">strong on every axis a Wasm runtime is judged on — not just one</text>

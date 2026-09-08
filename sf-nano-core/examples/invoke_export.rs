@@ -55,7 +55,7 @@ fn print_value(value: &Value) {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo run -p sf-nano-core --example invoke_export -- <wasm> <export> [typed-args...] [--dump-memory <offset> <len>]"
+        "usage: cargo run -p sf-nano-core --features wasi --example invoke_export -- <wasm> <export> [typed-args...] [--dump-memory <offset> <len>]"
     );
     process::exit(2);
 }

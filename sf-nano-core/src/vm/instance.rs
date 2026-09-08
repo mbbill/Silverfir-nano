@@ -140,17 +140,19 @@ pub struct Instance {
 /// reference held across a free fails its generation check rather than
 /// reaching whatever occupied the slot next.
 ///
-/// `invoke` checks the callee out of the table and lets its own borrow of the
-/// world end before running it. A cross-instance call made from inside that
-/// callee therefore re-enters through a fresh checkout instead of nesting a
-/// borrow, which is what makes the nested case work:
+/// Instantiate a validated module, then call an export by name:
 ///
-/// ```ignore
+/// ```rust
+/// use sf_nano_core::{Config, Engine, Module, RuntimeWorld, Value};
+///
+/// // (module (func (export "answer") (result i32) i32.const 42))
+/// let wasm = b"\0asm\x01\0\0\0\x01\x05\x01\x60\0\x01\x7f\x03\x02\x01\0\x07\x0a\x01\x06answer\0\0\x0a\x06\x01\x04\0\x41\x2a\x0b";
+/// let engine = Engine::new(Config::new()).expect("configuration");
+/// let module = Module::new("example", wasm).expect("valid module");
 /// let mut world = RuntimeWorld::new();
-/// let a = world.instantiate(&engine, module_a, &[])?;
-/// let b = world.instantiate(&engine, module_b, &imports_naming(a))?;
-/// // `run_b` calls a funcref owned by `a`, mid-execution.
-/// let result = world.invoke(b, "run_b", &args)?;
+/// let id = world.instantiate(&engine, module, &[]).expect("instance");
+/// assert_eq!(world.invoke(id, "answer", &[]).expect("call"), vec![Value::I32(42)]);
+/// world.free(id).expect("free instance");
 /// ```
 ///
 /// [`Instance::from_module`] remains the convenience for embedders that want
