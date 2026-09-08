@@ -1,6 +1,6 @@
 [package]
 name = "sf-nano-tracked-alloc"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 rust-version = "1.94"
 authors = ["Bill Ming <mbbill@gmail.com>"]
