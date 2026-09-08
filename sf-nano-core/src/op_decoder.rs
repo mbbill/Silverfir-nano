@@ -163,24 +163,6 @@ pub(crate) enum Immediate {
     },
 }
 
-#[macro_export]
-macro_rules! extract_imm {
-    ($enum:expr, $variant:path) => {
-        if let $variant(value) = $enum {
-            value
-        } else {
-            unreachable!()
-        }
-    };
-    ($enum:expr, $variant:path, tuple) => {
-        if let $variant(value1, value2) = $enum {
-            (value1, value2)
-        } else {
-            unreachable!()
-        }
-    };
-}
-
 impl fmt::Display for Immediate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Immediate::*;
