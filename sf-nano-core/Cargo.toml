@@ -1,6 +1,6 @@
 [package]
 name = "sf-nano-core"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 rust-version = "1.94"
 authors = ["Bill Ming <mbbill@gmail.com>"]
@@ -13,7 +13,7 @@ keywords = ["wasm", "webassembly", "jit", "interpreter", "no_std"]
 categories = ["wasm", "no-std"]
 
 [dependencies]
-tracked_alloc = { package = "sf-nano-tracked-alloc", version = "0.1.1", path = "../tools/tracked-alloc" }
+tracked_alloc = { package = "sf-nano-tracked-alloc", version = "0.6.0", path = "../tools/tracked-alloc" }
 filetime = { version = "0.2", optional = true }
 
 [dev-dependencies]

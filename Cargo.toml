@@ -10,6 +10,9 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "0.6.0"
+
 [profile.release]
 lto = true
 codegen-units = 1

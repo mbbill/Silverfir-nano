@@ -1,0 +1,31 @@
+name: release version
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['[0-9]*', 'v[0-9]*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: release version consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check packages, dependency, lockfile and installation examples
+        run: python3 -m ci.release_version
+      - name: Check release tag
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 -m ci.release_version --tag "$RELEASE_TAG"

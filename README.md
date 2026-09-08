@@ -74,7 +74,7 @@ linked reports, not a fresh comparison of the crates.io release.
 
 Historical measurements recorded on 2026-07-26 (commit `6c018fa4`), before
 mandatory input validation was enabled for the release. They have not been
-remeasured for 0.1.1. Measured on real firmware: the Pico 2 demo host built
+remeasured for 0.6.0. Measured on real firmware: the Pico 2 demo host built
 for the RP2350's two cores, release, with the engine swapped. Flash is the
 whole loadable image — engine, ST7735 display driver, DMA, embedded-graphics,
 defmt, the RP2350 HAL, and the embedded `.wasm` guest. SRAM is a separate
