@@ -121,7 +121,7 @@ jobs:
               },
               {
                   "platform": "arm64-darwin",
-                  "runner": "macos-14",
+                  "runner": "macos-15",
                   "target": "",
                   "runner_prefix": "",
                   "exe": "",

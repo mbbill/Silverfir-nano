@@ -184,7 +184,7 @@ jobs:
             zig: false
 
           - platform: arm64-darwin
-            runner: macos-14
+            runner: macos-15
             timeout: 90
             python: python3
             suite: host arm64-darwin
