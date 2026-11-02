@@ -391,7 +391,32 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     ) => Some(r),
                     _ => None,
                 };
-                if let Some(reg) = zero_reg {
+                // A zero test of a bool whose compare just published its
+                // flags branches on those flags: `bool != 0` is the
+                // published condition and `bool == 0` its exact inverse.
+                let fused = match (zero_reg, self.select_flags.take()) {
+                    (Some(reg), Some((flags_reg, code))) if flags_reg == reg => Some(code),
+                    _ => None,
+                };
+                if let Some(code) = fused {
+                    let then_code = if kind == MachineCompareKind::Eq {
+                        code.invert()
+                    } else {
+                        code
+                    };
+                    if else_fallthrough {
+                        if let Some(label) = then_label {
+                            self.lower_b_cond(then_code, label);
+                        }
+                    } else if then_fallthrough {
+                        if let Some(label) = else_label {
+                            self.lower_b_cond(then_code.invert(), label);
+                        }
+                    } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
+                        self.lower_b_cond(then_code, then_label);
+                        self.lower_b(else_label);
+                    }
+                } else if let Some(reg) = zero_reg {
                     let reg = self.map_gp_reg(reg)?;
                     let is_eq = matches!(kind, MachineCompareKind::Eq);
                     let emit = |this: &mut Self, take_label: usize, take_eq: bool| {
@@ -508,7 +533,20 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     ) => Some(reg),
                     _ => None,
                 };
-                if let Some(reg) = zero_reg {
+                let fused = match (zero_reg, self.select_flags.take()) {
+                    (Some(reg), Some((flags_reg, code))) if flags_reg == reg => Some(code),
+                    _ => None,
+                };
+                if let Some(code) = fused {
+                    // Jump when the zero test fails: `bool == 0` fails on
+                    // the published condition, `bool != 0` on its inverse.
+                    let false_code = if kind == MachineCompareKind::Eq {
+                        code
+                    } else {
+                        code.invert()
+                    };
+                    self.lower_b_cond(false_code, label);
+                } else if let Some(reg) = zero_reg {
                     let reg = self.map_gp_reg(reg)?;
                     if kind == MachineCompareKind::Eq {
                         self.lower_cbnz(reg, label);
