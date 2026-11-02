@@ -142,13 +142,6 @@ impl<'a> X86_64Backend<'a> {
         self.ucomis(width, x, constant);
     }
 
-    fn ucomis(&mut self, width: MachineFloatWidth, lhs: Xmm, rhs: Xmm) {
-        match width {
-            MachineFloatWidth::F32 => enc::ucomiss(&mut self.core.text, lhs, rhs),
-            MachineFloatWidth::F64 => enc::ucomisd(&mut self.core.text, lhs, rhs),
-        }
-    }
-
     /// Branch to `nan` when `x` is unordered with itself.
     fn branch_if_nan(&mut self, width: MachineFloatWidth, x: Xmm, nan: usize) {
         self.ucomis(width, x, x);

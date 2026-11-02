@@ -104,6 +104,8 @@ pub(crate) struct X86_64Backend<'a> {
     /// every path — hit, miss, and block-end drain.
     pending_op: Option<(&'a MachineInst, usize)>,
     pub(super) narrow_equality: Option<super::narrow_equality::NarrowEquality>,
+    /// Trailing float compare consumed by the branch terminator's flags.
+    pub(super) float_branch: Option<super::float_cond::FloatBranch>,
 }
 
 /// One deferred jump table: the movabs immediate to patch with the
@@ -247,6 +249,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             pending_jump_tables: collections::Vec::new(),
             pending_op: None,
             narrow_equality: None,
+            float_branch: None,
         }
     }
 
@@ -431,6 +434,11 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.pending_op = None;
         self.narrow_equality =
             super::narrow_equality::narrow_equality(block, self.core.mir_blocks()?);
+        self.float_branch = if self.narrow_equality.is_none() {
+            super::float_cond::float_compare_branch(block, self.core.mir_blocks()?)
+        } else {
+            None
+        };
         // A fallthrough edge may emit no bytes, but other predecessors do
         // not promise the same flags. Position stamps only prove reuse
         // within the current block.
@@ -447,6 +455,11 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             .is_some_and(|plan| index >= plan.first_skipped)
         {
             debug_assert!(self.pending_op.is_none());
+            return Ok(());
+        }
+        if self.float_branch.is_some_and(|plan| index == plan.index) {
+            // An earlier buffered op still flushes in order at `end_block`,
+            // before the terminator emits the compare.
             return Ok(());
         }
         // Try to consume the buffered pair together. On a miss, emit
@@ -493,6 +506,36 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                     return Ok(());
                 }
             }
+            if let Some(fusion) = super::float_cond::float_compare_select_fusion(prev, inst) {
+                let bool_is_dead = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .is_some_and(|block| {
+                        !crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                            &block.ops[index + 1..],
+                            &block.terminator,
+                            fusion.bool_reg,
+                        )
+                    });
+                if bool_is_dead {
+                    let MachineInstKind::Select {
+                        ty,
+                        dst,
+                        on_true,
+                        on_false,
+                        cond: _,
+                    } = inst.kind
+                    else {
+                        unreachable!("validated float compare-select fusion");
+                    };
+                    self.core.current_op_index = Some(index);
+                    self.lower_fused_float_compare_select(&fusion, ty, dst, on_true, on_false)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
             if let Some(fusion) = super::fusion::int_compare_select_fusion(prev, inst) {
                 let bool_is_dead = self
                     .core
@@ -530,7 +573,10 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             self.fp_scratch.assert_all_free();
         }
         if super::fusion::fusible_load(&inst.kind)
-            || matches!(inst.kind, MachineInstKind::IntCompare { .. })
+            || matches!(
+                inst.kind,
+                MachineInstKind::IntCompare { .. } | MachineInstKind::FloatCompare { .. }
+            )
             || (matches!(
                 inst.kind,
                 MachineInstKind::Move {
@@ -578,6 +624,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.core.current_op_index = None;
         let result = self.lower_terminator(term, fallthrough);
         self.narrow_equality = None;
+        self.float_branch = None;
         self.gp_scratch.assert_all_free();
         self.fp_scratch.assert_all_free();
         self.core.current_block = None;
@@ -893,6 +940,15 @@ impl<'a> X86_64Backend<'a> {
             disp_offset,
             literal_index,
         });
+    }
+
+    /// UCOMISS/UCOMISD `lhs, rhs`: CF=1 when `lhs < rhs` or unordered,
+    /// ZF=1 when equal or unordered, PF=1 only when unordered.
+    pub(super) fn ucomis(&mut self, width: MachineFloatWidth, lhs: u8, rhs: u8) {
+        match width {
+            MachineFloatWidth::F32 => enc::ucomiss(&mut self.core.text, lhs, rhs),
+            MachineFloatWidth::F64 => enc::ucomisd(&mut self.core.text, lhs, rhs),
+        }
     }
 
     pub(super) fn prepare_float_operand(

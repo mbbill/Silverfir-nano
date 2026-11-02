@@ -2066,46 +2066,18 @@ impl<'a> X86_64Backend<'a> {
                 }
                 MachineValue::Reg(reg) => {
                     let cond_gp = self.map_gp_reg(reg)?;
-                    let dst_fp = self.map_fp_reg(dst)? as u8;
-                    let gp0 = self.gp_scratch.scoped_alloc().detach();
-                    let gp1 = self.gp_scratch.scoped_alloc().detach();
-                    let fp0 = self.fp_scratch.scoped_alloc().detach();
-                    let fp1 = self.fp_scratch.scoped_alloc().detach();
-                    let false_label = self.core.new_label();
-                    let done = self.core.new_label();
                     // Wasm select conditions are i32 values; ignore any stale
                     // upper half that may remain in a GpWord carrier.
                     if !self.int_flags_current(MachineIntWidth::I32, cond_gp) {
                         enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
                     }
-                    self.emit_jcc(Cc::E, false_label);
-                    let true_fp = self.prepare_float_operand(width, on_true, *gp0, *fp0)?;
-                    if dst_fp != true_fp as u8 {
-                        match width {
-                            MachineFloatWidth::F32 => {
-                                enc::movaps_rr(&mut self.core.text, dst_fp, true_fp as u8)
-                            }
-                            MachineFloatWidth::F64 => {
-                                enc::movaps_rr(&mut self.core.text, dst_fp, true_fp as u8)
-                            }
-                        };
-                    }
-                    self.emit_jmp(done);
-                    self.core.bind_label(false_label);
-                    let false_fp = self.prepare_float_operand(width, on_false, *gp1, *fp1)?;
-                    if dst_fp != false_fp as u8 {
-                        match width {
-                            MachineFloatWidth::F32 => {
-                                enc::movaps_rr(&mut self.core.text, dst_fp, false_fp as u8)
-                            }
-                            MachineFloatWidth::F64 => {
-                                enc::movaps_rr(&mut self.core.text, dst_fp, false_fp as u8)
-                            }
-                        };
-                    }
-                    self.core.bind_label(done);
-                    self.core.set_fp_reg_width(dst, width)?;
-                    Ok(())
+                    self.lower_float_select_on_flags(
+                        width,
+                        super::float_cond::FloatCond::Single(Cc::NE),
+                        dst,
+                        on_true,
+                        on_false,
+                    )
                 }
                 MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
                     "x86_64 Select condition cannot be reserved cache register",
@@ -2806,101 +2778,6 @@ impl<'a> X86_64Backend<'a> {
                 MachineFloatWidth::F32 => enc::movd_r32_xmm(&mut self.core.text, dst_gp, result_fp),
                 MachineFloatWidth::F64 => enc::movq_r64_xmm(&mut self.core.text, dst_gp, result_fp),
             };
-        }
-        Ok(())
-    }
-
-    pub(super) fn lower_float_compare(
-        &mut self,
-        width: MachineFloatWidth,
-        kind: MachineCompareKind,
-        dst: MachineReg,
-        lhs: MachineValue,
-        rhs: MachineValue,
-    ) -> Result<(), WasmError> {
-        let dst_gp = self.map_gp_reg(dst)?;
-        let gp0 = self.gp_scratch.scoped_alloc().detach();
-        let gp1 = self.gp_scratch.scoped_alloc().detach();
-        let fp0 = self.fp_scratch.scoped_alloc().detach();
-        let fp1 = self.fp_scratch.scoped_alloc().detach();
-        let lhs_fp = self.prepare_float_operand(width, lhs, *gp0, *fp0)?;
-        // Choose an rhs FP scratch that doesn't conflict with lhs. When lhs
-        // already lives in a mapped FP register (not `fp0`), reuse `fp0` for
-        // rhs to avoid clobbering a live FP SSA value.
-        let rhs_fp_scratch = if lhs_fp != *fp0 as u32 { *fp0 } else { *fp1 };
-        if matches!(rhs, MachineValue::Imm64(0)) {
-            enc::xorpd(
-                &mut self.core.text,
-                rhs_fp_scratch as u8,
-                rhs_fp_scratch as u8,
-            );
-            match width {
-                MachineFloatWidth::F32 => {
-                    enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp_scratch as u8)
-                }
-                MachineFloatWidth::F64 => {
-                    enc::ucomisd(&mut self.core.text, lhs_fp as u8, rhs_fp_scratch as u8)
-                }
-            };
-        } else {
-            let rhs_fp = self.prepare_float_operand(width, rhs, *gp1, rhs_fp_scratch)?;
-            match width {
-                MachineFloatWidth::F32 => {
-                    enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
-                }
-                MachineFloatWidth::F64 => {
-                    enc::ucomisd(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
-                }
-            };
-        }
-        // Wasm float comparisons: unordered (NaN) => 0 for all except Ne.
-        // UCOMISD sets: ZF=1,PF=1,CF=1 for unordered; ZF=1,PF=0,CF=0 for equal;
-        // ZF=0,PF=0,CF=1 for less-than; ZF=0,PF=0,CF=0 for greater-than.
-        match kind {
-            MachineCompareKind::Eq => {
-                // Ordered and equal: ZF=1 AND PF=0
-                // SETE sets dst to ZF, SETNP sets tmp to !PF, AND them.
-                enc::setcc(&mut self.core.text, Cc::E, dst_gp);
-                enc::setcc(&mut self.core.text, Cc::NP, *gp0);
-                enc::and_rr_32(&mut self.core.text, dst_gp, *gp0);
-                // Zero-extend the byte result to full register
-                enc::movzx_r32_r8(&mut self.core.text, dst_gp, dst_gp);
-            }
-            MachineCompareKind::Ne => {
-                // Unordered OR not-equal: NE=1 OR PF=1
-                enc::setcc(&mut self.core.text, Cc::NE, dst_gp);
-                enc::setcc(&mut self.core.text, Cc::P, *gp0);
-                enc::or_rr_32(&mut self.core.text, dst_gp, *gp0);
-                enc::movzx_r32_r8(&mut self.core.text, dst_gp, dst_gp);
-            }
-            MachineCompareKind::Lt => {
-                // Ordered and less: CF=1 AND PF=0 → use JB (CF=1), but need !PF too
-                // Actually, for UCOMISD: CF=1 for less-than AND for unordered.
-                // So Lt = CF=1 AND PF=0 → SETB AND SETNP
-                enc::setcc(&mut self.core.text, Cc::B, dst_gp);
-                enc::setcc(&mut self.core.text, Cc::NP, *gp0);
-                enc::and_rr_32(&mut self.core.text, dst_gp, *gp0);
-                enc::movzx_r32_r8(&mut self.core.text, dst_gp, dst_gp);
-            }
-            MachineCompareKind::Gt => {
-                // Ordered and greater: ZF=0, CF=0, PF=0 → JA (CF=0 AND ZF=0)
-                // JA already excludes unordered (PF=1 implies CF=1), so SETA is correct.
-                enc::setcc(&mut self.core.text, Cc::A, dst_gp);
-                enc::movzx_r32_r8(&mut self.core.text, dst_gp, dst_gp);
-            }
-            MachineCompareKind::Le => {
-                // Ordered and less-or-equal: (CF=1 OR ZF=1) AND PF=0
-                enc::setcc(&mut self.core.text, Cc::BE, dst_gp);
-                enc::setcc(&mut self.core.text, Cc::NP, *gp0);
-                enc::and_rr_32(&mut self.core.text, dst_gp, *gp0);
-                enc::movzx_r32_r8(&mut self.core.text, dst_gp, dst_gp);
-            }
-            MachineCompareKind::Ge => {
-                // Ordered and greater-or-equal: CF=0 AND PF=0 → JAE excludes unordered already
-                // Actually JAE = !CF. Unordered sets CF=1, so JAE is 0 for unordered. Correct.
-                enc::setcc(&mut self.core.text, Cc::AE, dst_gp);
-                enc::movzx_r32_r8(&mut self.core.text, dst_gp, dst_gp);
-            }
         }
         Ok(())
     }

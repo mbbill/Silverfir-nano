@@ -169,6 +169,9 @@ impl<'a> X86_64Backend<'a> {
         let else_label = (!else_fallthrough)
             .then(|| self.core.emit_edge(else_edge.target, &else_edge.args))
             .transpose()?;
+        if let Some(plan) = self.float_branch {
+            return self.lower_float_branch(plan, then_label, else_label);
+        }
         match *cond {
             MachineBranchCond::Value(value) => match value {
                 MachineValue::Imm64(0) => {

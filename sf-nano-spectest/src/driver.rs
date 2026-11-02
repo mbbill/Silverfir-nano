@@ -293,6 +293,14 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         path: "fused_select_flags.wast",
         content: include_str!("../tests/fused_select_flags.wast"),
     });
+    wast_inputs.push(WastInput::Embedded {
+        path: "inline_float_trunc.wast",
+        content: include_str!("../tests/inline_float_trunc.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "float_compare_flags.wast",
+        content: include_str!("../tests/float_compare_flags.wast"),
+    });
     wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
     info!("Found {} WAST files", wast_inputs.len());
 

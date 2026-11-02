@@ -5,6 +5,7 @@ mod control;
 mod cpu;
 pub(crate) mod enc;
 mod entry_guard;
+mod float_cond;
 mod fusion;
 mod gp_scratch;
 mod inst;
