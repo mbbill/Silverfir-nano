@@ -18,6 +18,8 @@ use crate::vm::jit::arch::common::text_emitter::TextEmitter;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum Cc {
+    O = 0x0,
+    NO = 0x1,
     B = 0x2,
     AE = 0x3,
     E = 0x4,
@@ -38,6 +40,8 @@ impl Cc {
     #[inline]
     pub(crate) const fn invert(self) -> Cc {
         match self {
+            Self::O => Self::NO,
+            Self::NO => Self::O,
             Self::B => Self::AE,
             Self::AE => Self::B,
             Self::E => Self::NE,
@@ -1367,6 +1371,59 @@ pub(crate) fn try_branch_rel8(e: &mut TextEmitter, cc: Option<Cc>, target: usize
 }
 
 #[cfg(test)]
+mod truncating_conversion_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn cvtt_forms_encode_width_and_extended_registers() {
+        // Reference bytes from GNU as (Intel syntax).
+        let cases: [(fn(&mut TextEmitter, X86Reg, Xmm), X86Reg, Xmm, &[u8]); 6] = [
+            (
+                cvttsd2si_r64,
+                X86Reg::RAX,
+                0,
+                &[0xF2, 0x48, 0x0F, 0x2C, 0xC0],
+            ),
+            (
+                cvttsd2si_r32,
+                X86Reg::R8,
+                9,
+                &[0xF2, 0x45, 0x0F, 0x2C, 0xC1],
+            ),
+            (cvttss2si_r32, X86Reg::RAX, 1, &[0xF3, 0x0F, 0x2C, 0xC1]),
+            (
+                cvttss2si_r64,
+                X86Reg::R11,
+                15,
+                &[0xF3, 0x4D, 0x0F, 0x2C, 0xDF],
+            ),
+            (cvttsd2si_r32, X86Reg::RDX, 3, &[0xF2, 0x0F, 0x2C, 0xD3]),
+            (
+                cvttss2si_r64,
+                X86Reg::RSI,
+                8,
+                &[0xF3, 0x49, 0x0F, 0x2C, 0xF0],
+            ),
+        ];
+        for (emit, dst, src, expected) in cases {
+            let mut text = TextEmitter::new();
+            emit(&mut text, dst, src);
+            assert_eq!(text.finish().as_slice(), expected);
+        }
+    }
+
+    #[test]
+    fn overflow_conditions_encode_and_invert() {
+        let mut text = TextEmitter::new();
+        assert!(try_branch_rel8(&mut text, Some(Cc::O), 0x10));
+        assert!(try_branch_rel8(&mut text, Some(Cc::NO), 0x10));
+        assert_eq!(text.finish().as_slice(), &[0x70, 0x0E, 0x71, 0x0C]);
+        assert_eq!(Cc::O.invert(), Cc::NO);
+        assert_eq!(Cc::NO.invert(), Cc::O);
+    }
+}
+
+#[cfg(test)]
 mod short_branch_tests {
     use super::*;
 
@@ -1711,6 +1768,40 @@ pub(crate) fn cvtsi2ss_r64(e: &mut TextEmitter, dst: Xmm, src: X86Reg) {
     e.emit_u8(0x0F);
     e.emit_u8(0x2A);
     emit_xmm_modrm_rr(e, dst, src.idx());
+}
+
+/// CVTT{SS,SD}2SI r32/r64, xmm: prefix [REX] 0F 2C /r. The GP destination
+/// sits in ModR/M.reg and the XMM source in ModR/M.rm.
+fn sse_cvtt(e: &mut TextEmitter, prefix: u8, w: bool, dst: X86Reg, src: Xmm) {
+    e.emit_u8(prefix);
+    let r = dst.needs_rex_ext();
+    let b = src >= 8;
+    if w || r || b {
+        e.emit_u8(rex(w, r, false, b));
+    }
+    e.emit_u8(0x0F);
+    e.emit_u8(0x2C);
+    e.emit_u8(modrm(0b11, dst.idx3(), src & 7));
+}
+
+/// CVTTSS2SI r32, xmm (f32 -> i32, truncating): F3 0F 2C
+pub(crate) fn cvttss2si_r32(e: &mut TextEmitter, dst: X86Reg, src: Xmm) {
+    sse_cvtt(e, 0xF3, false, dst, src);
+}
+
+/// CVTTSS2SI r64, xmm (f32 -> i64, truncating): F3 REX.W 0F 2C
+pub(crate) fn cvttss2si_r64(e: &mut TextEmitter, dst: X86Reg, src: Xmm) {
+    sse_cvtt(e, 0xF3, true, dst, src);
+}
+
+/// CVTTSD2SI r32, xmm (f64 -> i32, truncating): F2 0F 2C
+pub(crate) fn cvttsd2si_r32(e: &mut TextEmitter, dst: X86Reg, src: Xmm) {
+    sse_cvtt(e, 0xF2, false, dst, src);
+}
+
+/// CVTTSD2SI r64, xmm (f64 -> i64, truncating): F2 REX.W 0F 2C
+pub(crate) fn cvttsd2si_r64(e: &mut TextEmitter, dst: X86Reg, src: Xmm) {
+    sse_cvtt(e, 0xF2, true, dst, src);
 }
 
 // --- GP <-> XMM moves ---

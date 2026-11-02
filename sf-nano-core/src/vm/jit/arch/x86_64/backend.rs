@@ -868,6 +868,33 @@ impl<'a> X86_64Backend<'a> {
         }
     }
 
+    /// Load an FP immediate from the function's literal pool: one FP-domain
+    /// load the core can hoist, instead of a GP materialization plus a
+    /// domain-crossing move on the consumer's critical path. Zero is a
+    /// register-clearing XOR.
+    pub(super) fn load_float_immediate(&mut self, width: MachineFloatWidth, bits: u64, dst: u8) {
+        let imm = match width {
+            MachineFloatWidth::F32 => u64::from(bits as u32),
+            MachineFloatWidth::F64 => bits,
+        };
+        if imm == 0 {
+            match width {
+                MachineFloatWidth::F32 => enc::xorps(&mut self.core.text, dst, dst),
+                MachineFloatWidth::F64 => enc::xorpd(&mut self.core.text, dst, dst),
+            };
+            return;
+        }
+        let literal_index = self.intern_fp_literal(imm);
+        let disp_offset = match width {
+            MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, dst),
+            MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, dst),
+        };
+        self.fp_literal_fixups.push(FpLiteralFixup {
+            disp_offset,
+            literal_index,
+        });
+    }
+
     pub(super) fn prepare_float_operand(
         &mut self,
         width: MachineFloatWidth,
@@ -881,34 +908,7 @@ impl<'a> X86_64Backend<'a> {
             }
         }
         if let MachineValue::Imm64(bits) = value {
-            // Load FP immediates from the function's literal pool: one
-            // FP-domain load the core can hoist, instead of a GP
-            // materialization plus a domain-crossing move on the consumer's
-            // critical path.
-            let imm = match width {
-                MachineFloatWidth::F32 => u64::from(bits as u32),
-                MachineFloatWidth::F64 => bits,
-            };
-            if imm == 0 {
-                match width {
-                    MachineFloatWidth::F32 => {
-                        enc::xorps(&mut self.core.text, fp_scratch as u8, fp_scratch as u8)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::xorpd(&mut self.core.text, fp_scratch as u8, fp_scratch as u8)
-                    }
-                };
-                return Ok(fp_scratch);
-            }
-            let literal_index = self.intern_fp_literal(imm);
-            let disp_offset = match width {
-                MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, fp_scratch as u8),
-                MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, fp_scratch as u8),
-            };
-            self.fp_literal_fixups.push(FpLiteralFixup {
-                disp_offset,
-                literal_index,
-            });
+            self.load_float_immediate(width, bits, fp_scratch as u8);
             return Ok(fp_scratch);
         }
         let gp = self.materialize_value(gp_scratch, value)?;

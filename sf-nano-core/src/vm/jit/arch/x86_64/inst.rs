@@ -15,42 +15,14 @@ use crate::{
 };
 
 use super::{
-    abi::{C_ARG0, C_ARG1},
     backend::{FpLiteralFixup, X86_64Backend},
-    callconv,
     enc::{self, Cc},
     fusion::map_int_cond,
-    helpers::x86_64_saturating_trunc,
     reg::X86Reg,
 };
 use crate::vm::jit::arch::common::helpers::convert_result_float_width;
 
 use crate::vm::jit::machine::machine_ir::MachineAddr;
-
-/// Map a `MachineConvertOp` to the u32 op code consumed by the runtime
-/// trunc/saturating-trunc helpers. Returns `u32::MAX` for ops that do not
-/// go through the helper path.
-pub(super) fn convert_op_code(op: MachineConvertOp) -> u32 {
-    match op {
-        MachineConvertOp::I32TruncF32S => 0,
-        MachineConvertOp::I32TruncF32U => 1,
-        MachineConvertOp::I32TruncF64S => 2,
-        MachineConvertOp::I32TruncF64U => 3,
-        MachineConvertOp::I64TruncF32S => 4,
-        MachineConvertOp::I64TruncF32U => 5,
-        MachineConvertOp::I64TruncF64S => 6,
-        MachineConvertOp::I64TruncF64U => 7,
-        MachineConvertOp::I32TruncSatF32S => 8,
-        MachineConvertOp::I32TruncSatF32U => 9,
-        MachineConvertOp::I32TruncSatF64S => 10,
-        MachineConvertOp::I32TruncSatF64U => 11,
-        MachineConvertOp::I64TruncSatF32S => 12,
-        MachineConvertOp::I64TruncSatF32U => 13,
-        MachineConvertOp::I64TruncSatF64S => 14,
-        MachineConvertOp::I64TruncSatF64U => 15,
-        _ => u32::MAX,
-    }
-}
 
 impl<'a> X86_64Backend<'a> {
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
@@ -2258,11 +2230,34 @@ impl<'a> X86_64Backend<'a> {
         dst: MachineReg,
         src: MachineValue,
     ) -> Result<(), WasmError> {
+        if super::trunc::is_float_trunc(op) {
+            return self.lower_float_trunc(op, dst, src);
+        }
         let dst_float_width = convert_result_float_width(op);
         let gp0 = self.gp_scratch.scoped_alloc().detach();
         let gp1 = self.gp_scratch.scoped_alloc().detach();
         let fp0 = self.fp_scratch.scoped_alloc().detach();
         let fp1 = self.fp_scratch.scoped_alloc().detach();
+        if let MachineConvertOp::F64PromoteF32 | MachineConvertOp::F32DemoteF64 = op {
+            // Float-to-float: the source stays in the FP domain.
+            let (src_width, dst_width) = if op == MachineConvertOp::F64PromoteF32 {
+                (MachineFloatWidth::F32, MachineFloatWidth::F64)
+            } else {
+                (MachineFloatWidth::F64, MachineFloatWidth::F32)
+            };
+            let src_fp = self.prepare_float_operand(src_width, src, *gp0, *fp0)? as u8;
+            let result_fp = if self.core.is_fp_reg(dst) {
+                self.core.set_fp_reg_width(dst, dst_width)?;
+                self.map_fp_reg(dst)? as u8
+            } else {
+                *fp1 as u8
+            };
+            match dst_width {
+                MachineFloatWidth::F64 => enc::cvtss2sd(&mut self.core.text, result_fp, src_fp),
+                MachineFloatWidth::F32 => enc::cvtsd2ss(&mut self.core.text, result_fp, src_fp),
+            }
+            return self.store_fp_result_if_gp(dst, dst_width, result_fp);
+        }
         let src_gp = self.materialize_value(*gp0, src)?;
         match op {
             MachineConvertOp::I32WrapI64 => {
@@ -2303,31 +2298,6 @@ impl<'a> X86_64Backend<'a> {
                     if dst_gp != src_gp {
                         enc::mov_rr_64(&mut self.core.text, dst_gp, src_gp);
                     }
-                }
-            }
-            // Float promotion / demotion
-            MachineConvertOp::F64PromoteF32 => {
-                let src_fp = self.prepare_float_operand(MachineFloatWidth::F32, src, *gp0, *fp0)?;
-                if self.core.is_fp_reg(dst) {
-                    let dst_fp = self.map_fp_reg(dst)? as u8;
-                    self.core.set_fp_reg_width(dst, MachineFloatWidth::F64)?;
-                    enc::cvtss2sd(&mut self.core.text, dst_fp, src_fp as u8);
-                } else {
-                    enc::cvtss2sd(&mut self.core.text, *fp1 as u8, src_fp as u8);
-                    let dst_gp = self.map_gp_reg(dst)?;
-                    enc::movq_r64_xmm(&mut self.core.text, dst_gp, *fp1 as u8);
-                }
-            }
-            MachineConvertOp::F32DemoteF64 => {
-                let src_fp = self.prepare_float_operand(MachineFloatWidth::F64, src, *gp0, *fp0)?;
-                if self.core.is_fp_reg(dst) {
-                    let dst_fp = self.map_fp_reg(dst)? as u8;
-                    self.core.set_fp_reg_width(dst, MachineFloatWidth::F32)?;
-                    enc::cvtsd2ss(&mut self.core.text, dst_fp, src_fp as u8);
-                } else {
-                    enc::cvtsd2ss(&mut self.core.text, *fp1 as u8, src_fp as u8);
-                    let dst_gp = self.map_gp_reg(dst)?;
-                    enc::movd_r32_xmm(&mut self.core.text, dst_gp, *fp1 as u8);
                 }
             }
             // Int -> Float conversions
@@ -2416,26 +2386,18 @@ impl<'a> X86_64Backend<'a> {
                 self.core.bind_label(done);
                 self.store_fp_result_if_gp(dst, MachineFloatWidth::F64, dst_fp)?;
             }
-            // Trapping truncations: call Rust helper
-            MachineConvertOp::I32TruncF32S
+            // Float-source conversions take the early returns above.
+            MachineConvertOp::F64PromoteF32
+            | MachineConvertOp::F32DemoteF64
+            | MachineConvertOp::I32TruncF32S
             | MachineConvertOp::I32TruncF32U
             | MachineConvertOp::I32TruncF64S
             | MachineConvertOp::I32TruncF64U
             | MachineConvertOp::I64TruncF32S
             | MachineConvertOp::I64TruncF32U
             | MachineConvertOp::I64TruncF64S
-            | MachineConvertOp::I64TruncF64U => {
-                if src_gp != *gp0 {
-                    drop(gp0);
-                }
-                drop(gp1);
-                drop(fp0);
-                drop(fp1);
-                let dst_gp = self.map_gp_reg(dst)?;
-                self.lower_trapping_trunc(op, dst_gp, src_gp)?;
-            }
-            // Saturating truncations: call Rust helper
-            MachineConvertOp::I32TruncSatF32S
+            | MachineConvertOp::I64TruncF64U
+            | MachineConvertOp::I32TruncSatF32S
             | MachineConvertOp::I32TruncSatF32U
             | MachineConvertOp::I32TruncSatF64S
             | MachineConvertOp::I32TruncSatF64U
@@ -2443,14 +2405,9 @@ impl<'a> X86_64Backend<'a> {
             | MachineConvertOp::I64TruncSatF32U
             | MachineConvertOp::I64TruncSatF64S
             | MachineConvertOp::I64TruncSatF64U => {
-                if src_gp != *gp0 {
-                    drop(gp0);
-                }
-                drop(gp1);
-                drop(fp0);
-                drop(fp1);
-                let dst_gp = self.map_gp_reg(dst)?;
-                self.lower_saturating_trunc(op, dst_gp, src_gp)?;
+                return Err(WasmError::internal(
+                    "x86_64 float-source conversion reached the integer-source path",
+                ));
             }
         }
         Ok(())
@@ -3021,65 +2978,6 @@ impl<'a> X86_64Backend<'a> {
         enc::pop(&mut self.core.text, X86Reg::R8);
         enc::pop(&mut self.core.text, X86Reg::RDI);
         enc::pop(&mut self.core.text, X86Reg::RSI);
-    }
-
-    fn lower_trapping_trunc(
-        &mut self,
-        op: MachineConvertOp,
-        dst: X86Reg,
-        src: X86Reg,
-    ) -> Result<(), WasmError> {
-        // The C trunc helper call is ABI-specific: SysV returns a two-field
-        // `repr(C)` struct in RAX/RDX, while Win64 receives an out-pointer
-        // as a fourth argument. `callconv::emit_trapping_trunc_call` owns
-        // the whole save → arg-setup → call → restore → test → branch
-        // sequence and leaves the 64-bit result in the supplied backend-owned
-        // scratch register.
-        #[cfg(sf_os_windows)]
-        let result_scratch = X86Reg::RDX;
-        #[cfg(not(sf_os_windows))]
-        let result_scratch = *self
-            .gp_scratch
-            .try_claim_rcx()
-            .or_else(|| self.gp_scratch.try_claim_rax())
-            .expect("x86_64 trapping trunc needs RCX or RAX for the helper target")
-            .detach();
-        let error_label = self.core.body_local_error_label;
-        callconv::emit_trapping_trunc_call(
-            self,
-            src,
-            convert_op_code(op) as u64,
-            result_scratch,
-            error_label,
-        );
-        if dst != X86Reg::RDX {
-            enc::mov_rr_64(&mut self.core.text, dst, X86Reg::RDX);
-        }
-        Ok(())
-    }
-
-    fn lower_saturating_trunc(
-        &mut self,
-        op: MachineConvertOp,
-        dst: X86Reg,
-        src: X86Reg,
-    ) -> Result<(), WasmError> {
-        // Keep the helper target out of ABI result registers. Win64 returns
-        // the saturating result in RAX, so use backend-owned R11 for the
-        // helper entry address.
-        self.save_caller_clobbered_gp_dynamic();
-        enc::mov_rr_64(&mut self.core.text, C_ARG0, src);
-        self.materialize_u64(C_ARG1, convert_op_code(op) as u64);
-        self.materialize_u64(
-            X86Reg::R11,
-            x86_64_saturating_trunc as *const () as usize as u64,
-        );
-        enc::call_reg(&mut self.core.text, X86Reg::R11);
-        self.restore_caller_clobbered_gp_dynamic();
-        if dst != X86Reg::RAX {
-            enc::mov_rr_64(&mut self.core.text, dst, X86Reg::RAX);
-        }
-        Ok(())
     }
 
     /// Indexed load through one [base + index + disp] instruction. A
