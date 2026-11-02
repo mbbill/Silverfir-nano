@@ -106,6 +106,8 @@ pub(crate) struct X86_64Backend<'a> {
     pub(super) narrow_equality: Option<super::narrow_equality::NarrowEquality>,
     /// Trailing float compare consumed by the branch terminator's flags.
     pub(super) float_branch: Option<super::float_cond::FloatBranch>,
+    /// Ops of a fused read-modify-write still to be skipped in this block.
+    pub(super) rmw_skip: u8,
 }
 
 /// One deferred jump table: the movabs immediate to patch with the
@@ -250,6 +252,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             pending_op: None,
             narrow_equality: None,
             float_branch: None,
+            rmw_skip: 0,
         }
     }
 
@@ -432,6 +435,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         // Streaming entry: the lookahead never carries across blocks.
         self.pending_op = None;
+        self.rmw_skip = 0;
         self.narrow_equality =
             super::narrow_equality::narrow_equality(block, self.core.mir_blocks()?);
         self.float_branch = if self.narrow_equality.is_none() {
@@ -460,6 +464,24 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         if self.float_branch.is_some_and(|plan| index == plan.index) {
             // An earlier buffered op still flushes in order at `end_block`,
             // before the terminator emits the compare.
+            return Ok(());
+        }
+        if self.rmw_skip > 0 {
+            self.rmw_skip -= 1;
+            return Ok(());
+        }
+        if let Some(fusion) = self.rmw_candidate(inst, index) {
+            if let Some((prev, prev_index)) = self.pending_op.take() {
+                self.core.current_op_index = Some(prev_index);
+                self.lower_inst(prev)?;
+                self.gp_scratch.assert_all_free();
+                self.fp_scratch.assert_all_free();
+            }
+            self.core.current_op_index = Some(index);
+            self.lower_rmw(&fusion)?;
+            self.gp_scratch.assert_all_free();
+            self.fp_scratch.assert_all_free();
+            self.rmw_skip = 2;
             return Ok(());
         }
         // Try to consume the buffered pair together. On a miss, emit
@@ -940,6 +962,30 @@ impl<'a> X86_64Backend<'a> {
             disp_offset,
             literal_index,
         });
+    }
+
+    /// A `load; op; store` triple starting at `index` that fuses into one
+    /// read-modify-write, with both intermediate values dead afterwards.
+    fn rmw_candidate(&self, load: &MachineInst, index: usize) -> Option<super::rmw::RmwFusion> {
+        if !matches!(load.kind, MachineInstKind::IndexedLoad { .. }) {
+            return None;
+        }
+        let block = self
+            .core
+            .mir_blocks()
+            .ok()?
+            .get(self.core.current_block?.as_usize())?;
+        let fusion =
+            super::rmw::rmw_fusion(load, block.ops.get(index + 1)?, block.ops.get(index + 2)?)?;
+        let after = block.ops.get(index + 3..)?;
+        let live = |reg| {
+            crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                after,
+                &block.terminator,
+                reg,
+            )
+        };
+        (!live(fusion.loaded) && !live(fusion.result)).then_some(fusion)
     }
 
     /// UCOMISS/UCOMISD `lhs, rhs`: CF=1 when `lhs < rhs` or unordered,

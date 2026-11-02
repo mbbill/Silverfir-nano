@@ -13,6 +13,7 @@ mod jump_table;
 mod narrow_equality;
 mod preserved;
 mod reg;
+mod rmw;
 mod simd;
 mod template;
 mod trunc;

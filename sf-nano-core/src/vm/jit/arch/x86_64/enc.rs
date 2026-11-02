@@ -1244,8 +1244,8 @@ pub(crate) fn store_imm32_64_idx(
 // ALU with memory source — reg <- reg OP [mem]
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Integer ALU ops with an r/m source form (the reg <- r/m direction).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Integer ALU ops with r/m forms in both directions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MemAluOp {
     Add,
     Or,
@@ -1264,6 +1264,57 @@ impl MemAluOp {
             Self::Sub => 0x2B,
             Self::Xor => 0x33,
         }
+    }
+
+    /// Opcode of the `r/m, reg` direction (memory destination).
+    const fn store_opcode(self) -> u8 {
+        self.opcode() - 2
+    }
+
+    /// ModR/M.reg extension of the `r/m, imm` group (0x81 / 0x83).
+    const fn imm_ext(self) -> u8 {
+        match self {
+            Self::Add => 0,
+            Self::Or => 1,
+            Self::And => 4,
+            Self::Sub => 5,
+            Self::Xor => 6,
+        }
+    }
+}
+
+/// OP [base + index + disp], src — a read-modify-write of one memory word.
+pub(crate) fn alu_mr_idx(
+    e: &mut TextEmitter,
+    wide: bool,
+    op: MemAluOp,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    src: X86Reg,
+) {
+    emit_rex_idx(e, wide, src.needs_rex_ext(), index, base);
+    e.emit_u8(op.store_opcode());
+    emit_modrm_mem_idx(e, src.idx3(), base, index, disp);
+}
+
+/// OP [base + index + disp], imm — sign-extended imm8 or imm32 form.
+pub(crate) fn alu_mi_idx(
+    e: &mut TextEmitter,
+    wide: bool,
+    op: MemAluOp,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    imm: i32,
+) {
+    emit_rex_idx(e, wide, false, index, base);
+    e.emit_u8(if fits_i8(imm) { 0x83 } else { 0x81 });
+    emit_modrm_mem_idx(e, op.imm_ext(), base, index, disp);
+    if fits_i8(imm) {
+        e.emit_u8(imm as u8);
+    } else {
+        emit_i32(e, imm);
     }
 }
 
@@ -1368,6 +1419,77 @@ pub(crate) fn try_branch_rel8(e: &mut TextEmitter, cc: Option<Cc>, target: usize
     e.emit_u8(cc.map_or(0xEB, |cc| 0x70 + cc as u8));
     e.emit_u8(displacement as u8);
     true
+}
+
+#[cfg(test)]
+mod memory_destination_alu_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn rmw_forms_match_reference_encodings() {
+        // Reference bytes from GNU as (Intel syntax).
+        let mut text = TextEmitter::new();
+        // or DWORD PTR [r12+r14*1], 0x200000
+        alu_mi_idx(
+            &mut text,
+            false,
+            MemAluOp::Or,
+            X86Reg::R12,
+            X86Reg::R14,
+            0,
+            0x200000,
+        );
+        // add QWORD PTR [rbp+rsi*1+0x10], -1
+        alu_mi_idx(
+            &mut text,
+            true,
+            MemAluOp::Add,
+            X86Reg::RBP,
+            X86Reg::RSI,
+            0x10,
+            -1,
+        );
+        // and DWORD PTR [r13+rax*1+0x0], -2097153  (RBP/R13 base needs disp8)
+        alu_mi_idx(
+            &mut text,
+            false,
+            MemAluOp::And,
+            X86Reg::R13,
+            X86Reg::RAX,
+            0,
+            -2097153,
+        );
+        // xor DWORD PTR [r12+r9*1+0x400], r10d
+        alu_mr_idx(
+            &mut text,
+            false,
+            MemAluOp::Xor,
+            X86Reg::R12,
+            X86Reg::R9,
+            0x400,
+            X86Reg::R10,
+        );
+        // sub QWORD PTR [rdi+rcx*1], rdx
+        alu_mr_idx(
+            &mut text,
+            true,
+            MemAluOp::Sub,
+            X86Reg::RDI,
+            X86Reg::RCX,
+            0,
+            X86Reg::RDX,
+        );
+        assert_eq!(
+            text.finish().as_slice(),
+            &[
+                0x43, 0x81, 0x0C, 0x34, 0x00, 0x00, 0x20, 0x00, // or
+                0x48, 0x83, 0x44, 0x35, 0x10, 0xFF, // add
+                0x41, 0x81, 0x64, 0x05, 0x00, 0xFF, 0xFF, 0xDF, 0xFF, // and
+                0x47, 0x31, 0x94, 0x0C, 0x00, 0x04, 0x00, 0x00, // xor
+                0x48, 0x29, 0x14, 0x0F, // sub
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
