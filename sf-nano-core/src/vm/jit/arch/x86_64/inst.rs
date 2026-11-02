@@ -2501,8 +2501,8 @@ impl<'a> X86_64Backend<'a> {
                     MachineFloatWidth::F32 => 0x7FFF_FFFFu64,
                     MachineFloatWidth::F64 => 0x7FFF_FFFF_FFFF_FFFFu64,
                 };
-                self.materialize_u64(*gp_scratch, mask);
-                enc::movq_xmm_r64(&mut self.core.text, mask_xmm, *gp_scratch);
+                // A literal-pool load keeps the mask in the FP domain.
+                self.load_float_immediate(width, mask, mask_xmm);
                 enc::andpd(&mut self.core.text, result_fp, mask_xmm);
             }
             MachineFloatUnaryOp::Neg => {
@@ -2526,8 +2526,8 @@ impl<'a> X86_64Backend<'a> {
                     MachineFloatWidth::F32 => 0x8000_0000u64,
                     MachineFloatWidth::F64 => 0x8000_0000_0000_0000u64,
                 };
-                self.materialize_u64(*gp_scratch, mask);
-                enc::movq_xmm_r64(&mut self.core.text, mask_xmm, *gp_scratch);
+                // A literal-pool load keeps the mask in the FP domain.
+                self.load_float_immediate(width, mask, mask_xmm);
                 enc::xorpd(&mut self.core.text, result_fp, mask_xmm);
             }
         }
