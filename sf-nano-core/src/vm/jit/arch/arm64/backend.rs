@@ -161,6 +161,8 @@ pub(crate) struct Arm64Backend<'a> {
     /// `lower_function_literal_pool` (which the pipeline calls between
     /// edge stubs and the body-local error tail).
     pub(super) pending_direct_calls: collections::Vec<PendingDirectCall>,
+    /// FP constants loaded PC-relative; placed with the call veneers.
+    pub(super) fp_literals: super::fp_literals::FpLiteralPool,
     /// 1-slot peephole lookahead buffer. Holds the previously seen op so
     /// `emit_inst_at` can attempt a 2-op fusion (zero-store pair, FP
     /// store/load pair) when the next op arrives. Drained on `end_block`.
@@ -751,6 +753,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             helper_gp_candidates: analysis.helper_gp_candidates,
             helper_fp_candidates: analysis.helper_fp_candidates,
             pending_direct_calls: collections::Vec::new(),
+            fp_literals: super::fp_literals::FpLiteralPool::default(),
             pending_op: None,
             fused_copy_ops_remaining: 0,
             select_flags: None,
@@ -953,7 +956,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             self.core.direct_call_patches.push(patch);
         }
 
-        Ok(())
+        self.fp_literals.flush(&mut self.core.text)
     }
 
     fn lower_body_local_error_tail(&mut self) {
