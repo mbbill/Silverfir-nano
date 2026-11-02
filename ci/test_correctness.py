@@ -418,8 +418,8 @@ class CoveragePlanTests(unittest.TestCase):
                 "performance-regression.yml",
                 "public-api.yml",
                 "release-version.yml",
+                "standings.yml",
                 "wasmi-startup-ranking.yml",
-                "x64-standings.yml",
             },
         )
 

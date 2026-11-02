@@ -1,6 +1,6 @@
-"""Cross-engine standings table for the x64 tuning branch.
+"""Cross-engine standings table for one native platform.
 
-Diagnostic tooling for .github/workflows/x64-standings.yml: reads the
+Diagnostic tooling for .github/workflows/standings.yml: reads the
 Criterion estimates one wasmi-benchmarks run left behind and renders a
 single within-run comparison table (Silverfir-nano JIT vs the comparison
 engines). No statistical win claim: this is a same-run snapshot, and the paired
@@ -87,7 +87,9 @@ def geomean(values: list[float]) -> float | None:
     return math.exp(sum(math.log(value) for value in values) / len(values))
 
 
-def render(cases: dict[str, dict[str, float]], notes: list[str]) -> str:
+def render(
+    cases: dict[str, dict[str, float]], notes: list[str], platform: str
+) -> str:
     runtimes = sorted({name for row in cases.values() for name in row})
     nano = pick_nano(runtimes)
     others = [name for name in runtimes if name != nano]
@@ -100,7 +102,7 @@ def render(cases: dict[str, dict[str, float]], notes: list[str]) -> str:
         ]
         return max(gaps, default=0.0)
 
-    lines = ["# x64 cross-engine standings", ""]
+    lines = [f"# {platform} cross-engine standings", ""]
     lines += [f"- {note}" for note in notes]
     lines += [
         "",
@@ -165,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-md", type=Path, required=True)
     parser.add_argument("--out-json", type=Path, required=True)
     parser.add_argument("--expected-cases", type=int, required=True)
+    parser.add_argument("--platform", required=True)
     parser.add_argument("--note", action="append", default=[])
     args = parser.parse_args(argv)
 
@@ -178,13 +181,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     validate_field(cases, args.expected_cases)
-    report = render(cases, args.note)
+    report = render(cases, args.note, args.platform)
     args.out_md.parent.mkdir(parents=True, exist_ok=True)
     args.out_md.write_text(report, encoding="utf-8")
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(
         json.dumps(
-            {"notes": args.note, "mean_ns": cases},
+            {"platform": args.platform, "notes": args.note, "mean_ns": cases},
             indent=2,
             sort_keys=True,
         )
