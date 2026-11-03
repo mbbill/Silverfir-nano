@@ -2569,6 +2569,30 @@ impl<'a> X86_64Backend<'a> {
             MachineFloatBinaryOp::Add
             | MachineFloatBinaryOp::Sub
             | MachineFloatBinaryOp::Mul
+            | MachineFloatBinaryOp::Div
+                if super::cpu::has_avx() =>
+            {
+                // VEX three-operand form: no lhs copy, no rhs save, and no
+                // dependency on the result register's previous value.
+                let op = match op {
+                    MachineFloatBinaryOp::Add => enc::ScalarFpOp::Add,
+                    MachineFloatBinaryOp::Sub => enc::ScalarFpOp::Sub,
+                    MachineFloatBinaryOp::Mul => enc::ScalarFpOp::Mul,
+                    MachineFloatBinaryOp::Div => enc::ScalarFpOp::Div,
+                    _ => unreachable!(),
+                };
+                enc::vex_scalar_rrr(
+                    &mut self.core.text,
+                    width == MachineFloatWidth::F64,
+                    op,
+                    result_fp,
+                    lhs_fp as u8,
+                    rhs_fp as u8,
+                );
+            }
+            MachineFloatBinaryOp::Add
+            | MachineFloatBinaryOp::Sub
+            | MachineFloatBinaryOp::Mul
             | MachineFloatBinaryOp::Div => {
                 // SSE two-operand: dst = dst OP src. Move lhs into result first.
                 // If result == rhs and result != lhs, the move would clobber rhs.

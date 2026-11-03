@@ -1546,6 +1546,58 @@ mod truncating_conversion_encoding_tests {
 }
 
 #[cfg(test)]
+mod vex_scalar_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn three_operand_forms_match_gnu_as() {
+        // Reference bytes from GNU as (Intel syntax). The two-byte form
+        // covers a low `src2`; an extended `src2` needs the three-byte
+        // form's B̄ bit.
+        let cases: [(bool, ScalarFpOp, Xmm, Xmm, Xmm, &[u8]); 8] = [
+            (true, ScalarFpOp::Add, 0, 1, 2, &[0xC5, 0xF3, 0x58, 0xC2]),
+            (true, ScalarFpOp::Mul, 9, 3, 4, &[0xC5, 0x63, 0x59, 0xCC]),
+            (true, ScalarFpOp::Sub, 2, 12, 5, &[0xC5, 0x9B, 0x5C, 0xD5]),
+            (
+                true,
+                ScalarFpOp::Div,
+                3,
+                4,
+                13,
+                &[0xC4, 0xC1, 0x5B, 0x5E, 0xDD],
+            ),
+            (
+                false,
+                ScalarFpOp::Add,
+                15,
+                14,
+                8,
+                &[0xC4, 0x41, 0x0A, 0x58, 0xF8],
+            ),
+            (false, ScalarFpOp::Mul, 1, 2, 3, &[0xC5, 0xEA, 0x59, 0xCB]),
+            (
+                false,
+                ScalarFpOp::Sub,
+                10,
+                0,
+                11,
+                &[0xC4, 0x41, 0x7A, 0x5C, 0xD3],
+            ),
+            (false, ScalarFpOp::Div, 4, 4, 4, &[0xC5, 0xDA, 0x5E, 0xE4]),
+        ];
+        for (double, op, dst, src1, src2, expected) in cases {
+            let mut text = TextEmitter::new();
+            vex_scalar_rrr(&mut text, double, op, dst, src1, src2);
+            assert_eq!(
+                text.finish().as_slice(),
+                expected,
+                "{op:?} {dst} {src1} {src2}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod short_branch_tests {
     use super::*;
 
@@ -1766,6 +1818,47 @@ pub(crate) fn movss_rip(e: &mut TextEmitter, dst: Xmm) -> usize {
 /// MOVSD xmm, [rip + disp32] with the displacement left for patching.
 pub(crate) fn movsd_rip(e: &mut TextEmitter, dst: Xmm) -> usize {
     sse_load_rip(e, 0xF2, dst)
+}
+
+/// Scalar FP arithmetic opcodes (map 0F) shared by the SSE and VEX forms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScalarFpOp {
+    Add = 0x58,
+    Mul = 0x59,
+    Sub = 0x5C,
+    Div = 0x5E,
+}
+
+/// AVX VEX.128 three-operand scalar arithmetic: `dst = src1 OP src2`, the
+/// destination's upper lane copied from `src1`. Unlike the two-operand SSE
+/// form it needs no copy of `src1` into `dst` first, and it carries no
+/// dependency on `dst`'s previous value. VEX.128 zeroes bits 255:128 of
+/// the destination, so it never dirties the upper YMM state and mixes with
+/// legacy SSE code without transition penalties.
+pub(crate) fn vex_scalar_rrr(
+    e: &mut TextEmitter,
+    double: bool,
+    op: ScalarFpOp,
+    dst: Xmm,
+    src1: Xmm,
+    src2: Xmm,
+) {
+    // pp: 10 = F3 (single), 11 = F2 (double). W and L are ignored (WIG/LIG)
+    // and encoded as 0.
+    let pp = if double { 0b11 } else { 0b10 };
+    let vvvv = (!src1 & 15) << 3;
+    if src2 < 8 {
+        // Two-byte VEX: implied 0F map, R̄ only.
+        e.emit_u8(0xC5);
+        e.emit_u8((u8::from(dst < 8) << 7) | vvvv | pp);
+    } else {
+        // Three-byte VEX for B̄ (X̄ unused, set); map 00001 = 0F.
+        e.emit_u8(0xC4);
+        e.emit_u8((u8::from(dst < 8) << 7) | 0x40 | 0x01);
+        e.emit_u8(vvvv | pp);
+    }
+    e.emit_u8(op as u8);
+    emit_xmm_modrm_rr(e, dst, src2);
 }
 
 pub(crate) fn addsd(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
