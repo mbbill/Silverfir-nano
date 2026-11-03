@@ -252,6 +252,74 @@ pub(super) fn int_compare_select_fusion(
     })
 }
 
+/// An unsigned ordering compare whose 0/1 result only feeds an add to, or a
+/// subtract from, another register (`x + (a < b)`, `x - (a >= b)`, ...).
+/// CMP leaves the predicate or its negation in CF, which ADC/SBB consume
+/// directly instead of SETcc + MOVZX + ADD. The caller must additionally
+/// prove `bool_reg` dead after the add.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct IntCompareCarry {
+    pub width: MachineIntWidth,
+    pub kind: MachineCompareKind,
+    pub lhs: MachineValue,
+    pub rhs: MachineValue,
+    pub bool_reg: MachineReg,
+    pub acc_width: MachineIntWidth,
+    pub subtract: bool,
+    pub acc: MachineReg,
+    pub dst: MachineReg,
+}
+
+pub(super) fn int_compare_carry_fusion(
+    compare: &MachineInst,
+    alu: &MachineInst,
+) -> Option<IntCompareCarry> {
+    let MachineInstKind::IntCompare {
+        width,
+        kind,
+        sign: MachineSign::Unsigned,
+        dst: bool_reg,
+        lhs,
+        rhs,
+    } = compare.kind
+    else {
+        return None;
+    };
+    if matches!(kind, MachineCompareKind::Eq | MachineCompareKind::Ne) {
+        return None;
+    }
+    let MachineInstKind::IntBinary {
+        width: acc_width,
+        op,
+        dst,
+        lhs: MachineValue::Reg(alu_lhs),
+        rhs: MachineValue::Reg(alu_rhs),
+    } = alu.kind
+    else {
+        return None;
+    };
+    let (subtract, acc) = match op {
+        MachineIntBinaryOp::Add if alu_rhs == bool_reg => (false, alu_lhs),
+        MachineIntBinaryOp::Add if alu_lhs == bool_reg => (false, alu_rhs),
+        MachineIntBinaryOp::Sub if alu_rhs == bool_reg => (true, alu_lhs),
+        _ => return None,
+    };
+    if acc == bool_reg {
+        return None;
+    }
+    Some(IntCompareCarry {
+        width,
+        kind,
+        lhs,
+        rhs,
+        bool_reg,
+        acc_width,
+        subtract,
+        acc,
+        dst,
+    })
+}
+
 pub(super) fn map_int_cond(kind: MachineCompareKind, sign: MachineSign) -> Cc {
     match (kind, sign) {
         (MachineCompareKind::Eq, _) => Cc::E,

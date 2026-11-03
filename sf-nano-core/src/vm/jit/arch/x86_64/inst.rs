@@ -2224,6 +2224,54 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
+    /// `dst = acc ± (lhs <cmp> rhs)` for an unsigned ordering compare: CMP
+    /// leaves the predicate (Lt, and Gt with swapped operands) or its
+    /// negation (Ge, and Le with swapped operands) in CF, and one ADC/SBB
+    /// adds or subtracts it:
+    ///
+    /// | | CF = p | CF = !p |
+    /// |---|---|---|
+    /// | `acc + p` | `adc acc, 0` | `sbb acc, -1` (acc + 1 - CF) |
+    /// | `acc - p` | `sbb acc, 0` | `adc acc, -1` (acc - 1 + CF) |
+    pub(super) fn lower_fused_compare_carry(
+        &mut self,
+        fusion: &super::fusion::IntCompareCarry,
+    ) -> Result<(), WasmError> {
+        let dst = self.map_gp_reg(fusion.dst)?;
+        let acc = self.map_gp_reg(fusion.acc)?;
+        let (lhs, rhs, carry_is_predicate) = match fusion.kind {
+            MachineCompareKind::Lt => (fusion.lhs, fusion.rhs, true),
+            MachineCompareKind::Gt => (fusion.rhs, fusion.lhs, true),
+            MachineCompareKind::Ge => (fusion.lhs, fusion.rhs, false),
+            MachineCompareKind::Le => (fusion.rhs, fusion.lhs, false),
+            MachineCompareKind::Eq | MachineCompareKind::Ne => {
+                unreachable!("carry fusion admits only ordering compares")
+            }
+        };
+        self.lower_cmp_values(fusion.width, lhs, rhs)?;
+        // MOV leaves EFLAGS intact, so the copy follows the compare and may
+        // overwrite one of its operands.
+        if dst != acc {
+            self.emit_gp_move_width(fusion.acc_width, dst, acc);
+        }
+        let (op, imm) = match (fusion.subtract, carry_is_predicate) {
+            (false, true) => (enc::CarryOp::Adc, 0),
+            (false, false) => (enc::CarryOp::Sbb, -1),
+            (true, true) => (enc::CarryOp::Sbb, 0),
+            (true, false) => (enc::CarryOp::Adc, -1),
+        };
+        enc::carry_ri8(
+            &mut self.core.text,
+            op,
+            fusion.acc_width == MachineIntWidth::I64,
+            dst,
+            imm,
+        );
+        // ADC and SBB set ZF from their result.
+        self.note_int_flags(fusion.acc_width, dst);
+        Ok(())
+    }
+
     /// `materialize_value` variant that never touches EFLAGS: the zero
     /// immediate uses `mov r32, 0` instead of the xor zero idiom.
     fn materialize_value_flags_safe(

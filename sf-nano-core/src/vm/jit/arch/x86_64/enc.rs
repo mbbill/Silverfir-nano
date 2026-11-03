@@ -226,6 +226,24 @@ fn alu_ri8(e: &mut TextEmitter, digit: u8, w: bool, dst: X86Reg, imm8: i8) {
     e.emit_u8(imm8 as u8);
 }
 
+/// The carry-consuming ALU ops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CarryOp {
+    /// `dst = dst + imm + CF`
+    Adc,
+    /// `dst = dst - imm - CF`
+    Sbb,
+}
+
+/// ADC/SBB dst, imm8 (group 83 /2 and /3).
+pub(crate) fn carry_ri8(e: &mut TextEmitter, op: CarryOp, w64: bool, dst: X86Reg, imm8: i8) {
+    let digit = match op {
+        CarryOp::Adc => 2,
+        CarryOp::Sbb => 3,
+    };
+    alu_ri8(e, digit, w64, dst, imm8);
+}
+
 /// Generic ALU r/m, imm32 (opcode group /digit, 0x81 for 64-bit).
 fn alu_ri32(e: &mut TextEmitter, digit: u8, w: bool, dst: X86Reg, imm: i32) {
     emit_rex_b(e, w, dst);
@@ -1572,6 +1590,32 @@ mod truncating_conversion_encoding_tests {
         assert_eq!(text.finish().as_slice(), &[0x70, 0x0E, 0x71, 0x0C]);
         assert_eq!(Cc::O.invert(), Cc::NO);
         assert_eq!(Cc::NO.invert(), Cc::O);
+    }
+}
+
+#[cfg(test)]
+mod carry_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn adc_and_sbb_imm8_match_gnu_as() {
+        // Reference bytes from GNU as (Intel syntax).
+        let mut text = TextEmitter::new();
+        carry_ri8(&mut text, CarryOp::Adc, false, X86Reg::RAX, 0);
+        carry_ri8(&mut text, CarryOp::Adc, true, X86Reg::R9, 0);
+        carry_ri8(&mut text, CarryOp::Sbb, false, X86Reg::RSI, -1);
+        carry_ri8(&mut text, CarryOp::Sbb, true, X86Reg::R14, 0);
+        carry_ri8(&mut text, CarryOp::Adc, false, X86Reg::R15, -1);
+        carry_ri8(&mut text, CarryOp::Sbb, true, X86Reg::RDI, -1);
+        let expected: &[u8] = &[
+            0x83, 0xD0, 0x00, // adc eax, 0
+            0x49, 0x83, 0xD1, 0x00, // adc r9, 0
+            0x83, 0xDE, 0xFF, // sbb esi, -1
+            0x49, 0x83, 0xDE, 0x00, // sbb r14, 0
+            0x41, 0x83, 0xD7, 0xFF, // adc r15d, -1
+            0x48, 0x83, 0xDF, 0xFF, // sbb rdi, -1
+        ];
+        assert_eq!(text.finish().as_slice(), expected);
     }
 }
 

@@ -589,6 +589,27 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                     return Ok(());
                 }
             }
+            if let Some(fusion) = super::fusion::int_compare_carry_fusion(prev, inst) {
+                let bool_is_dead = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .is_some_and(|block| {
+                        fusion.bool_reg == fusion.dst
+                            || !crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                                &block.ops[index + 1..],
+                                &block.terminator,
+                                fusion.bool_reg,
+                            )
+                    });
+                if bool_is_dead {
+                    self.core.current_op_index = Some(index);
+                    self.lower_fused_compare_carry(&fusion)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
             self.core.current_op_index = Some(prev_index);
             self.lower_inst(prev)?;
             self.gp_scratch.assert_all_free();
