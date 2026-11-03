@@ -31,6 +31,34 @@ enum Bank {
     Fp,
 }
 
+/// One register bank's per-block residency envelope: block `b` can host
+/// `budget - peaks[b]` resident units of `bank` beside its own transient
+/// operand-stack values.
+#[derive(Clone, Copy)]
+struct BankEnvelope<'a> {
+    bank: Bank,
+    peaks: &'a [usize],
+    budget: usize,
+}
+
+impl BankEnvelope<'_> {
+    fn region_peak(&self, node: &RegionNode) -> usize {
+        node.owned_blocks
+            .iter()
+            .map(|&b| self.peaks[b])
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn peak_blocks(&self, node: &RegionNode, peak: usize) -> collections::Vec<usize> {
+        node.owned_blocks
+            .iter()
+            .copied()
+            .filter(|&b| self.peaks[b] == peak)
+            .collect()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Algorithm4Params {
     assumed_trip_count: f64,
@@ -170,6 +198,22 @@ struct RegionNode {
     fp_capacity: usize,
 }
 
+impl RegionNode {
+    fn capacity(&self, bank: Bank) -> usize {
+        match bank {
+            Bank::Gp => self.gp_capacity,
+            Bank::Fp => self.fp_capacity,
+        }
+    }
+
+    fn set_capacity(&mut self, bank: Bank, capacity: usize) {
+        match bank {
+            Bank::Gp => self.gp_capacity = capacity,
+            Bank::Fp => self.fp_capacity = capacity,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct RegionTree {
     nodes: collections::Vec<RegionNode>,
@@ -264,21 +308,34 @@ pub(super) fn solve_public_cache_sets(
         barrier_call_weight[region_id] += weight * f64::from(call_counts.barrier[block_index]);
     }
 
-    // When no region was raised, every selection already fits every
-    // owned block's envelope, so the post-solve verification and the
-    // per-block clamp below are provable no-ops — skipping them keeps
-    // the tiniest modules' compile time flat (arm64 startup/coremark
-    // measured -2.45% with them unconditional).
-    let any_raised = raise_starved_capacities(
-        &mut regions,
-        &cell_meta,
-        &benefit,
-        block_local_summaries,
-        &block_weights,
-        peak_gp,
-        usize::from(gp_dynamic_budget),
-        &policy_params,
-    );
+    // When no region of a bank was raised, every selection in that bank
+    // already fits every owned block's envelope, so the bank's post-solve
+    // verification and per-block clamp below are provable no-ops —
+    // skipping them keeps the tiniest modules' compile time flat (arm64
+    // startup/coremark measured -2.45% with them unconditional).
+    let envelopes = [
+        BankEnvelope {
+            bank: Bank::Gp,
+            peaks: peak_gp,
+            budget: usize::from(gp_dynamic_budget),
+        },
+        BankEnvelope {
+            bank: Bank::Fp,
+            peaks: peak_fp,
+            budget: usize::from(fp_dynamic_budget),
+        },
+    ];
+    let raised = envelopes.map(|envelope| {
+        raise_starved_capacities(
+            &mut regions,
+            &cell_meta,
+            &benefit,
+            block_local_summaries,
+            &block_weights,
+            envelope,
+            &policy_params,
+        )
+    });
 
     let preferred_preserved = nominate_preserved(
         &cell_meta,
@@ -326,18 +383,19 @@ pub(super) fn solve_public_cache_sets(
         &mut selected,
     );
 
-    if any_raised {
-        verify_raised_extras(
-            &regions,
-            &cell_meta,
-            &benefit,
-            block_local_summaries,
-            &block_weights,
-            peak_gp,
-            usize::from(gp_dynamic_budget),
-            &policy_params,
-            &mut selected,
-        );
+    for (envelope, raised) in envelopes.iter().zip(raised) {
+        if raised {
+            verify_raised_extras(
+                &regions,
+                &cell_meta,
+                &benefit,
+                block_local_summaries,
+                &block_weights,
+                *envelope,
+                &policy_params,
+                &mut selected,
+            );
+        }
     }
     let mut block_residents: collections::Vec<collections::Vec<CellId>> = cfg
         .blocks
@@ -354,15 +412,16 @@ pub(super) fn solve_public_cache_sets(
             slots
         })
         .collect();
-    if any_raised {
-        clamp_block_residents(
-            &mut block_residents,
-            &regions,
-            &benefit,
-            &cell_meta,
-            peak_gp,
-            usize::from(gp_dynamic_budget),
-        );
+    for (envelope, raised) in envelopes.iter().zip(raised) {
+        if raised {
+            clamp_block_residents(
+                &mut block_residents,
+                &regions,
+                &benefit,
+                &cell_meta,
+                *envelope,
+            );
+        }
     }
     ResidencySolution {
         block_residents,
@@ -387,55 +446,51 @@ pub(super) fn solve_public_cache_sets(
 /// when its benefit outside the peak blocks exceeds the per-execution
 /// spill/reload crossings around them; the greedy accepts extras
 /// individually on that account.
+///
+/// Both banks and every region, the function root included, take the
+/// same account: c-ray's loop-free `ray_sphere` keeps 14 f64 locals in
+/// one root region whose entry block peaks at 10 FP stack values while
+/// no other block exceeds 5, which held the whole function to 4 FP
+/// residents out of x86-64's 14.
 fn raise_starved_capacities(
     regions: &mut RegionTree,
     cell_meta: &[CellMeta],
     benefit: &[collections::Vec<f64>],
     block_local_summaries: &[BlockCellSummary],
     block_weights: &[f64],
-    peak_gp: &[usize],
-    gp_budget: usize,
+    envelope: BankEnvelope<'_>,
     params: &Algorithm4Params,
 ) -> bool {
     let mut any_raised = false;
-    for region_id in 1..regions.nodes.len() {
+    for region_id in 0..regions.nodes.len() {
         let node = &regions.nodes[region_id];
-        let peak = node
-            .owned_blocks
-            .iter()
-            .map(|&b| peak_gp[b])
-            .max()
-            .unwrap_or(0);
-        let capacity = gp_budget.saturating_sub(peak);
-        let peak_blocks: collections::Vec<usize> = node
-            .owned_blocks
-            .iter()
-            .copied()
-            .filter(|&b| peak_gp[b] == peak)
-            .collect();
+        let peak = envelope.region_peak(node);
+        let capacity = envelope.budget.saturating_sub(peak);
+        let peak_blocks = envelope.peak_blocks(node, peak);
         if peak_blocks.is_empty() || peak_blocks.len() == node.owned_blocks.len() {
             continue;
         }
         let second_peak = node
             .owned_blocks
             .iter()
-            .map(|&b| peak_gp[b])
+            .map(|&b| envelope.peaks[b])
             .filter(|&p| p < peak)
             .max()
             .unwrap_or(0);
-        let new_capacity = gp_budget.saturating_sub(second_peak);
+        let new_capacity = envelope.budget.saturating_sub(second_peak);
         if new_capacity <= capacity {
             continue;
         }
+        let is_candidate = |slot: usize, value: f64| {
+            value > 0.0 && cell_meta[slot].bank == envelope.bank && !cell_meta[slot].is_ref
+        };
         // Starvation gate before any ranking work: startup pays for this
-        // pass on every compile, and most regions have fewer live GP
+        // pass on every compile, and most regions have fewer live
         // candidates than capacity (ffmpeg measured -4.5% ungated).
         let candidate_units: usize = benefit[region_id]
             .iter()
             .enumerate()
-            .filter(|&(slot, &value)| {
-                value > 0.0 && cell_meta[slot].bank == Bank::Gp && !cell_meta[slot].is_ref
-            })
+            .filter(|&(slot, &value)| is_candidate(slot, value))
             .map(|(slot, _)| cell_meta[slot].units)
             .sum();
         if candidate_units <= capacity {
@@ -445,9 +500,7 @@ fn raise_starved_capacities(
             .iter()
             .copied()
             .enumerate()
-            .filter(|&(slot, value)| {
-                value > 0.0 && cell_meta[slot].bank == Bank::Gp && !cell_meta[slot].is_ref
-            })
+            .filter(|&(slot, value)| is_candidate(slot, value))
             .collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
         // Walk candidates in benefit order past the current capacity and
@@ -482,7 +535,7 @@ fn raise_starved_capacities(
             }
         }
         if accepted_units > 0 {
-            regions.nodes[region_id].gp_capacity = capacity + accepted_units;
+            regions.nodes[region_id].set_capacity(envelope.bank, capacity + accepted_units);
             any_raised = true;
         }
     }
@@ -494,50 +547,40 @@ fn raise_starved_capacities(
 /// The DP prices call taxes but not the peak-block crossings a raised
 /// capacity implies, so it can admit a different extra than the raise
 /// account evaluated. With the final selection known, the check is
-/// exact: in every region whose selected GP units overflow some owned
-/// block's envelope, the overflow set (lowest-benefit selected slots)
-/// must each pay for their peak-block crossings; those that cannot are
-/// deselected region-wide (spectralnorm measured -3.2% without this).
+/// exact: in every region whose selected units of the bank overflow some
+/// owned block's envelope, the overflow set (lowest-benefit selected
+/// slots) must each pay for their peak-block crossings; those that
+/// cannot are deselected region-wide (spectralnorm measured -3.2%
+/// without this).
 fn verify_raised_extras(
     regions: &RegionTree,
     cell_meta: &[CellMeta],
     benefit: &[collections::Vec<f64>],
     block_local_summaries: &[BlockCellSummary],
     block_weights: &[f64],
-    peak_gp: &[usize],
-    gp_budget: usize,
+    envelope: BankEnvelope<'_>,
     params: &Algorithm4Params,
     selected: &mut [collections::Vec<bool>],
 ) {
-    for region_id in 1..regions.nodes.len() {
+    for region_id in 0..regions.nodes.len() {
         let node = &regions.nodes[region_id];
-        let peak = node
-            .owned_blocks
-            .iter()
-            .map(|&b| peak_gp[b])
-            .max()
-            .unwrap_or(0);
-        let envelope = gp_budget.saturating_sub(peak);
+        let peak = envelope.region_peak(node);
+        let room = envelope.budget.saturating_sub(peak);
         let mut chosen: collections::Vec<(usize, f64)> = selected[region_id]
             .iter()
             .copied()
             .enumerate()
-            .filter(|&(slot, is_selected)| is_selected && cell_meta[slot].bank == Bank::Gp)
+            .filter(|&(slot, is_selected)| is_selected && cell_meta[slot].bank == envelope.bank)
             .map(|(slot, _)| (slot, benefit[region_id][slot]))
             .collect();
         let total_units: usize = chosen.iter().map(|&(slot, _)| cell_meta[slot].units).sum();
-        if total_units <= envelope {
+        if total_units <= room {
             continue;
         }
-        let peak_blocks: collections::Vec<usize> = node
-            .owned_blocks
-            .iter()
-            .copied()
-            .filter(|&b| peak_gp[b] == peak)
-            .collect();
+        let peak_blocks = envelope.peak_blocks(node, peak);
         let crossing_weight: f64 = peak_blocks.iter().map(|&b| block_weights[b]).sum();
         chosen.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
-        let mut overflow = total_units.saturating_sub(envelope);
+        let mut overflow = total_units.saturating_sub(room);
         for &(slot, value) in &chosen {
             if overflow == 0 {
                 break;
@@ -572,22 +615,22 @@ fn clamp_block_residents(
     regions: &RegionTree,
     benefit: &[collections::Vec<f64>],
     cell_meta: &[CellMeta],
-    peak_gp: &[usize],
-    gp_budget: usize,
+    envelope: BankEnvelope<'_>,
 ) {
     for (block_index, slots) in residents.iter_mut().enumerate() {
         let region_id = regions.owner_by_block[block_index];
-        let allowed = gp_budget.saturating_sub(peak_gp[block_index]);
-        let mut gp_units: usize = slots
+        let allowed = envelope.budget.saturating_sub(envelope.peaks[block_index]);
+        let in_bank = |cell: &CellId| cell_meta[cell.0 as usize].bank == envelope.bank;
+        let mut units: usize = slots
             .iter()
-            .filter(|cell| cell_meta[cell.0 as usize].bank == Bank::Gp)
+            .filter(|cell| in_bank(cell))
             .map(|cell| cell_meta[cell.0 as usize].units)
             .sum();
-        while gp_units > allowed {
+        while units > allowed {
             let Some((drop_index, _)) = slots
                 .iter()
                 .enumerate()
-                .filter(|(_, cell)| cell_meta[cell.0 as usize].bank == Bank::Gp)
+                .filter(|(_, cell)| in_bank(cell))
                 .min_by(|a, b| {
                     let va = benefit[region_id][a.1 .0 as usize];
                     let vb = benefit[region_id][b.1 .0 as usize];
@@ -596,7 +639,7 @@ fn clamp_block_residents(
             else {
                 break;
             };
-            gp_units -= cell_meta[slots[drop_index].0 as usize].units;
+            units -= cell_meta[slots[drop_index].0 as usize].units;
             slots.remove(drop_index);
         }
     }
@@ -690,10 +733,7 @@ fn solve_bank(
     let capacities = regions
         .nodes
         .iter()
-        .map(|region| match bank {
-            Bank::Gp => region.gp_capacity,
-            Bank::Fp => region.fp_capacity,
-        })
+        .map(|region| region.capacity(bank))
         .collect::<collections::Vec<_>>();
     let mut slot_dps = slots
         .iter()
