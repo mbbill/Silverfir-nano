@@ -57,6 +57,20 @@ impl BankEnvelope<'_> {
             .filter(|&b| self.peaks[b] == peak)
             .collect()
     }
+
+    /// The first region the capacity raise considers. Loop regions start
+    /// at 1; the function root region (0) is raised only in the FP bank.
+    /// Raising the GP root as well re-planned most functions and cost
+    /// +2.0% (lua) and +2.6% (sqlite) compile instructions (callgrind,
+    /// --compile-only) through downstream cache-parameter, rewrite and
+    /// edge-lowering work, and CI confirmed wasmi startup/spidermonkey at
+    /// -4%; the FP root alone costs +0.07% on both.
+    fn first_raised_region(&self) -> usize {
+        match self.bank {
+            Bank::Gp => 1,
+            Bank::Fp => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -447,11 +461,11 @@ pub(super) fn solve_public_cache_sets(
 /// spill/reload crossings around them; the greedy accepts extras
 /// individually on that account.
 ///
-/// Both banks and every region, the function root included, take the
-/// same account: c-ray's loop-free `ray_sphere` keeps 14 f64 locals in
-/// one root region whose entry block peaks at 10 FP stack values while
-/// no other block exceeds 5, which held the whole function to 4 FP
-/// residents out of x86-64's 14.
+/// Both banks take the same account over their loop regions, and the FP
+/// bank also over the function root (see `first_raised_region`): c-ray's
+/// loop-free `ray_sphere` keeps 14 f64 locals in one root region whose
+/// entry block peaks at 10 FP stack values while no other block exceeds
+/// 5, which held the whole function to 4 FP residents out of x86-64's 14.
 fn raise_starved_capacities(
     regions: &mut RegionTree,
     cell_meta: &[CellMeta],
@@ -462,7 +476,7 @@ fn raise_starved_capacities(
     params: &Algorithm4Params,
 ) -> bool {
     let mut any_raised = false;
-    for region_id in 0..regions.nodes.len() {
+    for region_id in envelope.first_raised_region()..regions.nodes.len() {
         let node = &regions.nodes[region_id];
         let peak = envelope.region_peak(node);
         let capacity = envelope.budget.saturating_sub(peak);
@@ -562,7 +576,7 @@ fn verify_raised_extras(
     params: &Algorithm4Params,
     selected: &mut [collections::Vec<bool>],
 ) {
-    for region_id in 0..regions.nodes.len() {
+    for region_id in envelope.first_raised_region()..regions.nodes.len() {
         let node = &regions.nodes[region_id];
         let peak = envelope.region_peak(node);
         let room = envelope.budget.saturating_sub(peak);
