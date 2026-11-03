@@ -417,7 +417,7 @@ standard library for this target.
 
 For WASI validation, the RV32 job passes
 `--skip-rv32-qemu-timestamp-tests` to `sf-nano-wasitest`. This skips only
-`fd_filestat_set`, `path_filestat`, and `symlink_filestat`: qemu-riscv32-static
+`fd_filestat_set`, `path_filestat`, and `symlink_filestat`: qemu-riscv32
 returns ENOSYS for both timestamp-setting syscall paths observed in this
 runner.
 
@@ -433,12 +433,12 @@ problem, not a codegen one.
 cargo build --target armv7-unknown-linux-musleabihf -p sf-nano-cli --no-default-features --features interp
 
 # Linux/WSL: run under QEMU
-qemu-arm-static -cpu cortex-a15 \
+qemu-arm -cpu cortex-a15 \
   target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
   --engine interp benchmarks/wasi/coremark/coremark.wasm
 
 # macOS: run inside the Colima VM
-colima ssh -- qemu-arm-static \
+colima ssh -- qemu-arm \
   /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
   --engine interp /Users/$USER/Dev/Silverfir-nano/benchmarks/wasi/coremark/coremark.wasm
 ```
@@ -452,12 +452,12 @@ the CLI uses the JIT backend:
 
 ```bash
 # Linux/WSL
-qemu-arm-static -cpu cortex-a15 \
+qemu-arm -cpu cortex-a15 \
   target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
   benchmarks/wasi/coremark/coremark.wasm
 
 # macOS
-colima ssh -- qemu-arm-static \
+colima ssh -- qemu-arm \
   /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
   /Users/$USER/Dev/Silverfir-nano/benchmarks/wasi/coremark/coremark.wasm
 ```
@@ -469,12 +469,12 @@ cargo build --target armv7-unknown-linux-musleabihf -p sf-nano-spectest --no-def
 
 # Linux/WSL
 TESTSUITE_DIR=$PWD/target/webassembly-testsuite \
-qemu-arm-static -cpu cortex-a15 \
+qemu-arm -cpu cortex-a15 \
   target/armv7-unknown-linux-musleabihf/debug/sf-nano-spectest \
   --backend native
 
 # macOS
-colima ssh -- qemu-arm-static \
+colima ssh -- qemu-arm \
   /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-spectest \
   --backend native
 ```

@@ -263,9 +263,9 @@ class CoveragePlanTests(unittest.TestCase):
                 "riscv32gc-unknown-linux-musl",
             },
         )
-        self.assertEqual(correctness.CROSS_PLATFORMS["armv7"].qemu, "qemu-arm-static")
-        self.assertEqual(correctness.CROSS_PLATFORMS["riscv64"].qemu, "qemu-riscv64-static")
-        self.assertEqual(correctness.CROSS_PLATFORMS["riscv32"].qemu, "qemu-riscv32-static")
+        self.assertEqual(correctness.CROSS_PLATFORMS["armv7"].qemu, "qemu-arm")
+        self.assertEqual(correctness.CROSS_PLATFORMS["riscv64"].qemu, "qemu-riscv64")
+        self.assertEqual(correctness.CROSS_PLATFORMS["riscv32"].qemu, "qemu-riscv32")
 
     @mock.patch.object(correctness, "cargo")
     def test_riscv64_guard_regression_runs_as_a_focused_qemu_libtest(
