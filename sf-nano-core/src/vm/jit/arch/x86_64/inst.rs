@@ -1399,6 +1399,12 @@ impl<'a> X86_64Backend<'a> {
                 Ok(())
             }
             MachineIntBinaryOp::Mul => {
+                if let Some((src, constant)) = mul_immediate(width, lhs, rhs) {
+                    let scratch0 = self.gp_scratch.scoped_alloc().detach();
+                    let src = self.materialize_value(*scratch0, src)?;
+                    self.lower_mul_immediate(width, dst, src, constant);
+                    return Ok(());
+                }
                 let scratch0 = self.gp_scratch.scoped_alloc().detach();
                 let scratch1 = self.gp_scratch.scoped_alloc().detach();
                 let lhs_gp = self.materialize_value(*scratch0, lhs)?;
@@ -1429,6 +1435,48 @@ impl<'a> X86_64Backend<'a> {
             | MachineIntBinaryOp::DivU
             | MachineIntBinaryOp::RemS
             | MachineIntBinaryOp::RemU => self.lower_div_rem(width, op, dst, lhs, rhs),
+        }
+    }
+
+    /// `dst = src * constant` without materializing the constant: a shift
+    /// for powers of two, one LEA for 3/5/9, else three-operand IMUL.
+    /// `constant` comes from `mul_immediate`, already reduced to the width.
+    fn lower_mul_immediate(
+        &mut self,
+        width: MachineIntWidth,
+        dst: X86Reg,
+        src: X86Reg,
+        constant: u64,
+    ) {
+        let w64 = width == MachineIntWidth::I64;
+        match constant {
+            1 => {
+                if dst != src {
+                    self.emit_gp_move_width(width, dst, src);
+                }
+            }
+            c if c.is_power_of_two() => {
+                if dst != src {
+                    self.emit_gp_move_width(width, dst, src);
+                }
+                let count = c.trailing_zeros() as u8;
+                match width {
+                    MachineIntWidth::I64 => enc::shl_imm_64(&mut self.core.text, dst, count),
+                    MachineIntWidth::I32 => enc::shl_imm_32(&mut self.core.text, dst, count),
+                }
+                // A nonzero-count SHL sets ZF from its result.
+                self.note_int_flags(width, dst);
+            }
+            3 | 5 | 9 => {
+                let scale2 = (constant - 1).trailing_zeros() as u8;
+                enc::lea_self_scaled(&mut self.core.text, w64, dst, src, scale2);
+            }
+            c => {
+                // `mul_immediate` admits a 64-bit non-power-of-two only when
+                // it sign-extends from 32 bits; a 32-bit multiply keeps only
+                // the low half, so any 32-bit constant encodes as imm32.
+                enc::imul_rri(&mut self.core.text, w64, dst, src, c as u32 as i32);
+            }
         }
     }
 
@@ -3307,4 +3355,32 @@ impl<'a> X86_64Backend<'a> {
         self.emit_preserved_call_and_close(op::ELEM_DROP, None);
         Ok(())
     }
+}
+
+/// Split a multiply into its register operand and an immediate constant
+/// reduced to the operation width, when one operand is an immediate the
+/// x86 forms can encode: any 32-bit constant, and for 64-bit multiplies a
+/// power of two (a shift) or a value that sign-extends from 32 bits
+/// (IMUL's immediate). Both immediates is left to the general path.
+fn mul_immediate(
+    width: MachineIntWidth,
+    lhs: MachineValue,
+    rhs: MachineValue,
+) -> Option<(MachineValue, u64)> {
+    let (src, imm) = match (lhs, rhs) {
+        (MachineValue::Imm64(_), MachineValue::Imm64(_)) => return None,
+        (src, MachineValue::Imm64(imm)) | (MachineValue::Imm64(imm), src) => (src, imm),
+        _ => return None,
+    };
+    let constant = match width {
+        MachineIntWidth::I32 => u64::from(imm as u32),
+        MachineIntWidth::I64 => imm,
+    };
+    let encodable = match width {
+        MachineIntWidth::I32 => true,
+        MachineIntWidth::I64 => {
+            constant.is_power_of_two() || i64::from(constant as i64 as i32) == constant as i64
+        }
+    };
+    encodable.then_some((src, constant))
 }

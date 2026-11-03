@@ -771,6 +771,36 @@ pub(crate) fn imul_rr_32(e: &mut TextEmitter, dst: X86Reg, src: X86Reg) {
     emit_modrm_rr(e, dst, src);
 }
 
+/// IMUL dst, src, imm (three-operand, sign-extended immediate): the imm8
+/// form 6B when it fits, else 69 with imm32. A 32-bit destination holds
+/// the low half of the product and clears its upper half.
+pub(crate) fn imul_rri(e: &mut TextEmitter, w64: bool, dst: X86Reg, src: X86Reg, imm: i32) {
+    emit_rex(e, w64, dst, src);
+    if fits_i8(imm) {
+        e.emit_u8(0x6B);
+        emit_modrm_rr(e, dst, src);
+        e.emit_u8(imm as u8);
+    } else {
+        e.emit_u8(0x69);
+        emit_modrm_rr(e, dst, src);
+        emit_i32(e, imm);
+    }
+}
+
+/// LEA dst, [src + src * (1 << scale2)]: multiplies by 3, 5 or 9 in one
+/// flag-preserving operation, with lea_sum's width rules.
+pub(crate) fn lea_self_scaled(
+    e: &mut TextEmitter,
+    w64: bool,
+    dst: X86Reg,
+    src: X86Reg,
+    scale2: u8,
+) {
+    emit_rex_idx(e, w64, dst.needs_rex_ext(), src, src);
+    e.emit_u8(0x8D);
+    emit_modrm_mem_idx_scaled(e, dst.idx3(), src, src, scale2, 0);
+}
+
 /// IDIV r/m64 (signed: RDX:RAX / src -> RAX=quot, RDX=rem)
 pub(crate) fn idiv_rm_64(e: &mut TextEmitter, src: X86Reg) {
     emit_rex_b(e, true, src);
@@ -1542,6 +1572,37 @@ mod truncating_conversion_encoding_tests {
         assert_eq!(text.finish().as_slice(), &[0x70, 0x0E, 0x71, 0x0C]);
         assert_eq!(Cc::O.invert(), Cc::NO);
         assert_eq!(Cc::NO.invert(), Cc::O);
+    }
+}
+
+#[cfg(test)]
+mod multiply_by_immediate_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn imul_immediate_and_scaled_lea_match_gnu_as() {
+        // Reference bytes from GNU as (Intel syntax). RBP/R13 bases take a
+        // zero disp8; R12 as both base and index needs no SIB escape.
+        let mut text = TextEmitter::new();
+        imul_rri(&mut text, false, X86Reg::RAX, X86Reg::RCX, 12);
+        imul_rri(&mut text, true, X86Reg::R9, X86Reg::R10, 100_000);
+        imul_rri(&mut text, true, X86Reg::RDX, X86Reg::R13, -3);
+        imul_rri(&mut text, false, X86Reg::R15, X86Reg::RAX, 0x7fff_ffff);
+        lea_self_scaled(&mut text, false, X86Reg::RAX, X86Reg::RCX, 1);
+        lea_self_scaled(&mut text, true, X86Reg::R9, X86Reg::R13, 2);
+        lea_self_scaled(&mut text, true, X86Reg::R12, X86Reg::R12, 3);
+        lea_self_scaled(&mut text, false, X86Reg::RSI, X86Reg::RBP, 1);
+        let expected: &[u8] = &[
+            0x6B, 0xC1, 0x0C, // imul eax, ecx, 12
+            0x4D, 0x69, 0xCA, 0xA0, 0x86, 0x01, 0x00, // imul r9, r10, 100000
+            0x49, 0x6B, 0xD5, 0xFD, // imul rdx, r13, -3
+            0x44, 0x69, 0xF8, 0xFF, 0xFF, 0xFF, 0x7F, // imul r15d, eax, 0x7fffffff
+            0x8D, 0x04, 0x49, // lea eax, [rcx+rcx*2]
+            0x4F, 0x8D, 0x4C, 0xAD, 0x00, // lea r9, [r13+r13*4+0]
+            0x4F, 0x8D, 0x24, 0xE4, // lea r12, [r12+r12*8]
+            0x8D, 0x74, 0x6D, 0x00, // lea esi, [rbp+rbp*2+0]
+        ];
+        assert_eq!(text.finish().as_slice(), expected);
     }
 }
 
