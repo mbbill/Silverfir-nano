@@ -381,6 +381,11 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
                     fused: group.fused,
                     counted: counted(counting, ac, bc, dc, pair_dc),
                 };
+                // The slot-based slow path cannot recover an operand that
+                // lives only in the accumulator (see `native_may_exit_slow`).
+                if layout::native_may_exit_slow(op) && (ac == Cls::Acc || bc == Cls::Acc) {
+                    continue;
+                }
                 if !isa.wants(&v) {
                     continue;
                 }

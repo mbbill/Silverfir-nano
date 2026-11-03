@@ -305,6 +305,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         path: "memory_rmw.wast",
         content: include_str!("../tests/memory_rmw.wast"),
     });
+    wast_inputs.push(WastInput::Embedded {
+        path: "interp_slow_exit_operands.wast",
+        content: include_str!("../tests/interp_slow_exit_operands.wast"),
+    });
     wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
     info!("Found {} WAST files", wast_inputs.len());
 

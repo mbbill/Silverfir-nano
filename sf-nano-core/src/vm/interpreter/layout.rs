@@ -454,6 +454,42 @@ const fn compute_slot_fields(op: Op) -> (bool, bool, bool) {
     }
 }
 
+/// Native handlers which can return `EXIT_SLOW` after their cell payload has
+/// been transformed; static slow cells keep raw a/b/c and need no inverse.
+///
+/// The shared slow executor re-reads every operand from its frame slot, so
+/// these ops get no accumulator-source handlers. An operand resident only in
+/// the accumulator (its producer skipped the slot write) would otherwise be
+/// replaced by a stale slot on that exit, and the float accumulator is not
+/// even saved by the exit stub. Without such a handler the linker strips the
+/// hint and the producer writes its slot.
+pub(crate) const fn native_may_exit_slow(op: Op) -> bool {
+    use Op::*;
+    matches!(
+        op,
+        I32_DivS
+            | I32_DivU
+            | I32_RemS
+            | I32_RemU
+            | I64_DivS
+            | I64_DivU
+            | I64_RemS
+            | I64_RemU
+            | I32_TruncF32S
+            | I32_TruncF32U
+            | I32_TruncF64S
+            | I32_TruncF64U
+            | I64_TruncF32S
+            | I64_TruncF32U
+            | I64_TruncF64S
+            | I64_TruncF64U
+            | MemoryFill
+            | MemoryCopy
+            | MemoryFillCopy
+            | CallIndirect
+    )
+}
+
 /// Whether an op's native handler leaves its result in the accumulator
 /// (every value producer computes into it; see the backend's `finish`).
 /// Ops that are never native are harmlessly included — the linker's

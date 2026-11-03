@@ -146,3 +146,4 @@
 (assert_return (invoke "const_u64") (i64.const -2048))
 (assert_return (invoke "const_s32") (i32.const -2147483648))
 (assert_return (invoke "sum_u32" (f64.const 4294967000.25) (f64.const 295.5)) (i32.const -1))
+(assert_trap (invoke "sum_u32" (f64.const 4294967000.25) (f64.const 296.0)) "integer overflow")
