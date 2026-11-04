@@ -868,6 +868,7 @@ jobs:
             --regression-probability 99.99 \
             --improvement-probability 99.99 \
             --minimum-effect-percent 1.0 \
+            --placement-metric execute/fibonacci-rec \
             --placement-metric execute/fibonacci-tail \
             --placement-metric execute/tiny_keccak \
             --placement-metric execute/json_parse \
@@ -1086,6 +1087,7 @@ jobs:
             --regression-probability 99 \
             --improvement-probability 99.99 \
             --minimum-effect-percent 1.0 \
+            --placement-metric execute/fibonacci-rec \
             --placement-metric execute/fibonacci-tail \
             --placement-metric execute/tiny_keccak \
             --placement-metric execute/json_parse \
