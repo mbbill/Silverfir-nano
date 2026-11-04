@@ -933,8 +933,8 @@ impl<'a> DecodeContext<'a> {
         };
         self.pop_typed_values(pops as usize);
         self.push_op(kind.clone());
-        if pushes != 0 {
-            self.push_typed_values(&collections::vec![result_ty; pushes as usize]);
+        for _ in 0..pushes {
+            self.push_typed_value(result_ty);
         }
         if matches!(kind, PrimitiveOpKind::Unreachable) {
             self.set_unreachable();

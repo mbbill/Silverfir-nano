@@ -97,6 +97,35 @@ enum ParamSlotState {
     },
 }
 
+/// Buffers one block's lowering context hands to the next block of the same
+/// function, so later blocks reuse the earlier blocks' allocations instead of
+/// allocating each per-block table again.
+#[derive(Default)]
+pub(super) struct BlockLowerScratch {
+    machine_params: collections::Vec<ValueRegs>,
+    cache_bindings: collections::Vec<Option<CachedCellBinding>>,
+    cache_live: collections::Vec<bool>,
+    cache_has_value: collections::Vec<bool>,
+    cache_dirty: collections::Vec<bool>,
+    values: collections::Vec<ValueLocation>,
+    remaining_uses: RemainingUses,
+    dead_values: collections::Vec<SsaValue>,
+    linear_value_state: collections::Vec<LinearValueState>,
+    nonlinear_dynamic_reg_owners: collections::Vec<u8>,
+    param_slot_state: collections::Vec<ParamSlotState>,
+}
+
+/// `buffer` emptied and refilled with `len` copies of `value`.
+fn refilled<T: Clone>(
+    mut buffer: collections::Vec<T>,
+    len: usize,
+    value: T,
+) -> collections::Vec<T> {
+    buffer.clear();
+    buffer.resize(len, value);
+    buffer
+}
+
 pub(super) struct BlockLowerContext<'a> {
     regfile: &'a MachineRegFile,
     program: &'a SsaProgram,
@@ -104,12 +133,12 @@ pub(super) struct BlockLowerContext<'a> {
     current_abi: &'a MachineFunctionAbi,
     all_runtime: &'a [MachineFunctionAbi],
     machine_params: collections::Vec<ValueRegs>,
-    entry_cache_params: collections::Vec<EntryCacheParam>,
+    entry_cache_params: &'a [EntryCacheParam],
     all_entry_cache_params: &'a [collections::Vec<EntryCacheParam>],
     gp_reg_width: u8,
     i64_ops: &'static dyn I64Lowering,
     ops: collections::Vec<MachineInst>,
-    cached_cells: collections::Vec<CachedCell>,
+    cached_cells: &'a [CachedCell],
     cache_bindings: collections::Vec<Option<CachedCellBinding>>,
     /// Per cached-local dirty bit: `true` means the register has been written
     /// since the last call save. Only dirty locals need saving before the next
@@ -246,28 +275,52 @@ impl<'a> BlockLowerContext<'a> {
         call_preserved_cache_candidates: Option<&'a [bool]>,
         #[cfg(sf_has_guard_pages)] guard_pages: bool,
         #[cfg(sf_has_guard_pages)] stack_guard_pages: bool,
+        scratch: BlockLowerScratch,
     ) -> Result<Self, WasmError> {
-        let machine_params = target_param_regs(&block.params, program, regfile, gp_reg_width)?;
+        let BlockLowerScratch {
+            mut machine_params,
+            cache_bindings,
+            cache_live,
+            cache_has_value,
+            cache_dirty,
+            mut values,
+            remaining_uses,
+            mut dead_values,
+            linear_value_state,
+            nonlinear_dynamic_reg_owners,
+            param_slot_state,
+        } = scratch;
+        target_param_regs(
+            &mut machine_params,
+            &block.params,
+            program,
+            regfile,
+            gp_reg_width,
+        )?;
         let entry_cache_params = all_entry_cache_params
             .get(block.id.as_usize())
-            .cloned()
-            .unwrap_or_default();
-        let cache_live = collections::vec![false; cached_cells.len()];
-        let cache_has_value = collections::vec![false; cached_cells.len()];
-        let cache_dirty = collections::vec![false; cached_cells.len()];
+            .map(|params| params.as_slice())
+            .unwrap_or(&[]);
+        let cache_live = refilled(cache_live, cached_cells.len(), false);
+        let cache_has_value = refilled(cache_has_value, cached_cells.len(), false);
+        let cache_dirty = refilled(cache_dirty, cached_cells.len(), false);
         let param_slot_state = if is_entry {
             initial_param_slot_state(current_abi, regfile, program)?
         } else {
-            collections::vec![
-                ParamSlotState::FrameAuthoritative;
+            refilled(
+                param_slot_state,
                 program
                     .cell_types
                     .len()
-                    .max(usize::from(current_abi.frame_prefix_slots))
-            ]
+                    .max(usize::from(current_abi.frame_prefix_slots)),
+                ParamSlotState::FrameAuthoritative,
+            )
         };
+        let dynamic_reg_count = regfile.gp_dynamic_count() + regfile.fp_dynamic_count();
         let mut nonlinear_dynamic_reg_owners =
-            collections::vec![0; regfile.gp_dynamic_count() + regfile.fp_dynamic_count()];
+            refilled(nonlinear_dynamic_reg_owners, dynamic_reg_count, 0);
+        values.clear();
+        dead_values.clear();
         for state in &param_slot_state {
             if let ParamSlotState::RegisterOnly { lo, hi, .. } = *state {
                 reserve_nonlinear_dynamic_reg(regfile, &mut nonlinear_dynamic_reg_owners, lo)?;
@@ -289,19 +342,20 @@ impl<'a> BlockLowerContext<'a> {
             gp_reg_width,
             i64_ops,
             ops: collections::Vec::new(),
-            cached_cells: cached_cells.to_vec().into(),
-            cache_bindings: collections::vec![None; cache_live.len()],
+            cached_cells,
+            cache_bindings: refilled(cache_bindings, cache_live.len(), None),
             cache_live,
             cache_has_value,
             cache_dirty,
             call_preserved_cache_candidates: call_preserved_cache_candidates.unwrap_or(&[]),
-            values: collections::Vec::new(),
-            remaining_uses: compute_remaining_uses(block, program),
-            dead_values: collections::Vec::new(),
-            linear_value_state: collections::vec![
-                LinearValueState::default();
-                regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
-            ],
+            values,
+            remaining_uses: compute_remaining_uses(block, program, remaining_uses),
+            dead_values,
+            linear_value_state: refilled(
+                linear_value_state,
+                dynamic_reg_count,
+                LinearValueState::default(),
+            ),
             nonlinear_dynamic_reg_owners,
             param_slot_state,
             #[cfg(sf_has_guard_pages)]
@@ -310,7 +364,8 @@ impl<'a> BlockLowerContext<'a> {
             stack_guard_pages,
         };
 
-        let machine_params = lower.machine_params.clone();
+        // Moved out while the loop binds each parameter, so no copy is made.
+        let machine_params = mem::take(&mut lower.machine_params);
         for (param, regs) in block
             .params
             .iter()
@@ -336,8 +391,9 @@ impl<'a> BlockLowerContext<'a> {
                 lower.set_linear_value_reg(regs.lo, Some(param), Some(ty))?;
             }
         }
-        let entry_cache_params = lower.entry_cache_params.clone();
-        for entry in entry_cache_params {
+        lower.machine_params = machine_params;
+        let entry_cache_params = lower.entry_cache_params;
+        for &entry in entry_cache_params {
             let cached_index = usize::from(entry.cached_index);
             if is_entry {
                 if entry.needs_value {
@@ -385,6 +441,23 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn take_ops(&mut self) -> collections::Vec<MachineInst> {
         mem::take(&mut self.ops)
+    }
+
+    /// The per-block tables, for the next block of the same function.
+    pub(super) fn into_scratch(self) -> BlockLowerScratch {
+        BlockLowerScratch {
+            machine_params: self.machine_params,
+            cache_bindings: self.cache_bindings,
+            cache_live: self.cache_live,
+            cache_has_value: self.cache_has_value,
+            cache_dirty: self.cache_dirty,
+            values: self.values,
+            remaining_uses: self.remaining_uses,
+            dead_values: self.dead_values,
+            linear_value_state: self.linear_value_state,
+            nonlinear_dynamic_reg_owners: self.nonlinear_dynamic_reg_owners,
+            param_slot_state: self.param_slot_state,
+        }
     }
 
     // -----------------------------------------------------------------------

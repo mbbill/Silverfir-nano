@@ -19,6 +19,7 @@ struct UseCount {
 /// SSA value ids are integers and the lowering pass only needs point lookups
 /// and decrements. A sorted flat vector avoids a separately allocated B-tree
 /// node for nearly every value while retaining logarithmic lookup.
+#[derive(Default)]
 pub(super) struct RemainingUses {
     entries: collections::Vec<UseCount>,
 }
@@ -78,8 +79,14 @@ fn count_operand_use(operand: SsaOperand, uses: &mut collections::Vec<UseCount>)
     // Const / None operands have no SsaValue reference to track.
 }
 
-pub(super) fn compute_remaining_uses(block: &SsaBlock, program: &SsaProgram) -> RemainingUses {
-    let mut uses = collections::Vec::new();
+/// Use counts for `block`, built in `reuse`'s storage.
+pub(super) fn compute_remaining_uses(
+    block: &SsaBlock,
+    program: &SsaProgram,
+    reuse: RemainingUses,
+) -> RemainingUses {
+    let mut uses = reuse.entries;
+    uses.clear();
     for inst_idx in 0..block.ops.len() {
         match block.view(inst_idx, program) {
             SsaInstView::Spill { src, .. }

@@ -51,7 +51,8 @@ use super::{
     lower_cache_layout::{compute_block_entry_cache_params, preferred_preserved_for_cached},
     lower_const_pool::ConstPoolBuilder,
     lower_context::{
-        explicit_cached_cells, BlockLowerContext, CachedCell, EntryCacheParam, ValueRegs,
+        explicit_cached_cells, BlockLowerContext, BlockLowerScratch, CachedCell, EntryCacheParam,
+        ValueRegs,
     },
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
@@ -444,6 +445,7 @@ fn lower_function(
         &call_preserved_cache_candidates,
     );
     release_cache_planning_only_ssa_storage(&mut input.ssa);
+    let mut scratch = BlockLowerScratch::default();
     for block_index in 0..original_block_count {
         let block = take_block_for_lowering(&mut input.ssa.blocks[block_index]);
         let target = block.id;
@@ -466,6 +468,7 @@ fn lower_function(
             guard_pages,
             #[cfg(sf_has_guard_pages)]
             stack_guard_pages,
+            core::mem::take(&mut scratch),
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());
         let mut current_params = collections::Vec::new();
@@ -794,6 +797,7 @@ fn lower_function(
                     lower.take_ops(),
                     terminator,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             SsaTerminator::TailCallIndirect {
@@ -842,6 +846,7 @@ fn lower_function(
                     &mut extra_block_ids,
                     const_pool,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             SsaTerminator::TailCallRef {
@@ -881,6 +886,7 @@ fn lower_function(
                     &mut extra_block_ids,
                     const_pool,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             SsaTerminator::EhThrow { tag_idx, args } => {
@@ -903,6 +909,7 @@ fn lower_function(
                     lower.take_ops(),
                     terminator,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             SsaTerminator::EhThrowRef { exnref_slot } => {
@@ -924,6 +931,7 @@ fn lower_function(
                     lower.take_ops(),
                     terminator,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             _ => {}
@@ -938,6 +946,7 @@ fn lower_function(
             lower.take_ops(),
             terminator,
         )?;
+        scratch = lower.into_scratch();
     }
 
     release_prepared_ssa_storage(&mut input.ssa);
@@ -2660,13 +2669,16 @@ fn attach_edge_args(
 }
 
 #[inline]
+/// Fills `regs` with the registers a block's parameters arrive in.
 pub(super) fn target_param_regs(
+    regs: &mut collections::Vec<ValueRegs>,
     params: &[SsaValue],
     program: &SsaProgram,
     regfile: &MachineRegFile,
     gp_reg_width: u8,
-) -> Result<collections::Vec<ValueRegs>, WasmError> {
-    let mut regs = collections::Vec::with_capacity(params.len());
+) -> Result<(), WasmError> {
+    regs.clear();
+    regs.reserve(params.len());
     let mut gp_index = 0usize;
     let mut fp_index = 0usize;
     for param in params {
@@ -2698,7 +2710,7 @@ pub(super) fn target_param_regs(
             gp_index += 1;
         }
     }
-    Ok(regs)
+    Ok(())
 }
 
 fn program_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineStorageType {

@@ -150,29 +150,13 @@ pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> collectio
             }
             SemanticOpKind::Br { .. } => {
                 if reachable {
-                    for frame in stack.iter_mut() {
-                        if frame.kind == FrameKind::Loop {
-                            continue;
-                        }
-                        frame.branch_def_set = Some(match &frame.branch_def_set {
-                            Some(existing) => intersect_vecs(existing, &def_set),
-                            None => def_set.clone(),
-                        });
-                    }
+                    record_branch(&mut stack, &def_set);
                 }
                 reachable = false;
             }
             SemanticOpKind::BrIf { .. } => {
                 if reachable {
-                    for frame in stack.iter_mut() {
-                        if frame.kind == FrameKind::Loop {
-                            continue;
-                        }
-                        frame.branch_def_set = Some(match &frame.branch_def_set {
-                            Some(existing) => intersect_vecs(existing, &def_set),
-                            None => def_set.clone(),
-                        });
-                    }
+                    record_branch(&mut stack, &def_set);
                 }
             }
             SemanticOpKind::BrOnNull { .. }
@@ -180,28 +164,12 @@ pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> collectio
             | SemanticOpKind::BrOnCast { .. }
             | SemanticOpKind::BrOnCastFail { .. } => {
                 if reachable {
-                    for frame in stack.iter_mut() {
-                        if frame.kind == FrameKind::Loop {
-                            continue;
-                        }
-                        frame.branch_def_set = Some(match &frame.branch_def_set {
-                            Some(existing) => intersect_vecs(existing, &def_set),
-                            None => def_set.clone(),
-                        });
-                    }
+                    record_branch(&mut stack, &def_set);
                 }
             }
             SemanticOpKind::BrTable { .. } => {
                 if reachable {
-                    for frame in stack.iter_mut() {
-                        if frame.kind == FrameKind::Loop {
-                            continue;
-                        }
-                        frame.branch_def_set = Some(match &frame.branch_def_set {
-                            Some(existing) => intersect_vecs(existing, &def_set),
-                            None => def_set.clone(),
-                        });
-                    }
+                    record_branch(&mut stack, &def_set);
                 }
                 reachable = false;
             }
@@ -247,6 +215,26 @@ struct Frame {
     branch_def_set: Option<collections::Vec<bool>>,
     if_arm_def_set: Option<collections::Vec<bool>>,
     if_arm_reachable: bool,
+}
+
+/// A branch may target the end of any enclosing non-loop frame, so each such
+/// end keeps only the locals defined on every branch that reaches it. The
+/// intersection is taken in place; a frame allocates its set on its first
+/// branch only.
+fn record_branch(stack: &mut [Frame], def_set: &[bool]) {
+    for frame in stack
+        .iter_mut()
+        .filter(|frame| frame.kind != FrameKind::Loop)
+    {
+        match &mut frame.branch_def_set {
+            Some(existing) => {
+                for (slot, &bit) in existing.iter_mut().zip(def_set) {
+                    *slot &= bit;
+                }
+            }
+            None => frame.branch_def_set = Some(def_set.to_vec().into()),
+        }
+    }
 }
 
 fn intersect_vecs(a: &[bool], b: &[bool]) -> collections::Vec<bool> {
