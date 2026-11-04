@@ -1,8 +1,10 @@
 //! Copy propagation pass.
 //!
-//! Tracks linear-value register aliases within a block and rewrites later uses
-//! to the original source register. Cached-local and fixed-register writes are
-//! preserved, but their sources are still canonicalized.
+//! Tracks register aliases within a block and rewrites later uses to the
+//! original source register. A linear copy of a linear value or of a cached
+//! local is elided while its source stays unchanged. Writes to cached locals
+//! and fixed registers are preserved, but their sources are still
+//! canonicalized.
 //!
 //! Also folds single-use `move rX <- Imm64(C)` into consumer operands as
 //! inline immediates.
@@ -123,10 +125,14 @@ pub(super) fn copy_propagate(
                     read += 1;
                     continue;
                 }
-                // Only linear-value moves are safe to elide here. Cached-local
-                // or fixed-register moves often materialize snapshots, so they
-                // must remain explicit.
-                if ownership.is_linear_value_reg(*src, config)
+                // A linear copy of a linear value or of a cached local becomes
+                // an alias of its source. A copy of a cached local is a
+                // snapshot only if the local is rewritten while the copy is
+                // still read, and `can_elide_reg_move` keeps every copy whose
+                // source changes before its last read. Copies from fixed or
+                // untracked registers stay explicit.
+                if (ownership.is_linear_value_reg(*src, config)
+                    || ownership.owner(*src, config) == Some(MachineRegOwner::CachedCell))
                     && machine_ir::same_reg_bank(*dst, *src, config)
                     && can_elide_reg_move(&block.ops, &block.terminator, read, *dst, *src)
                 {

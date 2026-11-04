@@ -178,37 +178,37 @@ fn copy_propagate_drops_self_move_and_advances() {
     ));
 }
 
-#[test]
-fn does_not_copy_propagate_move_from_cached_cell_block_param() {
-    let mut program = MachineProgram {
+/// A cached local's block-param register and a linear copy of it, with the
+/// copy read once in the block and passed on the edge.
+fn cached_cell_param_copy_program(extra: Option<MachineInst>) -> MachineProgram {
+    let mut ops = collections::vec![MachineInst {
+        kind: MachineInstKind::Move {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: MachineReg(8),
+            src: MachineValue::Reg(MachineReg(7)),
+        },
+    }];
+    ops.extend(extra);
+    ops.push(MachineInst {
+        kind: MachineInstKind::IntUnary {
+            width: MachineIntWidth::I32,
+            op: MachineIntUnaryOp::Clz,
+            dst: MachineReg(6),
+            src: MachineValue::Reg(MachineReg(8)),
+        },
+    });
+    MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: collections::vec![],
         blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                // This uses a dynamic GP register that historically would have
-                // been treated as a plain "transient" number. The explicit
-                // owner says otherwise, and the peephole must obey the owner.
+                // The register's explicit owner, not its number, makes it a
+                // cached local here.
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))
                     .with_owner(MachineRegOwner::CachedCell,)],
-                ops: collections::vec![
-                    MachineInst {
-                        kind: MachineInstKind::Move {
-                            owner: MachineRegOwner::LinearValue,
-                            ty: MachineStorageType::GpWord,
-                            dst: MachineReg(8),
-                            src: MachineValue::Reg(MachineReg(7)),
-                        },
-                    },
-                    MachineInst {
-                        kind: MachineInstKind::IntUnary {
-                            width: MachineIntWidth::I32,
-                            op: MachineIntUnaryOp::Clz,
-                            dst: MachineReg(6),
-                            src: MachineValue::Reg(MachineReg(8)),
-                        },
-                    },
-                ],
+                ops,
                 terminator: MachineTerminator::Jump(MachineEdge {
                     target: MachineBlockId(1),
                     args: collections::vec![MachineValue::Reg(MachineReg(8))],
@@ -221,32 +221,73 @@ fn does_not_copy_propagate_move_from_cached_cell_block_param() {
                 terminator: MachineTerminator::Return,
             },
         ],
-    };
+    }
+}
+
+#[test]
+fn copy_propagates_copy_of_unchanged_cached_cell_block_param() {
+    let mut program = cached_cell_param_copy_program(None);
 
     optimize(&mut program, test_config(7, 8, 12, 12, 0));
 
     let block = &program.blocks[0];
-    assert_eq!(
-        block.ops.len(),
-        2,
-        "cached-local block params are not linear values, so the move must stay explicit; ops={:?}",
+    assert!(
+        matches!(
+            block.ops.as_slice(),
+            [MachineInst {
+                kind: MachineInstKind::IntUnary {
+                    src: MachineValue::Reg(MachineReg(7)),
+                    ..
+                },
+            }]
+        ),
+        "the local is unchanged while the copy is read, so readers use the local's register; ops={:?}",
         block.ops
     );
-    assert!(matches!(
-        block.ops[0].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(8),
-            src: MachineValue::Reg(MachineReg(7)),
-            ..
-        }
-    ));
-    assert!(matches!(
-        block.ops[1].kind,
+    let MachineTerminator::Jump(edge) = &block.terminator else {
+        panic!("expected jump terminator");
+    };
+    assert_eq!(
+        edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(7))]
+    );
+}
+
+#[test]
+fn keeps_copy_of_cached_cell_rewritten_before_the_copy_is_read() {
+    // `local.set` of the cached local between the copy and its reader: the
+    // copy is a snapshot of the old value.
+    let mut program = cached_cell_param_copy_program(Some(MachineInst {
+        kind: MachineInstKind::Move {
+            owner: MachineRegOwner::CachedCell,
+            ty: MachineStorageType::GpWord,
+            dst: MachineReg(7),
+            src: MachineValue::Imm64(5),
+        },
+    }));
+
+    optimize(&mut program, test_config(7, 8, 12, 12, 0));
+
+    let block = &program.blocks[0];
+    assert!(
+        matches!(
+            block.ops.first().map(|op| &op.kind),
+            Some(MachineInstKind::Move {
+                dst: MachineReg(8),
+                src: MachineValue::Reg(MachineReg(7)),
+                ..
+            })
+        ),
+        "a snapshot of a local that is rewritten before it is read must stay explicit; ops={:?}",
+        block.ops
+    );
+    assert!(block.ops.iter().any(|op| matches!(
+        op.kind,
         MachineInstKind::IntUnary {
             src: MachineValue::Reg(MachineReg(8)),
             ..
         }
-    ));
+    )));
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
@@ -343,7 +384,7 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
 }
 
 #[test]
-fn does_not_copy_propagate_cached_cell_load_defs() {
+fn copy_propagates_copy_of_cached_cell_load_while_unchanged() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: collections::vec![],
@@ -399,40 +440,33 @@ fn does_not_copy_propagate_cached_cell_load_defs() {
     optimize(&mut program, test_config(7, 8, 12, 12, 0));
 
     let block = &program.blocks[0];
-    assert_eq!(
-        block.ops.len(),
-        3,
-        "a load tagged as CachedCell must not be treated as a linear alias source; ops={:?}",
+    assert!(
+        matches!(
+            block.ops.as_slice(),
+            [
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        dst: MachineReg(7),
+                        ..
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntUnary {
+                        src: MachineValue::Reg(MachineReg(7)),
+                        ..
+                    },
+                },
+            ]
+        ),
+        "a copy of a freshly loaded cached local reads the local's register; ops={:?}",
         block.ops
     );
-    assert!(matches!(
-        block.ops[0].kind,
-        MachineInstKind::Load {
-            dst: MachineReg(7),
-            ..
-        }
-    ));
-    assert!(matches!(
-        block.ops[1].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(8),
-            src: MachineValue::Reg(MachineReg(7)),
-            ..
-        }
-    ));
-    assert!(matches!(
-        block.ops[2].kind,
-        MachineInstKind::IntUnary {
-            src: MachineValue::Reg(MachineReg(8)),
-            ..
-        }
-    ));
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
     assert_eq!(
         edge.args,
-        collections::vec![MachineValue::Reg(MachineReg(8))]
+        collections::vec![MachineValue::Reg(MachineReg(7))]
     );
 }
 
