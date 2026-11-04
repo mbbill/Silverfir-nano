@@ -75,62 +75,84 @@ pub(super) fn forward_stored_values(
                     }
                 }
             }
-            MachineInstKind::Store {
-                addr, width, src, ..
-            } => {
-                tracked.retain(|entry| !store_may_alias(entry.addr, entry.width, *addr, *width));
-                if is_forwardable_width(*width) {
-                    tracked.push(TrackedStore {
-                        addr: *addr,
-                        src: *src,
-                        width: *width,
-                    });
-                }
-            }
-            MachineInstKind::IndexedStore { .. }
-            | MachineInstKind::MemoryFill { .. }
-            | MachineInstKind::MemoryCopy { .. }
-            | MachineInstKind::MemoryInit { .. }
-            | MachineInstKind::TableFill { .. }
-            | MachineInstKind::TableCopy { .. }
-            | MachineInstKind::TableInit { .. }
-            | MachineInstKind::TableGrow { .. } => {
-                tracked.retain(|entry| !unknown_store_may_alias(entry.addr.base));
-            }
-            MachineInstKind::CallRuntime(_)
-            | MachineInstKind::RefFunc { .. }
-            | MachineInstKind::RefAsNonNull { .. }
-            | MachineInstKind::RefAbsolutize { .. }
-            | MachineInstKind::RefEq { .. }
-            | MachineInstKind::RefI31 { .. }
-            | MachineInstKind::I31GetS { .. }
-            | MachineInstKind::I31GetU { .. }
-            | MachineInstKind::AnyConvertExtern { .. }
-            | MachineInstKind::ExternConvertAny { .. }
-            | MachineInstKind::RefTest { .. }
-            | MachineInstKind::RefCast { .. }
-            | MachineInstKind::StructNew { .. }
-            | MachineInstKind::StructNewDefault { .. }
-            | MachineInstKind::StructGet { .. }
-            | MachineInstKind::StructSet { .. }
-            | MachineInstKind::ArrayNew { .. }
-            | MachineInstKind::ArrayNewDefault { .. }
-            | MachineInstKind::ArrayGet { .. }
-            | MachineInstKind::ArraySet { .. }
-            | MachineInstKind::ArrayLen { .. } => {
-                tracked.clear();
-            }
             _ => {}
         }
 
-        if keep_inst && !tracked.is_empty() {
-            inst.kind.for_each_defined_reg(|dst| {
-                kill_tracked_stores_by_reg(tracked, dst);
-            });
+        if keep_inst {
+            track_store_effects(&inst.kind, tracked);
         }
 
         keep_inst
     });
+}
+
+/// Update `tracked` for one instruction that is kept: record forwardable
+/// stores, drop entries a store may overwrite or a call may observe-and-change,
+/// and drop entries whose address base or stored register the instruction
+/// redefines.
+#[inline]
+pub(super) fn track_store_effects(
+    kind: &MachineInstKind,
+    tracked: &mut collections::Vec<TrackedStore>,
+) {
+    match kind {
+        MachineInstKind::Store {
+            ty,
+            addr,
+            width,
+            src,
+        } => {
+            tracked.retain(|entry| !store_may_alias(entry.addr, entry.width, *addr, *width));
+            if is_forwardable_width(*width) {
+                tracked.push(TrackedStore {
+                    addr: *addr,
+                    ty: *ty,
+                    src: *src,
+                    width: *width,
+                });
+            }
+        }
+        MachineInstKind::IndexedStore { .. }
+        | MachineInstKind::MemoryFill { .. }
+        | MachineInstKind::MemoryCopy { .. }
+        | MachineInstKind::MemoryInit { .. }
+        | MachineInstKind::TableFill { .. }
+        | MachineInstKind::TableCopy { .. }
+        | MachineInstKind::TableInit { .. }
+        | MachineInstKind::TableGrow { .. } => {
+            tracked.retain(|entry| !unknown_store_may_alias(entry.addr.base));
+        }
+        MachineInstKind::CallRuntime(_)
+        | MachineInstKind::RefFunc { .. }
+        | MachineInstKind::RefAsNonNull { .. }
+        | MachineInstKind::RefAbsolutize { .. }
+        | MachineInstKind::RefEq { .. }
+        | MachineInstKind::RefI31 { .. }
+        | MachineInstKind::I31GetS { .. }
+        | MachineInstKind::I31GetU { .. }
+        | MachineInstKind::AnyConvertExtern { .. }
+        | MachineInstKind::ExternConvertAny { .. }
+        | MachineInstKind::RefTest { .. }
+        | MachineInstKind::RefCast { .. }
+        | MachineInstKind::StructNew { .. }
+        | MachineInstKind::StructNewDefault { .. }
+        | MachineInstKind::StructGet { .. }
+        | MachineInstKind::StructSet { .. }
+        | MachineInstKind::ArrayNew { .. }
+        | MachineInstKind::ArrayNewDefault { .. }
+        | MachineInstKind::ArrayGet { .. }
+        | MachineInstKind::ArraySet { .. }
+        | MachineInstKind::ArrayLen { .. } => {
+            tracked.clear();
+        }
+        _ => {}
+    }
+
+    if !tracked.is_empty() {
+        kind.for_each_defined_reg(|dst| {
+            kill_tracked_stores_by_reg(tracked, dst);
+        });
+    }
 }
 
 /// A spill immediately followed by destructive arithmetic and its reload can
