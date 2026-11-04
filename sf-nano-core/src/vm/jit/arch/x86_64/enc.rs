@@ -111,7 +111,12 @@ fn emit_modrm_rr(e: &mut TextEmitter, reg: X86Reg, rm: X86Reg) {
 /// Emit ModR/M for [rm] (mod=00), [rm+disp8] (mod=01), [rm+disp32] (mod=10).
 /// Handles RSP (SIB needed) and RBP (disp8 needed) special cases.
 fn emit_modrm_mem(e: &mut TextEmitter, reg: X86Reg, base: X86Reg, disp: i32) {
-    let reg3 = reg.idx3();
+    emit_modrm_mem3(e, reg.idx3(), base, disp);
+}
+
+/// [`emit_modrm_mem`] with the reg field given as its low three bits, for
+/// XMM registers as well as GP ones.
+fn emit_modrm_mem3(e: &mut TextEmitter, reg3: u8, base: X86Reg, disp: i32) {
     let base3 = base.idx3();
 
     // RSP/R12 as base requires SIB byte
@@ -1702,6 +1707,93 @@ mod vex_scalar_encoding_tests {
     }
 
     #[test]
+    fn vex_scalar_memory_forms_match_gnu_as() {
+        use X86Reg::*;
+        let base = |base, disp| XmmMem::Base { base, disp };
+        let indexed = |base, index, disp| XmmMem::Indexed { base, index, disp };
+        // `vaddsd 0x10(%r12,%rcx,1), %xmm2, %xmm3` and so on: extended base
+        // or index registers need the three-byte prefix, RSP needs a SIB
+        // byte, R13 with no displacement needs a zero disp8.
+        let cases: [(bool, ScalarFpOp, Xmm, Xmm, XmmMem, &[u8]); 8] = [
+            (
+                true,
+                ScalarFpOp::Add,
+                3,
+                2,
+                indexed(R12, RCX, 0x10),
+                &[0xC4, 0xC1, 0x6B, 0x58, 0x5C, 0x0C, 0x10],
+            ),
+            (
+                true,
+                ScalarFpOp::Mul,
+                8,
+                8,
+                base(RBP, 0x40),
+                &[0xC5, 0x3B, 0x59, 0x45, 0x40],
+            ),
+            (
+                false,
+                ScalarFpOp::Sub,
+                10,
+                9,
+                indexed(R12, R10, 0),
+                &[0xC4, 0x01, 0x32, 0x5C, 0x14, 0x14],
+            ),
+            (
+                true,
+                ScalarFpOp::Div,
+                2,
+                1,
+                base(R13, 0),
+                &[0xC4, 0xC1, 0x73, 0x5E, 0x55, 0x00],
+            ),
+            (
+                true,
+                ScalarFpOp::Add,
+                1,
+                15,
+                indexed(RSI, RDI, 0x12345),
+                &[0xC5, 0x83, 0x58, 0x8C, 0x3E, 0x45, 0x23, 0x01, 0x00],
+            ),
+            (
+                false,
+                ScalarFpOp::Mul,
+                4,
+                3,
+                base(RSP, -8),
+                &[0xC5, 0xE2, 0x59, 0x64, 0x24, 0xF8],
+            ),
+            (
+                true,
+                ScalarFpOp::Mul,
+                9,
+                2,
+                XmmMem::Rip,
+                &[0xC5, 0x6B, 0x59, 0x0D, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                true,
+                ScalarFpOp::Sub,
+                6,
+                6,
+                indexed(RAX, R9, 0),
+                &[0xC4, 0xA1, 0x4B, 0x5C, 0x34, 0x08],
+            ),
+        ];
+        for (double, op, dst, src1, mem, expected) in cases {
+            let mut text = TextEmitter::new();
+            let disp_offset = vex_scalar_rrm(&mut text, double, op, dst, src1, mem);
+            let bytes = text.finish();
+            assert_eq!(bytes.as_slice(), expected, "{op:?} {dst} {src1} {mem:?}");
+            assert_eq!(
+                disp_offset,
+                (mem == XmmMem::Rip).then(|| expected.len() - 4),
+                "{op:?} {mem:?} displacement offset"
+            );
+        }
+    }
+
+    #[test]
     fn vex_scalar_unary_forms_match_gnu_as() {
         // `vcvtss2sd %xmm11, %xmm11, %xmm9` and friends: the source repeats
         // as src1, so the result's upper lane comes from the input.
@@ -2002,6 +2094,66 @@ pub(crate) fn vex_scalar_rrr(
     }
     e.emit_u8(op as u8);
     emit_xmm_modrm_rr(e, dst, src2);
+}
+
+/// Memory source of a scalar FP instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum XmmMem {
+    /// `[base + disp]`
+    Base { base: X86Reg, disp: i32 },
+    /// `[base + index + disp]`
+    Indexed {
+        base: X86Reg,
+        index: X86Reg,
+        disp: i32,
+    },
+    /// `[rip + disp32]`, the displacement left for patching.
+    Rip,
+}
+
+/// [`vex_scalar_rrr`] with a memory second source: `dst = src1 OP [mem]`.
+/// For `XmmMem::Rip` returns the text offset of the disp32, which is the
+/// instruction's last field.
+pub(crate) fn vex_scalar_rrm(
+    e: &mut TextEmitter,
+    double: bool,
+    op: ScalarFpOp,
+    dst: Xmm,
+    src1: Xmm,
+    mem: XmmMem,
+) -> Option<usize> {
+    let pp = if double { 0b11 } else { 0b10 };
+    let vvvv = (!src1 & 15) << 3;
+    let (x, b) = match mem {
+        XmmMem::Base { base, .. } => (false, base.needs_rex_ext()),
+        XmmMem::Indexed { base, index, .. } => (index.needs_rex_ext(), base.needs_rex_ext()),
+        XmmMem::Rip => (false, false),
+    };
+    if !x && !b {
+        e.emit_u8(0xC5);
+        e.emit_u8((u8::from(dst < 8) << 7) | vvvv | pp);
+    } else {
+        // Three-byte VEX: R̄ X̄ B̄ and map 00001 = 0F.
+        e.emit_u8(0xC4);
+        e.emit_u8((u8::from(dst < 8) << 7) | (u8::from(!x) << 6) | (u8::from(!b) << 5) | 0x01);
+        e.emit_u8(vvvv | pp);
+    }
+    e.emit_u8(op as u8);
+    match mem {
+        XmmMem::Base { base, disp } => {
+            emit_modrm_mem3(e, dst & 7, base, disp);
+            None
+        }
+        XmmMem::Indexed { base, index, disp } => {
+            emit_modrm_mem_idx(e, dst & 7, base, index, disp);
+            None
+        }
+        XmmMem::Rip => {
+            // mod=00 rm=101 selects [rip + disp32].
+            e.emit_u8(modrm(0, dst & 7, 5));
+            Some(e.emit_u32(0))
+        }
+    }
 }
 
 pub(crate) fn addsd(e: &mut TextEmitter, dst: Xmm, src: Xmm) {

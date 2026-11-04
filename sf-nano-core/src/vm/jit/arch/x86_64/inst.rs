@@ -943,6 +943,53 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
+    /// Lower a fused FP `load + arithmetic` pair as one AVX instruction
+    /// with a memory source.
+    pub(super) fn lower_load_float(
+        &mut self,
+        fusion: &super::fusion::LoadFloatFusion,
+    ) -> Result<(), WasmError> {
+        use super::fusion::LoadAluMem;
+        let width = if fusion.double {
+            MachineFloatWidth::F64
+        } else {
+            MachineFloatWidth::F32
+        };
+        let src = self.map_fp_reg(fusion.src)? as u8;
+        let dst = self.map_fp_reg(fusion.dst)? as u8;
+        self.core.set_fp_reg_width(fusion.dst, width)?;
+        let scratch = self.gp_scratch.scoped_alloc().detach();
+        let mem = match &fusion.mem {
+            LoadAluMem::Base(addr) => enc::XmmMem::Base {
+                base: self.map_gp_reg(addr.base)?,
+                disp: addr.offset,
+            },
+            LoadAluMem::Indexed {
+                base,
+                index,
+                extend,
+                offset,
+            } => {
+                let base = self.map_gp_reg(*base)?;
+                let index = self.map_gp_reg(*index)?;
+                let index = match extend {
+                    MachineIndexExtend::None => index,
+                    MachineIndexExtend::ZeroExtend32 => {
+                        enc::mov_rr_32(&mut self.core.text, *scratch, index);
+                        *scratch
+                    }
+                };
+                enc::XmmMem::Indexed {
+                    base,
+                    index,
+                    disp: *offset,
+                }
+            }
+        };
+        enc::vex_scalar_rrm(&mut self.core.text, fusion.double, fusion.op, dst, src, mem);
+        Ok(())
+    }
+
     /// Load from [base + index + disp]; the indexed twin of
     /// [`Self::lower_load_from`].
     fn lower_load_from_idx(
@@ -2674,6 +2721,46 @@ impl<'a> X86_64Backend<'a> {
         let gp1 = self.gp_scratch.scoped_alloc().detach();
         let fp0 = self.fp_scratch.scoped_alloc().detach();
         let fp1 = self.fp_scratch.scoped_alloc().detach();
+        if super::cpu::has_avx() && self.core.is_fp_reg(dst) {
+            // A constant operand reads straight from the literal pool as the
+            // VEX memory source instead of being loaded into a scratch first.
+            let (op_code, commutative) = match op {
+                MachineFloatBinaryOp::Add => (Some(enc::ScalarFpOp::Add), true),
+                MachineFloatBinaryOp::Sub => (Some(enc::ScalarFpOp::Sub), false),
+                MachineFloatBinaryOp::Mul => (Some(enc::ScalarFpOp::Mul), true),
+                MachineFloatBinaryOp::Div => (Some(enc::ScalarFpOp::Div), false),
+                _ => (None, false),
+            };
+            let literal = match (lhs, rhs) {
+                (MachineValue::Imm64(_), MachineValue::Imm64(_)) => None,
+                (register, MachineValue::Imm64(bits)) => Some((register, bits)),
+                (MachineValue::Imm64(bits), register) if commutative => Some((register, bits)),
+                _ => None,
+            };
+            if let (Some(op_code), Some((register, bits))) = (op_code, literal) {
+                let src = self.prepare_float_operand(width, register, *gp0, *fp0)? as u8;
+                let dst_fp = self.map_fp_reg(dst)? as u8;
+                self.core.set_fp_reg_width(dst, width)?;
+                let literal_index = self.intern_fp_literal(match width {
+                    MachineFloatWidth::F32 => u64::from(bits as u32),
+                    MachineFloatWidth::F64 => bits,
+                });
+                let disp_offset = enc::vex_scalar_rrm(
+                    &mut self.core.text,
+                    width == MachineFloatWidth::F64,
+                    op_code,
+                    dst_fp,
+                    src,
+                    enc::XmmMem::Rip,
+                )
+                .expect("RIP-relative VEX source has a displacement");
+                self.fp_literal_fixups.push(FpLiteralFixup {
+                    disp_offset,
+                    literal_index,
+                });
+                return Ok(());
+            }
+        }
         let lhs_fp = self.prepare_float_operand(width, lhs, *gp0, *fp0)?;
         let rhs_fp = self.prepare_float_operand(width, rhs, *gp1, *fp1)?;
         let result_fp = if self.core.is_fp_reg(dst) {

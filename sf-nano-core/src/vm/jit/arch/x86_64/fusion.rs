@@ -1,11 +1,11 @@
 //! x86_64 condition-code mapping and instruction-pair fusion probes.
 
-use super::enc::{Cc, MemAluOp};
+use super::enc::{Cc, MemAluOp, ScalarFpOp};
 use crate::vm::jit::machine::machine_ir::{
-    MachineAddr, MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind,
-    MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
-    MACHINE_FIXED_REG_COUNT,
+    MachineAddr, MachineCompareKind, MachineFloatBinaryOp, MachineFloatWidth, MachineIndexExtend,
+    MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension,
+    MachineMemWidth, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
+    MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
 };
 
 /// Read through an immediately preceding GP snapshot without materializing
@@ -160,6 +160,104 @@ pub(super) fn load_alu_fusion(prev: &MachineInst, next: &MachineInst) -> Option<
         op: alu_op,
         w32,
         dst,
+        loaded,
+        mem,
+    })
+}
+
+/// A fused `load + scalar FP arithmetic` pair for the AVX memory-source
+/// form `dst = src OP [mem]`. The caller must prove the loaded register
+/// dead afterwards unless the arithmetic overwrites it.
+pub(super) struct LoadFloatFusion {
+    pub op: ScalarFpOp,
+    pub double: bool,
+    pub dst: MachineReg,
+    /// The register operand, never the loaded register itself.
+    pub src: MachineReg,
+    pub loaded: MachineReg,
+    pub mem: LoadAluMem,
+}
+
+/// Probe `prev = FP load, next = FP add/sub/mul/div` reading the loaded
+/// value once. Sub and Div need it on the right; Add and Mul take either
+/// side (NaN payload choice between two NaN inputs is nondeterministic in
+/// Wasm, so the operand swap is unobservable). The load width must equal
+/// the arithmetic width, and every register involved must be an FP lane.
+pub(super) fn load_float_fusion(
+    prev: &MachineInst,
+    next: &MachineInst,
+    is_fp: impl Fn(MachineReg) -> bool,
+) -> Option<LoadFloatFusion> {
+    let (loaded, mem, mem_width) = match &prev.kind {
+        MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            dst,
+            addr,
+            width,
+            extension: MachineLoadExtension::None,
+            ..
+        } => (*dst, LoadAluMem::Base(*addr), *width),
+        MachineInstKind::IndexedLoad {
+            dst,
+            base,
+            index,
+            index_extend,
+            offset,
+            width,
+            extension: MachineLoadExtension::None,
+        } => (
+            *dst,
+            LoadAluMem::Indexed {
+                base: *base,
+                index: *index,
+                extend: *index_extend,
+                offset: *offset,
+            },
+            *width,
+        ),
+        _ => return None,
+    };
+    let MachineInstKind::FloatBinary {
+        width,
+        op,
+        dst,
+        lhs,
+        rhs,
+    } = &next.kind
+    else {
+        return None;
+    };
+    let (op, commutative) = match op {
+        MachineFloatBinaryOp::Add => (ScalarFpOp::Add, true),
+        MachineFloatBinaryOp::Sub => (ScalarFpOp::Sub, false),
+        MachineFloatBinaryOp::Mul => (ScalarFpOp::Mul, true),
+        MachineFloatBinaryOp::Div => (ScalarFpOp::Div, false),
+        _ => return None,
+    };
+    let double = match (width, mem_width) {
+        (MachineFloatWidth::F64, MachineMemWidth::U64) => true,
+        (MachineFloatWidth::F32, MachineMemWidth::U32) => false,
+        _ => return None,
+    };
+    if !is_fp(loaded) || !is_fp(*dst) {
+        return None;
+    }
+    let register_operand = |value: &MachineValue| match value {
+        MachineValue::Reg(reg) if *reg != loaded && is_fp(*reg) => Some(*reg),
+        _ => None,
+    };
+    let src = if *rhs == MachineValue::Reg(loaded) {
+        register_operand(lhs)?
+    } else if commutative && *lhs == MachineValue::Reg(loaded) {
+        register_operand(rhs)?
+    } else {
+        return None;
+    };
+    Some(LoadFloatFusion {
+        op,
+        double,
+        dst: *dst,
+        src,
         loaded,
         mem,
     })

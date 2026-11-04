@@ -528,6 +528,33 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                     return Ok(());
                 }
             }
+            if super::cpu::has_avx() {
+                if let Some(fusion) =
+                    super::fusion::load_float_fusion(prev, inst, |reg| self.core.is_fp_reg(reg))
+                {
+                    // The arithmetic either overwrites the loaded register or
+                    // must be its last reader.
+                    let loaded_consumed = fusion.dst == fusion.loaded
+                        || self
+                            .core
+                            .current_block
+                            .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                            .is_some_and(|block| {
+                                !crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                                    &block.ops[index + 1..],
+                                    &block.terminator,
+                                    fusion.loaded,
+                                )
+                            });
+                    if loaded_consumed {
+                        self.core.current_op_index = Some(index);
+                        self.lower_load_float(&fusion)?;
+                        self.gp_scratch.assert_all_free();
+                        self.fp_scratch.assert_all_free();
+                        return Ok(());
+                    }
+                }
+            }
             if let Some(fusion) = super::float_cond::float_compare_select_fusion(prev, inst) {
                 let bool_is_dead = self
                     .core

@@ -318,6 +318,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         content: include_str!("../tests/cached_table_dispatch.wast"),
     });
     wast_inputs.push(WastInput::Embedded {
+        path: "fp_memory_operands.wast",
+        content: include_str!("../tests/fp_memory_operands.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
         path: "mem0_bulk_host_call.wast",
         content: include_str!("../tests/mem0_bulk_host_call.wast"),
     });
