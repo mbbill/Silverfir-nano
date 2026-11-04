@@ -269,12 +269,14 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.core
     }
 
-    /// 16-byte-align loop headers so a tight loop body never straddles a
-    /// fetch window: a straddled two-instruction loop measured 2 cycles
-    /// per iteration where the aligned form sustains 1. Padding executes
-    /// only on fallthrough entry, as a few multi-byte NOPs.
+    /// 32-byte-align loop headers so a loop body of up to 32 bytes never
+    /// straddles a 32- or 64-byte fetch line: a straddled two-instruction
+    /// loop measured 2 cycles per iteration where the aligned form sustains
+    /// 1, and a 29-byte loop placed across a 64-byte line ran 60% slower
+    /// than the same loop inside one. Padding executes only on fallthrough
+    /// entry, as a few multi-byte NOPs.
     fn align_loop_header(&mut self) {
-        const LOOP_HEADER_ALIGN: usize = 16;
+        const LOOP_HEADER_ALIGN: usize = 32;
         let misalign = self.core.text.next_addr_for_alignment() % LOOP_HEADER_ALIGN;
         if misalign != 0 {
             enc::emit_nops(&mut self.core.text, LOOP_HEADER_ALIGN - misalign);
