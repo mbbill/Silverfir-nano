@@ -17,9 +17,9 @@ use crate::{
             MachineCallTarget, MachineCompareKind, MachineConstId, MachineConvertOp, MachineEdge,
             MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
             MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind,
-            MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineModule,
-            MachineModuleAbi, MachineParamLoc, MachineProgram, MachineReg, MachineRegOwner,
-            MachineResultSrc, MachineReturnAbi, MachineReturnValue, MachineSign,
+            MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
+            MachineModule, MachineModuleAbi, MachineParamLoc, MachineProgram, MachineReg,
+            MachineRegOwner, MachineResultSrc, MachineReturnAbi, MachineReturnValue, MachineSign,
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         jit::middle::{
@@ -1915,9 +1915,14 @@ fn lower_indirect_dispatch_cluster(
                         target: miss,
                         args: carried_args.param_values(),
                     },
+                    // The bounds setup already loaded the view array base
+                    // into lane 1; the entry load reuses it.
                     else_edge: MachineEdge {
                         target: checked,
-                        args: prepend_gp_word_arg(lanes.lane0, &carried_args.param_values()),
+                        args: prepend_gp_word_args(
+                            &[lanes.lane0, lanes.lane1],
+                            &carried_args.param_values(),
+                        ),
                     },
                 },
             )?;
@@ -1926,7 +1931,7 @@ fn lower_indirect_dispatch_cluster(
                 checked,
                 original_blocks,
                 extra_blocks,
-                prepend_gp_word_param(lanes.lane0, &carried_args.params),
+                prepend_gp_word_params(&[lanes.lane0, lanes.lane1], &carried_args.params),
                 build_call_indirect_fixed_table_load_block(lower, table_idx, lanes.lane0)?,
                 MachineTerminator::Branch {
                     cond: MachineBranchCond::IntCompare {
@@ -1959,8 +1964,9 @@ fn lower_indirect_dispatch_cluster(
                 ),
                 build_call_indirect_expected_type_load_block(lower, type_idx)?,
                 MachineTerminator::Branch {
+                    // Both type ids are zero-extended u32 loads.
                     cond: MachineBranchCond::IntCompare {
-                        width: lower.gp_word_int_width(),
+                        width: MachineIntWidth::I32,
                         kind: MachineCompareKind::Ne,
                         sign: MachineSign::Unsigned,
                         lhs: MachineValue::Reg(lanes.lane3),
@@ -2066,11 +2072,13 @@ fn lower_indirect_dispatch_cluster(
                 extra_blocks,
                 prepend_gp_word_param(indirect_temps.lane0, &carried_args.params),
                 if fixed_fast_table {
-                    build_call_indirect_fixed_table_load_block(
+                    let mut ops = collections::vec![call_indirect_fixed_views_base_load(lower)?];
+                    ops.extend(build_call_indirect_fixed_table_load_block(
                         lower,
                         table_idx,
                         indirect_temps.lane0,
-                    )?
+                    )?);
+                    ops
                 } else {
                     build_call_indirect_checked_block(
                         lower,
@@ -2223,7 +2231,13 @@ fn lower_indirect_dispatch_cluster(
                 },
                 MachineTerminator::Branch {
                     cond: MachineBranchCond::IntCompare {
-                        width: lower.gp_word_int_width(),
+                        // A fast table compares two zero-extended u32 type
+                        // ids, which a 32-bit compare decides exactly.
+                        width: if fixed_fast_table {
+                            MachineIntWidth::I32
+                        } else {
+                            lower.gp_word_int_width()
+                        },
                         kind: MachineCompareKind::Ne,
                         sign: MachineSign::Unsigned,
                         lhs: MachineValue::Reg(if fixed_local_table {
@@ -2952,7 +2966,6 @@ fn emit_call_indirect_cached_bounds_setup(
     index_slot: FrameSlot,
 ) -> Result<(), WasmError> {
     evict_call_indirect_control_gp_caches(lower)?;
-    let runtime_layout = lower.runtime_abi_layout();
     let fixed_view = fixed_call_table_view_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
     lower.emit_machine_inst(MachineInst {
@@ -2965,16 +2978,7 @@ fn emit_call_indirect_cached_bounds_setup(
             extension: MachineLoadExtension::ZeroExtend,
         },
     });
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::Load {
-            owner: MachineRegOwner::LinearValue,
-            ty: MachineStorageType::GpWord,
-            dst: temps.lane1,
-            addr: lower.runtime_addr(runtime_layout.context.fixed_call_table_views_base_offset),
-            width: lower.gp_word_mem_width(),
-            extension: MachineLoadExtension::None,
-        },
-    });
+    lower.emit_machine_inst(call_indirect_fixed_views_base_load(lower)?);
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
             owner: MachineRegOwner::LinearValue,
@@ -3427,12 +3431,34 @@ fn build_call_indirect_fixed_local_type_check_block(
     Ok(ops)
 }
 
+/// Load the fixed call-table view array base into control lane 1, where
+/// [`build_call_indirect_fixed_table_load_block`] expects it.
+fn call_indirect_fixed_views_base_load(
+    lower: &BlockLowerContext<'_>,
+) -> Result<MachineInst, WasmError> {
+    let runtime_layout = lower.runtime_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    Ok(MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: temps.lane1,
+            addr: lower.runtime_addr(runtime_layout.context.fixed_call_table_views_base_offset),
+            width: lower.gp_word_mem_width(),
+            extension: MachineLoadExtension::None,
+        },
+    })
+}
+
+/// Load one fixed call-table entry. Control lane 1 must hold the view array
+/// base on entry (see [`call_indirect_fixed_views_base_load`]). The entry's
+/// fields are read at their offsets from one scaled index, so no field load
+/// waits on index arithmetic for another.
 fn build_call_indirect_fixed_table_load_block(
     lower: &BlockLowerContext<'_>,
     table_idx: u32,
     index_reg: MachineReg,
 ) -> Result<collections::Vec<MachineInst>, WasmError> {
-    let runtime_layout = lower.runtime_abi_layout();
     let fixed_view = fixed_call_table_view_abi_layout();
     let fixed_entry = fixed_call_table_entry_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
@@ -3441,17 +3467,18 @@ fn build_call_indirect_fixed_table_load_block(
     let callee_entry = temps.lane2;
     let actual_type = temps.lane3;
     debug_assert_eq!(fixed_entry.stride, 16);
-    Ok(collections::vec![
-        MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: table_base,
-                addr: lower.runtime_addr(runtime_layout.context.fixed_call_table_views_base_offset),
-                width: lower.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
+    let field = |dst, offset: u32, width, extension| MachineInst {
+        kind: MachineInstKind::IndexedLoad {
+            dst,
+            base: table_base,
+            index: local_target,
+            index_extend: MachineIndexExtend::None,
+            offset: offset as i32,
+            width,
+            extension,
         },
+    };
+    Ok(collections::vec![
         MachineInst {
             kind: MachineInstKind::Load {
                 owner: MachineRegOwner::LinearValue,
@@ -3476,59 +3503,25 @@ fn build_call_indirect_fixed_table_load_block(
                 rhs: MachineValue::Imm64(4),
             },
         },
-        MachineInst {
-            kind: MachineInstKind::IndexedLoad {
-                dst: actual_type,
-                base: table_base,
-                index: local_target,
-                index_extend: MachineIndexExtend::None,
-                offset: fixed_entry.type_canon_offset as i32,
-                width: MachineMemWidth::U32,
-                extension: MachineLoadExtension::ZeroExtend,
-            },
-        },
-        MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: lower.gp_word_int_width(),
-                op: MachineIntBinaryOp::Add,
-                dst: local_target,
-                lhs: MachineValue::Reg(local_target),
-                rhs: MachineValue::Imm64(u64::from(fixed_entry.entry_offset)),
-            },
-        },
-        MachineInst {
-            kind: MachineInstKind::IndexedLoad {
-                dst: callee_entry,
-                base: table_base,
-                index: local_target,
-                index_extend: MachineIndexExtend::None,
-                offset: 0,
-                width: lower.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        },
-        MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: lower.gp_word_int_width(),
-                op: MachineIntBinaryOp::Sub,
-                dst: local_target,
-                lhs: MachineValue::Reg(local_target),
-                rhs: MachineValue::Imm64(u64::from(
-                    fixed_entry.entry_offset - fixed_entry.local_target_offset,
-                )),
-            },
-        },
-        MachineInst {
-            kind: MachineInstKind::IndexedLoad {
-                dst: local_target,
-                base: table_base,
-                index: local_target,
-                index_extend: MachineIndexExtend::None,
-                offset: 0,
-                width: MachineMemWidth::U32,
-                extension: MachineLoadExtension::ZeroExtend,
-            },
-        },
+        field(
+            actual_type,
+            fixed_entry.type_canon_offset,
+            MachineMemWidth::U32,
+            MachineLoadExtension::ZeroExtend,
+        ),
+        field(
+            callee_entry,
+            fixed_entry.entry_offset,
+            lower.gp_word_mem_width(),
+            MachineLoadExtension::None,
+        ),
+        // The scaled index is dead after this load, which reuses its lane.
+        field(
+            local_target,
+            fixed_entry.local_target_offset,
+            MachineMemWidth::U32,
+            MachineLoadExtension::ZeroExtend,
+        ),
     ])
 }
 
