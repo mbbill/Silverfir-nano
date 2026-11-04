@@ -1851,6 +1851,48 @@ mod vex_scalar_encoding_tests {
     }
 
     #[test]
+    fn vex_scalar_loads_match_gnu_as() {
+        use X86Reg::*;
+        let base = |base, disp| XmmMem::Base { base, disp };
+        let indexed = |base, index, disp| XmmMem::Indexed { base, index, disp };
+        // Intel syntax as assembled by GNU as: VEX.vvvv is 1111b, and R13
+        // with no displacement still takes a zero disp8.
+        let cases: [(bool, Xmm, XmmMem, &[u8]); 4] = [
+            (
+                true,
+                2,
+                indexed(R12, R8, 0),
+                &[0xC4, 0x81, 0x7B, 0x10, 0x14, 0x04],
+            ),
+            (false, 9, base(RBP, 0x40), &[0xC5, 0x7A, 0x10, 0x4D, 0x40]),
+            (
+                true,
+                0,
+                indexed(RAX, RCX, 0x10),
+                &[0xC5, 0xFB, 0x10, 0x44, 0x08, 0x10],
+            ),
+            (
+                false,
+                12,
+                base(R13, 0),
+                &[0xC4, 0x41, 0x7A, 0x10, 0x65, 0x00],
+            ),
+        ];
+        for (double, dst, mem, expected) in cases {
+            let mut text = TextEmitter::new();
+            assert_eq!(vex_movs_load(&mut text, double, dst, mem), None);
+            assert_eq!(text.finish().as_slice(), expected, "{double} {dst} {mem:?}");
+        }
+        // vmovsd xmm3, QWORD PTR [rip+0x0]
+        let mut text = TextEmitter::new();
+        assert_eq!(vex_movs_rip(&mut text, true, 3), 4);
+        assert_eq!(
+            text.finish().as_slice(),
+            &[0xC5, 0xFB, 0x10, 0x1D, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
     fn vex_scalar_unary_forms_match_gnu_as() {
         // `vcvtss2sd %xmm11, %xmm11, %xmm9` and friends: the source repeats
         // as src1, so the result's upper lane comes from the input.
@@ -2179,8 +2221,43 @@ pub(crate) fn vex_scalar_rrm(
     src1: Xmm,
     mem: XmmMem,
 ) -> Option<usize> {
+    vex_scalar_mem(e, double, op as u8, dst, !src1 & 15, mem)
+}
+
+/// VEX.128 `VMOVSD xmm, m64` / `VMOVSS xmm, m32`: a scalar load that zeroes
+/// every bit above the loaded element. The SSE `MOVSD`/`MOVSS` load keeps
+/// bits 255:128 of the full register, so it is a partial write; the VEX form
+/// writes the whole register and depends on nothing but memory. For
+/// `XmmMem::Rip` returns the text offset of the disp32.
+pub(crate) fn vex_movs_load(
+    e: &mut TextEmitter,
+    double: bool,
+    dst: Xmm,
+    mem: XmmMem,
+) -> Option<usize> {
+    // The load form has no second register source: VEX.vvvv must be 1111b.
+    vex_scalar_mem(e, double, 0x10, dst, 0b1111, mem)
+}
+
+/// [`vex_movs_load`] from `[rip + disp32]`; returns the text offset of the
+/// disp32, the instruction's last field, for patching.
+pub(crate) fn vex_movs_rip(e: &mut TextEmitter, double: bool, dst: Xmm) -> usize {
+    vex_scalar_mem(e, double, 0x10, dst, 0b1111, XmmMem::Rip);
+    e.len() - 4
+}
+
+/// Scalar VEX.128 map-0F instruction with a memory operand. `vvvv_inv` is
+/// the already-inverted VEX.vvvv field.
+fn vex_scalar_mem(
+    e: &mut TextEmitter,
+    double: bool,
+    opcode: u8,
+    dst: Xmm,
+    vvvv_inv: u8,
+    mem: XmmMem,
+) -> Option<usize> {
     let pp = if double { 0b11 } else { 0b10 };
-    let vvvv = (!src1 & 15) << 3;
+    let vvvv = (vvvv_inv & 15) << 3;
     let (x, b) = match mem {
         XmmMem::Base { base, .. } => (false, base.needs_rex_ext()),
         XmmMem::Indexed { base, index, .. } => (index.needs_rex_ext(), base.needs_rex_ext()),
@@ -2195,7 +2272,7 @@ pub(crate) fn vex_scalar_rrm(
         e.emit_u8((u8::from(dst < 8) << 7) | (u8::from(!x) << 6) | (u8::from(!b) << 5) | 0x01);
         e.emit_u8(vvvv | pp);
     }
-    e.emit_u8(op as u8);
+    e.emit_u8(opcode);
     match mem {
         XmmMem::Base { base, disp } => {
             emit_modrm_mem3(e, dst & 7, base, disp);

@@ -1047,9 +1047,13 @@ impl<'a> X86_64Backend<'a> {
             return;
         }
         let literal_index = self.intern_fp_literal(imm);
-        let disp_offset = match width {
-            MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, dst),
-            MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, dst),
+        let double = width == MachineFloatWidth::F64;
+        let disp_offset = if super::cpu::has_avx() {
+            enc::vex_movs_rip(&mut self.core.text, double, dst)
+        } else if double {
+            enc::movsd_rip(&mut self.core.text, dst)
+        } else {
+            enc::movss_rip(&mut self.core.text, dst)
         };
         self.fp_literal_fixups.push(FpLiteralFixup {
             disp_offset,

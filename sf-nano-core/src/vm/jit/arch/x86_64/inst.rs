@@ -697,23 +697,7 @@ impl<'a> X86_64Backend<'a> {
                     Ok(())
                 }
                 MachineValue::Imm64(value) => {
-                    // Load from the function's literal pool: one FP-domain
-                    // load the core can hoist, instead of a GP
-                    // materialization plus a domain-crossing move on the
-                    // consumer's critical path.
-                    let bits = match width {
-                        MachineFloatWidth::F32 => u64::from(value as u32),
-                        MachineFloatWidth::F64 => value,
-                    };
-                    let literal_index = self.intern_fp_literal(bits);
-                    let disp_offset = match width {
-                        MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, dst_fp),
-                        MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, dst_fp),
-                    };
-                    self.fp_literal_fixups.push(FpLiteralFixup {
-                        disp_offset,
-                        literal_index,
-                    });
+                    self.load_float_immediate(width, value, dst_fp);
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
@@ -770,30 +754,7 @@ impl<'a> X86_64Backend<'a> {
             ));
         }
         let dst_fp = self.map_fp_reg(dst)? as u8;
-        let imm = match width {
-            MachineFloatWidth::F32 => u64::from(bits as u32),
-            MachineFloatWidth::F64 => bits,
-        };
-        if imm == 0 {
-            // XORPS/XORPD xmm, xmm → zero
-            match width {
-                MachineFloatWidth::F32 => enc::xorps(&mut self.core.text, dst_fp, dst_fp),
-                MachineFloatWidth::F64 => enc::xorpd(&mut self.core.text, dst_fp, dst_fp),
-            };
-        } else {
-            // Load from the function's literal pool: one FP-domain load the
-            // core can hoist, instead of a GP materialization plus a
-            // domain-crossing move on the consumer's critical path.
-            let literal_index = self.intern_fp_literal(imm);
-            let disp_offset = match width {
-                MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, dst_fp),
-                MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, dst_fp),
-            };
-            self.fp_literal_fixups.push(FpLiteralFixup {
-                disp_offset,
-                literal_index,
-            });
-        }
+        self.load_float_immediate(width, bits, dst_fp);
         self.core.set_fp_reg_width(dst, width)?;
         Ok(())
     }
@@ -848,10 +809,19 @@ impl<'a> X86_64Backend<'a> {
                         .into(),
                 )),
             };
-            match tracked_width {
-                MachineFloatWidth::F32 => enc::movss_load(&mut self.core.text, dst_fp, base, disp),
-                MachineFloatWidth::F64 => enc::movsd_load(&mut self.core.text, dst_fp, base, disp),
-            };
+            let double = tracked_width == MachineFloatWidth::F64;
+            if super::cpu::has_avx() {
+                enc::vex_movs_load(
+                    &mut self.core.text,
+                    double,
+                    dst_fp,
+                    enc::XmmMem::Base { base, disp },
+                );
+            } else if double {
+                enc::movsd_load(&mut self.core.text, dst_fp, base, disp);
+            } else {
+                enc::movss_load(&mut self.core.text, dst_fp, base, disp);
+            }
             self.core.set_fp_reg_width(dst, tracked_width)?;
             return Ok(());
         }
@@ -1029,14 +999,19 @@ impl<'a> X86_64Backend<'a> {
                         .into(),
                 )),
             };
-            match tracked_width {
-                MachineFloatWidth::F32 => {
-                    enc::movss_load_idx(&mut self.core.text, dst_fp, base, index, disp)
-                }
-                MachineFloatWidth::F64 => {
-                    enc::movsd_load_idx(&mut self.core.text, dst_fp, base, index, disp)
-                }
-            };
+            let double = tracked_width == MachineFloatWidth::F64;
+            if super::cpu::has_avx() {
+                enc::vex_movs_load(
+                    &mut self.core.text,
+                    double,
+                    dst_fp,
+                    enc::XmmMem::Indexed { base, index, disp },
+                );
+            } else if double {
+                enc::movsd_load_idx(&mut self.core.text, dst_fp, base, index, disp);
+            } else {
+                enc::movss_load_idx(&mut self.core.text, dst_fp, base, index, disp);
+            }
             self.core.set_fp_reg_width(dst, tracked_width)?;
             return Ok(());
         }
