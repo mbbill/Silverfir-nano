@@ -538,7 +538,9 @@ fn visit_call_target_source_regs(target: &MachineCallTarget, f: &mut impl FnMut(
             callee_target,
             callee_entry,
         } => {
-            f(*callee_target);
+            if let Some(callee_target) = callee_target {
+                f(*callee_target);
+            }
             f(*callee_entry);
         }
     }
@@ -720,7 +722,7 @@ mod tests {
         let survivor = MachineReg(6);
         let term = MachineTerminator::Call {
             target: MachineCallTarget::Indirect {
-                callee_target: MachineReg(2),
+                callee_target: Some(MachineReg(2)),
                 callee_entry: MachineReg(3),
             },
             frame_delta: 0,

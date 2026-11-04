@@ -910,7 +910,9 @@ impl MachineProgram {
             callee_entry,
         } = target
         {
-            self.validate_reg(*callee_target, config)?;
+            if let Some(callee_target) = callee_target {
+                self.validate_reg(*callee_target, config)?;
+            }
             self.validate_reg(*callee_entry, config)?;
         }
         Ok(())

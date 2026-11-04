@@ -1350,7 +1350,9 @@ fn visit_call_target_regs(target: &MachineCallTarget, visit: &mut impl FnMut(Mac
         callee_entry,
     } = target
     {
-        visit(*callee_target);
+        if let Some(callee_target) = callee_target {
+            visit(*callee_target);
+        }
         visit(*callee_entry);
     }
 }

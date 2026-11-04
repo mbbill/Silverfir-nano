@@ -2486,6 +2486,10 @@ fn lower_indirect_dispatch_cluster(
     local_transfer_ops.extend(lower.take_ops());
     let mut result_success_args = collections::Vec::new();
     let mut continuation_params = collections::Vec::new();
+    // The fast transfers dispatch through a precomputed entry and never load
+    // the callee's identity; the generic transfer computes it from the
+    // element.
+    let dispatch_callee_target = (!fast_transfer).then_some(indirect_temps.lane0);
     let local_transfer_term = match continuation {
         Some(continuation) => {
             let IndirectTransfer::Call {
@@ -2507,7 +2511,7 @@ fn lower_indirect_dispatch_cluster(
             continuation_params = params;
             MachineTerminator::Call {
                 target: MachineCallTarget::Indirect {
-                    callee_target: indirect_temps.lane0,
+                    callee_target: dispatch_callee_target,
                     callee_entry: indirect_temps.lane2,
                 },
                 frame_delta: slot_offset_bytes(transfer.source_args().start)? as u32,
@@ -2521,7 +2525,7 @@ fn lower_indirect_dispatch_cluster(
         }
         None => MachineTerminator::TailCall {
             target: MachineCallTarget::Indirect {
-                callee_target: indirect_temps.lane0,
+                callee_target: dispatch_callee_target,
                 callee_entry: indirect_temps.lane2,
             },
             args: machine_call_args,
@@ -3526,13 +3530,6 @@ fn build_call_indirect_fixed_table_load_block(
             fixed_entry.entry_offset,
             lower.gp_word_mem_width(),
             MachineLoadExtension::None,
-        ),
-        // The scaled index is dead after this load, which reuses its lane.
-        field(
-            local_target,
-            fixed_entry.local_target_offset,
-            MachineMemWidth::U32,
-            MachineLoadExtension::ZeroExtend,
         ),
     ])
 }

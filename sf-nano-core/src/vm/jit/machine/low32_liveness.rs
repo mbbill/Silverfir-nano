@@ -471,7 +471,9 @@ impl Low32DeadHiDefs {
             callee_entry,
         } = target
         {
-            Self::demand_reg(demand, *callee_target);
+            if let Some(callee_target) = callee_target {
+                Self::demand_reg(demand, *callee_target);
+            }
             Self::demand_reg(demand, *callee_entry);
         }
     }

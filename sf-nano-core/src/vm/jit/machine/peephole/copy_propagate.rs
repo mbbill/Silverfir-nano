@@ -623,7 +623,9 @@ fn rewrite_call_target(target: &mut MachineCallTarget, aliases: &[Option<Machine
         callee_entry,
     } = target
     {
-        *callee_target = resolve_alias(*callee_target, aliases);
+        if let Some(callee_target) = callee_target {
+            *callee_target = resolve_alias(*callee_target, aliases);
+        }
         *callee_entry = resolve_alias(*callee_entry, aliases);
     }
 }
