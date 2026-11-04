@@ -17,7 +17,9 @@ use super::{
 };
 
 use super::backend::BranchFixup;
-use super::fusion::{cmp_imm_inst, int_binary_imm_inst, map_float_cond, map_int_cond, ExactCopy18};
+use super::fusion::{
+    add_sub_imm_pair, cmp_imm_inst, int_binary_imm_inst, map_float_cond, map_int_cond, ExactCopy18,
+};
 use crate::vm::jit::arch::common::helpers::convert_result_float_width;
 use crate::vm::jit::arch::common::scratch_pool::ScratchPool;
 use crate::vm::jit::arch::common::text_emitter::TextEmitter;
@@ -2370,6 +2372,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core.text.emit_u32(inst);
                     return Ok(());
                 }
+                if let Some(pair) = add_sub_imm_pair(width, op, dst, lhs_phys, imm) {
+                    for inst in pair {
+                        self.core.text.emit_u32(inst);
+                    }
+                    return Ok(());
+                }
             }
         }
         if let MachineValue::Imm64(imm) = lhs {
@@ -2384,6 +2392,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     | MachineIntBinaryOp::Xor => {
                         if let Some(inst) = int_binary_imm_inst(width, op, dst, rhs_phys, imm) {
                             self.core.text.emit_u32(inst);
+                            return Ok(());
+                        }
+                        if let Some(pair) = add_sub_imm_pair(width, op, dst, rhs_phys, imm) {
+                            for inst in pair {
+                                self.core.text.emit_u32(inst);
+                            }
                             return Ok(());
                         }
                     }

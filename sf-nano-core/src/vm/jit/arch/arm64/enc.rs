@@ -159,6 +159,22 @@ fn add_sub_imm(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, imm12: u32)
         | rd.index()
 }
 
+/// `ADD`/`SUB` (immediate) with the immediate shifted left by 12.
+fn add_sub_imm_lsl12(sf: u32, op: u32, rd: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    add_sub_imm(sf, op, 0, rd, rn, imm12) | (1 << 22)
+}
+
+/// `rd = rn + (imm12 << 12)` (or minus, for `sub`), at 64 bits when `w64`.
+pub(crate) fn add_sub_imm_lsl12_inst(
+    w64: bool,
+    sub: bool,
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    imm12: u32,
+) -> u32 {
+    add_sub_imm_lsl12(u32::from(w64), u32::from(sub), rd, rn, imm12)
+}
+
 fn cond_select(sf: u32, op2: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, cond: Cond) -> u32 {
     (sf << 31)
         | (0b0_0_11010100 << 21)
