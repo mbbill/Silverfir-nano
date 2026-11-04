@@ -30,6 +30,7 @@
 //! temporary or an FP width.
 
 use crate::collections;
+use crate::vm::jit::machine::block_lists::BlockLists;
 use crate::vm::jit::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineBlockParam, MachineInst, MachineInstKind,
     MachineTerminator, MachineValue,
@@ -81,18 +82,15 @@ fn back_edge_jumps(blocks: &[MachineBlock], entry: MachineBlockId) -> collection
         OnStack,
         Done,
     }
-    let successors: collections::Vec<collections::Vec<usize>> = blocks
-        .iter()
-        .map(|block| {
-            let mut targets = collections::Vec::new();
-            visit_edges(&block.terminator, |edge| {
-                if let Some(target) = block_index_for_id(blocks, edge.target) {
-                    targets.push(target);
-                }
-            });
-            targets
-        })
-        .collect();
+    let mut edges = collections::Vec::with_capacity(blocks.len() * 2);
+    for (source, block) in blocks.iter().enumerate() {
+        visit_edges(&block.terminator, |edge| {
+            if let Some(target) = block_index_for_id(blocks, edge.target) {
+                edges.push((source, target));
+            }
+        });
+    }
+    let successors = BlockLists::from_pairs(blocks.len(), &edges);
     let mut back_edge = collections::vec![false; blocks.len()];
     let mut state = collections::vec![State::New; blocks.len()];
     let Some(root) = block_index_for_id(blocks, entry) else {

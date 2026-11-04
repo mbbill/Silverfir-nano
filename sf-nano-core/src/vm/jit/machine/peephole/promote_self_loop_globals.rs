@@ -69,7 +69,7 @@ fn try_promote(
     entry: MachineBlockId,
     config: BackendConfig,
 ) {
-    if loop_graph.latches_by_header[header].as_slice() != [header] {
+    if loop_graph.latches_by_header[header] != [header] {
         return;
     }
 
@@ -96,7 +96,7 @@ fn try_promote(
         return;
     };
     if blocks[exit].id == entry
-        || loop_graph.predecessors[exit].as_slice() != [header]
+        || loop_graph.predecessors[exit] != [header]
         || blocks[exit]
             .params
             .iter()

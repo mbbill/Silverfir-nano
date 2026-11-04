@@ -11,6 +11,7 @@
 //! Wasm trap ordering is therefore unchanged.
 
 use crate::collections;
+use crate::vm::jit::machine::block_lists::BlockLists;
 use crate::vm::{
     jit::backend::BackendConfig,
     jit::machine::machine_ir::{
@@ -24,8 +25,8 @@ use crate::vm::{
 use super::helpers::{inst_defines, inst_uses_value, terminator_uses_reg};
 
 pub(super) struct LoopGraph {
-    pub predecessors: collections::Vec<collections::Vec<usize>>,
-    pub latches_by_header: collections::Vec<collections::Vec<usize>>,
+    pub predecessors: BlockLists,
+    pub latches_by_header: BlockLists,
 }
 
 pub(super) fn hoist_loop_address_bases(
@@ -60,35 +61,32 @@ pub(super) fn hoist_loop_address_bases(
 }
 
 pub(super) fn analyze_loop_graph(blocks: &[MachineBlock], entry: MachineBlockId) -> LoopGraph {
-    let mut predecessors: collections::Vec<collections::Vec<usize>> =
-        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
-    let mut successors: collections::Vec<collections::Vec<usize>> =
-        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
+    // Each distinct (source, target) edge once, grouped by source.
+    let mut edges = collections::Vec::with_capacity(blocks.len() * 2);
     for source in 0..blocks.len() {
+        let first = edges.len();
         visit_edges(&blocks[source].terminator, |edge| {
             let Some(target) = block_index_for_id(blocks, edge.target) else {
                 return;
             };
-            if !successors[source].contains(&target) {
-                successors[source].push(target);
-            }
-            if !predecessors[target].contains(&source) {
-                predecessors[target].push(source);
+            if !edges[first..].contains(&(source, target)) {
+                edges.push((source, target));
             }
         });
     }
+    let successors = BlockLists::from_pairs(blocks.len(), &edges);
+    let reversed = edges
+        .iter()
+        .map(|&(source, target)| (target, source))
+        .collect::<collections::Vec<_>>();
+    let predecessors = BlockLists::from_pairs(blocks.len(), &reversed);
 
-    let mut latches_by_header: collections::Vec<collections::Vec<usize>> =
-        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
-    let has_backward_edge = successors.iter().enumerate().any(|(source, targets)| {
-        targets
-            .iter()
-            .any(|&target| blocks[target].id.0 <= blocks[source].id.0)
-    });
-    if !has_backward_edge {
+    let is_backward =
+        |&(source, target): &(usize, usize)| blocks[target].id.0 <= blocks[source].id.0;
+    if !edges.iter().any(is_backward) {
         return LoopGraph {
             predecessors,
-            latches_by_header,
+            latches_by_header: BlockLists::from_pairs(blocks.len(), &[]),
         };
     }
 
@@ -101,26 +99,23 @@ pub(super) fn analyze_loop_graph(blocks: &[MachineBlock], entry: MachineBlockId)
     let immediate_dominators = entry_index
         .map(|entry| compute_immediate_dominators(&successors, &predecessors, entry))
         .unwrap_or_else(|| collections::vec![None; blocks.len()]);
-    for (source, targets) in successors.iter().enumerate() {
-        for &target in targets {
-            if blocks[target].id.0 <= blocks[source].id.0
-                && dominates(&immediate_dominators, target, source)
-                && !latches_by_header[target].contains(&source)
-            {
-                latches_by_header[target].push(source);
-            }
-        }
-    }
+    // `edges` holds each edge once, so no header lists a latch twice.
+    let latches = edges
+        .iter()
+        .filter(|edge| is_backward(edge))
+        .filter(|&&(source, target)| dominates(&immediate_dominators, target, source))
+        .map(|&(source, target)| (target, source))
+        .collect::<collections::Vec<_>>();
 
     LoopGraph {
         predecessors,
-        latches_by_header,
+        latches_by_header: BlockLists::from_pairs(blocks.len(), &latches),
     }
 }
 
 fn compute_immediate_dominators(
-    successors: &[collections::Vec<usize>],
-    predecessors: &[collections::Vec<usize>],
+    successors: &BlockLists,
+    predecessors: &BlockLists,
     entry: usize,
 ) -> collections::Vec<Option<usize>> {
     let mut visited = collections::vec![false; successors.len()];
@@ -209,7 +204,7 @@ fn dominates(idom: &[Option<usize>], dominator: usize, mut block: usize) -> bool
 pub(super) fn natural_loop_nodes(
     header: usize,
     latches: &[usize],
-    predecessors: &[collections::Vec<usize>],
+    predecessors: &BlockLists,
 ) -> collections::Vec<usize> {
     if latches.iter().all(|&latch| latch == header) {
         return collections::vec![header];
@@ -250,7 +245,7 @@ fn try_hoist_one_base(
     blocks: &mut [MachineBlock],
     header: usize,
     loop_nodes: &[usize],
-    predecessors: &[collections::Vec<usize>],
+    predecessors: &BlockLists,
     config: BackendConfig,
 ) {
     if loop_nodes.is_empty() || loop_can_change_memory_base(blocks, loop_nodes) {
@@ -624,12 +619,20 @@ mod tests {
 
     #[test]
     fn natural_loop_members_are_sorted_unique_and_stop_at_the_header() {
-        let mut predecessors = collections::vec![collections::Vec::new(); 194];
-        predecessors[64] = collections::vec![0, 65, 130];
-        predecessors[65] = collections::vec![64];
-        predecessors[129] = collections::vec![65, 130];
-        predecessors[130] = collections::vec![129, 64];
-        predecessors[193] = collections::vec![64];
+        let predecessors = BlockLists::from_pairs(
+            194,
+            &[
+                (64, 0),
+                (64, 65),
+                (64, 130),
+                (65, 64),
+                (129, 65),
+                (129, 130),
+                (130, 129),
+                (130, 64),
+                (193, 64),
+            ],
+        );
         assert_eq!(
             natural_loop_nodes(64, &[130, 65, 130, 193, 64], &predecessors),
             collections::vec![64, 65, 129, 130, 193],
@@ -740,7 +743,7 @@ mod tests {
             .latches_by_header
             .iter()
             .all(|latches| latches.is_empty()));
-        assert_eq!(loop_graph.predecessors[0].as_slice(), &[1]);
+        assert_eq!(&loop_graph.predecessors[0], &[1]);
     }
 
     #[test]

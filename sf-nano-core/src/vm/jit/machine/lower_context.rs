@@ -341,7 +341,9 @@ impl<'a> BlockLowerContext<'a> {
             all_entry_cache_params,
             gp_reg_width,
             i64_ops,
-            ops: collections::Vec::new(),
+            // A block lowers to about 0.8 machine ops per SSA op (sqlite);
+            // this capacity makes most blocks allocate their ops once.
+            ops: collections::Vec::with_capacity(block.ops.len() + 4),
             cached_cells,
             cache_bindings: refilled(cache_bindings, cache_live.len(), None),
             cache_live,

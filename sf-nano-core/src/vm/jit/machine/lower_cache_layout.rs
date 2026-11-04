@@ -20,6 +20,7 @@ use crate::{
 };
 
 use super::{
+    block_lists::BlockLists,
     lower_context::{CachedCell, EntryCacheParam, ValueRegs},
     lower_module::{preferred_fp_dynamic_reg, preferred_gp_dynamic_reg},
     lower_regalloc::MachineRegFile,
@@ -378,16 +379,17 @@ pub(super) fn is_local_jit_call(
     }
 }
 
-fn compute_predecessors(program: &SsaProgram) -> collections::Vec<collections::Vec<usize>> {
-    let mut predecessors = collections::vec![collections::Vec::new(); program.blocks.len()];
+fn compute_predecessors(program: &SsaProgram) -> BlockLists {
+    let block_count = program.blocks.len();
+    let mut edges = collections::Vec::with_capacity(block_count * 2);
     for (block_index, block) in program.blocks.iter().enumerate() {
         for_each_block_successor(&block.terminator, |target| {
-            if let Some(preds) = predecessors.get_mut(target) {
-                preds.push(block_index);
+            if target < block_count {
+                edges.push((target, block_index));
             }
         });
     }
-    predecessors
+    BlockLists::from_pairs(block_count, &edges)
 }
 
 fn compute_reverse_postorder(program: &SsaProgram) -> collections::Vec<usize> {
@@ -420,7 +422,7 @@ fn compute_reverse_postorder(program: &SsaProgram) -> collections::Vec<usize> {
 fn compute_immediate_dominators(
     block_count: usize,
     entry: SsaTarget,
-    predecessors: &[collections::Vec<usize>],
+    predecessors: &BlockLists,
     rpo: &[usize],
 ) -> collections::Vec<Option<usize>> {
     let mut rpo_index = collections::vec![usize::MAX; block_count];
@@ -482,46 +484,56 @@ fn build_idom_children(
     block_count: usize,
     entry_index: usize,
     idom: &[Option<usize>],
-) -> collections::Vec<collections::Vec<usize>> {
-    let mut children = collections::vec![collections::Vec::new(); block_count];
-    for block_index in 0..block_count {
-        let Some(parent) = idom[block_index] else {
-            continue;
-        };
-        if block_index == entry_index {
-            continue;
+) -> BlockLists {
+    let edges = (0..block_count)
+        .filter(|&block_index| block_index != entry_index)
+        .filter_map(|block_index| Some((idom[block_index]?, block_index)))
+        .collect::<collections::Vec<_>>();
+    BlockLists::from_pairs(block_count, &edges)
+}
+
+/// Each block's entry cached cells, as cached indices, split by bank.
+struct BankCells {
+    gp: BlockLists,
+    fp: BlockLists,
+}
+
+impl BankCells {
+    fn of(&self, bank: LayoutBank, block_index: usize) -> &[usize] {
+        match bank {
+            LayoutBank::Gp => &self.gp[block_index],
+            LayoutBank::Fp => &self.fp[block_index],
         }
-        children[parent].push(block_index);
     }
-    children
 }
 
 fn compute_block_bank_slots(
     program: &SsaProgram,
     cell_to_cached_index: &[CachedIndex],
     cell_meta: &[CellLayoutMeta],
-) -> collections::Vec<[collections::Vec<usize>; 2]> {
-    (0..program.blocks.len())
-        .map(|block_index| {
-            let mut gp = collections::Vec::new();
-            let mut fp = collections::Vec::new();
-            let cells = program
-                .block_entry_cached_cells
-                .get(block_index)
-                .map(|cells| cells.as_slice())
-                .unwrap_or(&[]);
-            for cell in cells {
-                let Some(cached_index) = cached_index(cell_to_cached_index, *cell) else {
-                    continue;
-                };
-                match cell_meta[cached_index].bank {
-                    LayoutBank::Gp => gp.push(cached_index),
-                    LayoutBank::Fp => fp.push(cached_index),
-                }
+) -> BankCells {
+    let mut gp = collections::Vec::new();
+    let mut fp = collections::Vec::new();
+    for block_index in 0..program.blocks.len() {
+        let cells = program
+            .block_entry_cached_cells
+            .get(block_index)
+            .map(|cells| cells.as_slice())
+            .unwrap_or(&[]);
+        for cell in cells {
+            let Some(cached_index) = cached_index(cell_to_cached_index, *cell) else {
+                continue;
+            };
+            match cell_meta[cached_index].bank {
+                LayoutBank::Gp => gp.push((block_index, cached_index)),
+                LayoutBank::Fp => fp.push((block_index, cached_index)),
             }
-            [gp, fp]
-        })
-        .collect()
+        }
+    }
+    BankCells {
+        gp: BlockLists::from_pairs(program.blocks.len(), &gp),
+        fp: BlockLists::from_pairs(program.blocks.len(), &fp),
+    }
 }
 
 fn assign_bank_layouts_from_root(
@@ -530,8 +542,8 @@ fn assign_bank_layouts_from_root(
     lane_count: usize,
     program: &SsaProgram,
     cell_to_cached_index: &[CachedIndex],
-    idom_children: &[collections::Vec<usize>],
-    bank_cells: &[[collections::Vec<usize>; 2]],
+    idom_children: &BlockLists,
+    bank_cells: &BankCells,
     cell_meta: &[CellLayoutMeta],
     param_usage: &[ParamPrefixUsage],
     is_local_func: &[bool],
@@ -551,10 +563,7 @@ fn assign_bank_layouts_from_root(
             continue;
         }
         visited[block_index] = true;
-        let cells = match bank {
-            LayoutBank::Gp => &bank_cells[block_index][0],
-            LayoutBank::Fp => &bank_cells[block_index][1],
-        };
+        let cells = bank_cells.of(bank, block_index);
         let prefix = match bank {
             LayoutBank::Gp => param_usage[block_index].gp,
             LayoutBank::Fp => param_usage[block_index].fp,
@@ -604,9 +613,9 @@ fn assign_bank_layouts_from_root(
 
 fn improve_gp_layouts_for_incoming_edges(
     program: &SsaProgram,
-    predecessors: &[collections::Vec<usize>],
+    predecessors: &BlockLists,
     cell_to_cached_index: &[CachedIndex],
-    bank_cells: &[[collections::Vec<usize>; 2]],
+    bank_cells: &BankCells,
     cell_meta: &[CellLayoutMeta],
     param_usage: &[ParamPrefixUsage],
     is_local_func: &[bool],
@@ -641,7 +650,7 @@ fn improve_gp_layouts_for_incoming_edges(
             if preds.len() < 2 {
                 continue;
             }
-            let cells = &bank_cells[block_index][0];
+            let cells = bank_cells.of(LayoutBank::Gp, block_index);
             if cells.is_empty() {
                 continue;
             }
@@ -1690,13 +1699,14 @@ mod tests {
     fn idom_layout_walk_handles_long_linear_tree_without_recursion() {
         let block_count = 12_000;
         let program = long_linear_program(block_count);
-        let mut idom_children = collections::vec![collections::Vec::new(); block_count];
-        for index in 0..block_count - 1 {
-            idom_children[index].push(index + 1);
-        }
-        let bank_cells = (0..block_count)
-            .map(|_| [collections::Vec::new(), collections::Vec::new()])
+        let chain = (0..block_count - 1)
+            .map(|index| (index, index + 1))
             .collect::<collections::Vec<_>>();
+        let idom_children = BlockLists::from_pairs(block_count, &chain);
+        let bank_cells = BankCells {
+            gp: BlockLists::from_pairs(block_count, &[]),
+            fp: BlockLists::from_pairs(block_count, &[]),
+        };
         let cell_to_cached_index = collections::Vec::new();
         let cell_meta = collections::Vec::new();
         let param_usage = collections::vec![ParamPrefixUsage::default(); block_count];
