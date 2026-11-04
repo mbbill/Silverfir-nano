@@ -957,6 +957,11 @@ pub(crate) fn ret() -> u32 {
     (0b1101011_0010 << 21) | (0b11111 << 16) | (abi::link_reg().index() << 5)
 }
 
+/// NOP (HINT #0).
+pub(crate) const fn nop() -> u32 {
+    0xd503_201f
+}
+
 // --- Integer data-processing (2 source) ---
 
 fn data_proc_2src(sf: u32, opcode: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {

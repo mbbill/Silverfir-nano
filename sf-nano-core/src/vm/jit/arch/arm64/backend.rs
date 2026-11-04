@@ -980,6 +980,20 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.emit_stack_probe(addr)
     }
 
+    fn align_loop_header(&mut self) {
+        // Start each loop on a 32-byte fetch block, so a loop's fetch
+        // pattern does not depend on the size of the code laid out before
+        // it. The previous block's `end_block` already drained the pending
+        // op, so the padding cannot split a fusion pair.
+        const LOOP_HEADER_ALIGN: usize = 32;
+        let misalign = self.core.text.next_addr_for_alignment() % LOOP_HEADER_ALIGN;
+        if misalign != 0 {
+            for _ in 0..(LOOP_HEADER_ALIGN - misalign) / 4 {
+                self.core.text.emit_u32(enc::nop());
+            }
+        }
+    }
+
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         // Streaming entry: clear the lookahead and reset block state.
         debug_assert_eq!(self.fused_copy_ops_remaining, 0);
@@ -1307,7 +1321,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
 
     fn emit_nop_padding(buf: &mut CodeBuffer, bytes: usize) {
         debug_assert!(bytes % 4 == 0, "ARM64 NOP padding must be 4-byte aligned");
-        const ARM64_NOP: [u8; 4] = 0xd503201f_u32.to_le_bytes();
+        const ARM64_NOP: [u8; 4] = enc::nop().to_le_bytes();
         for _ in 0..bytes / 4 {
             buf.emit_bytes(&ARM64_NOP);
         }
