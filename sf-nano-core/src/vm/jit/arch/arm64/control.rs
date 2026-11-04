@@ -805,6 +805,19 @@ impl<'a> super::backend::Arm64Backend<'a> {
         success: &MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
+        // LAYOUT EXPERIMENT, to be reverted: two NOPs keep the code after a
+        // fast indirect call where it was while the callee identity load
+        // still preceded it.
+        if matches!(
+            target,
+            MachineCallTarget::Indirect {
+                callee_target: None,
+                ..
+            }
+        ) {
+            self.core.text.emit_u32(enc::nop());
+            self.core.text.emit_u32(enc::nop());
+        }
         let body_local_error_label = self.core.body_local_error_label;
         let continuation_label = self.core.block_label(success.target)?;
         let continuation_is_fallthrough = fallthrough == Some(success.target);
@@ -866,6 +879,19 @@ impl<'a> super::backend::Arm64Backend<'a> {
         target: &MachineCallTarget,
         args: &MachineCallArgs,
     ) -> Result<(), WasmError> {
+        // LAYOUT EXPERIMENT, to be reverted: two NOPs keep the code after a
+        // fast indirect call where it was while the callee identity load
+        // still preceded it.
+        if matches!(
+            target,
+            MachineCallTarget::Indirect {
+                callee_target: None,
+                ..
+            }
+        ) {
+            self.core.text.emit_u32(enc::nop());
+            self.core.text.emit_u32(enc::nop());
+        }
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();
