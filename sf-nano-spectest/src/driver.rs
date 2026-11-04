@@ -314,6 +314,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         content: include_str!("../tests/compare_carry.wast"),
     });
     wast_inputs.push(WastInput::Embedded {
+        path: "cached_table_dispatch.wast",
+        content: include_str!("../tests/cached_table_dispatch.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
         path: "interp_slow_exit_operands.wast",
         content: include_str!("../tests/interp_slow_exit_operands.wast"),
     });

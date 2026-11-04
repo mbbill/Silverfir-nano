@@ -82,7 +82,17 @@ impl FunctionInst {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TableDispatchMode {
     Generic,
-    FixedLocalOnly { len: u32 },
+    FixedLocalOnly {
+        len: u32,
+    },
+    /// A funcref table this module never mutates, with exact type checks,
+    /// that may still change size or contents through the host, other
+    /// instances or the interpreter (it is imported, exported, growable or
+    /// holds non-local elements). `call_indirect` reads a per-context
+    /// `{type, target, entry}` array rebuilt whenever the table's revision
+    /// moves; every miss — out of range, null, non-local, type mismatch —
+    /// takes the generic runtime path, which reads the live element.
+    Cached,
 }
 
 /// JIT-only operations on the shared [`TableInst`]: the revision readers
