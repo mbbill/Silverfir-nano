@@ -66,6 +66,7 @@ fn fold_block_params_sourced_from_cached_cells(program: &mut SsaProgram) -> bool
     // `changed_in[cell] == block_index + 1` while scanning a block backward:
     // the cell changes later in that block.
     let mut changed_in = collections::vec![0usize; program.cell_types.len()];
+    let mut any_candidate = false;
     for (block_index, block) in program.blocks.iter().enumerate() {
         // Only values bound on this block's own edges can be folded.
         let mut binds = false;
@@ -90,6 +91,7 @@ fn fold_block_params_sourced_from_cached_cells(program: &mut SsaProgram) -> bool
                 {
                     if let Some(slot) = cache_get_cell.get_mut(inst.result.0 as usize) {
                         *slot = Some((super::cell::CellId(inst.meta), block_index));
+                        any_candidate = true;
                     }
                 }
                 _ => {}
@@ -97,6 +99,11 @@ fn fold_block_params_sourced_from_cached_cells(program: &mut SsaProgram) -> bool
         }
     }
 
+    // Without a fresh cached-local read bound on some edge, nothing can fold;
+    // skip building the incoming-edge lists.
+    if !any_candidate {
+        return false;
+    }
     let incoming_by_block = all_incoming_edge_locations(program);
     let mut param_location = collections::vec![None; program.value_types.len()];
     for (block_index, block) in program.blocks.iter().enumerate() {
@@ -363,6 +370,15 @@ fn cache_run_slot(inst: &SsaInst) -> Option<super::cell::CellId> {
 }
 
 fn thread_empty_goto_blocks(program: &mut SsaProgram) -> bool {
+    // Only an empty block that jumps elsewhere can be threaded; most rounds
+    // of the cleanup fixed point find none, so skip the incoming-edge lists.
+    let threadable = program.blocks.iter().enumerate().any(|(index, block)| {
+        block.ops.is_empty()
+            && matches!(&block.terminator, SsaTerminator::Goto(edge) if edge.target.as_usize() != index)
+    });
+    if !threadable {
+        return false;
+    }
     let block_count = program.blocks.len();
     let mut incoming_by_block = all_incoming_edge_locations(program);
     let mut removed = collections::vec![false; block_count];
