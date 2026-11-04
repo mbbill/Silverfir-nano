@@ -889,6 +889,15 @@ impl<'a> X86_64Backend<'a> {
     ) -> Result<(), WasmError> {
         use super::fusion::LoadAluMem;
         let dst = self.map_gp_reg(fusion.dst)?;
+        let src = self.map_gp_reg(fusion.src)?;
+        let width = if fusion.w32 {
+            MachineIntWidth::I32
+        } else {
+            MachineIntWidth::I64
+        };
+        if src != dst {
+            self.emit_gp_move_width(width, dst, src);
+        }
         match &fusion.mem {
             LoadAluMem::Base(addr) => {
                 let base = self.map_gp_reg(addr.base)?;
@@ -933,14 +942,7 @@ impl<'a> X86_64Backend<'a> {
                 }
             }
         }
-        self.note_int_flags(
-            if fusion.w32 {
-                MachineIntWidth::I32
-            } else {
-                MachineIntWidth::I64
-            },
-            dst,
-        );
+        self.note_int_flags(width, dst);
         Ok(())
     }
 

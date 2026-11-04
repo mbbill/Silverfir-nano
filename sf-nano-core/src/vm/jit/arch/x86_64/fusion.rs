@@ -5,7 +5,7 @@ use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineBranchCond, MachineCompareKind, MachineFloatBinaryOp, MachineFloatWidth,
     MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
     MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner, MachineSign,
-    MachineStorageType, MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
+    MachineStorageType, MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
 };
 
 /// Read through an immediately preceding GP snapshot without materializing
@@ -64,14 +64,17 @@ pub(super) fn copied_narrow_load(
     })
 }
 
-/// A fused `load + ALU` pair: `dst <- dst OP [mem]` in one instruction,
+/// A fused `load + ALU` pair: `dst <- src OP [mem]`, a copy of `src` into
+/// `dst` when they differ and then one memory-operand ALU instruction,
 /// replacing a load into a transient plus a reg-reg ALU op. The loaded
 /// register must additionally be proven dead by the caller.
 pub(super) struct LoadAluFusion {
     pub op: MemAluOp,
     pub w32: bool,
-    /// The ALU's destination, which is also its register operand.
+    /// The ALU's destination.
     pub dst: MachineReg,
+    /// The ALU's register operand.
+    pub src: MachineReg,
     /// The load's transient destination; dead after the ALU.
     pub loaded: MachineReg,
     pub mem: LoadAluMem,
@@ -88,11 +91,14 @@ pub(super) enum LoadAluMem {
 }
 
 /// Probe `prev = load, next = int-binary` for the memory-operand form.
-/// The x86 shape is `dst = dst OP mem`, so the ALU's register operand
-/// must be its destination; commutative ops accept either operand order.
-/// Width must match exactly — the memory operand reads exactly the ALU
-/// width — which also excludes every extending load except the
-/// zero-extending 32-bit form consumed by a 32-bit op.
+/// The x86 shape is `dst = dst OP mem`; a register operand other than the
+/// destination is first copied into it, which requires the destination to
+/// stay out of the address. Commutative ops accept either operand order.
+/// Width must match — the memory operand reads exactly the ALU width —
+/// which also excludes every extending load except the zero-extending
+/// 32-bit form consumed by a 32-bit op. A 32-bit op may also read the low
+/// half of a 64-bit frame slot: the op only uses its operands' low 32 bits,
+/// and a frame slot access cannot fault at either width.
 pub(super) fn load_alu_fusion(prev: &MachineInst, next: &MachineInst) -> Option<LoadAluFusion> {
     let (loaded, mem, mem_width) = match &prev.kind {
         MachineInstKind::Load {
@@ -141,25 +147,40 @@ pub(super) fn load_alu_fusion(prev: &MachineInst, next: &MachineInst) -> Option<
         MachineIntBinaryOp::Xor => (MemAluOp::Xor, true),
         _ => return None,
     };
+    let frame_slot = matches!(&mem, LoadAluMem::Base(addr) if addr.base == MACHINE_FP_REG);
     let w32 = match (width, mem_width) {
         (MachineIntWidth::I64, MachineMemWidth::U64) => false,
         (MachineIntWidth::I32, MachineMemWidth::U32) => true,
+        (MachineIntWidth::I32, MachineMemWidth::U64) if frame_slot => true,
         _ => return None,
     };
     let dst = *dst;
     if dst == loaded {
         return None;
     }
-    let direct = *lhs == MachineValue::Reg(dst) && *rhs == MachineValue::Reg(loaded);
-    let swapped =
-        commutative && *lhs == MachineValue::Reg(loaded) && *rhs == MachineValue::Reg(dst);
-    if !direct && !swapped {
+    let src = match (*lhs, *rhs) {
+        (MachineValue::Reg(src), MachineValue::Reg(other)) if other == loaded && src != loaded => {
+            src
+        }
+        (MachineValue::Reg(other), MachineValue::Reg(src))
+            if commutative && other == loaded && src != loaded =>
+        {
+            src
+        }
+        _ => return None,
+    };
+    let address_uses_dst = match &mem {
+        LoadAluMem::Base(addr) => addr.base == dst,
+        LoadAluMem::Indexed { base, index, .. } => *base == dst || *index == dst,
+    };
+    if src != dst && address_uses_dst {
         return None;
     }
     Some(LoadAluFusion {
         op: alu_op,
         w32,
         dst,
+        src,
         loaded,
         mem,
     })
@@ -585,6 +606,78 @@ mod tests {
                 extension: MachineLoadExtension::ZeroExtend,
             },
         }
+    }
+
+    fn word_load(dst: u16, base: MachineReg, offset: i32) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: MachineReg(dst),
+                addr: MachineAddr { base, offset },
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        }
+    }
+
+    fn binary(op: MachineIntBinaryOp, dst: u16, lhs: u16, rhs: u16) -> MachineInst {
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32,
+                op,
+                dst: MachineReg(dst),
+                lhs: MachineValue::Reg(MachineReg(lhs)),
+                rhs: MachineValue::Reg(MachineReg(rhs)),
+            },
+        }
+    }
+
+    #[test]
+    fn i32_op_reads_the_low_half_of_a_frame_slot_into_another_destination() {
+        // r8 <- [fp+112]; r6 <- r7 + r8  ==>  r6 <- r7; r6 += dword [fp+112]
+        let load = word_load(8, MACHINE_FP_REG, 112);
+        let fusion = load_alu_fusion(&load, &binary(MachineIntBinaryOp::Add, 6, 7, 8)).unwrap();
+        assert!(fusion.w32);
+        assert_eq!(
+            (fusion.dst, fusion.src, fusion.loaded),
+            (MachineReg(6), MachineReg(7), MachineReg(8))
+        );
+        // The loaded value on the left of a commutative op.
+        let fusion = load_alu_fusion(&load, &binary(MachineIntBinaryOp::And, 6, 8, 7)).unwrap();
+        assert_eq!(fusion.src, MachineReg(7));
+        // Sub is not commutative: r6 <- r8 - r7 has no `r6 -= [mem]` form.
+        assert!(load_alu_fusion(&load, &binary(MachineIntBinaryOp::Sub, 6, 8, 7)).is_none());
+    }
+
+    #[test]
+    fn low_half_reads_stay_on_frame_slots_and_off_the_destination() {
+        // A 64-bit load through another base may fault where 32 bits would not.
+        let heap = word_load(8, MachineReg(5), 0);
+        assert!(load_alu_fusion(&heap, &binary(MachineIntBinaryOp::Add, 7, 7, 8)).is_none());
+        // Copying r7 into r5 first would move the address the load reads.
+        let wide = word_load(8, MachineReg(5), 0);
+        let wide_add = MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I64,
+                op: MachineIntBinaryOp::Add,
+                dst: MachineReg(5),
+                lhs: MachineValue::Reg(MachineReg(7)),
+                rhs: MachineValue::Reg(MachineReg(8)),
+            },
+        };
+        assert!(load_alu_fusion(&wide, &wide_add).is_none());
+        // With the destination as its own operand the address is read first.
+        let in_place = MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I64,
+                op: MachineIntBinaryOp::Add,
+                dst: MachineReg(5),
+                lhs: MachineValue::Reg(MachineReg(5)),
+                rhs: MachineValue::Reg(MachineReg(8)),
+            },
+        };
+        assert!(load_alu_fusion(&wide, &in_place).is_some());
     }
 
     fn address(inst: &MachineInst, regs: &[u64; 12]) -> u64 {
