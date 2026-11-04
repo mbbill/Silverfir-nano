@@ -3292,6 +3292,9 @@ impl<'a> X86_64Backend<'a> {
         val: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
+        if mem_idx == 0 && self.core.compiled.memory0_is64() == Some(false) {
+            return self.lower_mem0_bulk(super::bulk::Mem0Bulk::Fill, dest, val, len);
+        }
         use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
@@ -3310,6 +3313,9 @@ impl<'a> X86_64Backend<'a> {
         src: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
+        if dst_mem == 0 && src_mem == 0 && self.core.compiled.memory0_is64() == Some(false) {
+            return self.lower_mem0_bulk(super::bulk::Mem0Bulk::Copy, dest, src, len);
+        }
         use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, dst_mem);

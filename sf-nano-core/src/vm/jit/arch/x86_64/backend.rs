@@ -1186,6 +1186,10 @@ mod result_flags_tests {
             abi::compile_backend_config()
         }
 
+        fn memory0_is64(&self) -> Option<bool> {
+            None
+        }
+
         fn runtime_for(&self, _id: MachineFuncId) -> Option<&MachineFunctionAbi> {
             None
         }

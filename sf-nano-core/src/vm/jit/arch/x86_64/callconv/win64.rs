@@ -35,6 +35,14 @@ pub(in crate::vm::jit::arch::x86_64) const CALLEE_SAVED_GP: &[X86Reg] = &[
     X86Reg::RSI,
 ];
 
+// ── Raw C calls ─────────────────────────────────────────────────────────────
+
+/// XMM registers a C callee preserves.
+pub(in crate::vm::jit::arch::x86_64) const CALLEE_SAVED_XMM: &[u32] =
+    &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+/// Stack a caller reserves at RSP for the callee's register home area.
+pub(in crate::vm::jit::arch::x86_64) const CALL_SHADOW_BYTES: u32 = 32;
+
 // ── Stack frame shape ───────────────────────────────────────────────────────
 //
 // Layout after entry (from higher addresses to lower):

@@ -1,5 +1,6 @@
 pub(super) mod abi;
 pub(crate) mod backend;
+mod bulk;
 mod callconv;
 mod control;
 mod cpu;

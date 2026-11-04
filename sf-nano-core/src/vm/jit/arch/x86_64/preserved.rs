@@ -42,7 +42,7 @@ const PRESERVED_FP_BYTES: u32 = (abi::FP_MACHINE_REG_COUNT as u32) * 16;
 const PRESERVED_FRAME_BYTES: u32 = PRESERVED_IO_BYTES as u32 + PRESERVED_FP_BYTES;
 
 /// MOVAPS [RSP+disp], XMMn.
-fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
+pub(super) fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
     let reg = (xmm & 7) as u8;
     if xmm >= 8 {
         e.emit_u8(0x44);
@@ -59,7 +59,7 @@ fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
 }
 
 /// MOVAPS XMMn, [RSP+disp].
-fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
+pub(super) fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
     let reg = (xmm & 7) as u8;
     if xmm >= 8 {
         e.emit_u8(0x44);
