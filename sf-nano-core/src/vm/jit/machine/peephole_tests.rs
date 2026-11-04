@@ -3073,6 +3073,71 @@ fn fuses_rotate_then_xor_into_rotated_register_operand() {
 }
 
 #[test]
+fn cheap_shift_targets_keep_rotates_and_long_shifts_separate() {
+    let shift_then_xor = |op, amount| MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I32,
+                        op,
+                        dst: MachineReg(7),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(amount),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::Xor,
+                        dst: MachineReg(8),
+                        lhs: MachineValue::Reg(MachineReg(5)),
+                        rhs: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+    let config = test_config(7, 8, 9, 9, 0).with_cheap_operand_shifts_only();
+    let fused = |op, amount| {
+        let mut program = shift_then_xor(op, amount);
+        optimize(&mut program, config);
+        match program.blocks[0].ops.as_slice() {
+            [inst] => match inst.kind {
+                MachineInstKind::IntBinaryShifted { shift, amount, .. } => Some((shift, amount)),
+                ref other => panic!("unexpected single op {other:?}"),
+            },
+            [_, _] => None,
+            ops => panic!("unexpected ops {ops:?}"),
+        }
+    };
+
+    assert_eq!(
+        fused(MachineIntBinaryOp::Shl, 2),
+        Some((MachineShiftOp::Lsl, 2))
+    );
+    assert_eq!(
+        fused(MachineIntBinaryOp::Shl, 4),
+        Some((MachineShiftOp::Lsl, 4))
+    );
+    assert_eq!(fused(MachineIntBinaryOp::Shl, 5), None);
+    assert_eq!(fused(MachineIntBinaryOp::Rotr, 13), None);
+    assert_eq!(fused(MachineIntBinaryOp::Rotl, 1), None);
+    assert_eq!(fused(MachineIntBinaryOp::ShrU, 3), None);
+    assert_eq!(fused(MachineIntBinaryOp::ShrS, 3), None);
+
+    // Without the option every immediate shift fuses.
+    let mut program = shift_then_xor(MachineIntBinaryOp::Rotr, 13);
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    assert_eq!(program.blocks[0].ops.len(), 1);
+}
+
+#[test]
 fn skips_i64_pair_sign_ext_analysis_on_64_bit_targets() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),

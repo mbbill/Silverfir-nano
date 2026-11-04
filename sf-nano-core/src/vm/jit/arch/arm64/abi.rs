@@ -353,6 +353,7 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
     )
     .with_gp32_zero_extending_defs()
     .with_profitable_block_index_extend_relaxation()
+    .with_cheap_operand_shifts_only()
     // Lazy per-body preserved save: ~1 store in the body prelude plus 1
     // restore at each return path (typically two).
     .with_preserved_lane_save_overhead(3)

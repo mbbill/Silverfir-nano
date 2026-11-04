@@ -59,6 +59,12 @@ pub(crate) struct BackendConfig {
     /// scaled imm12 form. Eligible blocks still relax every safe access so
     /// mixed-offset instruction fusions remain available.
     pub relax_index_extends_in_profitable_blocks_only: bool,
+    /// Fuse a shift into an ALU op's register operand only for `LSL #0-4`.
+    /// The Arm Neoverse and Cortex-A optimization guides give the other
+    /// shifted-register forms (ROR, LSR, ASR, longer LSL) two cycles of
+    /// latency against one for a plain ALU op, so fusing lengthens a chain
+    /// through the unshifted operand that a separate shift would not.
+    pub fuse_only_cheap_operand_shifts: bool,
 }
 
 impl BackendConfig {
@@ -123,6 +129,7 @@ impl BackendConfig {
             preserved_lane_save_overhead: 0,
             gp32_defs_zero_extend: false,
             relax_index_extends_in_profitable_blocks_only: false,
+            fuse_only_cheap_operand_shifts: false,
         }
     }
 
@@ -141,6 +148,13 @@ impl BackendConfig {
     #[cfg(any(sf_backend_arm64, test))]
     pub(crate) const fn with_profitable_block_index_extend_relaxation(mut self) -> Self {
         self.relax_index_extends_in_profitable_blocks_only = true;
+        self
+    }
+
+    #[inline]
+    #[cfg(any(sf_backend_arm64, test))]
+    pub(crate) const fn with_cheap_operand_shifts_only(mut self) -> Self {
+        self.fuse_only_cheap_operand_shifts = true;
         self
     }
 
