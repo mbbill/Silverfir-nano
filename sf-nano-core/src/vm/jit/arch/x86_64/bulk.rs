@@ -14,7 +14,7 @@
 //!    backend-owned and never hold MachineIR values, so staging cannot
 //!    overwrite another operand.
 //! 2. Check each accessed range `[offset, offset + len)` against the memory
-//!    length in the fixed `MEM0_SIZE` register and branch to the shared
+//!    length in the context's `MEM0_SIZE` field and branch to the shared
 //!    out-of-bounds trap, the source range before the destination is staged
 //!    over it. Both operands are zero-extended 32-bit values, so their
 //!    64-bit sum cannot wrap. Nothing has touched the stack yet, so the trap
@@ -38,7 +38,7 @@ use crate::{
     vm::jit::machine::{
         machine_ir::{
             MachineReg, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MACHINE_MEM0_BASE_REG,
         },
         peephole::helpers::reg_live_after,
     },
@@ -175,17 +175,17 @@ impl X86_64Backend<'_> {
     /// Trap unless `offset + len <= memory length`; `offset` is staged in
     /// `staged` and the length in `STAGE_LEN`. The staged offset is restored.
     fn check_mem0_range(&mut self, staged: X86Reg, offset: MachineValue) {
-        let mem0_size = map_fixed_reg(MACHINE_MEM0_SIZE_REG);
+        let mem0_size = Self::mem0_size_mem();
         let trap = self
             .core
             .ensure_trap_label(MachineTrapKind::MemoryOutOfBounds);
         if offset == MachineValue::Imm64(0) {
-            enc::cmp_rr_64(&mut self.core.text, STAGE_LEN, mem0_size);
+            enc::cmp_reg_mem(&mut self.core.text, true, STAGE_LEN, mem0_size);
             self.emit_jcc(Cc::A, trap);
             return;
         }
         enc::add_rr_64(&mut self.core.text, staged, STAGE_LEN);
-        enc::cmp_rr_64(&mut self.core.text, staged, mem0_size);
+        enc::cmp_reg_mem(&mut self.core.text, true, staged, mem0_size);
         self.emit_jcc(Cc::A, trap);
         enc::sub_rr_64(&mut self.core.text, staged, STAGE_LEN);
     }

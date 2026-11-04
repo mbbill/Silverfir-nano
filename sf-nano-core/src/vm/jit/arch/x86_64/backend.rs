@@ -345,18 +345,13 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         callconv::emit_prologue_extra(self);
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_CTX_REG), C_ARG0);
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_FP_REG), C_ARG1);
-        // Load mem0 base/size from ctx
+        // Load the mem0 base from ctx. The size stays there
+        // (`abi::mem0_size_addr`).
         enc::load_64(
             &mut self.core.text,
             map_fixed_reg(MACHINE_MEM0_BASE_REG),
             map_fixed_reg(MACHINE_CTX_REG),
             ctx_offset::MEM0_BASE as i32,
-        );
-        enc::load_64(
-            &mut self.core.text,
-            map_fixed_reg(MACHINE_MEM0_SIZE_REG),
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::MEM0_SIZE as i32,
         );
     }
 
@@ -952,6 +947,7 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Register mapping ─────────────────────────────────────────────────
 
+    #[inline]
     pub(super) fn map_gp_reg(&self, reg: MachineReg) -> Result<X86Reg, WasmError> {
         crate::vm::jit::arch::common::helpers::validate_gp_reg(self, reg)?;
         map_reg(reg)
@@ -965,6 +961,19 @@ impl<'a> X86_64Backend<'a> {
     }
 
     // ── Value materialization ────────────────────────────────────────────
+
+    /// Read memory 0's byte length from the runtime context
+    /// (`abi::mem0_size_addr`). Leaves EFLAGS untouched.
+    pub(super) fn load_mem0_size(&mut self, dst: X86Reg) {
+        let (base, disp) = abi::mem0_size_addr();
+        enc::load_64(&mut self.core.text, dst, base, disp);
+    }
+
+    /// Memory 0's byte length as a memory operand.
+    pub(super) fn mem0_size_mem() -> enc::GpMem {
+        let (base, disp) = abi::mem0_size_addr();
+        enc::GpMem::Base { base, disp }
+    }
 
     pub(super) fn materialize_u64(&mut self, dst: X86Reg, value: u64) {
         if value == 0 {
@@ -992,6 +1001,10 @@ impl<'a> X86_64Backend<'a> {
                         enc::movq_r64_xmm(&mut self.core.text, scratch, src_fp as u8);
                     }
                 };
+                Ok(scratch)
+            }
+            MachineValue::Reg(MACHINE_MEM0_SIZE_REG) => {
+                self.load_mem0_size(scratch);
                 Ok(scratch)
             }
             MachineValue::Reg(reg) => self.map_gp_reg(reg),

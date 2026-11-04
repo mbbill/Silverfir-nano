@@ -8,7 +8,7 @@ use crate::{
             MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
             MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType,
-            MachineTrapKind, MachineValue, MACHINE_FP_REG,
+            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_SIZE_REG,
         },
         jit::runtime::preserved,
     },
@@ -736,6 +736,10 @@ impl<'a> X86_64Backend<'a> {
                     };
                     Ok(())
                 }
+                MachineValue::Reg(MACHINE_MEM0_SIZE_REG) => {
+                    self.load_mem0_size(dst_gp);
+                    Ok(())
+                }
                 MachineValue::Reg(src_reg) => {
                     let src_gp = self.map_gp_reg(src_reg)?;
                     if dst_gp != src_gp {
@@ -803,6 +807,16 @@ impl<'a> X86_64Backend<'a> {
         width: MachineMemWidth,
         extension: MachineLoadExtension,
     ) -> Result<(), WasmError> {
+        if dst == MACHINE_MEM0_SIZE_REG {
+            // Refreshing the size from the context it already lives in.
+            let (_, disp) = super::abi::mem0_size_addr();
+            if addr.base != MACHINE_CTX_REG || addr.offset != disp {
+                return Err(WasmError::internal(
+                    "x86_64 memory 0 size reloads only from its context field",
+                ));
+            }
+            return Ok(());
+        }
         let base = self.map_gp_reg(addr.base)?;
         self.lower_load_from(dst, base, addr.offset, width, extension)
     }
@@ -1872,7 +1886,7 @@ impl<'a> X86_64Backend<'a> {
         value: MachineValue,
     ) -> Result<(X86Reg, Option<DetachedGpScratch>), WasmError> {
         if let MachineValue::Reg(reg) = value {
-            if !self.core.is_fp_reg(reg) {
+            if reg != MACHINE_MEM0_SIZE_REG && !self.core.is_fp_reg(reg) {
                 return Ok((self.map_gp_reg(reg)?, None));
             }
         }
@@ -1888,6 +1902,17 @@ impl<'a> X86_64Backend<'a> {
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
         let (lhs_gp, _lhs_scratch) = self.gp_operand(lhs)?;
+        if rhs == MachineValue::Reg(MACHINE_MEM0_SIZE_REG) {
+            // A 32-bit compare would read only the low half of a length
+            // that can be 2^32.
+            if width != MachineIntWidth::I64 {
+                return Err(WasmError::internal(
+                    "x86_64 compares memory 0's size only at 64 bits",
+                ));
+            }
+            enc::cmp_reg_mem(&mut self.core.text, true, lhs_gp, Self::mem0_size_mem());
+            return Ok(());
+        }
         // Immediate form
         if let MachineValue::Imm64(imm_val) = rhs {
             let imm = imm_val as i64 as i32;
@@ -2347,7 +2372,7 @@ impl<'a> X86_64Backend<'a> {
         value: MachineValue,
     ) -> Result<(X86Reg, Option<DetachedGpScratch>), WasmError> {
         if let MachineValue::Reg(reg) = value {
-            if !self.core.is_fp_reg(reg) {
+            if reg != MACHINE_MEM0_SIZE_REG && !self.core.is_fp_reg(reg) {
                 return Ok((self.map_gp_reg(reg)?, None));
             }
         }
