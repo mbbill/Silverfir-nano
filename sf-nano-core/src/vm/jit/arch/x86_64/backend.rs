@@ -106,6 +106,8 @@ pub(crate) struct X86_64Backend<'a> {
     pub(super) narrow_equality: Option<super::narrow_equality::NarrowEquality>,
     /// Trailing float compare consumed by the branch terminator's flags.
     pub(super) float_branch: Option<super::float_cond::FloatBranch>,
+    /// Trailing GP load that the branch terminator's compare reads in place.
+    pub(super) branch_load_compare: Option<super::fusion::BranchLoadCompare>,
     /// Ops of a fused read-modify-write still to be skipped in this block.
     pub(super) rmw_skip: u8,
 }
@@ -251,6 +253,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             pending_jump_tables: collections::Vec::new(),
             pending_op: None,
             narrow_equality: None,
+            branch_load_compare: None,
             float_branch: None,
             rmw_skip: 0,
         }
@@ -686,13 +689,28 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
         if let Some((prev, prev_index)) = self.pending_op.take() {
-            self.core.current_op_index = Some(prev_index);
-            self.lower_inst(prev)?;
-            self.gp_scratch.assert_all_free();
-            self.fp_scratch.assert_all_free();
+            let plan = (self.narrow_equality.is_none() && self.float_branch.is_none())
+                .then(|| {
+                    super::fusion::branch_load_compare(prev, term, |reg| self.core.is_fp_reg(reg))
+                })
+                .flatten();
+            if plan.is_some() {
+                // The branch compare reads the memory operand itself.
+                self.branch_load_compare = plan;
+            } else {
+                self.core.current_op_index = Some(prev_index);
+                self.lower_inst(prev)?;
+                self.gp_scratch.assert_all_free();
+                self.fp_scratch.assert_all_free();
+            }
         }
         self.core.current_op_index = None;
         let result = self.lower_terminator(term, fallthrough);
+        debug_assert!(
+            self.branch_load_compare.is_none(),
+            "branch load compare must be consumed by its branch"
+        );
+        self.branch_load_compare = None;
         self.narrow_equality = None;
         self.float_branch = None;
         self.gp_scratch.assert_all_free();

@@ -318,6 +318,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         content: include_str!("../tests/cached_table_dispatch.wast"),
     });
     wast_inputs.push(WastInput::Embedded {
+        path: "branch_load_compare.wast",
+        content: include_str!("../tests/branch_load_compare.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
         path: "fp_memory_operands.wast",
         content: include_str!("../tests/fp_memory_operands.wast"),
     });

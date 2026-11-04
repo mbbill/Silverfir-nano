@@ -1413,6 +1413,63 @@ pub(crate) fn alu_rm_32_idx(
     emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
 }
 
+/// A general-purpose memory operand: `[base + disp]` or
+/// `[base + index + disp]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GpMem {
+    Base {
+        base: X86Reg,
+        disp: i32,
+    },
+    Indexed {
+        base: X86Reg,
+        index: X86Reg,
+        disp: i32,
+    },
+}
+
+/// REX prefix, opcode and ModR/M (+SIB, displacement) for one opcode with a
+/// memory r/m operand; `reg3`/`reg_ext` are the reg field and its REX.R bit.
+fn emit_op_mem(e: &mut TextEmitter, w64: bool, opcode: u8, reg3: u8, reg_ext: bool, mem: GpMem) {
+    match mem {
+        GpMem::Base { base, disp } => {
+            let b = base.needs_rex_ext();
+            if w64 || reg_ext || b {
+                e.emit_u8(rex(w64, reg_ext, false, b));
+            }
+            e.emit_u8(opcode);
+            emit_modrm_mem3(e, reg3, base, disp);
+        }
+        GpMem::Indexed { base, index, disp } => {
+            emit_rex_idx(e, w64, reg_ext, index, base);
+            e.emit_u8(opcode);
+            emit_modrm_mem_idx(e, reg3, base, index, disp);
+        }
+    }
+}
+
+/// CMP reg, [mem]: flags from `reg - [mem]`.
+pub(crate) fn cmp_reg_mem(e: &mut TextEmitter, w64: bool, reg: X86Reg, mem: GpMem) {
+    emit_op_mem(e, w64, 0x3B, reg.idx3(), reg.needs_rex_ext(), mem);
+}
+
+/// CMP [mem], reg: flags from `[mem] - reg`.
+pub(crate) fn cmp_mem_reg(e: &mut TextEmitter, w64: bool, mem: GpMem, reg: X86Reg) {
+    emit_op_mem(e, w64, 0x39, reg.idx3(), reg.needs_rex_ext(), mem);
+}
+
+/// CMP [mem], imm: flags from `[mem] - imm`, the immediate sign-extended to
+/// the operand width.
+pub(crate) fn cmp_mem_imm(e: &mut TextEmitter, w64: bool, mem: GpMem, imm: i32) {
+    if fits_i8(imm) {
+        emit_op_mem(e, w64, 0x83, 7, false, mem);
+        e.emit_u8(imm as u8);
+    } else {
+        emit_op_mem(e, w64, 0x81, 7, false, mem);
+        emit_i32(e, imm);
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Padding
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2652,5 +2709,80 @@ mod bmi2_tests {
                 0xc6, 0xc4, 0x43, 0xfb, 0xf0, 0xc1, 0x0d, 0xc4, 0xe3, 0x7b, 0xf0, 0xc6, 0xff,
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod cmp_mem_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn compare_with_memory_forms_match_gnu_as() {
+        use X86Reg::*;
+        let base = |base, disp| GpMem::Base { base, disp };
+        let indexed = |base, index, disp| GpMem::Indexed { base, index, disp };
+        // Intel operand order: `cmp r14, [rbp + 0x40]` is GNU
+        // `cmp 0x40(%rbp), %r14`.
+        let reg_mem: [(bool, X86Reg, GpMem, &[u8]); 4] = [
+            (true, R14, base(RBP, 0x40), &[0x4C, 0x3B, 0x75, 0x40]),
+            (false, RSI, base(RBP, 0x40), &[0x3B, 0x75, 0x40]),
+            (
+                false,
+                R9,
+                indexed(R12, RCX, 8),
+                &[0x45, 0x3B, 0x4C, 0x0C, 0x08],
+            ),
+            (true, RAX, base(R13, 0), &[0x49, 0x3B, 0x45, 0x00]),
+        ];
+        for (w64, reg, mem, expected) in reg_mem {
+            let mut text = TextEmitter::new();
+            cmp_reg_mem(&mut text, w64, reg, mem);
+            assert_eq!(text.finish().as_slice(), expected, "{reg:?} {mem:?}");
+        }
+        let mem_reg: [(bool, GpMem, X86Reg, &[u8]); 2] = [
+            (
+                true,
+                base(RBP, 0x90),
+                R10,
+                &[0x4C, 0x39, 0x95, 0x90, 0x00, 0x00, 0x00],
+            ),
+            (false, indexed(R12, R8, 0), RDI, &[0x43, 0x39, 0x3C, 0x04]),
+        ];
+        for (w64, mem, reg, expected) in mem_reg {
+            let mut text = TextEmitter::new();
+            cmp_mem_reg(&mut text, w64, mem, reg);
+            assert_eq!(text.finish().as_slice(), expected, "{mem:?} {reg:?}");
+        }
+        let mem_imm: [(bool, GpMem, i32, &[u8]); 4] = [
+            (
+                false,
+                base(RBP, 0x90),
+                8,
+                &[0x83, 0xBD, 0x90, 0x00, 0x00, 0x00, 0x08],
+            ),
+            (
+                true,
+                base(RSP, -8),
+                0x12345,
+                &[0x48, 0x81, 0x7C, 0x24, 0xF8, 0x45, 0x23, 0x01, 0x00],
+            ),
+            (
+                false,
+                indexed(R12, R10, 0x10),
+                -1,
+                &[0x43, 0x83, 0x7C, 0x14, 0x10, 0xFF],
+            ),
+            (
+                true,
+                base(RBX, 0x200),
+                0x7F,
+                &[0x48, 0x83, 0xBB, 0x00, 0x02, 0x00, 0x00, 0x7F],
+            ),
+        ];
+        for (w64, mem, imm, expected) in mem_imm {
+            let mut text = TextEmitter::new();
+            cmp_mem_imm(&mut text, w64, mem, imm);
+            assert_eq!(text.finish().as_slice(), expected, "{mem:?} {imm}");
+        }
     }
 }

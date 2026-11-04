@@ -4,8 +4,8 @@ use crate::{
     error::WasmError,
     vm::jit::machine::machine_ir::{
         MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
-        MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineIntWidth,
-        MachineMemWidth, MachineResultDst, MachineResultSrc, MachineReturnValue,
+        MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineIndexExtend,
+        MachineIntWidth, MachineMemWidth, MachineResultDst, MachineResultSrc, MachineReturnValue,
         MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
         MACHINE_FP_REG,
     },
@@ -58,6 +58,68 @@ impl<'a> X86_64Backend<'a> {
             }
         }
         self.lower_cmp_values(width, lhs, rhs)
+    }
+
+    /// Compare with the loaded operand read from memory in place: the flags
+    /// match `lhs - rhs` exactly as the register compare would set them.
+    fn lower_branch_load_compare(
+        &mut self,
+        plan: &super::fusion::BranchLoadCompare,
+        width: MachineIntWidth,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    ) -> Result<(), WasmError> {
+        use super::fusion::LoadAluMem;
+        let scratch = self.gp_scratch.scoped_alloc().detach();
+        let mem = match &plan.mem {
+            LoadAluMem::Base(addr) => enc::GpMem::Base {
+                base: self.map_gp_reg(addr.base)?,
+                disp: addr.offset,
+            },
+            LoadAluMem::Indexed {
+                base,
+                index,
+                extend,
+                offset,
+            } => {
+                let base = self.map_gp_reg(*base)?;
+                let index = self.map_gp_reg(*index)?;
+                let index = match extend {
+                    MachineIndexExtend::None => index,
+                    MachineIndexExtend::ZeroExtend32 => {
+                        enc::mov_rr_32(&mut self.core.text, *scratch, index);
+                        *scratch
+                    }
+                };
+                enc::GpMem::Indexed {
+                    base,
+                    index,
+                    disp: *offset,
+                }
+            }
+        };
+        let w64 = width == MachineIntWidth::I64;
+        match (plan.loaded_is_lhs, lhs, rhs) {
+            (true, _, MachineValue::Reg(reg)) => {
+                let reg = self.map_gp_reg(reg)?;
+                enc::cmp_mem_reg(&mut self.core.text, w64, mem, reg);
+            }
+            (true, _, MachineValue::Imm64(imm)) => {
+                let imm = super::fusion::compare_immediate(width, imm)
+                    .ok_or_else(|| WasmError::internal("x86_64 branch compare immediate"))?;
+                enc::cmp_mem_imm(&mut self.core.text, w64, mem, imm);
+            }
+            (false, MachineValue::Reg(reg), _) => {
+                let reg = self.map_gp_reg(reg)?;
+                enc::cmp_reg_mem(&mut self.core.text, w64, reg, mem);
+            }
+            _ => {
+                return Err(WasmError::internal(
+                    "x86_64 branch load compare has no register partner",
+                ))
+            }
+        }
+        Ok(())
     }
 
     // ── Main terminator dispatch ─────────────────────────────────────────────
@@ -231,6 +293,8 @@ impl<'a> X86_64Backend<'a> {
                         }
                         _ => unreachable!("validated narrow equality width"),
                     }
+                } else if let Some(plan) = self.branch_load_compare.take() {
+                    self.lower_branch_load_compare(&plan, width, lhs, rhs)?;
                 } else {
                     self.lower_branch_compare(width, kind, lhs, rhs)?;
                 }

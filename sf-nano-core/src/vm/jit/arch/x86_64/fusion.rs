@@ -2,10 +2,10 @@
 
 use super::enc::{Cc, MemAluOp, ScalarFpOp};
 use crate::vm::jit::machine::machine_ir::{
-    MachineAddr, MachineCompareKind, MachineFloatBinaryOp, MachineFloatWidth, MachineIndexExtend,
-    MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension,
-    MachineMemWidth, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
-    MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
+    MachineAddr, MachineBranchCond, MachineCompareKind, MachineFloatBinaryOp, MachineFloatWidth,
+    MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
+    MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner, MachineSign,
+    MachineStorageType, MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
 };
 
 /// Read through an immediately preceding GP snapshot without materializing
@@ -261,6 +261,130 @@ pub(super) fn load_float_fusion(
         loaded,
         mem,
     })
+}
+
+/// A buffered GP load whose only reader is the block's branch compare, so
+/// the compare can read memory directly: `cmp reg, [mem]`, `cmp [mem], reg`
+/// or `cmp [mem], imm`.
+pub(super) struct BranchLoadCompare {
+    pub mem: LoadAluMem,
+    /// The loaded value is the compare's left operand; otherwise its right.
+    pub loaded_is_lhs: bool,
+}
+
+/// Probe `load` against the block's terminator. The compare must read the
+/// loaded register exactly once, and no edge may carry it, so the register
+/// is dead once the flags are set. A Wasm memory access (`IndexedLoad`)
+/// must keep its exact width so its bounds behaviour is unchanged; a
+/// base-relative frame or context load may also feed a 32-bit compare from
+/// a 64-bit slot, reading the low half. The left side may be compared with
+/// an immediate, the right side only with a register (x86 has no
+/// immediate-first CMP).
+pub(super) fn branch_load_compare(
+    load: &MachineInst,
+    terminator: &MachineTerminator,
+    is_fp: impl Fn(MachineReg) -> bool,
+) -> Option<BranchLoadCompare> {
+    let MachineTerminator::Branch {
+        cond: MachineBranchCond::IntCompare {
+            width, lhs, rhs, ..
+        },
+        then_edge,
+        else_edge,
+    } = terminator
+    else {
+        return None;
+    };
+    let (loaded, mem, readable) = match &load.kind {
+        MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            dst,
+            addr,
+            width: load_width,
+            extension,
+            ..
+        } => (
+            *dst,
+            LoadAluMem::Base(*addr),
+            compare_reads_load(*width, *load_width, *extension, false),
+        ),
+        MachineInstKind::IndexedLoad {
+            dst,
+            base,
+            index,
+            index_extend,
+            offset,
+            width: load_width,
+            extension,
+        } => (
+            *dst,
+            LoadAluMem::Indexed {
+                base: *base,
+                index: *index,
+                extend: *index_extend,
+                offset: *offset,
+            },
+            compare_reads_load(*width, *load_width, *extension, true),
+        ),
+        _ => return None,
+    };
+    if !readable || is_fp(loaded) {
+        return None;
+    }
+    let loaded_value = MachineValue::Reg(loaded);
+    if then_edge.args.contains(&loaded_value) || else_edge.args.contains(&loaded_value) {
+        return None;
+    }
+    let other_operand_ok = |value: &MachineValue, immediate_ok: bool| match value {
+        MachineValue::Reg(reg) => *reg != loaded && !is_fp(*reg),
+        MachineValue::Imm64(imm) => immediate_ok && compare_immediate(*width, *imm).is_some(),
+        MachineValue::ReservedReg(_) => false,
+    };
+    let loaded_is_lhs = if *lhs == loaded_value {
+        if !other_operand_ok(rhs, true) {
+            return None;
+        }
+        true
+    } else if *rhs == loaded_value {
+        if !other_operand_ok(lhs, false) {
+            return None;
+        }
+        false
+    } else {
+        return None;
+    };
+    Some(BranchLoadCompare { mem, loaded_is_lhs })
+}
+
+/// Whether a `width` compare can read memory in place of this load.
+fn compare_reads_load(
+    width: MachineIntWidth,
+    load_width: MachineMemWidth,
+    extension: MachineLoadExtension,
+    wasm_memory: bool,
+) -> bool {
+    match (width, load_width, extension) {
+        (MachineIntWidth::I64, MachineMemWidth::U64, MachineLoadExtension::None)
+        | (
+            MachineIntWidth::I32,
+            MachineMemWidth::U32,
+            MachineLoadExtension::None | MachineLoadExtension::ZeroExtend,
+        ) => true,
+        (MachineIntWidth::I32, MachineMemWidth::U64, MachineLoadExtension::None) => !wasm_memory,
+        _ => false,
+    }
+}
+
+/// The CMP immediate for `imm` at `width`: any 32-bit pattern for i32, and
+/// for i64 only values that are the sign extension of their low 32 bits.
+pub(super) fn compare_immediate(width: MachineIntWidth, imm: u64) -> Option<i32> {
+    match width {
+        MachineIntWidth::I32 => Some(imm as u32 as i32),
+        MachineIntWidth::I64 => {
+            let low = imm as i64 as i32;
+            (i64::from(low) == imm as i64).then_some(low)
+        }
+    }
 }
 
 /// Cheap buffering predicate: only loads that could take part in the
