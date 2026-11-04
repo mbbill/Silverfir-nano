@@ -21,10 +21,10 @@ use super::instr::{
     Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC,
     FLAG_FUSED, FLAG_GLOBAL_CONVERT, FLAG_NO_NATIVE, FLAG_SHARED_TABLE,
 };
-use super::layout::slot_fields;
 use super::layout::{
     c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
 };
+use super::layout::{native_may_exit_slow, slot_fields};
 use super::predecode::LinkFunction;
 #[cfg(test)]
 use super::predecode::PredecodedFunction;
@@ -132,35 +132,6 @@ fn into_dispatch_cells(instrs: Vec<Instr>) -> Vec<DCell> {
     // operation. There is one owner throughout and no live reference crosses
     // the transfer.
     unsafe { retype_vec(instrs) }
-}
-
-/// Native handlers which can return `EXIT_SLOW` after their cell payload has
-/// been transformed. Static slow cells keep raw a/b/c and need no inverse.
-const fn native_may_exit_slow(op: Op) -> bool {
-    use Op::*;
-    matches!(
-        op,
-        I32_DivS
-            | I32_DivU
-            | I32_RemS
-            | I32_RemU
-            | I64_DivS
-            | I64_DivU
-            | I64_RemS
-            | I64_RemU
-            | I32_TruncF32S
-            | I32_TruncF32U
-            | I32_TruncF64S
-            | I32_TruncF64U
-            | I64_TruncF32S
-            | I64_TruncF32U
-            | I64_TruncF64S
-            | I64_TruncF64U
-            | MemoryFill
-            | MemoryCopy
-            | MemoryFillCopy
-            | CallIndirect
-    )
 }
 
 /// Recreate a native cell's stage-A payload on an `EXIT_SLOW` edge.

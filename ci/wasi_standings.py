@@ -1,6 +1,6 @@
-"""Cross-engine WASI-suite standings for the x64 tuning branch.
+"""Cross-engine WASI-suite standings for one native platform.
 
-Diagnostic tooling for .github/workflows/x64-standings.yml: drives
+Diagnostic tooling for .github/workflows/standings.yml: drives
 benchmarks/wasi for Silverfir-nano JIT (via run_tests.py), a prebuilt
 wasmtime (Cranelift), and V8 (via run_v8.mjs under Node), then renders
 one within-run comparison table. The suite reports rates, so higher is
@@ -131,6 +131,7 @@ def render(
     nano: str,
     notes: list[str],
     failures: list[str],
+    platform: str,
 ) -> str:
     others = [name for name in runtimes if name != nano]
     metrics = sorted({key for rates in runtimes.values() for key in rates})
@@ -145,7 +146,7 @@ def render(
             (gap(key, other) or 0.0 for other in others), default=0.0
         )
 
-    lines = ["# x64 WASI-suite standings", ""]
+    lines = [f"# {platform} WASI-suite standings", ""]
     lines += [f"- {note}" for note in notes]
     lines += [
         "",
@@ -198,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-md", type=Path, required=True)
     parser.add_argument("--out-json", type=Path, required=True)
     parser.add_argument("--reverse", choices=("true", "false"), default="false")
+    parser.add_argument("--platform", required=True)
     parser.add_argument("--note", action="append", default=[])
     args = parser.parse_args(argv)
 
@@ -237,13 +239,14 @@ def main(argv: list[str] | None = None) -> int:
     if empty:
         raise SystemExit(f"no metrics from: {', '.join(empty)}")
 
-    report = render(runtimes, "silverfir-nano.jit", args.note, failures)
+    report = render(runtimes, "silverfir-nano.jit", args.note, failures, args.platform)
     args.out_md.parent.mkdir(parents=True, exist_ok=True)
     args.out_md.write_text(report, encoding="utf-8")
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(
         json.dumps(
             {
+                "platform": args.platform,
                 "notes": args.note,
                 "failures": failures,
                 "rates": {

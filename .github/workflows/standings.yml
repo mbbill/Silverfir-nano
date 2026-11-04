@@ -1,0 +1,360 @@
+# Same-run diagnostic rankings against Wasmtime (Cranelift) and V8 on every
+# native desktop platform. The paired revision performance workflow remains
+# the regression gate; these tables are snapshots with no statistical claim.
+name: standings
+
+# Manual comparison only; iterative changes use dev performance CI.
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Engine tier to rank"
+        required: true
+        default: "jit"
+        type: choice
+        options:
+          - "jit"
+          - "interp"
+
+concurrency:
+  group: standings-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    name: ${{ matrix.platform }} / wasmi corpus / draw ${{ matrix.draw }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64-linux, x64-windows, arm64-darwin]
+        draw: [1, 2]
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+          - platform: x64-windows
+            runner: windows-latest
+          - platform: arm64-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/wasmi-target
+      CARGO_INCREMENTAL: "0"
+      # jit ranks against the optimizing tier; interp against the fast
+      # interpreters the M4 reference table uses.
+      BENCH_FEATURES: ${{ (inputs.tier == 'interp' && 'silverfir-nano-interp,wasmi-v2,wasm3,stitch') || 'silverfir-nano-jit,wasmtime-cranelift,v8' }}
+    steps:
+      # Long suite paths, and LF checkouts so the adapter patch and the
+      # filter list apply byte-for-byte.
+      - name: Configure Git for Windows checkouts
+        if: runner.os == 'Windows'
+        run: |
+          git config --system core.longpaths true
+          git config --system core.autocrlf false
+
+      - uses: actions/checkout@v7
+
+      # Audit this repository before adding the separate third-party checkout.
+      - name: Audit lint policy
+        run: python3 -m ci.lint_policy
+
+      - name: Checkout pinned wasmi-benchmarks
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasmi benchmark system dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libfontconfig1-dev
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: standings-${{ matrix.platform }}
+          workspaces: "wasmi-benchmarks -> ../wasmi-target"
+
+      - name: Record runner CPU
+        id: cpu
+        run: |
+          uname -a || true
+          model="$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)"
+          if [[ -z "$model" ]]; then
+            model="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"
+          fi
+          if [[ -z "$model" && "$RUNNER_OS" == "Windows" ]]; then
+            model="$(powershell -NoProfile -Command '(Get-CimInstance Win32_Processor | Select-Object -First 1).Name' | tr -d '\r')"
+          fi
+          echo "$model"
+          echo "model=${model:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Point the suite at this checkout
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          core = Path("sf-nano-core").resolve()
+          assert (core / "Cargo.toml").is_file(), core
+          config = Path("wasmi-benchmarks/.cargo/config.toml")
+          config.parent.mkdir(parents=True, exist_ok=True)
+          config.write_text(
+              '[patch."https://github.com/mbbill/Silverfir-nano"]\n'
+              "sf-nano-core = { path = %s }\n" % json.dumps(core.as_posix()),
+              encoding="utf-8",
+              newline="\n",
+          )
+          PY
+          # The pinned lockfile records an older Nano release; a path patch
+          # of a different version is otherwise silently unused. Refresh
+          # only Nano; every build below is --locked. Cargo reads
+          # .cargo/config.toml from the working directory, not from
+          # --manifest-path, so every suite command runs inside the suite.
+          (cd wasmi-benchmarks && cargo update --package sf-nano-core)
+          # This revision's explicit adapter API migration (see ci/README.md).
+          git -C wasmi-benchmarks apply "$(pwd)/ci/wasmi_adapter.patch"
+
+      - name: Verify the patched dependency resolves locally
+        working-directory: wasmi-benchmarks
+        run: |
+          cargo metadata --locked --format-version 1 \
+            --no-default-features --features "$BENCH_FEATURES" > ../metadata.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = (Path("..") / "sf-nano-core" / "Cargo.toml").resolve()
+          packages = json.loads(Path("../metadata.json").read_text(encoding="utf-8"))["packages"]
+          nano = [Path(p["manifest_path"]).resolve() for p in packages if p["name"] == "sf-nano-core"]
+          print("sf-nano-core:", nano)
+          assert nano == [expected], f"expected {expected}, resolved {nano}"
+          PY
+
+      - name: Build comparison engines before measuring
+        working-directory: wasmi-benchmarks
+        run: |
+          cargo bench --locked --no-default-features --features "$BENCH_FEATURES" \
+            --bench criterion --no-run 2>&1 | tee ../corpus-build.log
+          if grep -E '^warning(\[[^]]+\])?:' ../corpus-build.log; then
+            echo '::error::ACTION REQUIRED: compiler warnings in comparison build'
+            exit 1
+          fi
+
+      - name: Clear cached measurement results
+        run: rm -rf wasmi-target/criterion
+
+      - name: Run the selected corpus for every engine
+        working-directory: wasmi-benchmarks
+        run: |
+          # ci/standings_filter.txt selects what this run measures: the
+          # full corpus for standings, or a narrow gap list for fast
+          # iteration. Linux pins one core with ASLR off, as the
+          # regression jobs do; macOS and Windows run unpinned, so all
+          # engines there share the same unpinned conditions.
+          pin=()
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            pin=(taskset -c 1 setarch "$(uname -m)" -R)
+          fi
+          ran=0
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            line="${line//$'\r'/}"
+            [[ -z "${line//[[:space:]]/}" ]] && continue
+            ran=1
+            echo "::group::bench ${line}"
+            # Unquoted ${line}: word-splitting into filter + flags is
+            # intended here.
+            "${pin[@]}" cargo bench \
+              --locked --no-default-features \
+              --features "$BENCH_FEATURES" \
+              --bench criterion \
+              -- ${line} --noplot
+            echo "::endgroup::"
+          done < ../ci/standings_filter.txt
+          if [[ "$ran" -eq 0 ]]; then
+            echo "ci/standings_filter.txt selected nothing" >&2
+            exit 1
+          fi
+
+      - name: Write the standings table
+        env:
+          CPU_MODEL: ${{ steps.cpu.outputs.model }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            pinning="taskset -c 1, ASLR off (setarch -R)"
+          else
+            pinning="unpinned"
+          fi
+          mkdir -p standings
+          python3 -m ci.standings_report \
+            --criterion-dir wasmi-target/criterion \
+            --expected-cases 20 \
+            --platform "$PLATFORM" \
+            --out-md standings/standings.md \
+            --out-json standings/standings.json \
+            --note "commit: ${GITHUB_SHA}" \
+            --note "cpu: ${CPU_MODEL}" \
+            --note "rustc: $(rustc -V)" \
+            --note "suite: wasmi-benchmarks@16a3d7c8" \
+            --note "pinning: ${pinning}"
+          cat standings/standings.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: standings-corpus-${{ matrix.platform }}-${{ matrix.draw }}
+          path: |
+            standings/
+            wasmi-target/criterion/
+            wasmi-benchmarks/Cargo.lock
+          if-no-files-found: error
+          retention-days: 30
+
+  wasi:
+    name: ${{ matrix.platform }} / wasi / draw ${{ matrix.draw }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64-linux, x64-windows, arm64-darwin]
+        draw: [1, 2]
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+            wasmtime_asset: x86_64-linux
+            exe: ""
+          - platform: x64-windows
+            runner: windows-latest
+            wasmtime_asset: x86_64-windows
+            exe: ".exe"
+          - platform: arm64-darwin
+            runner: macos-15
+            wasmtime_asset: aarch64-macos
+            exe: ""
+    # The wasi comparison drives compiled-tier CLIs; the interp tier is
+    # ranked on the wasmi corpus above.
+    if: ${{ inputs.tier != 'interp' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Prebuilt release; matches the version family in RESULTS.md.
+      WASMTIME_VERSION: v47.0.2
+    steps:
+      - name: Configure Git for Windows checkouts
+        if: runner.os == 'Windows'
+        run: git config --system core.autocrlf false
+
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: standings-wasi-${{ matrix.platform }}
+
+      # The CI implementation tests target the Linux runners that own them.
+      - name: Test CI implementation
+        if: runner.os == 'Linux'
+        run: env -u GITHUB_STEP_SUMMARY python3 -m unittest discover -s ci -p 'test_*.py'
+
+      - name: Build sf-nano-cli
+        run: |
+          python3 -m ci.lint_policy
+          cargo build --release --locked -p sf-nano-cli 2>&1 | tee build.log
+          if grep -E '^warning(\[[^]]+\])?:' build.log; then exit 1; fi
+
+      - name: Install prebuilt wasmtime (tar.xz)
+        if: runner.os != 'Windows'
+        env:
+          ASSET: ${{ matrix.wasmtime_asset }}
+        run: |
+          name="wasmtime-${WASMTIME_VERSION}-${ASSET}"
+          curl --proto '=https' --tlsv1.2 --retry 5 --location --fail \
+            --silent --show-error -o "$RUNNER_TEMP/wasmtime.tar.xz" \
+            "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${name}.tar.xz"
+          tar -xJf "$RUNNER_TEMP/wasmtime.tar.xz" -C "$RUNNER_TEMP"
+          echo "WASMTIME_BIN=$RUNNER_TEMP/${name}/wasmtime" >> "$GITHUB_ENV"
+
+      - name: Install prebuilt wasmtime (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ASSET: ${{ matrix.wasmtime_asset }}
+        run: |
+          $name = "wasmtime-$env:WASMTIME_VERSION-$env:ASSET"
+          $zip = Join-Path $env:RUNNER_TEMP "wasmtime.zip"
+          Invoke-WebRequest -Uri "https://github.com/bytecodealliance/wasmtime/releases/download/$env:WASMTIME_VERSION/$name.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
+          "WASMTIME_BIN=$(Join-Path $env:RUNNER_TEMP $name | Join-Path -ChildPath 'wasmtime.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.7.0"
+
+      - name: Record runner CPU
+        id: cpu
+        run: |
+          "$WASMTIME_BIN" --version
+          uname -a || true
+          model="$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)"
+          if [[ -z "$model" ]]; then
+            model="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"
+          fi
+          if [[ -z "$model" && "$RUNNER_OS" == "Windows" ]]; then
+            model="$(powershell -NoProfile -Command '(Get-CimInstance Win32_Processor | Select-Object -First 1).Name' | tr -d '\r')"
+          fi
+          echo "$model"
+          echo "model=${model:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Run the wasi suite for every engine
+        env:
+          CPU_MODEL: ${{ steps.cpu.outputs.model }}
+          PLATFORM: ${{ matrix.platform }}
+          EXE: ${{ matrix.exe }}
+        run: |
+          # Linux pins as the regression jobs do; the personality and
+          # affinity are inherited by every engine the driver spawns.
+          pin=()
+          pinning="unpinned"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            pin=(taskset -c 1 setarch "$(uname -m)" -R)
+            pinning="taskset -c 1, ASLR off (setarch -R)"
+          fi
+          "${pin[@]}" python3 -m ci.wasi_standings \
+            --nano "target/release/sf-nano-cli${EXE}" \
+            --wasmtime "$WASMTIME_BIN" \
+            --time 2 \
+            --reverse ${{ matrix.draw == 2 }} \
+            --platform "$PLATFORM" \
+            --out-md standings-wasi/standings.md \
+            --out-json standings-wasi/standings.json \
+            --note "commit: ${GITHUB_SHA}" \
+            --note "cpu: ${CPU_MODEL}" \
+            --note "rustc: $(rustc -V)" \
+            --note "wasmtime: $("$WASMTIME_BIN" --version)" \
+            --note "node: $(node --version), V8: $(node -p process.versions.v8)" \
+            --note "pinning: ${pinning}"
+          cat standings-wasi/standings.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: standings-wasi-${{ matrix.platform }}-${{ matrix.draw }}
+          path: standings-wasi/
+          if-no-files-found: error
+          retention-days: 30

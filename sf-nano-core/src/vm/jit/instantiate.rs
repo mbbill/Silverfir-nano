@@ -280,6 +280,15 @@ fn compute_static_table_dispatch_modes(
         let local_only = table_active_elements_are_local_only(module, table_idx);
         let exact_type_checks = !module_declares_type_subtyping(module);
         let fixed_len = u32::try_from(table.limits().min()).ok();
+        // Writers this module cannot see (host, interpreter, importers) all
+        // bump the table revision; its own code has no table writes at all.
+        let cacheable =
+            !has_table_mutation && exact_type_checks && table.value_type() == ValueType::funcref();
+        let fallback = if cacheable {
+            TableDispatchMode::Cached
+        } else {
+            TableDispatchMode::Generic
+        };
         let mode = if !has_table_mutation
             && fixed_size
             && private_local
@@ -289,9 +298,9 @@ fn compute_static_table_dispatch_modes(
         {
             fixed_len
                 .map(|len| TableDispatchMode::FixedLocalOnly { len })
-                .unwrap_or(TableDispatchMode::Generic)
+                .unwrap_or(fallback)
         } else {
-            TableDispatchMode::Generic
+            fallback
         };
         modes.push(mode);
     }
@@ -1492,6 +1501,34 @@ mod tests {
         let modes =
             compute_static_table_dispatch_modes(&module).expect("table facts should compute");
         assert_eq!(modes, collections::vec![TableDispatchMode::Generic]);
+    }
+
+    #[test]
+    fn unmutated_shared_or_growable_funcref_tables_use_cached_dispatch() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (func $f)
+              (table (export "exported") 1 1 funcref)
+              (table 1 8 funcref)
+              (table 1 8 externref)
+              (elem (table 0) (i32.const 0) func $f)
+              (elem (table 1) (i32.const 0) func $f)
+            )
+            "#,
+        )
+        .expect("wat should encode");
+        let module = Module::new("test", &wasm).expect("module should parse");
+        let modes =
+            compute_static_table_dispatch_modes(&module).expect("table facts should compute");
+        assert_eq!(
+            modes,
+            collections::vec![
+                TableDispatchMode::Cached,
+                TableDispatchMode::Cached,
+                TableDispatchMode::Generic,
+            ]
+        );
     }
 
     fn grow_shared_memory_for_test(memory: &MemInst, new_pages: usize) {

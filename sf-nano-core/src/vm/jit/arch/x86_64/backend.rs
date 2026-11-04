@@ -104,6 +104,12 @@ pub(crate) struct X86_64Backend<'a> {
     /// every path — hit, miss, and block-end drain.
     pending_op: Option<(&'a MachineInst, usize)>,
     pub(super) narrow_equality: Option<super::narrow_equality::NarrowEquality>,
+    /// Trailing float compare consumed by the branch terminator's flags.
+    pub(super) float_branch: Option<super::float_cond::FloatBranch>,
+    /// Trailing GP load that the branch terminator's compare reads in place.
+    pub(super) branch_load_compare: Option<super::fusion::BranchLoadCompare>,
+    /// Ops of a fused read-modify-write still to be skipped in this block.
+    pub(super) rmw_skip: u8,
 }
 
 /// One deferred jump table: the movabs immediate to patch with the
@@ -247,6 +253,9 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             pending_jump_tables: collections::Vec::new(),
             pending_op: None,
             narrow_equality: None,
+            branch_load_compare: None,
+            float_branch: None,
+            rmw_skip: 0,
         }
     }
 
@@ -429,8 +438,14 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         // Streaming entry: the lookahead never carries across blocks.
         self.pending_op = None;
+        self.rmw_skip = 0;
         self.narrow_equality =
             super::narrow_equality::narrow_equality(block, self.core.mir_blocks()?);
+        self.float_branch = if self.narrow_equality.is_none() {
+            super::float_cond::float_compare_branch(block, self.core.mir_blocks()?)
+        } else {
+            None
+        };
         // A fallthrough edge may emit no bytes, but other predecessors do
         // not promise the same flags. Position stamps only prove reuse
         // within the current block.
@@ -447,6 +462,29 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             .is_some_and(|plan| index >= plan.first_skipped)
         {
             debug_assert!(self.pending_op.is_none());
+            return Ok(());
+        }
+        if self.float_branch.is_some_and(|plan| index == plan.index) {
+            // An earlier buffered op still flushes in order at `end_block`,
+            // before the terminator emits the compare.
+            return Ok(());
+        }
+        if self.rmw_skip > 0 {
+            self.rmw_skip -= 1;
+            return Ok(());
+        }
+        if let Some(fusion) = self.rmw_candidate(inst, index) {
+            if let Some((prev, prev_index)) = self.pending_op.take() {
+                self.core.current_op_index = Some(prev_index);
+                self.lower_inst(prev)?;
+                self.gp_scratch.assert_all_free();
+                self.fp_scratch.assert_all_free();
+            }
+            self.core.current_op_index = Some(index);
+            self.lower_rmw(&fusion)?;
+            self.gp_scratch.assert_all_free();
+            self.fp_scratch.assert_all_free();
+            self.rmw_skip = 2;
             return Ok(());
         }
         // Try to consume the buffered pair together. On a miss, emit
@@ -493,6 +531,63 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                     return Ok(());
                 }
             }
+            if super::cpu::has_avx() {
+                if let Some(fusion) =
+                    super::fusion::load_float_fusion(prev, inst, |reg| self.core.is_fp_reg(reg))
+                {
+                    // The arithmetic either overwrites the loaded register or
+                    // must be its last reader.
+                    let loaded_consumed = fusion.dst == fusion.loaded
+                        || self
+                            .core
+                            .current_block
+                            .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                            .is_some_and(|block| {
+                                !crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                                    &block.ops[index + 1..],
+                                    &block.terminator,
+                                    fusion.loaded,
+                                )
+                            });
+                    if loaded_consumed {
+                        self.core.current_op_index = Some(index);
+                        self.lower_load_float(&fusion)?;
+                        self.gp_scratch.assert_all_free();
+                        self.fp_scratch.assert_all_free();
+                        return Ok(());
+                    }
+                }
+            }
+            if let Some(fusion) = super::float_cond::float_compare_select_fusion(prev, inst) {
+                let bool_is_dead = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .is_some_and(|block| {
+                        !crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                            &block.ops[index + 1..],
+                            &block.terminator,
+                            fusion.bool_reg,
+                        )
+                    });
+                if bool_is_dead {
+                    let MachineInstKind::Select {
+                        ty,
+                        dst,
+                        on_true,
+                        on_false,
+                        cond: _,
+                    } = inst.kind
+                    else {
+                        unreachable!("validated float compare-select fusion");
+                    };
+                    self.core.current_op_index = Some(index);
+                    self.lower_fused_float_compare_select(&fusion, ty, dst, on_true, on_false)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
             if let Some(fusion) = super::fusion::int_compare_select_fusion(prev, inst) {
                 let bool_is_dead = self
                     .core
@@ -524,13 +619,37 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                     return Ok(());
                 }
             }
+            if let Some(fusion) = super::fusion::int_compare_carry_fusion(prev, inst) {
+                let bool_is_dead = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .is_some_and(|block| {
+                        fusion.bool_reg == fusion.dst
+                            || !crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                                &block.ops[index + 1..],
+                                &block.terminator,
+                                fusion.bool_reg,
+                            )
+                    });
+                if bool_is_dead {
+                    self.core.current_op_index = Some(index);
+                    self.lower_fused_compare_carry(&fusion)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
             self.core.current_op_index = Some(prev_index);
             self.lower_inst(prev)?;
             self.gp_scratch.assert_all_free();
             self.fp_scratch.assert_all_free();
         }
         if super::fusion::fusible_load(&inst.kind)
-            || matches!(inst.kind, MachineInstKind::IntCompare { .. })
+            || matches!(
+                inst.kind,
+                MachineInstKind::IntCompare { .. } | MachineInstKind::FloatCompare { .. }
+            )
             || (matches!(
                 inst.kind,
                 MachineInstKind::Move {
@@ -570,14 +689,30 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
         if let Some((prev, prev_index)) = self.pending_op.take() {
-            self.core.current_op_index = Some(prev_index);
-            self.lower_inst(prev)?;
-            self.gp_scratch.assert_all_free();
-            self.fp_scratch.assert_all_free();
+            let plan = (self.narrow_equality.is_none() && self.float_branch.is_none())
+                .then(|| {
+                    super::fusion::branch_load_compare(prev, term, |reg| self.core.is_fp_reg(reg))
+                })
+                .flatten();
+            if plan.is_some() {
+                // The branch compare reads the memory operand itself.
+                self.branch_load_compare = plan;
+            } else {
+                self.core.current_op_index = Some(prev_index);
+                self.lower_inst(prev)?;
+                self.gp_scratch.assert_all_free();
+                self.fp_scratch.assert_all_free();
+            }
         }
         self.core.current_op_index = None;
         let result = self.lower_terminator(term, fallthrough);
+        debug_assert!(
+            self.branch_load_compare.is_none(),
+            "branch load compare must be consumed by its branch"
+        );
+        self.branch_load_compare = None;
         self.narrow_equality = None;
+        self.float_branch = None;
         self.gp_scratch.assert_all_free();
         self.fp_scratch.assert_all_free();
         self.core.current_block = None;
@@ -868,6 +1003,66 @@ impl<'a> X86_64Backend<'a> {
         }
     }
 
+    /// Load an FP immediate from the function's literal pool: one FP-domain
+    /// load the core can hoist, instead of a GP materialization plus a
+    /// domain-crossing move on the consumer's critical path. Zero is a
+    /// register-clearing XOR.
+    pub(super) fn load_float_immediate(&mut self, width: MachineFloatWidth, bits: u64, dst: u8) {
+        let imm = match width {
+            MachineFloatWidth::F32 => u64::from(bits as u32),
+            MachineFloatWidth::F64 => bits,
+        };
+        if imm == 0 {
+            match width {
+                MachineFloatWidth::F32 => enc::xorps(&mut self.core.text, dst, dst),
+                MachineFloatWidth::F64 => enc::xorpd(&mut self.core.text, dst, dst),
+            };
+            return;
+        }
+        let literal_index = self.intern_fp_literal(imm);
+        let disp_offset = match width {
+            MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, dst),
+            MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, dst),
+        };
+        self.fp_literal_fixups.push(FpLiteralFixup {
+            disp_offset,
+            literal_index,
+        });
+    }
+
+    /// A `load; op; store` triple starting at `index` that fuses into one
+    /// read-modify-write, with both intermediate values dead afterwards.
+    fn rmw_candidate(&self, load: &MachineInst, index: usize) -> Option<super::rmw::RmwFusion> {
+        if !matches!(load.kind, MachineInstKind::IndexedLoad { .. }) {
+            return None;
+        }
+        let block = self
+            .core
+            .mir_blocks()
+            .ok()?
+            .get(self.core.current_block?.as_usize())?;
+        let fusion =
+            super::rmw::rmw_fusion(load, block.ops.get(index + 1)?, block.ops.get(index + 2)?)?;
+        let after = block.ops.get(index + 3..)?;
+        let live = |reg| {
+            crate::vm::jit::machine::peephole::helpers::reg_live_after(
+                after,
+                &block.terminator,
+                reg,
+            )
+        };
+        (!live(fusion.loaded) && !live(fusion.result)).then_some(fusion)
+    }
+
+    /// UCOMISS/UCOMISD `lhs, rhs`: CF=1 when `lhs < rhs` or unordered,
+    /// ZF=1 when equal or unordered, PF=1 only when unordered.
+    pub(super) fn ucomis(&mut self, width: MachineFloatWidth, lhs: u8, rhs: u8) {
+        match width {
+            MachineFloatWidth::F32 => enc::ucomiss(&mut self.core.text, lhs, rhs),
+            MachineFloatWidth::F64 => enc::ucomisd(&mut self.core.text, lhs, rhs),
+        }
+    }
+
     pub(super) fn prepare_float_operand(
         &mut self,
         width: MachineFloatWidth,
@@ -881,34 +1076,7 @@ impl<'a> X86_64Backend<'a> {
             }
         }
         if let MachineValue::Imm64(bits) = value {
-            // Load FP immediates from the function's literal pool: one
-            // FP-domain load the core can hoist, instead of a GP
-            // materialization plus a domain-crossing move on the consumer's
-            // critical path.
-            let imm = match width {
-                MachineFloatWidth::F32 => u64::from(bits as u32),
-                MachineFloatWidth::F64 => bits,
-            };
-            if imm == 0 {
-                match width {
-                    MachineFloatWidth::F32 => {
-                        enc::xorps(&mut self.core.text, fp_scratch as u8, fp_scratch as u8)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::xorpd(&mut self.core.text, fp_scratch as u8, fp_scratch as u8)
-                    }
-                };
-                return Ok(fp_scratch);
-            }
-            let literal_index = self.intern_fp_literal(imm);
-            let disp_offset = match width {
-                MachineFloatWidth::F32 => enc::movss_rip(&mut self.core.text, fp_scratch as u8),
-                MachineFloatWidth::F64 => enc::movsd_rip(&mut self.core.text, fp_scratch as u8),
-            };
-            self.fp_literal_fixups.push(FpLiteralFixup {
-                disp_offset,
-                literal_index,
-            });
+            self.load_float_immediate(width, bits, fp_scratch as u8);
             return Ok(fp_scratch);
         }
         let gp = self.materialize_value(gp_scratch, value)?;
@@ -1061,6 +1229,10 @@ mod result_flags_tests {
     impl CodegenModuleView for TestModule {
         fn backend(&self) -> BackendConfig {
             abi::compile_backend_config()
+        }
+
+        fn memory0_is64(&self) -> Option<bool> {
+            None
         }
 
         fn runtime_for(&self, _id: MachineFuncId) -> Option<&MachineFunctionAbi> {

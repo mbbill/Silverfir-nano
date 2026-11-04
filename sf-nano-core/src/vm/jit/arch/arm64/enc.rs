@@ -913,6 +913,23 @@ pub(crate) fn ldr_lit_64(rt: Arm64Reg, imm19: i32) -> u32 {
     (0b01011000 << 24) | (imm19_bits << 5) | rt.index()
 }
 
+/// LDR Dt, label (PC-relative, signed 19-bit word offset).
+pub(crate) fn ldr_lit_d(rt: Arm64FpReg, imm19: i32) -> u32 {
+    let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
+    0x5C00_0000 | (imm19_bits << 5) | rt.index()
+}
+
+/// LDR St, label (PC-relative, signed 19-bit word offset).
+pub(crate) fn ldr_lit_s(rt: Arm64FpReg, imm19: i32) -> u32 {
+    let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
+    0x1C00_0000 | (imm19_bits << 5) | rt.index()
+}
+
+/// MOVI Dd, #0 — zeroes the 64-bit lane without a GP source.
+pub(crate) fn movi_d_zero(rd: Arm64FpReg) -> u32 {
+    0x2F00_E400 | rd.index()
+}
+
 pub(crate) fn b_cond(cond: Cond, imm19: i32) -> u32 {
     let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
     (0b01010100 << 24) | (imm19_bits << 5) | (cond as u32)

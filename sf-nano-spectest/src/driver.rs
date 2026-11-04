@@ -293,6 +293,50 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         path: "fused_select_flags.wast",
         content: include_str!("../tests/fused_select_flags.wast"),
     });
+    wast_inputs.push(WastInput::Embedded {
+        path: "inline_float_trunc.wast",
+        content: include_str!("../tests/inline_float_trunc.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "float_compare_flags.wast",
+        content: include_str!("../tests/float_compare_flags.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "memory_rmw.wast",
+        content: include_str!("../tests/memory_rmw.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "mul_immediate.wast",
+        content: include_str!("../tests/mul_immediate.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "compare_carry.wast",
+        content: include_str!("../tests/compare_carry.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "cached_table_dispatch.wast",
+        content: include_str!("../tests/cached_table_dispatch.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "bounded_br_table.wast",
+        content: include_str!("../tests/bounded_br_table.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "branch_load_compare.wast",
+        content: include_str!("../tests/branch_load_compare.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "fp_memory_operands.wast",
+        content: include_str!("../tests/fp_memory_operands.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "mem0_bulk_host_call.wast",
+        content: include_str!("../tests/mem0_bulk_host_call.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "interp_slow_exit_operands.wast",
+        content: include_str!("../tests/interp_slow_exit_operands.wast"),
+    });
     wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
     info!("Found {} WAST files", wast_inputs.len());
 

@@ -139,7 +139,7 @@ impl Low32DeadHiDefs {
                 Self::demand_edge(function, then_edge, demand_in, &mut demand);
                 Self::demand_edge(function, else_edge, demand_in, &mut demand);
             }
-            MachineTerminator::JumpTable { index, entries } => {
+            MachineTerminator::JumpTable { index, entries, .. } => {
                 Self::demand_value(&mut demand, index);
                 for edge in entries {
                     Self::demand_edge(function, edge, demand_in, &mut demand);

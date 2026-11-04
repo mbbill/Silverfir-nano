@@ -1,11 +1,11 @@
 //! x86_64 condition-code mapping and instruction-pair fusion probes.
 
-use super::enc::{Cc, MemAluOp};
+use super::enc::{Cc, MemAluOp, ScalarFpOp};
 use crate::vm::jit::machine::machine_ir::{
-    MachineAddr, MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind,
-    MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
-    MACHINE_FIXED_REG_COUNT,
+    MachineAddr, MachineBranchCond, MachineCompareKind, MachineFloatBinaryOp, MachineFloatWidth,
+    MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
+    MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner, MachineSign,
+    MachineStorageType, MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
 };
 
 /// Read through an immediately preceding GP snapshot without materializing
@@ -165,6 +165,228 @@ pub(super) fn load_alu_fusion(prev: &MachineInst, next: &MachineInst) -> Option<
     })
 }
 
+/// A fused `load + scalar FP arithmetic` pair for the AVX memory-source
+/// form `dst = src OP [mem]`. The caller must prove the loaded register
+/// dead afterwards unless the arithmetic overwrites it.
+pub(super) struct LoadFloatFusion {
+    pub op: ScalarFpOp,
+    pub double: bool,
+    pub dst: MachineReg,
+    /// The register operand, never the loaded register itself.
+    pub src: MachineReg,
+    pub loaded: MachineReg,
+    pub mem: LoadAluMem,
+}
+
+/// Probe `prev = FP load, next = FP add/sub/mul/div` reading the loaded
+/// value once. Sub and Div need it on the right; Add and Mul take either
+/// side (NaN payload choice between two NaN inputs is nondeterministic in
+/// Wasm, so the operand swap is unobservable). The load width must equal
+/// the arithmetic width, and every register involved must be an FP lane.
+pub(super) fn load_float_fusion(
+    prev: &MachineInst,
+    next: &MachineInst,
+    is_fp: impl Fn(MachineReg) -> bool,
+) -> Option<LoadFloatFusion> {
+    let (loaded, mem, mem_width) = match &prev.kind {
+        MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            dst,
+            addr,
+            width,
+            extension: MachineLoadExtension::None,
+            ..
+        } => (*dst, LoadAluMem::Base(*addr), *width),
+        MachineInstKind::IndexedLoad {
+            dst,
+            base,
+            index,
+            index_extend,
+            offset,
+            width,
+            extension: MachineLoadExtension::None,
+        } => (
+            *dst,
+            LoadAluMem::Indexed {
+                base: *base,
+                index: *index,
+                extend: *index_extend,
+                offset: *offset,
+            },
+            *width,
+        ),
+        _ => return None,
+    };
+    let MachineInstKind::FloatBinary {
+        width,
+        op,
+        dst,
+        lhs,
+        rhs,
+    } = &next.kind
+    else {
+        return None;
+    };
+    let (op, commutative) = match op {
+        MachineFloatBinaryOp::Add => (ScalarFpOp::Add, true),
+        MachineFloatBinaryOp::Sub => (ScalarFpOp::Sub, false),
+        MachineFloatBinaryOp::Mul => (ScalarFpOp::Mul, true),
+        MachineFloatBinaryOp::Div => (ScalarFpOp::Div, false),
+        _ => return None,
+    };
+    let double = match (width, mem_width) {
+        (MachineFloatWidth::F64, MachineMemWidth::U64) => true,
+        (MachineFloatWidth::F32, MachineMemWidth::U32) => false,
+        _ => return None,
+    };
+    if !is_fp(loaded) || !is_fp(*dst) {
+        return None;
+    }
+    let register_operand = |value: &MachineValue| match value {
+        MachineValue::Reg(reg) if *reg != loaded && is_fp(*reg) => Some(*reg),
+        _ => None,
+    };
+    let src = if *rhs == MachineValue::Reg(loaded) {
+        register_operand(lhs)?
+    } else if commutative && *lhs == MachineValue::Reg(loaded) {
+        register_operand(rhs)?
+    } else {
+        return None;
+    };
+    Some(LoadFloatFusion {
+        op,
+        double,
+        dst: *dst,
+        src,
+        loaded,
+        mem,
+    })
+}
+
+/// A buffered GP load whose only reader is the block's branch compare, so
+/// the compare can read memory directly: `cmp reg, [mem]`, `cmp [mem], reg`
+/// or `cmp [mem], imm`.
+pub(super) struct BranchLoadCompare {
+    pub mem: LoadAluMem,
+    /// The loaded value is the compare's left operand; otherwise its right.
+    pub loaded_is_lhs: bool,
+}
+
+/// Probe `load` against the block's terminator. The compare must read the
+/// loaded register exactly once, and no edge may carry it, so the register
+/// is dead once the flags are set. A Wasm memory access (`IndexedLoad`)
+/// must keep its exact width so its bounds behaviour is unchanged; a
+/// base-relative frame or context load may also feed a 32-bit compare from
+/// a 64-bit slot, reading the low half. The left side may be compared with
+/// an immediate, the right side only with a register (x86 has no
+/// immediate-first CMP).
+pub(super) fn branch_load_compare(
+    load: &MachineInst,
+    terminator: &MachineTerminator,
+    is_fp: impl Fn(MachineReg) -> bool,
+) -> Option<BranchLoadCompare> {
+    let MachineTerminator::Branch {
+        cond: MachineBranchCond::IntCompare {
+            width, lhs, rhs, ..
+        },
+        then_edge,
+        else_edge,
+    } = terminator
+    else {
+        return None;
+    };
+    let (loaded, mem, readable) = match &load.kind {
+        MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            dst,
+            addr,
+            width: load_width,
+            extension,
+            ..
+        } => (
+            *dst,
+            LoadAluMem::Base(*addr),
+            compare_reads_load(*width, *load_width, *extension, false),
+        ),
+        MachineInstKind::IndexedLoad {
+            dst,
+            base,
+            index,
+            index_extend,
+            offset,
+            width: load_width,
+            extension,
+        } => (
+            *dst,
+            LoadAluMem::Indexed {
+                base: *base,
+                index: *index,
+                extend: *index_extend,
+                offset: *offset,
+            },
+            compare_reads_load(*width, *load_width, *extension, true),
+        ),
+        _ => return None,
+    };
+    if !readable || is_fp(loaded) {
+        return None;
+    }
+    let loaded_value = MachineValue::Reg(loaded);
+    if then_edge.args.contains(&loaded_value) || else_edge.args.contains(&loaded_value) {
+        return None;
+    }
+    let other_operand_ok = |value: &MachineValue, immediate_ok: bool| match value {
+        MachineValue::Reg(reg) => *reg != loaded && !is_fp(*reg),
+        MachineValue::Imm64(imm) => immediate_ok && compare_immediate(*width, *imm).is_some(),
+        MachineValue::ReservedReg(_) => false,
+    };
+    let loaded_is_lhs = if *lhs == loaded_value {
+        if !other_operand_ok(rhs, true) {
+            return None;
+        }
+        true
+    } else if *rhs == loaded_value {
+        if !other_operand_ok(lhs, false) {
+            return None;
+        }
+        false
+    } else {
+        return None;
+    };
+    Some(BranchLoadCompare { mem, loaded_is_lhs })
+}
+
+/// Whether a `width` compare can read memory in place of this load.
+fn compare_reads_load(
+    width: MachineIntWidth,
+    load_width: MachineMemWidth,
+    extension: MachineLoadExtension,
+    wasm_memory: bool,
+) -> bool {
+    match (width, load_width, extension) {
+        (MachineIntWidth::I64, MachineMemWidth::U64, MachineLoadExtension::None)
+        | (
+            MachineIntWidth::I32,
+            MachineMemWidth::U32,
+            MachineLoadExtension::None | MachineLoadExtension::ZeroExtend,
+        ) => true,
+        (MachineIntWidth::I32, MachineMemWidth::U64, MachineLoadExtension::None) => !wasm_memory,
+        _ => false,
+    }
+}
+
+/// The CMP immediate for `imm` at `width`: any 32-bit pattern for i32, and
+/// for i64 only values that are the sign extension of their low 32 bits.
+pub(super) fn compare_immediate(width: MachineIntWidth, imm: u64) -> Option<i32> {
+    match width {
+        MachineIntWidth::I32 => Some(imm as u32 as i32),
+        MachineIntWidth::I64 => {
+            let low = imm as i64 as i32;
+            (i64::from(low) == imm as i64).then_some(low)
+        }
+    }
+}
+
 /// Cheap buffering predicate: only loads that could take part in the
 /// memory-operand fusion are worth holding in the lookahead slot.
 pub(super) fn fusible_load(kind: &MachineInstKind) -> bool {
@@ -249,6 +471,74 @@ pub(super) fn int_compare_select_fusion(
         lhs,
         rhs,
         select_result,
+    })
+}
+
+/// An unsigned ordering compare whose 0/1 result only feeds an add to, or a
+/// subtract from, another register (`x + (a < b)`, `x - (a >= b)`, ...).
+/// CMP leaves the predicate or its negation in CF, which ADC/SBB consume
+/// directly instead of SETcc + MOVZX + ADD. The caller must additionally
+/// prove `bool_reg` dead after the add.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct IntCompareCarry {
+    pub width: MachineIntWidth,
+    pub kind: MachineCompareKind,
+    pub lhs: MachineValue,
+    pub rhs: MachineValue,
+    pub bool_reg: MachineReg,
+    pub acc_width: MachineIntWidth,
+    pub subtract: bool,
+    pub acc: MachineReg,
+    pub dst: MachineReg,
+}
+
+pub(super) fn int_compare_carry_fusion(
+    compare: &MachineInst,
+    alu: &MachineInst,
+) -> Option<IntCompareCarry> {
+    let MachineInstKind::IntCompare {
+        width,
+        kind,
+        sign: MachineSign::Unsigned,
+        dst: bool_reg,
+        lhs,
+        rhs,
+    } = compare.kind
+    else {
+        return None;
+    };
+    if matches!(kind, MachineCompareKind::Eq | MachineCompareKind::Ne) {
+        return None;
+    }
+    let MachineInstKind::IntBinary {
+        width: acc_width,
+        op,
+        dst,
+        lhs: MachineValue::Reg(alu_lhs),
+        rhs: MachineValue::Reg(alu_rhs),
+    } = alu.kind
+    else {
+        return None;
+    };
+    let (subtract, acc) = match op {
+        MachineIntBinaryOp::Add if alu_rhs == bool_reg => (false, alu_lhs),
+        MachineIntBinaryOp::Add if alu_lhs == bool_reg => (false, alu_rhs),
+        MachineIntBinaryOp::Sub if alu_rhs == bool_reg => (true, alu_lhs),
+        _ => return None,
+    };
+    if acc == bool_reg {
+        return None;
+    }
+    Some(IntCompareCarry {
+        width,
+        kind,
+        lhs,
+        rhs,
+        bool_reg,
+        acc_width,
+        subtract,
+        acc,
+        dst,
     })
 }
 

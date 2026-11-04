@@ -2636,6 +2636,129 @@ fn fuses_compare_branch_for_high_dynamic_result_reg() {
     ));
 }
 
+/// A block that compares a value and then spills it, as a function entry
+/// spills its parameters, followed by a branch on the compare.
+fn compare_spill_branch_program(spill: MachineValue) -> MachineProgram {
+    MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![
+                    MachineInst {
+                        kind: MachineInstKind::IntCompare {
+                            width: MachineIntWidth::I64,
+                            kind: MachineCompareKind::Le,
+                            sign: MachineSign::Signed,
+                            dst: MachineReg(8),
+                            lhs: MachineValue::Reg(MachineReg(7)),
+                            rhs: MachineValue::Imm64(1),
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: MachineStorageType::GpI64,
+                            addr: MachineAddr {
+                                base: MachineReg(1),
+                                offset: 0,
+                            },
+                            width: MachineMemWidth::U64,
+                            src: spill,
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(8))),
+                    then_edge: MachineEdge {
+                        target: MachineBlockId(1),
+                        args: collections::Vec::new(),
+                    },
+                    else_edge: MachineEdge {
+                        target: MachineBlockId(2),
+                        args: collections::Vec::new(),
+                    },
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    }
+}
+
+#[test]
+fn fuses_compare_branch_across_a_trailing_spill() {
+    let mut program = compare_spill_branch_program(MachineValue::Reg(MachineReg(7)));
+
+    optimize(&mut program, test_config(7, 8, 12, 14, 0));
+
+    let block = &program.blocks[0];
+    assert!(
+        matches!(
+            block.ops.as_slice(),
+            [MachineInst {
+                kind: MachineInstKind::Store {
+                    src: MachineValue::Reg(MachineReg(7)),
+                    ..
+                },
+            }]
+        ),
+        "the spill stays and the compare moves into the branch; ops={:?}",
+        block.ops
+    );
+    assert!(matches!(
+        block.terminator,
+        MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                width: MachineIntWidth::I64,
+                kind: MachineCompareKind::Le,
+                sign: MachineSign::Signed,
+                lhs: MachineValue::Reg(MachineReg(7)),
+                rhs: MachineValue::Imm64(1),
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn keeps_compare_when_a_trailing_store_reads_its_result() {
+    let mut program = compare_spill_branch_program(MachineValue::Reg(MachineReg(8)));
+
+    optimize(&mut program, test_config(7, 8, 12, 14, 0));
+
+    let block = &program.blocks[0];
+    assert!(
+        matches!(
+            block.ops.first().map(|op| &op.kind),
+            Some(MachineInstKind::IntCompare {
+                dst: MachineReg(8),
+                ..
+            })
+        ),
+        "a store of the compare result needs it materialized; ops={:?}",
+        block.ops
+    );
+    assert!(matches!(
+        block.terminator,
+        MachineTerminator::Branch {
+            cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(8))),
+            ..
+        }
+    ));
+}
+
 #[test]
 fn fuses_test_bits_for_high_dynamic_result_reg() {
     let mut program = MachineProgram {

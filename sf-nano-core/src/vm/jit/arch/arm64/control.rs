@@ -261,9 +261,11 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 self.lower_b(trap_label);
                 Ok(())
             }
-            MachineTerminator::JumpTable { index, entries } => {
-                self.lower_jump_table(*index, entries)
-            }
+            MachineTerminator::JumpTable {
+                index,
+                entries,
+                in_range,
+            } => self.lower_jump_table(*index, entries, *in_range),
             MachineTerminator::Call {
                 target,
                 frame_delta,
@@ -391,7 +393,32 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     ) => Some(r),
                     _ => None,
                 };
-                if let Some(reg) = zero_reg {
+                // A zero test of a bool whose compare just published its
+                // flags branches on those flags: `bool != 0` is the
+                // published condition and `bool == 0` its exact inverse.
+                let fused = match (zero_reg, self.select_flags.take()) {
+                    (Some(reg), Some((flags_reg, code))) if flags_reg == reg => Some(code),
+                    _ => None,
+                };
+                if let Some(code) = fused {
+                    let then_code = if kind == MachineCompareKind::Eq {
+                        code.invert()
+                    } else {
+                        code
+                    };
+                    if else_fallthrough {
+                        if let Some(label) = then_label {
+                            self.lower_b_cond(then_code, label);
+                        }
+                    } else if then_fallthrough {
+                        if let Some(label) = else_label {
+                            self.lower_b_cond(then_code.invert(), label);
+                        }
+                    } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
+                        self.lower_b_cond(then_code, then_label);
+                        self.lower_b(else_label);
+                    }
+                } else if let Some(reg) = zero_reg {
                     let reg = self.map_gp_reg(reg)?;
                     let is_eq = matches!(kind, MachineCompareKind::Eq);
                     let emit = |this: &mut Self, take_label: usize, take_eq: bool| {
@@ -508,7 +535,20 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     ) => Some(reg),
                     _ => None,
                 };
-                if let Some(reg) = zero_reg {
+                let fused = match (zero_reg, self.select_flags.take()) {
+                    (Some(reg), Some((flags_reg, code))) if flags_reg == reg => Some(code),
+                    _ => None,
+                };
+                if let Some(code) = fused {
+                    // Jump when the zero test fails: `bool == 0` fails on
+                    // the published condition, `bool != 0` on its inverse.
+                    let false_code = if kind == MachineCompareKind::Eq {
+                        code
+                    } else {
+                        code.invert()
+                    };
+                    self.lower_b_cond(false_code, label);
+                } else if let Some(reg) = zero_reg {
                     let reg = self.map_gp_reg(reg)?;
                     if kind == MachineCompareKind::Eq {
                         self.lower_cbnz(reg, label);
@@ -1200,6 +1240,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         &mut self,
         index: MachineValue,
         entries: &[MachineEdge],
+        in_range: bool,
     ) -> Result<(), WasmError> {
         if entries.is_empty() {
             return Err(WasmError::internal(
@@ -1227,14 +1268,22 @@ impl<'a> super::backend::Arm64Backend<'a> {
         .detach();
         // Keep C-ABI argument registers out of normal control lowering. `s1`
         // holds the clamped jump-table index first, then the scaled byte offset.
-        self.materialize_u64(*s1, (entries.len() - 1) as u64);
-        self.core.text.emit_u32(enc::cmp_reg_64(*index_reg, *s1));
-        self.core
-            .text
-            .emit_u32(enc::csel_64(*s1, *index_reg, *s1, enc::Cond::Ls));
+        // An index a dominating branch already bounds needs no clamp.
+        let scaled_from = if in_range {
+            *index_reg
+        } else {
+            self.materialize_u64(*s1, (entries.len() - 1) as u64);
+            self.core.text.emit_u32(enc::cmp_reg_64(*index_reg, *s1));
+            self.core
+                .text
+                .emit_u32(enc::csel_64(*s1, *index_reg, *s1, enc::Cond::Ls));
+            *s1
+        };
 
         let table_base_load = self.core.text.emit_u32(enc::ldr_lit_64(*s0, 0));
-        self.core.text.emit_u32(enc::lsl_imm_64(*s1, *s1, 3));
+        self.core
+            .text
+            .emit_u32(enc::lsl_imm_64(*s1, scaled_from, 3));
         self.core.text.emit_u32(enc::ldr_reg_64(*s0, *s0, *s1));
         self.core.text.emit_u32(enc::br(*s0));
 
@@ -1736,6 +1785,7 @@ mod tests {
                                 repeated_edge,
                                 default_edge,
                             ],
+                            in_range: false,
                         },
                     },
                     MachineBlock {

@@ -7,10 +7,11 @@ use crate::{
     error::WasmError,
     vm::{
         jit::machine::machine_ir::{
-            MachineAddr, MachineArgSrc, MachineBlockParam, MachineCallArgs, MachineCallLaneArg,
-            MachineFloatWidth, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
-            MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FP_REG,
+            MachineAddr, MachineArgSrc, MachineBlock, MachineBlockId, MachineBlockParam,
+            MachineCallArgs, MachineCallLaneArg, MachineFloatWidth, MachineFuncId, MachineFunction,
+            MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineReg,
+            MachineRegOwner, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_FP_REG,
         },
         jit::middle::frame::FrameSlot,
         jit::runtime::code::CodegenModuleView,
@@ -23,6 +24,66 @@ use super::core::{CompilerCore, FunctionBody};
 use super::types::DebugRegion;
 use super::types::{FunctionArtifact, ParallelSource};
 use super::{backend::ArchBackend, template::TemplateBackend};
+
+/// Mark the targets of depth-first back edges from `entry`. In a reducible
+/// CFG these are exactly the natural loop headers. Layout order alone cannot
+/// tell: a cold path placed after the block it rejoins jumps backward in the
+/// layout without closing a loop, and aligning its rejoin block would put
+/// padding on the hot fallthrough path.
+fn loop_headers(blocks: &[MachineBlock], entry: MachineBlockId) -> collections::Vec<bool> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Visit {
+        Unseen,
+        OnStack,
+        Done,
+    }
+    fn successor(terminator: &MachineTerminator, n: usize) -> Option<usize> {
+        let edge = match terminator {
+            MachineTerminator::Jump(edge) => (n == 0).then_some(edge),
+            MachineTerminator::Branch {
+                then_edge,
+                else_edge,
+                ..
+            } => [then_edge, else_edge].get(n).copied(),
+            MachineTerminator::JumpTable { entries, .. } => entries.get(n),
+            MachineTerminator::Call { success, .. } => (n == 0).then_some(success),
+            MachineTerminator::TailCall { .. }
+            | MachineTerminator::Return
+            | MachineTerminator::ReturnScalar { .. }
+            | MachineTerminator::Trap { .. } => None,
+        };
+        edge.map(|edge| edge.target.as_usize())
+    }
+
+    let mut visit = collections::vec![Visit::Unseen; blocks.len()];
+    let mut heads = collections::vec![false; blocks.len()];
+    // Each frame is a block and the index of its next successor to explore.
+    let mut stack: collections::Vec<(usize, usize)> = collections::Vec::new();
+    if let Some(state) = visit.get_mut(entry.as_usize()) {
+        *state = Visit::OnStack;
+        stack.push((entry.as_usize(), 0));
+    }
+    while let Some((block, next)) = stack.last_mut() {
+        match successor(&blocks[*block].terminator, *next) {
+            Some(target) => {
+                *next += 1;
+                match visit[target] {
+                    Visit::Unseen => {
+                        visit[target] = Visit::OnStack;
+                        stack.push((target, 0));
+                    }
+                    Visit::OnStack => heads[target] = true,
+                    Visit::Done => {}
+                }
+            }
+            None => {
+                visit[*block] = Visit::Done;
+                stack.pop();
+            }
+        }
+    }
+    heads
+}
 
 // ── compile_function ─────────────────────────────────────────────────────────
 
@@ -97,47 +158,11 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     }
 
     // Blocks
-    // Loop headers: blocks some same-or-later layout block branches back
-    // to. Their labels get the arch's loop alignment below; everything
-    // else stays packed.
+    // Loop headers get the arch's loop alignment below; everything else
+    // stays packed.
     let is_loop_header = {
-        let blocks = b.core().mir_blocks()?;
-        let mut layout_pos = collections::Vec::new();
-        layout_pos.resize(blocks.len(), usize::MAX);
-        for (index, block_id) in block_layout.iter().enumerate() {
-            layout_pos[block_id.as_usize()] = index;
-        }
-        let mut heads = collections::Vec::new();
-        heads.resize(blocks.len(), false);
-        let mut targets: collections::Vec<usize> = collections::Vec::new();
-        for (index, block_id) in block_layout.iter().enumerate() {
-            targets.clear();
-            match &blocks[block_id.as_usize()].terminator {
-                MachineTerminator::Jump(edge) => targets.push(edge.target.as_usize()),
-                MachineTerminator::Branch {
-                    then_edge,
-                    else_edge,
-                    ..
-                } => {
-                    targets.push(then_edge.target.as_usize());
-                    targets.push(else_edge.target.as_usize());
-                }
-                MachineTerminator::JumpTable { entries, .. } => {
-                    targets.extend(entries.iter().map(|edge| edge.target.as_usize()));
-                }
-                MachineTerminator::Call { success, .. } => targets.push(success.target.as_usize()),
-                MachineTerminator::TailCall { .. }
-                | MachineTerminator::Return
-                | MachineTerminator::ReturnScalar { .. }
-                | MachineTerminator::Trap { .. } => {}
-            }
-            for &target in &targets {
-                if layout_pos[target] <= index {
-                    heads[target] = true;
-                }
-            }
-        }
-        heads
+        let function = b.core().mir_function()?;
+        loop_headers(&function.program.blocks, function.program.entry)
     };
     for (index, block_id) in block_layout.iter().copied().enumerate() {
         if entry_guard && index == 0 {
@@ -676,4 +701,69 @@ fn frame_slot_byte_offset(slot: FrameSlot, byte_offset: i8) -> Result<i32, WasmE
         .checked_mul(8)
         .and_then(|base| base.checked_add(i32::from(byte_offset)))
         .ok_or_else(|| WasmError::internal("call argument frame slot offset overflow"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loop_headers;
+    use crate::collections;
+    use crate::vm::jit::machine::machine_ir::{
+        MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineReg,
+        MachineTerminator, MachineValue,
+    };
+
+    fn edge(target: u32) -> MachineEdge {
+        MachineEdge {
+            target: MachineBlockId(target),
+            args: collections::Vec::new(),
+        }
+    }
+
+    fn block(id: u32, terminator: MachineTerminator) -> MachineBlock {
+        MachineBlock {
+            id: MachineBlockId(id),
+            params: collections::Vec::new(),
+            ops: collections::Vec::new(),
+            terminator,
+        }
+    }
+
+    fn branch(then_target: u32, else_target: u32) -> MachineTerminator {
+        MachineTerminator::Branch {
+            cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(7))),
+            then_edge: edge(then_target),
+            else_edge: edge(else_target),
+        }
+    }
+
+    /// b1 heads a loop whose body b2 leaves for a cold path b5 that rejoins
+    /// at b4. Laid out last, b5 jumps backward to b4 without closing a loop,
+    /// so only b1 is a header.
+    #[test]
+    fn only_back_edge_targets_are_loop_headers() {
+        let blocks = collections::vec![
+            block(0, MachineTerminator::Jump(edge(1))),
+            block(1, branch(2, 3)),
+            block(2, branch(5, 4)),
+            block(3, MachineTerminator::Return),
+            block(4, MachineTerminator::Jump(edge(1))),
+            block(5, MachineTerminator::Jump(edge(4))),
+        ];
+        let heads = loop_headers(&blocks, MachineBlockId(0));
+        assert_eq!(heads, [false, true, false, false, false, false]);
+    }
+
+    /// A self loop and a nested loop each mark their own header.
+    #[test]
+    fn nested_and_self_loops_mark_each_header() {
+        let blocks = collections::vec![
+            block(0, MachineTerminator::Jump(edge(1))),
+            block(1, branch(2, 4)),
+            block(2, branch(2, 3)),
+            block(3, MachineTerminator::Jump(edge(1))),
+            block(4, MachineTerminator::Return),
+        ];
+        let heads = loop_headers(&blocks, MachineBlockId(0));
+        assert_eq!(heads, [false, true, true, false, false]);
+    }
 }

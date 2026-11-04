@@ -9,7 +9,9 @@
 //!    `move rTmp <- rSrc` to reference `rSrc` directly.
 //!
 //! 3. **Store-to-load forwarding** (`forward_stored_values`): Replaces
-//!    `load` after a matching `store` with a register move.
+//!    `load` after a matching `store` with a register move. A whole-program
+//!    follow-up (`forward_edge_stored_values`) does the same across the
+//!    edge from a block's only predecessor.
 //!
 //! 4. **Load-to-load reuse** (`reuse_loaded_values`): Replaces a second
 //!    identical load with a register copy from the first.
@@ -31,12 +33,14 @@
 //!    every incoming CFG edge, on backends where those definitions already
 //!    zero-extend (`gp32_defs_zero_extend`).
 
+mod bound_jump_table_index;
 mod cache_loop_frame_words;
 mod copy_propagate;
 mod deduplicate_constants;
 mod eliminate_dead_params;
 mod eliminate_overwritten_frame_stores;
 mod fold_induction_offsets;
+mod forward_edge_stored_values;
 mod forward_stored_values;
 mod fuse_compare_branch;
 mod fuse_indexed_memory;
@@ -102,6 +106,7 @@ impl BlockFeatures {
 #[derive(Clone, Copy)]
 struct TrackedStore {
     addr: MachineAddr,
+    ty: MachineStorageType,
     src: MachineValue,
     width: MachineMemWidth,
 }
@@ -331,6 +336,13 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     // ZeroExtend32 memory sequence, so it must precede the irreversible
     // relaxation below.
     recognize_memmove::recognize_memmove(program, config);
+    // After compare-branch fusion, so a compare folded into the terminator no
+    // longer redefines the stored register at the end of the predecessor; and
+    // after the passes that match block-parameter shapes (loop caching,
+    // induction folding, memmove recognition), which an extra carried
+    // parameter would otherwise disturb. Memmove recognition can add blocks,
+    // so this pass derives predecessors from the current terminators.
+    forward_edge_stored_values::forward_stored_values_across_edges(&mut program.blocks, entry);
     // Run this exactly once after every materialized MachineIR rewrite. The
     // fold may have emitted new ZeroExtend32 forms, and clean block parameters
     // (including loop-carried values) can now use the direct indexed form.
@@ -340,4 +352,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
             config.relax_index_extends_in_profitable_blocks_only,
         );
     }
+    // Last, so no later rewrite can change the guarding branch or the
+    // edge that carries the bounded index.
+    bound_jump_table_index::bound_jump_table_indexes(&mut program.blocks);
 }

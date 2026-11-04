@@ -1316,7 +1316,7 @@ fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(Machin
             visit_edge_regs(then_edge, &mut visit);
             visit_edge_regs(else_edge, &mut visit);
         }
-        MachineTerminator::JumpTable { index, entries } => {
+        MachineTerminator::JumpTable { index, entries, .. } => {
             visit_value_reg(index, &mut visit);
             for edge in entries {
                 visit_edge_regs(edge, &mut visit);

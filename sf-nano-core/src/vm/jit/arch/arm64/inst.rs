@@ -118,6 +118,7 @@ pub(super) fn prepare_fp<'p>(
     config: BackendConfig,
     fp_widths: &[Option<MachineFloatWidth>],
     text: &mut TextEmitter,
+    literals: &mut super::fp_literals::FpLiteralPool,
     gp_pool: &ScratchPool<Arm64Reg, 2>,
     fp_pool: &'p ScratchPool<Arm64FpReg, 2>,
     width: MachineFloatWidth,
@@ -137,14 +138,19 @@ pub(super) fn prepare_fp<'p>(
             MachineFloatWidth::F32 => enc::fmov_f32_imm8(bits as u32),
             MachineFloatWidth::F64 => enc::fmov_f64_imm8(bits),
         };
-        if let Some(imm8) = imm8 {
-            let fp_scratch = fp_pool.scoped_alloc();
-            text.emit_u32(match width {
-                MachineFloatWidth::F32 => enc::fmov_s_imm(*fp_scratch, imm8),
-                MachineFloatWidth::F64 => enc::fmov_d_imm(*fp_scratch, imm8),
-            });
-            return Ok(PreparedFp::Scratch(fp_scratch));
+        let fp_scratch = fp_pool.scoped_alloc();
+        match imm8 {
+            Some(imm8) => {
+                text.emit_u32(match width {
+                    MachineFloatWidth::F32 => enc::fmov_s_imm(*fp_scratch, imm8),
+                    MachineFloatWidth::F64 => enc::fmov_d_imm(*fp_scratch, imm8),
+                });
+            }
+            // Anything else is one PC-relative load (zero: MOVI) instead
+            // of a GP build plus a cross-domain FMOV.
+            None => literals.emit_load(text, width, bits, *fp_scratch),
         }
+        return Ok(PreparedFp::Scratch(fp_scratch));
     }
     let gp = prepare_gp(config, fp_widths, text, gp_pool, value)?;
     let fp_scratch = fp_pool.scoped_alloc();
@@ -2889,6 +2895,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         self.core.compiled.backend(),
                         &self.core.fp_reg_widths,
                         &mut self.core.text,
+                        &mut self.fp_literals,
                         &self.gp_scratch,
                         &self.fp_scratch,
                         width,
@@ -2898,6 +2905,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         self.core.compiled.backend(),
                         &self.core.fp_reg_widths,
                         &mut self.core.text,
+                        &mut self.fp_literals,
                         &self.gp_scratch,
                         &self.fp_scratch,
                         width,
@@ -3009,6 +3017,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             self.core.compiled.backend(),
             &self.core.fp_reg_widths,
             &mut self.core.text,
+            &mut self.fp_literals,
             &self.gp_scratch,
             &self.fp_scratch,
             width,
@@ -3103,6 +3112,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             self.core.compiled.backend(),
             &self.core.fp_reg_widths,
             &mut self.core.text,
+            &mut self.fp_literals,
             &self.gp_scratch,
             &self.fp_scratch,
             width,
@@ -3113,6 +3123,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             self.core.compiled.backend(),
             &self.core.fp_reg_widths,
             &mut self.core.text,
+            &mut self.fp_literals,
             &self.gp_scratch,
             &self.fp_scratch,
             width,
@@ -3273,6 +3284,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             self.core.compiled.backend(),
             &self.core.fp_reg_widths,
             &mut self.core.text,
+            &mut self.fp_literals,
             &self.gp_scratch,
             &self.fp_scratch,
             width,
@@ -3353,6 +3365,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             self.core.compiled.backend(),
             &self.core.fp_reg_widths,
             &mut self.core.text,
+            &mut self.fp_literals,
             &self.gp_scratch,
             &self.fp_scratch,
             width,
@@ -3368,6 +3381,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 self.core.compiled.backend(),
                 &self.core.fp_reg_widths,
                 &mut self.core.text,
+                &mut self.fp_literals,
                 &self.gp_scratch,
                 &self.fp_scratch,
                 width,
@@ -3505,6 +3519,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core.compiled.backend(),
                     &self.core.fp_reg_widths,
                     &mut self.core.text,
+                    &mut self.fp_literals,
                     &self.gp_scratch,
                     &self.fp_scratch,
                     MachineFloatWidth::F32,
@@ -3523,6 +3538,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core.compiled.backend(),
                     &self.core.fp_reg_widths,
                     &mut self.core.text,
+                    &mut self.fp_literals,
                     &self.gp_scratch,
                     &self.fp_scratch,
                     MachineFloatWidth::F64,
@@ -4383,65 +4399,55 @@ impl<'a> super::backend::Arm64Backend<'a> {
         src: MachineValue,
     ) -> Result<(), WasmError> {
         let spec = trunc_spec(op);
-
-        // Get source into an FP scratch register.
-        let src_fp = *self.fp_scratch.scoped_alloc();
-        let src_gp = prepare_gp(
+        let width = if spec.src_f32 {
+            MachineFloatWidth::F32
+        } else {
+            MachineFloatWidth::F64
+        };
+        let fcmp = |lhs, rhs| {
+            if spec.src_f32 {
+                enc::fcmp_s(lhs, rhs)
+            } else {
+                enc::fcmp_d(lhs, rhs)
+            }
+        };
+        // The source stays in the FP domain: a mapped register is read in
+        // place; only a constant or GP-carried value needs a scratch.
+        let src_fp = prepare_fp(
             self.core.compiled.backend(),
             &self.core.fp_reg_widths,
             &mut self.core.text,
+            &mut self.fp_literals,
             &self.gp_scratch,
+            &self.fp_scratch,
+            width,
             src,
         )?
         .detach();
-        self.core.text.emit_u32(if spec.src_f32 {
-            enc::fmov_s_from_gp(src_fp, *src_gp)
-        } else {
-            enc::fmov_d_from_gp(src_fp, *src_gp)
-        });
+        // Both scratches stay reserved until the conversion is emitted.
+        let bound = self.fp_scratch.scoped_alloc().detach();
+        let (src_fp, bound_fp) = (*src_fp, *bound);
 
         // 1. NaN check: FCMP src, src — NaN ≠ NaN sets V flag.
-        self.core.text.emit_u32(if spec.src_f32 {
-            enc::fcmp_s(src_fp, src_fp)
-        } else {
-            enc::fcmp_d(src_fp, src_fp)
-        });
+        self.core.text.emit_u32(fcmp(src_fp, src_fp));
         let trap_nan = self
             .core
             .ensure_trap_label(MachineTrapKind::InvalidConversion);
         self.lower_b_cond(enc::Cond::Vs, trap_nan);
 
         // 2. Upper bound check: FCMP src, upper — trap if src >= upper.
-        let bound_fp = *self.fp_scratch.scoped_alloc();
-        let bound_gp = *self.gp_scratch.scoped_alloc();
-        materialize_u64_into(&mut self.core.text, bound_gp, spec.upper_bits);
-        self.core.text.emit_u32(if spec.src_f32 {
-            enc::fmov_s_from_gp(bound_fp, bound_gp)
-        } else {
-            enc::fmov_d_from_gp(bound_fp, bound_gp)
-        });
-        self.core.text.emit_u32(if spec.src_f32 {
-            enc::fcmp_s(src_fp, bound_fp)
-        } else {
-            enc::fcmp_d(src_fp, bound_fp)
-        });
+        self.fp_literals
+            .emit_load(&mut self.core.text, width, spec.upper_bits, bound_fp);
+        self.core.text.emit_u32(fcmp(src_fp, bound_fp));
         let trap_overflow = self
             .core
             .ensure_trap_label(MachineTrapKind::IntegerOverflow);
         self.lower_b_cond(enc::Cond::Ge, trap_overflow);
 
         // 3. Lower bound check: FCMP src, lower — trap condition depends on variant.
-        materialize_u64_into(&mut self.core.text, bound_gp, spec.lower_bits);
-        self.core.text.emit_u32(if spec.src_f32 {
-            enc::fmov_s_from_gp(bound_fp, bound_gp)
-        } else {
-            enc::fmov_d_from_gp(bound_fp, bound_gp)
-        });
-        self.core.text.emit_u32(if spec.src_f32 {
-            enc::fcmp_s(src_fp, bound_fp)
-        } else {
-            enc::fcmp_d(src_fp, bound_fp)
-        });
+        self.fp_literals
+            .emit_load(&mut self.core.text, width, spec.lower_bits, bound_fp);
+        self.core.text.emit_u32(fcmp(src_fp, bound_fp));
         // Signed: trap if src < lower (Mi after NaN ruled out).
         // Unsigned: trap if src <= lower (Ls after NaN ruled out).
         self.lower_b_cond(spec.lower_cond, trap_overflow);

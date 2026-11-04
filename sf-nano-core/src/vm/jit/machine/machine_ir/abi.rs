@@ -186,9 +186,10 @@ pub(crate) struct MachineFunctionAbi {
 /// Module-wide ABI metadata carried alongside MachineIR.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MachineModuleAbi {
-    /// ARM64's inline memory0 bulk path requires proof of a 32-bit index.
+    /// The ARM64 and x86_64 inline memory0 bulk paths require proof of a
+    /// 32-bit index.
     /// Standalone MachineIR without module declarations leaves this unknown.
-    #[cfg(sf_backend_arm64)]
+    #[cfg(any(sf_backend_arm64, sf_backend_x64))]
     pub memory0_is64: Option<bool>,
     pub functions: collections::Vec<MachineFunctionAbi>,
 }

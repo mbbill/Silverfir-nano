@@ -72,6 +72,7 @@ impl<'a> BlockLowerContext<'a> {
                 Ok(MachineTerminator::JumpTable {
                     index: MachineValue::Reg(index),
                     entries: lowered,
+                    in_range: false,
                 })
             }
             SsaTerminator::Return { .. } => {

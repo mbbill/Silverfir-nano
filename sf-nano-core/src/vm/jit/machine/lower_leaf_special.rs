@@ -867,6 +867,12 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
+    /// `retag` marks an imported or exported table. Its writes go through the
+    /// runtime as a one-element `table.fill`, which retags the reference for
+    /// the shared container and bumps the table revision: another context
+    /// may hold `Cached` dispatch entries for it, and an inline store would
+    /// leave them naming the old function. A private table's own module
+    /// performs every write to it, so those stay inline.
     pub(super) fn lower_table_set(
         &mut self,
         table_idx: u32,
@@ -875,6 +881,20 @@ impl<'a> BlockLowerContext<'a> {
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
+        if retag {
+            let (index, src) = two_args(args)?;
+            let start = self.lower_operand(index)?;
+            let val = self.lower_operand(src)?;
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TableFill {
+                    table_idx,
+                    start,
+                    val,
+                    len: MachineValue::Imm64(1),
+                },
+            });
+            return Ok(LeafLowering::InPlace);
+        }
         let (index_value, src_value) = {
             let (a, b) = two_args(args)?;
             (a.unwrap_value(), b.unwrap_value())
@@ -882,24 +902,12 @@ impl<'a> BlockLowerContext<'a> {
         let index = self.use_value(index_value)?;
         let src = self.use_value(src_value)?;
         let dead_index = self.dead_value_reg(index_value);
-        let scratch_count = usize::from(retag) + if dead_index.is_some() { 1 } else { 2 };
+        let scratch_count = if dead_index.is_some() { 1 } else { 2 };
         let scratch = self.borrow_free_gp_dynamic_regs(scratch_count)?;
-        let (src, scratch_offset) = if retag {
-            let absolute = scratch[0];
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::RefAbsolutize {
-                    src: MachineValue::Reg(src),
-                    dst: absolute,
-                },
-            });
-            (absolute, 1)
-        } else {
-            (src, 0)
-        };
         let (index64, table_len) = if let Some(index64) = dead_index {
-            (index64, scratch[scratch_offset])
+            (index64, scratch[0])
         } else {
-            (scratch[scratch_offset], scratch[scratch_offset + 1])
+            (scratch[0], scratch[1])
         };
         let continuation_ops = self.lower_table_access_continuation(
             table_idx,

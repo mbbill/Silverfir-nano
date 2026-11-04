@@ -2,7 +2,10 @@
 //!
 //! Fuses `IntCompare { dst } + Branch { Reg(dst) }` into
 //! `Branch { IntCompare { ... } }` when the compare result register is a
-//! linear value and is dead in both successor blocks.
+//! linear value and is dead in both successor blocks. Stores may sit between
+//! the compare and the branch (a block often spills a value it compared, as
+//! a function entry does with its parameters): a store defines no register,
+//! so the compare's operands still hold the same values at the branch.
 //!
 //! This is a cross-block pass: it reads successor blocks to check liveness,
 //! so it must run after the per-block optimizations are done.
@@ -21,12 +24,6 @@ pub(super) fn fuse_compare_branch(
     _config: BackendConfig,
 ) {
     for idx in 0..blocks.len() {
-        // Check the last op and the terminator of this block.
-        let last_op = match blocks[idx].ops.last() {
-            Some(op) => op,
-            None => continue,
-        };
-
         // Terminator must be Branch { cond: Value(Reg(cond_reg)) }.
         let (cond_reg, then_target, else_target) = match &blocks[idx].terminator {
             MachineTerminator::Branch {
@@ -36,6 +33,18 @@ pub(super) fn fuse_compare_branch(
             } => (*r, then_edge.target, else_edge.target),
             _ => continue,
         };
+
+        // The compare is the last op, or is followed only by stores that do
+        // not read its result.
+        let Some(compare_idx) = blocks[idx].ops.iter().rposition(|op| {
+            !matches!(
+                op.kind,
+                MachineInstKind::Store { .. } | MachineInstKind::IndexedStore { .. }
+            ) || count_value_uses(&op.kind, cond_reg) > 0
+        }) else {
+            continue;
+        };
+        let last_op = &blocks[idx].ops[compare_idx];
 
         // Build the fused branch condition, or skip.
         //
@@ -107,7 +116,7 @@ pub(super) fn fuse_compare_branch(
         }
 
         // Safe to fuse: remove the compare op and rewrite the terminator.
-        blocks[idx].ops.pop();
+        blocks[idx].ops.remove(compare_idx);
         if let MachineTerminator::Branch { cond, .. } = &mut blocks[idx].terminator {
             *cond = fused_cond;
         }

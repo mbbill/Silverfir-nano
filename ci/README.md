@@ -90,6 +90,23 @@ executes every benchmark once on both revisions and validates its fixed oracle;
 it does not calculate or gate performance deltas, and no benchmark receives a
 platform-specific exclusion.
 
+## Cross-engine standings
+
+`.github/workflows/standings.yml` is a manual, same-run diagnostic that ranks
+the JIT against Wasmtime (Cranelift) and V8 on x64 Linux, x64 Windows and
+ARM64 macOS. Each platform runs two draws of two jobs:
+
+- `corpus`: the pinned wasmi-benchmarks execute corpus, selected by
+  `ci/standings_filter.txt`, rendered by `ci.standings_report`. The suite is
+  patched to this checkout, Nano alone is refreshed in its private lockfile,
+  and `ci/wasmi_adapter.patch` is applied, as `ci.wasmi_performance` does.
+- `wasi`: `benchmarks/wasi` through `ci.wasi_standings`, with the prebuilt
+  Wasmtime release for that platform and Node's V8.
+
+Linux pins one core with ASLR off; macOS and Windows run unpinned, so a table
+compares engines under the same conditions only within one job. The tables
+carry no statistical claim; the paired revision workflow remains the gate.
+
 ## Measurement trust
 
 Runs of byte-identical sources have measured statistically certain but

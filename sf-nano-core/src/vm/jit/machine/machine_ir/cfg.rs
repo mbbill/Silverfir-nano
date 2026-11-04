@@ -121,9 +121,15 @@ pub(crate) enum MachineTerminator {
         then_edge: MachineEdge,
         else_edge: MachineEdge,
     },
+    /// Dispatch on an i32 `index`: entries `0..len - 1` are the table and
+    /// the last entry is the default, taken by any larger index.
     JumpTable {
         index: MachineValue,
         entries: collections::Vec<MachineEdge>,
+        /// A dominating branch proves `index <= entries.len() - 1` as an
+        /// unsigned i32, so a backend may index the table without first
+        /// clamping larger values to the default entry.
+        in_range: bool,
     },
     /// Compiled call transfer into another MachineIR function.
     ///
