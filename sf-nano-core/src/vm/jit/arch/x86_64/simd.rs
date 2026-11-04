@@ -2476,7 +2476,10 @@ impl<'a> X86_64Backend<'a> {
         )?;
         let dst_fp = self.map_fp_reg(dst)? as u8;
 
+        // The per-lane shifts take their count in CL. RCX is an allocatable
+        // register, so it is saved around the loop, which has no trap exit.
         let count_src = self.materialize_value(X86Reg::RAX, shift)?;
+        enc::push(&mut self.core.text, X86Reg::RCX);
         if count_src != X86Reg::RCX {
             enc::mov_rr_32(&mut self.core.text, X86Reg::RCX, count_src);
         }
@@ -2490,6 +2493,7 @@ impl<'a> X86_64Backend<'a> {
         }
         movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 0);
         enc::add_rsp_imm8(&mut self.core.text, 16);
+        enc::pop(&mut self.core.text, X86Reg::RCX);
         Ok(())
     }
 
@@ -2621,9 +2625,7 @@ impl<'a> X86_64Backend<'a> {
         movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 0);
         enc::add_rsp_imm32(
             &mut self.core.text,
-            V128_PREFIX_BYTES
-                + (preserved_io::SLOT_COUNT as u32 * 8)
-                + (abi::FP_MACHINE_REG_COUNT as u32) * 16,
+            V128_PREFIX_BYTES + super::preserved::PRESERVED_FRAME_BYTES,
         );
         self.restore_caller_clobbered_gp_dynamic();
         self.emit_jmp(done_label);
@@ -2638,9 +2640,7 @@ impl<'a> X86_64Backend<'a> {
         }
         enc::add_rsp_imm32(
             &mut self.core.text,
-            V128_PREFIX_BYTES
-                + (preserved_io::SLOT_COUNT as u32 * 8)
-                + (abi::FP_MACHINE_REG_COUNT as u32) * 16,
+            V128_PREFIX_BYTES + super::preserved::PRESERVED_FRAME_BYTES,
         );
         self.restore_caller_clobbered_gp_dynamic();
         let body_local_error_label = self.core.body_local_error_label;
@@ -2936,9 +2936,9 @@ impl<'a> X86_64Backend<'a> {
             enc::shr_imm_32(&mut self.core.text, X86Reg::RDX, 2);
             enc::and_ri_32(&mut self.core.text, X86Reg::RDX, 0x33);
             enc::add_rr_32(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
-            enc::mov_rr_32(&mut self.core.text, X86Reg::RCX, X86Reg::RAX);
-            enc::shr_imm_32(&mut self.core.text, X86Reg::RCX, 4);
-            enc::add_rr_32(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
+            enc::mov_rr_32(&mut self.core.text, X86Reg::RDX, X86Reg::RAX);
+            enc::shr_imm_32(&mut self.core.text, X86Reg::RDX, 4);
+            enc::add_rr_32(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
             enc::and_ri_32(&mut self.core.text, X86Reg::RAX, 0x0f);
             enc::store_8(&mut self.core.text, X86Reg::RSP, 16 + lane, X86Reg::RAX);
         }
@@ -3128,8 +3128,11 @@ impl<'a> X86_64Backend<'a> {
                 true,
             );
             enc::imul_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
+            // The output lane holds the first product while RAX and RDX
+            // form the second; the 16-bit sum wraps the same either way.
+            enc::store_16(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
             self.emit_load_int_lane_to(
-                X86Reg::RCX,
+                X86Reg::RAX,
                 X86Reg::RSP,
                 lhs_off + 1,
                 IntCompareLaneWidth::B8,
@@ -3142,8 +3145,15 @@ impl<'a> X86_64Backend<'a> {
                 IntCompareLaneWidth::B8,
                 true,
             );
-            enc::imul_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RDX);
-            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
+            enc::imul_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
+            self.emit_load_int_lane_to(
+                X86Reg::RDX,
+                X86Reg::RSP,
+                out_off,
+                IntCompareLaneWidth::H16,
+                true,
+            );
+            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
             enc::store_16(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
         }
         movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 32);
@@ -3181,8 +3191,11 @@ impl<'a> X86_64Backend<'a> {
                 true,
             );
             enc::imul_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
+            // The output lane holds the first product while RAX and RDX
+            // form the second; the 16-bit sum wraps the same either way.
+            enc::store_16(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
             self.emit_load_int_lane_to(
-                X86Reg::RCX,
+                X86Reg::RAX,
                 X86Reg::RSP,
                 lhs_off + 1,
                 IntCompareLaneWidth::B8,
@@ -3195,8 +3208,15 @@ impl<'a> X86_64Backend<'a> {
                 IntCompareLaneWidth::B8,
                 true,
             );
-            enc::imul_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RDX);
-            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
+            enc::imul_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
+            self.emit_load_int_lane_to(
+                X86Reg::RDX,
+                X86Reg::RSP,
+                out_off,
+                IntCompareLaneWidth::H16,
+                true,
+            );
+            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
             enc::store_16(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
         }
         for lane in 0..4 {
@@ -3219,13 +3239,13 @@ impl<'a> X86_64Backend<'a> {
             );
             enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
             self.emit_load_int_lane_to(
-                X86Reg::RCX,
+                X86Reg::RDX,
                 X86Reg::RSP,
                 add_off,
                 IntCompareLaneWidth::S32,
                 true,
             );
-            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
+            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
             enc::store_32(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
         }
         movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 64);
@@ -3959,12 +3979,10 @@ impl<'a> X86_64Backend<'a> {
             FloatCompareLaneWidth::F32 => {
                 enc::load_32(&mut self.core.text, X86Reg::RAX, X86Reg::RSP, lhs_off);
                 enc::load_32(&mut self.core.text, X86Reg::RDX, X86Reg::RSP, rhs_off);
-                enc::mov_rr_32(&mut self.core.text, X86Reg::RCX, X86Reg::RAX);
-                enc::and_ri_32(&mut self.core.text, X86Reg::RCX, 0x7fff_ffff);
+                enc::test_ri_32(&mut self.core.text, X86Reg::RAX, 0x7fff_ffff);
                 let lhs_non_zero = self.core.new_label();
                 self.emit_jcc(Cc::NE, lhs_non_zero);
-                enc::mov_rr_32(&mut self.core.text, X86Reg::RCX, X86Reg::RDX);
-                enc::and_ri_32(&mut self.core.text, X86Reg::RCX, 0x7fff_ffff);
+                enc::test_ri_32(&mut self.core.text, X86Reg::RDX, 0x7fff_ffff);
                 self.emit_jcc(Cc::NE, lhs_non_zero);
                 enc::and_ri_32(&mut self.core.text, X86Reg::RAX, 0x8000_0000u32 as i32);
                 enc::and_ri_32(&mut self.core.text, X86Reg::RDX, 0x8000_0000u32 as i32);
@@ -3981,22 +3999,21 @@ impl<'a> X86_64Backend<'a> {
                 self.core.bind_label(done);
             }
             FloatCompareLaneWidth::F64 => {
+                // Shifting out the sign bit leaves zero only for +-0.
                 enc::load_64(&mut self.core.text, X86Reg::RAX, X86Reg::RSP, lhs_off);
-                enc::mov_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RAX);
-                enc::shl_imm_64(&mut self.core.text, X86Reg::RCX, 1);
-                enc::test_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RCX);
+                enc::shl_imm_64(&mut self.core.text, X86Reg::RAX, 1);
+                enc::test_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
                 let lhs_non_zero = self.core.new_label();
                 self.emit_jcc(Cc::NE, lhs_non_zero);
 
                 enc::load_64(&mut self.core.text, X86Reg::RDX, X86Reg::RSP, rhs_off);
-                enc::mov_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RDX);
-                enc::shl_imm_64(&mut self.core.text, X86Reg::RCX, 1);
-                enc::test_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RCX);
+                enc::shl_imm_64(&mut self.core.text, X86Reg::RDX, 1);
+                enc::test_rr_64(&mut self.core.text, X86Reg::RDX, X86Reg::RDX);
                 self.emit_jcc(Cc::NE, lhs_non_zero);
 
-                enc::mov_ri_64(&mut self.core.text, X86Reg::RCX, 0x8000_0000_0000_0000);
-                enc::and_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
-                enc::and_rr_64(&mut self.core.text, X86Reg::RDX, X86Reg::RCX);
+                // Both lanes are +-0, so each value is its sign bit alone.
+                enc::load_64(&mut self.core.text, X86Reg::RAX, X86Reg::RSP, lhs_off);
+                enc::load_64(&mut self.core.text, X86Reg::RDX, X86Reg::RSP, rhs_off);
                 if is_max {
                     enc::and_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
                 } else {

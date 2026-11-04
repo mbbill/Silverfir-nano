@@ -694,7 +694,10 @@ mod tests {
             *dst = MachineReg(7);
         }
         assert!(copied_narrow_load(&copy, &overwrite, &[], &edge).is_some());
-        for reg in [0, 1, 2, 3, 12, 40] {
+        // Fixed registers, the first register past the dynamic GP lanes,
+        // and an FP-bank register.
+        let past_gp = super::super::abi::max_gp_mapped_regs() as u16;
+        for reg in [0, 1, 2, 3, past_gp, 40] {
             let mut invalid = copy.clone();
             if let MachineInstKind::Move { src, .. } = &mut invalid.kind {
                 *src = MachineValue::Reg(MachineReg(reg));

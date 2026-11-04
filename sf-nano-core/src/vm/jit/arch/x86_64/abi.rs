@@ -33,8 +33,10 @@ struct RegPlan {
     /// Backend-owned GP registers required by x86_64 instruction forms.
     ///
     /// These are not part of the dynamic bank: ordinary lowering may need the
-    /// exact register (`RCX` for variable shifts, `RAX:RDX` for div/rem), so
-    /// x86_64 tracks them with a backend-local GP scratch owner.
+    /// exact register (`RAX:RDX` for div/rem, `RAX` for helper status), so
+    /// x86_64 tracks them with a backend-local GP scratch owner. `RCX`, the
+    /// variable shift count register, is a dynamic lane instead; shift
+    /// lowering saves it when the count lives elsewhere.
     gp_backend_owned: &'static [X86Reg],
     /// Ordered FP dynamic bank. Earlier entries are preferred for allocation.
     fp_dynamic: &'static [u32],
@@ -64,13 +66,14 @@ const REG_PLAN: RegPlan = RegPlan {
         X86Reg::R8,
         X86Reg::R9,
         X86Reg::R10,
+        X86Reg::RCX,
         X86Reg::R14,
         X86Reg::R15,
         X86Reg::R11,
     ],
     // x86_64 ordinary lowering sometimes requires these exact registers.
     // They are backend-owned and tracked locally, not handed out by regalloc.
-    gp_backend_owned: &[X86Reg::RAX, X86Reg::RCX, X86Reg::RDX],
+    gp_backend_owned: &[X86Reg::RAX, X86Reg::RDX],
 
     // XMM0..XMM1 are reserved for the scratch pool; the dynamic bank
     // starts at XMM2 so the allocator never hands out a lane that the
@@ -119,7 +122,7 @@ pub(super) const W2W_FP_RET0: u32 = REG_PLAN.fp_scratch[0];
 const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
 
 // Lane-class widths over `REG_PLAN.gp_dynamic`, in positional order.
-const GP_VOLATILE_DYNAMIC: u8 = 5;
+const GP_VOLATILE_DYNAMIC: u8 = 6;
 const GP_PRESERVED_DYNAMIC: u8 = 2;
 const GP_INTERNAL_SCRATCH: u8 = 1;
 const GP_ARG_LANES: u8 = 4;
@@ -158,12 +161,8 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
 
 // ── Scratch pool construction ────────────────────────────────────────────────
 
-pub(super) fn gp_backend_owned_regs() -> [X86Reg; 3] {
-    [
-        REG_PLAN.gp_backend_owned[0],
-        REG_PLAN.gp_backend_owned[1],
-        REG_PLAN.gp_backend_owned[2],
-    ]
+pub(super) fn gp_backend_owned_regs() -> [X86Reg; 2] {
+    [REG_PLAN.gp_backend_owned[0], REG_PLAN.gp_backend_owned[1]]
 }
 
 pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 2> {

@@ -12,18 +12,21 @@ use super::reg::X86Reg;
 /// exact registers:
 ///
 /// - `RAX` / `RDX` for `div` / `idiv`
-/// - `RCX` for variable shifts / rotates
+/// - `RAX` for helper status and `RDX` for helper results
 ///
 /// They are therefore backend-owned and tracked locally by the x86_64 backend.
+/// `RCX`, which variable shifts and rotates need for their count, is an
+/// allocatable lane; those sites save it around the shift when the count is
+/// elsewhere.
 #[derive(Debug)]
 pub(super) struct GpScratchPool {
-    regs: [X86Reg; 3],
+    regs: [X86Reg; 2],
     in_use: Cell<u8>,
     cursor: Cell<u8>,
 }
 
 impl GpScratchPool {
-    pub(super) fn new(regs: [X86Reg; 3]) -> Self {
+    pub(super) fn new(regs: [X86Reg; 2]) -> Self {
         Self {
             regs,
             in_use: Cell::new(0),
@@ -55,10 +58,6 @@ impl GpScratchPool {
 
     pub(super) fn claim_rax(&self) -> GpScratchGuard<'_> {
         self.claim_named(X86Reg::RAX)
-    }
-
-    pub(super) fn claim_rcx(&self) -> GpScratchGuard<'_> {
-        self.claim_named(X86Reg::RCX)
     }
 
     pub(super) fn claim_rdx(&self) -> GpScratchGuard<'_> {

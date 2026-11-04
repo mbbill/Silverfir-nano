@@ -18,6 +18,7 @@ use super::{
     backend::{FpLiteralFixup, X86_64Backend},
     enc::{self, Cc},
     fusion::map_int_cond,
+    gp_scratch::DetachedGpScratch,
     reg::X86Reg,
 };
 use crate::vm::jit::arch::common::helpers::convert_result_float_width;
@@ -1624,27 +1625,35 @@ impl<'a> X86_64Backend<'a> {
             );
             return Ok(());
         }
-        // Variable shift: RCX is scratch-only on x86_64, so own it explicitly
-        // rather than borrowing a dynamic register and restoring it later.
-        let rcx = self.gp_scratch.claim_rcx().detach();
+        // Variable shift or rotate: the count must be in CL, and RCX is an
+        // allocatable lane. Compute in a backend scratch; unless the count is
+        // already in RCX, save RCX around the operation, and write the result
+        // to its lane after RCX is restored.
         let scratch0 = self.gp_scratch.scoped_alloc().detach();
-        let lhs_gp = self.materialize_value(*scratch0, lhs)?;
-        let rhs_gp = self.materialize_value(*rcx, rhs)?;
-        if rhs_gp == dst && dst != lhs_gp {
-            if rhs_gp != *rcx {
-                enc::mov_rr_64(&mut self.core.text, *rcx, rhs_gp);
-            }
-            if dst != lhs_gp {
-                self.emit_gp_move_width(width, dst, lhs_gp);
-            }
-        } else {
-            if dst != lhs_gp {
-                self.emit_gp_move_width(width, dst, lhs_gp);
-            }
-            if rhs_gp != *rcx {
-                enc::mov_rr_64(&mut self.core.text, *rcx, rhs_gp);
-            }
+        let value = *scratch0;
+        let lhs_gp = self.materialize_value(value, lhs)?;
+        if lhs_gp != value {
+            self.emit_gp_move_width(width, value, lhs_gp);
         }
+        let count_in_rcx = matches!(rhs, MachineValue::Reg(reg) if self.map_gp_reg(reg)? == X86Reg::RCX);
+        if !count_in_rcx {
+            let scratch1 = self.gp_scratch.scoped_alloc().detach();
+            let count = self.materialize_value(*scratch1, rhs)?;
+            enc::push(&mut self.core.text, X86Reg::RCX);
+            enc::mov_rr_32(&mut self.core.text, X86Reg::RCX, count);
+        }
+        let target = value;
+        self.emit_shift_cl(width, op, target);
+        if !count_in_rcx {
+            enc::pop(&mut self.core.text, X86Reg::RCX);
+        }
+        if dst != value {
+            self.emit_gp_move_width(width, dst, value);
+        }
+        Ok(())
+    }
+
+    fn emit_shift_cl(&mut self, width: MachineIntWidth, op: MachineIntBinaryOp, dst: X86Reg) {
         match (width, op) {
             (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => {
                 enc::shl_cl_64(&mut self.core.text, dst)
@@ -1678,7 +1687,6 @@ impl<'a> X86_64Backend<'a> {
             }
             _ => unreachable!(),
         };
-        Ok(())
     }
 
     /// Emit div/rem: x86_64 uses RAX:RDX for dividend, result in RAX (quot) / RDX (rem).
@@ -1694,19 +1702,19 @@ impl<'a> X86_64Backend<'a> {
         // backend registers, so claim ownership explicitly before touching them.
         let rax = self.gp_scratch.claim_rax().detach();
         let rdx = self.gp_scratch.claim_rdx().detach();
-        let scratch0 = self.gp_scratch.scoped_alloc().detach();
 
         let lhs_gp = self.materialize_value(*rax, lhs)?;
         if lhs_gp != *rax {
             enc::mov_rr_64(&mut self.core.text, *rax, lhs_gp);
         }
-        let rhs_gp = self.materialize_value(*scratch0, rhs)?;
-        let divisor = if rhs_gp == *rax || rhs_gp == *rdx {
-            enc::mov_rr_64(&mut self.core.text, *scratch0, rhs_gp);
-            *scratch0
-        } else {
-            rhs_gp
+        // A GP divisor already sits in an allocatable lane, never RAX or
+        // RDX. Any other divisor is staged in `dst`: the dividend is now in
+        // RAX and the result is written to `dst` last.
+        let divisor = match rhs {
+            MachineValue::Reg(reg) if !self.core.is_fp_reg(reg) => self.map_gp_reg(reg)?,
+            _ => self.materialize_value(dst, rhs)?,
         };
+        debug_assert!(divisor != *rax && divisor != *rdx);
 
         // Division-by-zero check: divisor == 0 => trap
         enc::test_rr_64(&mut self.core.text, divisor, divisor);
@@ -1852,21 +1860,37 @@ impl<'a> X86_64Backend<'a> {
         }
     }
 
+    /// `value` in a GP register. A backend scratch is held only for a value
+    /// that is not already in a GP register (an immediate or an FP
+    /// register); the caller keeps the returned guard while it reads the
+    /// register.
+    fn gp_operand(
+        &mut self,
+        value: MachineValue,
+    ) -> Result<(X86Reg, Option<DetachedGpScratch>), WasmError> {
+        if let MachineValue::Reg(reg) = value {
+            if !self.core.is_fp_reg(reg) {
+                return Ok((self.map_gp_reg(reg)?, None));
+            }
+        }
+        let scratch = self.gp_scratch.scoped_alloc().detach();
+        let gp = self.materialize_value(*scratch, value)?;
+        Ok((gp, Some(scratch)))
+    }
+
     pub(super) fn lower_cmp_values(
         &mut self,
         width: MachineIntWidth,
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
-        let scratch0 = self.gp_scratch.scoped_alloc().detach();
-        let scratch1 = self.gp_scratch.scoped_alloc().detach();
+        let (lhs_gp, _lhs_scratch) = self.gp_operand(lhs)?;
         // Immediate form
         if let MachineValue::Imm64(imm_val) = rhs {
             let imm = imm_val as i64 as i32;
             if imm as i64 == imm_val as i64
                 || (width == MachineIntWidth::I32 && imm_val as u32 as i32 == imm)
             {
-                let lhs_gp = self.materialize_value(*scratch0, lhs)?;
                 match width {
                     MachineIntWidth::I64 => enc::cmp_ri_64(&mut self.core.text, lhs_gp, imm),
                     MachineIntWidth::I32 => enc::cmp_ri_32(&mut self.core.text, lhs_gp, imm),
@@ -1874,8 +1898,7 @@ impl<'a> X86_64Backend<'a> {
                 return Ok(());
             }
         }
-        let lhs_gp = self.materialize_value(*scratch0, lhs)?;
-        let rhs_gp = self.materialize_value(*scratch1, rhs)?;
+        let (rhs_gp, _rhs_scratch) = self.gp_operand(rhs)?;
         match width {
             MachineIntWidth::I64 => enc::cmp_rr_64(&mut self.core.text, lhs_gp, rhs_gp),
             MachineIntWidth::I32 => enc::cmp_rr_32(&mut self.core.text, lhs_gp, rhs_gp),
@@ -1890,9 +1913,7 @@ impl<'a> X86_64Backend<'a> {
         src: MachineValue,
         mask: MachineValue,
     ) -> Result<(), WasmError> {
-        let scratch0 = self.gp_scratch.scoped_alloc().detach();
-        let scratch1 = self.gp_scratch.scoped_alloc().detach();
-        let src_gp = self.materialize_value(*scratch0, src)?;
+        let (src_gp, _src_scratch) = self.gp_operand(src)?;
         match mask {
             MachineValue::Imm64(imm_val) => {
                 let imm = imm_val as i64 as i32;
@@ -1904,8 +1925,7 @@ impl<'a> X86_64Backend<'a> {
                         MachineIntWidth::I32 => enc::test_ri_32(&mut self.core.text, src_gp, imm),
                     }
                 } else {
-                    let mask_gp =
-                        self.materialize_value(*scratch1, MachineValue::Imm64(imm_val))?;
+                    let (mask_gp, _mask_scratch) = self.gp_operand(mask)?;
                     match width {
                         MachineIntWidth::I64 => {
                             enc::test_rr_64(&mut self.core.text, src_gp, mask_gp)
@@ -1917,7 +1937,7 @@ impl<'a> X86_64Backend<'a> {
                 }
             }
             MachineValue::Reg(_) => {
-                let mask_gp = self.materialize_value(*scratch1, mask)?;
+                let (mask_gp, _mask_scratch) = self.gp_operand(mask)?;
                 match width {
                     MachineIntWidth::I64 => enc::test_rr_64(&mut self.core.text, src_gp, mask_gp),
                     MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src_gp, mask_gp),
@@ -2227,18 +2247,19 @@ impl<'a> X86_64Backend<'a> {
 
         // Pre-materialize one zero immediate while EFLAGS is still dead:
         // the xor zero idiom is shorter and dependency-breaking but
-        // clobbers flags, so it must precede the compare. Only one
-        // operand can be held across `lower_cmp_values`, which pins two
-        // of the three pool scratches itself.
+        // clobbers flags, so it must precede the compare. The held zero
+        // leaves one of the two pool scratches for the compare, so only a
+        // compare whose left side is already in a GP register qualifies.
+        let lhs_in_gp = matches!(fusion.lhs, MachineValue::Reg(reg) if !self.core.is_fp_reg(reg));
         let mut pre_guard = None;
         let mut pre_true: Option<X86Reg> = None;
         let mut pre_false: Option<X86Reg> = None;
-        if on_true == MachineValue::Imm64(0) {
+        if lhs_in_gp && on_true == MachineValue::Imm64(0) {
             let guard = self.gp_scratch.scoped_alloc().detach();
             enc::xor_rr_32(&mut self.core.text, *guard, *guard);
             pre_true = Some(*guard);
             pre_guard = Some(guard);
-        } else if on_false == MachineValue::Imm64(0) {
+        } else if lhs_in_gp && on_false == MachineValue::Imm64(0) {
             let guard = self.gp_scratch.scoped_alloc().detach();
             enc::xor_rr_32(&mut self.core.text, *guard, *guard);
             pre_false = Some(*guard);
@@ -2249,15 +2270,13 @@ impl<'a> X86_64Backend<'a> {
         let cc = super::fusion::map_int_cond(fusion.kind, fusion.sign);
 
         // --- flags live from here to the CMOV ---
-        let scratch0 = self.gp_scratch.scoped_alloc().detach();
-        let true_reg = match pre_true {
-            Some(reg) => reg,
-            None => self.materialize_value_flags_safe(*scratch0, on_true)?,
+        let (true_reg, _true_scratch) = match pre_true {
+            Some(reg) => (reg, None),
+            None => self.gp_operand_flags_safe(on_true)?,
         };
-        let scratch1 = self.gp_scratch.scoped_alloc().detach();
-        let false_reg = match pre_false {
-            Some(reg) => reg,
-            None => self.materialize_value_flags_safe(*scratch1, on_false)?,
+        let (false_reg, _false_scratch) = match pre_false {
+            Some(reg) => (reg, None),
+            None => self.gp_operand_flags_safe(on_false)?,
         };
         if dst == true_reg && dst != false_reg {
             self.emit_gp_cmov_ty(ty, cc.invert(), dst, false_reg)?;
@@ -2317,6 +2336,21 @@ impl<'a> X86_64Backend<'a> {
         // ADC and SBB set ZF from their result.
         self.note_int_flags(fusion.acc_width, dst);
         Ok(())
+    }
+
+    /// `gp_operand` variant that never touches EFLAGS.
+    fn gp_operand_flags_safe(
+        &mut self,
+        value: MachineValue,
+    ) -> Result<(X86Reg, Option<DetachedGpScratch>), WasmError> {
+        if let MachineValue::Reg(reg) = value {
+            if !self.core.is_fp_reg(reg) {
+                return Ok((self.map_gp_reg(reg)?, None));
+            }
+        }
+        let scratch = self.gp_scratch.scoped_alloc().detach();
+        let gp = self.materialize_value_flags_safe(*scratch, value)?;
+        Ok((gp, Some(scratch)))
     }
 
     /// `materialize_value` variant that never touches EFLAGS: the zero
@@ -3068,19 +3102,21 @@ impl<'a> X86_64Backend<'a> {
     /// Save caller-clobbered GP dynamic registers to the system stack before a
     /// C helper call.
     pub(super) fn save_caller_clobbered_gp_dynamic(&mut self) {
-        // Push the caller-clobbered dynamic GP subset. `RAX`, `RCX`, and `RDX`
-        // are backend-owned on x86_64, not dynamic.
+        // Push the caller-clobbered dynamic GP subset. `RAX` and `RDX` are
+        // backend-owned on x86_64, not dynamic.
         enc::push(&mut self.core.text, X86Reg::RSI);
         enc::push(&mut self.core.text, X86Reg::RDI);
         enc::push(&mut self.core.text, X86Reg::R8);
         enc::push(&mut self.core.text, X86Reg::R9);
         enc::push(&mut self.core.text, X86Reg::R10);
         enc::push(&mut self.core.text, X86Reg::R11);
+        enc::push(&mut self.core.text, X86Reg::RCX);
     }
 
     /// Restore caller-clobbered GP dynamic registers from the system stack
     /// after a C helper call.
     pub(super) fn restore_caller_clobbered_gp_dynamic(&mut self) {
+        enc::pop(&mut self.core.text, X86Reg::RCX);
         enc::pop(&mut self.core.text, X86Reg::R11);
         enc::pop(&mut self.core.text, X86Reg::R10);
         enc::pop(&mut self.core.text, X86Reg::R9);
@@ -3254,15 +3290,12 @@ impl<'a> X86_64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG2, arg2)?;
 
         if let Some(width) = ty.float_width() {
-            self.emit_preserved_call_and_close(op_code, Some(X86Reg::RCX));
+            let result = self.gp_scratch.claim_rdx().detach();
+            self.emit_preserved_call_and_close(op_code, Some(*result));
             let dst_fp = self.map_fp_reg(dst)? as u8;
             match width {
-                MachineFloatWidth::F32 => {
-                    enc::movd_xmm_r32(&mut self.core.text, dst_fp, X86Reg::RCX)
-                }
-                MachineFloatWidth::F64 => {
-                    enc::movq_xmm_r64(&mut self.core.text, dst_fp, X86Reg::RCX)
-                }
+                MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, dst_fp, *result),
+                MachineFloatWidth::F64 => enc::movq_xmm_r64(&mut self.core.text, dst_fp, *result),
             }
             self.core.set_fp_reg_width(dst, width)?;
         } else {
@@ -3288,15 +3321,12 @@ impl<'a> X86_64Backend<'a> {
             self.emit_io_store_value(slot, value)?;
         }
         if let Some(width) = ty.float_width() {
-            self.emit_preserved_call_and_close(op_code, Some(X86Reg::RCX));
+            let result = self.gp_scratch.claim_rdx().detach();
+            self.emit_preserved_call_and_close(op_code, Some(*result));
             let dst_fp = self.map_fp_reg(dst)? as u8;
             match width {
-                MachineFloatWidth::F32 => {
-                    enc::movd_xmm_r32(&mut self.core.text, dst_fp, X86Reg::RCX)
-                }
-                MachineFloatWidth::F64 => {
-                    enc::movq_xmm_r64(&mut self.core.text, dst_fp, X86Reg::RCX)
-                }
+                MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, dst_fp, *result),
+                MachineFloatWidth::F64 => enc::movq_xmm_r64(&mut self.core.text, dst_fp, *result),
             }
             self.core.set_fp_reg_width(dst, width)?;
         } else {

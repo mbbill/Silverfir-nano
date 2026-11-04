@@ -3,28 +3,31 @@
 //! Memory 0's base and byte length already live in fixed registers, so once
 //! the range is checked these operations are a plain `memmove` / `memset`.
 //! The general runtime-helper path instead saves every C-clobbered dynamic
-//! lane (six GP pushes and all fourteen XMM lanes), goes through the
+//! lane (seven GP pushes and all fourteen XMM lanes), goes through the
 //! opcode dispatcher, and resolves the memory through the store. Here only
 //! the lanes holding values still needed after the operation are saved.
 //!
 //! Sequence:
 //!
-//! 1. Zero-extend the three operands into the backend-owned RAX, RCX and
-//!    RDX (destination, then source or fill byte, then length). Those never
-//!    hold MachineIR values, so staging cannot overwrite another operand.
+//! 1. Zero-extend the length into RDX, and for a copy the source offset
+//!    into RAX, then the destination offset into RAX. RAX and RDX are
+//!    backend-owned and never hold MachineIR values, so staging cannot
+//!    overwrite another operand.
 //! 2. Check each accessed range `[offset, offset + len)` against the memory
 //!    length in the fixed `MEM0_SIZE` register and branch to the shared
-//!    out-of-bounds trap. Both operands are zero-extended 32-bit values, so
-//!    their 64-bit sum cannot wrap. Nothing has touched the stack yet, so
-//!    the trap needs no cleanup, and no byte is written before both ranges
-//!    of a copy are proven.
+//!    out-of-bounds trap, the source range before the destination is staged
+//!    over it. Both operands are zero-extended 32-bit values, so their
+//!    64-bit sum cannot wrap. Nothing has touched the stack yet, so the trap
+//!    needs no cleanup, and no byte is written before both ranges of a copy
+//!    are proven.
 //! 3. Push the live C-clobbered GP lanes, then reserve the XMM save area,
 //!    an alignment pad and the ABI's shadow space, and save the live
 //!    C-clobbered XMM lanes. The body keeps RSP 16-byte aligned between
 //!    instructions, as the preserved-helper frame already relies on.
-//! 4. Form the C arguments from the staged values, last argument first, so
-//!    no staged value is overwritten before it is read (checked below for
-//!    both ABIs), and call through RAX.
+//! 4. Zero-extend the source offset or fill byte into RCX, an allocatable
+//!    lane that is saved or dead by now. Form the C arguments from the
+//!    staged values, last argument first, so no staged value is overwritten
+//!    before it is read (checked below for both ABIs), and call through RAX.
 //! 5. Restore in reverse order.
 
 use core::ffi::c_void;
@@ -56,7 +59,8 @@ unsafe extern "C" {
 }
 
 /// Staging registers: destination offset, source offset or fill byte,
-/// length. All three are backend-owned scratch registers.
+/// length. RAX and RDX are backend-owned scratch registers; RCX is an
+/// allocatable lane, written only after the live lanes are saved.
 const STAGE_DEST: X86Reg = X86Reg::RAX;
 const STAGE_SECOND: X86Reg = X86Reg::RCX;
 const STAGE_LEN: X86Reg = X86Reg::RDX;
@@ -89,19 +93,19 @@ impl X86_64Backend<'_> {
         len: MachineValue,
     ) -> Result<(), WasmError> {
         let dest_reg = self.gp_scratch.claim_rax().detach();
-        let second_reg = self.gp_scratch.claim_rcx().detach();
         let len_reg = self.gp_scratch.claim_rdx().detach();
-        debug_assert!(*dest_reg == STAGE_DEST && *second_reg == STAGE_SECOND);
-        debug_assert!(*len_reg == STAGE_LEN);
+        debug_assert!(*dest_reg == STAGE_DEST && *len_reg == STAGE_LEN);
 
-        self.stage_u32(STAGE_DEST, dest)?;
-        self.stage_u32(STAGE_SECOND, second)?;
+        // Range checks branch to a trap, so they run before anything is
+        // pushed, with only the two backend scratches: the source range is
+        // checked through RAX before the destination is staged there.
         self.stage_u32(STAGE_LEN, len)?;
-
-        self.check_mem0_range(STAGE_DEST, dest);
         if op == Mem0Bulk::Copy {
-            self.check_mem0_range(STAGE_SECOND, second);
+            self.stage_u32(STAGE_DEST, second)?;
+            self.check_mem0_range(STAGE_DEST, second);
         }
+        self.stage_u32(STAGE_DEST, dest)?;
+        self.check_mem0_range(STAGE_DEST, dest);
 
         let (saved_gp, saved_xmm) = self.live_c_clobbered_lanes()?;
         let pad = if saved_gp.len() % 2 == 1 { 8 } else { 0 };
@@ -118,6 +122,10 @@ impl X86_64Backend<'_> {
             movaps_store_rsp(&mut self.core.text, xmm, disp);
         }
 
+        // RCX is an allocatable lane: past the saves it is either preserved
+        // on the stack or dead, and its own value, if `second` lives there,
+        // is read here before any argument register is written.
+        self.stage_u32(STAGE_SECOND, second)?;
         let mem0_base = map_fixed_reg(MACHINE_MEM0_BASE_REG);
         if C_ARG2 != STAGE_LEN {
             enc::mov_rr_64(&mut self.core.text, C_ARG2, STAGE_LEN);
