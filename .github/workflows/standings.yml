@@ -90,12 +90,13 @@ jobs:
         id: cpu
         run: |
           uname -a || true
-          model="$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)"
+          # `shell: bash` runs with pipefail; lscpu exists only on Linux.
+          model="$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n1 || true)"
           if [[ -z "$model" ]]; then
             model="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"
           fi
           if [[ -z "$model" && "$RUNNER_OS" == "Windows" ]]; then
-            model="$(powershell -NoProfile -Command '(Get-CimInstance Win32_Processor | Select-Object -First 1).Name' | tr -d '\r')"
+            model="$(powershell -NoProfile -Command '(Get-CimInstance Win32_Processor | Select-Object -First 1).Name' | tr -d '\r' || true)"
           fi
           echo "$model"
           echo "model=${model:-unknown}" >> "$GITHUB_OUTPUT"
@@ -311,12 +312,13 @@ jobs:
         run: |
           "$WASMTIME_BIN" --version
           uname -a || true
-          model="$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)"
+          # `shell: bash` runs with pipefail; lscpu exists only on Linux.
+          model="$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n1 || true)"
           if [[ -z "$model" ]]; then
             model="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)"
           fi
           if [[ -z "$model" && "$RUNNER_OS" == "Windows" ]]; then
-            model="$(powershell -NoProfile -Command '(Get-CimInstance Win32_Processor | Select-Object -First 1).Name' | tr -d '\r')"
+            model="$(powershell -NoProfile -Command '(Get-CimInstance Win32_Processor | Select-Object -First 1).Name' | tr -d '\r' || true)"
           fi
           echo "$model"
           echo "model=${model:-unknown}" >> "$GITHUB_OUTPUT"
