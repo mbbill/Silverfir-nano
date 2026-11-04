@@ -208,6 +208,40 @@ pub(super) const RECENT_STORE_SLOTS: usize = 8;
 pub(super) const RECENT_STORE_MAX_AGE: u32 = 24;
 
 impl<'a> Arm64Backend<'a> {
+    /// Whether the MachineIR right after the current op tests `reg`
+    /// against zero, the only test `select_flags` can serve: a Select on
+    /// `reg`, or a trap or the block's branch on `reg` or `reg ==/!= 0`.
+    /// Outside a known op position, assume it does.
+    pub(super) fn next_tests_nonzero(&self, reg: MachineReg) -> bool {
+        let (Some(block_id), Some(index)) = (self.core.current_block, self.core.current_op_index)
+        else {
+            return true;
+        };
+        let Some(block) = self
+            .core
+            .mir_blocks()
+            .ok()
+            .and_then(|blocks| blocks.get(block_id.as_usize()))
+        else {
+            return true;
+        };
+        match block.ops.get(index + 1).map(|next| &next.kind) {
+            Some(MachineInstKind::Select {
+                cond: MachineValue::Reg(cond),
+                ..
+            }) => *cond == reg,
+            Some(MachineInstKind::TrapIf { cond, .. }) => {
+                super::fusion::cond_tests_nonzero(cond, reg)
+            }
+            Some(_) => false,
+            None => matches!(
+                &block.terminator,
+                MachineTerminator::Branch { cond, .. }
+                    if super::fusion::cond_tests_nonzero(cond, reg)
+            ),
+        }
+    }
+
     fn analyze_body(core: &CompilerCore<'a>) -> Arm64BodyAnalysis {
         let FunctionBody::Mir(function) = core.body else {
             return Arm64BodyAnalysis {
@@ -1117,19 +1151,20 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                             )
                         });
                 if temporary_is_dead {
+                    use crate::vm::jit::machine::machine_ir::MachineIntWidth;
+                    self.core.current_op_index = Some(index);
+                    let publish = self.next_tests_nonzero(fusion.dst);
                     let dst = self.map_gp_reg(fusion.dst)?;
                     let lhs = self.map_gp_reg(fusion.lhs)?;
                     let not_rhs = self.map_gp_reg(fusion.not_rhs)?;
-                    let encoded = match fusion.width {
-                        crate::vm::jit::machine::machine_ir::MachineIntWidth::I32 => {
-                            enc::bics_reg_32(dst, lhs, not_rhs)
-                        }
-                        crate::vm::jit::machine::machine_ir::MachineIntWidth::I64 => {
-                            enc::bics_reg_64(dst, lhs, not_rhs)
-                        }
+                    let encoded = match (fusion.width, publish) {
+                        (MachineIntWidth::I32, true) => enc::bics_reg_32(dst, lhs, not_rhs),
+                        (MachineIntWidth::I64, true) => enc::bics_reg_64(dst, lhs, not_rhs),
+                        (MachineIntWidth::I32, false) => enc::bic_reg_32(dst, lhs, not_rhs),
+                        (MachineIntWidth::I64, false) => enc::bic_reg_64(dst, lhs, not_rhs),
                     };
                     self.core.text.emit_u32(encoded);
-                    self.select_flags = Some((fusion.dst, enc::Cond::Ne));
+                    self.select_flags = publish.then_some((fusion.dst, enc::Cond::Ne));
                     self.gp_scratch.assert_all_free();
                     self.fp_scratch.assert_all_free();
                     return Ok(());

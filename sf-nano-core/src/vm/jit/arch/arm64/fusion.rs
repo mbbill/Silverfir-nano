@@ -5,9 +5,9 @@
 //! instruction encodings. No compiler state is accessed.
 
 use crate::vm::jit::machine::machine_ir::{
-    MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
-    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
-    MachineStorageType, MachineValue, MACHINE_MEM0_BASE_REG,
+    MachineBranchCond, MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind,
+    MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
+    MachineSign, MachineStorageType, MachineValue, MACHINE_MEM0_BASE_REG,
 };
 
 use super::{
@@ -257,6 +257,24 @@ pub(super) fn cmp_imm_inst(width: MachineIntWidth, lhs: Arm64Reg, rhs: u64) -> O
     match width {
         MachineIntWidth::I32 => try_imm12_u32(rhs as u32).map(|imm12| enc::cmp_imm_32(lhs, imm12)),
         MachineIntWidth::I64 => try_imm12_u64(rhs).map(|imm12| enc::cmp_imm_64(lhs, imm12)),
+    }
+}
+
+/// Whether a branch or trap condition is `reg != 0` or `reg == 0`.
+pub(super) fn cond_tests_nonzero(cond: &MachineBranchCond, reg: MachineReg) -> bool {
+    match *cond {
+        MachineBranchCond::Value(MachineValue::Reg(r)) => r == reg,
+        MachineBranchCond::IntCompare {
+            kind: MachineCompareKind::Eq | MachineCompareKind::Ne,
+            lhs,
+            rhs,
+            ..
+        } => matches!(
+            (lhs, rhs),
+            (MachineValue::Reg(r), MachineValue::Imm64(0))
+                | (MachineValue::Imm64(0), MachineValue::Reg(r)) if r == reg
+        ),
+        _ => false,
     }
 }
 
@@ -898,5 +916,46 @@ mod tests {
             add_sub_imm_pair(i32_, MachineIntBinaryOp::Or, w4, w3, 0x20_1470),
             None
         );
+    }
+    #[test]
+    fn recognizes_zero_tests_of_a_register() {
+        let reg = MachineReg(20);
+        let other = MachineReg(21);
+        let compare = |kind, lhs, rhs| MachineBranchCond::IntCompare {
+            width: MachineIntWidth::I32,
+            kind,
+            sign: MachineSign::Unsigned,
+            lhs,
+            rhs,
+        };
+        let r = MachineValue::Reg;
+        let zero = MachineValue::Imm64(0);
+
+        assert!(cond_tests_nonzero(&MachineBranchCond::Value(r(reg)), reg));
+        assert!(cond_tests_nonzero(
+            &compare(MachineCompareKind::Ne, r(reg), zero),
+            reg
+        ));
+        assert!(cond_tests_nonzero(
+            &compare(MachineCompareKind::Eq, zero, r(reg)),
+            reg
+        ));
+
+        assert!(!cond_tests_nonzero(
+            &MachineBranchCond::Value(r(other)),
+            reg
+        ));
+        assert!(!cond_tests_nonzero(
+            &compare(MachineCompareKind::Ne, r(reg), MachineValue::Imm64(1)),
+            reg
+        ));
+        assert!(!cond_tests_nonzero(
+            &compare(MachineCompareKind::Lt, r(reg), zero),
+            reg
+        ));
+        assert!(!cond_tests_nonzero(
+            &compare(MachineCompareKind::Eq, r(reg), r(other)),
+            reg
+        ));
     }
 }
