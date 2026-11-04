@@ -1700,6 +1700,38 @@ mod vex_scalar_encoding_tests {
             );
         }
     }
+
+    #[test]
+    fn vex_scalar_unary_forms_match_gnu_as() {
+        // `vcvtss2sd %xmm11, %xmm11, %xmm9` and friends: the source repeats
+        // as src1, so the result's upper lane comes from the input.
+        let cases: [(bool, ScalarFpOp, Xmm, Xmm, &[u8]); 7] = [
+            (
+                false,
+                ScalarFpOp::Convert,
+                9,
+                11,
+                &[0xC4, 0x41, 0x22, 0x5A, 0xCB],
+            ),
+            (true, ScalarFpOp::Convert, 11, 2, &[0xC5, 0x6B, 0x5A, 0xDA]),
+            (true, ScalarFpOp::Convert, 12, 4, &[0xC5, 0x5B, 0x5A, 0xE4]),
+            (false, ScalarFpOp::Convert, 0, 3, &[0xC5, 0xE2, 0x5A, 0xC3]),
+            (true, ScalarFpOp::Sqrt, 2, 5, &[0xC5, 0xD3, 0x51, 0xD5]),
+            (
+                false,
+                ScalarFpOp::Sqrt,
+                1,
+                13,
+                &[0xC4, 0xC1, 0x12, 0x51, 0xCD],
+            ),
+            (true, ScalarFpOp::Sqrt, 14, 7, &[0xC5, 0x43, 0x51, 0xF7]),
+        ];
+        for (double, op, dst, src, expected) in cases {
+            let mut text = TextEmitter::new();
+            vex_scalar_rrr(&mut text, double, op, dst, src, src);
+            assert_eq!(text.finish().as_slice(), expected, "{op:?} {dst} {src}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1925,19 +1957,25 @@ pub(crate) fn movsd_rip(e: &mut TextEmitter, dst: Xmm) -> usize {
     sse_load_rip(e, 0xF2, dst)
 }
 
-/// Scalar FP arithmetic opcodes (map 0F) shared by the SSE and VEX forms.
+/// Scalar FP opcodes (map 0F) shared by the SSE and VEX forms. The `double`
+/// operand of the encoders selects the F2 (f64 source) or F3 (f32 source)
+/// prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ScalarFpOp {
+    Sqrt = 0x51,
     Add = 0x58,
     Mul = 0x59,
+    /// CVTSD2SS with an f64 source, CVTSS2SD with an f32 source.
+    Convert = 0x5A,
     Sub = 0x5C,
     Div = 0x5E,
 }
 
 /// AVX VEX.128 three-operand scalar arithmetic: `dst = src1 OP src2`, the
-/// destination's upper lane copied from `src1`. Unlike the two-operand SSE
-/// form it needs no copy of `src1` into `dst` first, and it carries no
-/// dependency on `dst`'s previous value. VEX.128 zeroes bits 255:128 of
+/// destination's upper lane copied from `src1`. The unary operations
+/// (`Sqrt`, `Convert`) read only `src2` for the low lane. Unlike the
+/// two-operand SSE form it needs no copy of `src1` into `dst` first, and it
+/// carries no dependency on `dst`'s previous value. VEX.128 zeroes bits 255:128 of
 /// the destination, so it never dirties the upper YMM state and mixes with
 /// legacy SSE code without transition penalties.
 pub(crate) fn vex_scalar_rrr(

@@ -2320,9 +2320,23 @@ impl<'a> X86_64Backend<'a> {
             } else {
                 *fp1 as u8
             };
-            match dst_width {
-                MachineFloatWidth::F64 => enc::cvtss2sd(&mut self.core.text, result_fp, src_fp),
-                MachineFloatWidth::F32 => enc::cvtsd2ss(&mut self.core.text, result_fp, src_fp),
+            if super::cpu::has_avx() {
+                // The SSE forms merge into the result register's upper lane,
+                // so they wait for whatever last wrote it. Naming the source
+                // as the merge operand leaves only the true dependency.
+                enc::vex_scalar_rrr(
+                    &mut self.core.text,
+                    src_width == MachineFloatWidth::F64,
+                    enc::ScalarFpOp::Convert,
+                    result_fp,
+                    src_fp,
+                    src_fp,
+                );
+            } else {
+                match dst_width {
+                    MachineFloatWidth::F64 => enc::cvtss2sd(&mut self.core.text, result_fp, src_fp),
+                    MachineFloatWidth::F32 => enc::cvtsd2ss(&mut self.core.text, result_fp, src_fp),
+                }
             }
             return self.store_fp_result_if_gp(dst, dst_width, result_fp);
         }
@@ -2502,6 +2516,17 @@ impl<'a> X86_64Backend<'a> {
             *fp1 as u8
         };
         match op {
+            MachineFloatUnaryOp::Sqrt if super::cpu::has_avx() => {
+                // Same merge-dependency break as the precision conversions.
+                enc::vex_scalar_rrr(
+                    &mut self.core.text,
+                    width == MachineFloatWidth::F64,
+                    enc::ScalarFpOp::Sqrt,
+                    result_fp,
+                    src_fp as u8,
+                    src_fp as u8,
+                );
+            }
             MachineFloatUnaryOp::Sqrt => {
                 match width {
                     MachineFloatWidth::F32 => {
