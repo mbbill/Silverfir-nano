@@ -1635,7 +1635,8 @@ impl<'a> X86_64Backend<'a> {
         if lhs_gp != value {
             self.emit_gp_move_width(width, value, lhs_gp);
         }
-        let count_in_rcx = matches!(rhs, MachineValue::Reg(reg) if self.map_gp_reg(reg)? == X86Reg::RCX);
+        let count_in_rcx =
+            matches!(rhs, MachineValue::Reg(reg) if self.map_gp_reg(reg)? == X86Reg::RCX);
         if !count_in_rcx {
             let scratch1 = self.gp_scratch.scoped_alloc().detach();
             let count = self.materialize_value(*scratch1, rhs)?;
