@@ -174,7 +174,7 @@ pub(super) fn forward_stored_values_across_edges(
 /// The predecessor of each block that has exactly one, from the current
 /// terminators. Earlier whole-program passes can add blocks (memmove
 /// recognition does), so a loop graph built before them may be stale.
-fn only_predecessors(blocks: &[MachineBlock]) -> collections::Vec<Option<usize>> {
+pub(super) fn only_predecessors(blocks: &[MachineBlock]) -> collections::Vec<Option<usize>> {
     #[derive(Clone, Copy)]
     enum Incoming {
         None,

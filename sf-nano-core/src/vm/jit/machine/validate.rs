@@ -842,7 +842,7 @@ impl MachineProgram {
                 self.validate_edge(then_edge, source_block, config)?;
                 self.validate_edge(else_edge, source_block, config)
             }
-            MachineTerminator::JumpTable { index, entries } => {
+            MachineTerminator::JumpTable { index, entries, .. } => {
                 self.validate_value(*index, config)?;
                 for edge in entries {
                     self.validate_edge(edge, source_block, config)?;

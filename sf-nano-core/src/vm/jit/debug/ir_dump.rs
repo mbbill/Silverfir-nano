@@ -1680,10 +1680,19 @@ fn render_machine_term(term: &MachineTerminator) -> String {
             else_edge.target.0,
             medge_args(&else_edge.args),
         ),
-        MachineTerminator::JumpTable { index, entries } => {
+        MachineTerminator::JumpTable {
+            index,
+            entries,
+            in_range,
+        } => {
             let targets: collections::Vec<String> =
                 entries.iter().map(|e| format!("b{}", e.target.0)).collect();
-            format!("jump_table {} [{}]", mval(index), targets.join(", "))
+            format!(
+                "jump_table{} {} [{}]",
+                if *in_range { ".in_range" } else { "" },
+                mval(index),
+                targets.join(", ")
+            )
         }
         MachineTerminator::Call {
             target,

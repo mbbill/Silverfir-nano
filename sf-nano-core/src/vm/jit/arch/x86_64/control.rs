@@ -159,9 +159,11 @@ impl<'a> X86_64Backend<'a> {
                 self.emit_jmp(trap_label);
                 Ok(())
             }
-            MachineTerminator::JumpTable { index, entries } => {
-                self.lower_jump_table(*index, entries)
-            }
+            MachineTerminator::JumpTable {
+                index,
+                entries,
+                in_range,
+            } => self.lower_jump_table(*index, entries, *in_range),
             MachineTerminator::Call {
                 target,
                 frame_delta,
@@ -901,6 +903,7 @@ impl<'a> X86_64Backend<'a> {
         &mut self,
         index: MachineValue,
         entries: &[MachineEdge],
+        in_range: bool,
     ) -> Result<(), WasmError> {
         if entries.is_empty() {
             return Err(WasmError::internal(
@@ -986,10 +989,13 @@ impl<'a> X86_64Backend<'a> {
             }
         }
 
-        // Clamp index to (entries.len() - 1) using 32-bit unsigned compare.
-        self.materialize_u64(*table_scratch, (entries.len() - 1) as u64);
-        enc::cmp_rr_32(&mut self.core.text, *index_scratch, *table_scratch);
-        enc::cmovcc_rr_32(&mut self.core.text, Cc::A, *index_scratch, *table_scratch);
+        // Clamp index to (entries.len() - 1) using 32-bit unsigned compare,
+        // unless a dominating branch already bounds it.
+        if !in_range {
+            self.materialize_u64(*table_scratch, (entries.len() - 1) as u64);
+            enc::cmp_rr_32(&mut self.core.text, *index_scratch, *table_scratch);
+            enc::cmovcc_rr_32(&mut self.core.text, Cc::A, *index_scratch, *table_scratch);
+        }
 
         // Load table base address (absolute, patched later), then dispatch
         // through one scaled memory-indirect jump: the SIB scale replaces

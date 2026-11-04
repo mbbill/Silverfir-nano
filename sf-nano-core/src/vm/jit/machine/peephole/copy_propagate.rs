@@ -585,7 +585,7 @@ fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<Ma
             rewrite_edge(then_edge, aliases);
             rewrite_edge(else_edge, aliases);
         }
-        MachineTerminator::JumpTable { index, entries } => {
+        MachineTerminator::JumpTable { index, entries, .. } => {
             rewrite_value(index, aliases);
             for edge in entries {
                 rewrite_edge(edge, aliases);

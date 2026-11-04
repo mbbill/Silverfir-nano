@@ -261,9 +261,11 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 self.lower_b(trap_label);
                 Ok(())
             }
-            MachineTerminator::JumpTable { index, entries } => {
-                self.lower_jump_table(*index, entries)
-            }
+            MachineTerminator::JumpTable {
+                index,
+                entries,
+                in_range,
+            } => self.lower_jump_table(*index, entries, *in_range),
             MachineTerminator::Call {
                 target,
                 frame_delta,
@@ -1238,6 +1240,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         &mut self,
         index: MachineValue,
         entries: &[MachineEdge],
+        in_range: bool,
     ) -> Result<(), WasmError> {
         if entries.is_empty() {
             return Err(WasmError::internal(
@@ -1265,14 +1268,22 @@ impl<'a> super::backend::Arm64Backend<'a> {
         .detach();
         // Keep C-ABI argument registers out of normal control lowering. `s1`
         // holds the clamped jump-table index first, then the scaled byte offset.
-        self.materialize_u64(*s1, (entries.len() - 1) as u64);
-        self.core.text.emit_u32(enc::cmp_reg_64(*index_reg, *s1));
-        self.core
-            .text
-            .emit_u32(enc::csel_64(*s1, *index_reg, *s1, enc::Cond::Ls));
+        // An index a dominating branch already bounds needs no clamp.
+        let scaled_from = if in_range {
+            *index_reg
+        } else {
+            self.materialize_u64(*s1, (entries.len() - 1) as u64);
+            self.core.text.emit_u32(enc::cmp_reg_64(*index_reg, *s1));
+            self.core
+                .text
+                .emit_u32(enc::csel_64(*s1, *index_reg, *s1, enc::Cond::Ls));
+            *s1
+        };
 
         let table_base_load = self.core.text.emit_u32(enc::ldr_lit_64(*s0, 0));
-        self.core.text.emit_u32(enc::lsl_imm_64(*s1, *s1, 3));
+        self.core
+            .text
+            .emit_u32(enc::lsl_imm_64(*s1, scaled_from, 3));
         self.core.text.emit_u32(enc::ldr_reg_64(*s0, *s0, *s1));
         self.core.text.emit_u32(enc::br(*s0));
 
@@ -1774,6 +1785,7 @@ mod tests {
                                 repeated_edge,
                                 default_edge,
                             ],
+                            in_range: false,
                         },
                     },
                     MachineBlock {

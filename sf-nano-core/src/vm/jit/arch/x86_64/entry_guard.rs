@@ -339,6 +339,7 @@ mod tests {
                 target: MachineBlockId(0),
                 args: collections::vec![MachineValue::Reg(MachineReg(4))],
             }],
+            in_range: false,
         };
         assert!(entry_guard(&p, Some(MachineBlockId(2))).is_none());
         p.blocks[2].terminator = MachineTerminator::Jump(MachineEdge {

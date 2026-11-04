@@ -33,6 +33,7 @@
 //!    every incoming CFG edge, on backends where those definitions already
 //!    zero-extend (`gp32_defs_zero_extend`).
 
+mod bound_jump_table_index;
 mod cache_loop_frame_words;
 mod copy_propagate;
 mod deduplicate_constants;
@@ -351,4 +352,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
             config.relax_index_extends_in_profitable_blocks_only,
         );
     }
+    // Last, so no later rewrite can change the guarding branch or the
+    // edge that carries the bounded index.
+    bound_jump_table_index::bound_jump_table_indexes(&mut program.blocks);
 }

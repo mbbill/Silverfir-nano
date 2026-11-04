@@ -94,7 +94,7 @@ impl<'a> Arm32Backend<'a> {
                 self.emit_tail_call(target, args)?;
             }
 
-            MachineTerminator::JumpTable { index, entries } => {
+            MachineTerminator::JumpTable { index, entries, .. } => {
                 if entries.is_empty() {
                     return Err(WasmError::internal(
                         "arm32 jump table requires at least one entry".into(),
