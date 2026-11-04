@@ -318,6 +318,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         content: include_str!("../tests/cached_table_dispatch.wast"),
     });
     wast_inputs.push(WastInput::Embedded {
+        path: "cached_local_snapshot.wast",
+        content: include_str!("../tests/cached_local_snapshot.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
         path: "bounded_br_table.wast",
         content: include_str!("../tests/bounded_br_table.wast"),
     });
