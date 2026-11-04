@@ -54,6 +54,7 @@ mod relax_index_extends;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
+mod rotate_loops;
 mod simplify_demanded_bits;
 
 use crate::vm::jit::backend::BackendConfig;
@@ -351,6 +352,12 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
             program,
             config.relax_index_extends_in_profitable_blocks_only,
         );
+    }
+    // After every pass that reads loop shape: a rotated latch no longer jumps
+    // to its header. 32-bit targets keep the jump, since their 64-bit values
+    // occupy register pairs that the move-only parameter binding would split.
+    if !config.is_32bit_gp_target() {
+        rotate_loops::rotate_loops(&mut program.blocks, entry);
     }
     // Last, so no later rewrite can change the guarding branch or the
     // edge that carries the bounded index.

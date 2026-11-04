@@ -326,6 +326,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         content: include_str!("../tests/bounded_br_table.wast"),
     });
     wast_inputs.push(WastInput::Embedded {
+        path: "rotated_loops.wast",
+        content: include_str!("../tests/rotated_loops.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
         path: "branch_load_compare.wast",
         content: include_str!("../tests/branch_load_compare.wast"),
     });
