@@ -16,7 +16,6 @@
 //!    `shift(rhs, #amount) + binop(lhs, shifted)` → `IntBinaryShifted { lhs, rhs, shift, amount }`
 //!    for Add/Sub/And/Or/Xor with LSL/LSR/ASR, and logical ops with ROR.
 //!    - ARM64/arm32: barrel-shifter form (1 insn). x86_64: decomposed (no gain).
-//!    - With `fuse_only_cheap_operand_shifts` (arm64), only `LSL #0-4`.
 //!
 //! 3. **Test bits** (`try_fuse_test_bits`):
 //!    `And(src, mask) + IntCompare(result, 0, Eq|Ne)` → `TestBits { src, mask, kind }`
@@ -267,7 +266,7 @@ fn try_fuse_shifted_binop(
     second: &MachineInst,
     later: &[MachineInst],
     term: &MachineTerminator,
-    config: BackendConfig,
+    _config: BackendConfig,
 ) -> Option<MachineInst> {
     // First: IntBinary { op: shift/rotate, dst: shift_dst,
     //                    lhs: Reg(shift_src), rhs: Imm64(amount) }
@@ -284,9 +283,6 @@ fn try_fuse_shifted_binop(
         }
         _ => return None,
     };
-    if config.fuse_only_cheap_operand_shifts && !(shift == MachineShiftOp::Lsl && amount <= 4) {
-        return None;
-    }
 
     // Second: IntBinary { op: Add/Sub/And/Or/Xor, using shift_dst as one operand }
     let (binop, binop_dst, lhs_reg, rhs_is_shifted) = match second.kind {
