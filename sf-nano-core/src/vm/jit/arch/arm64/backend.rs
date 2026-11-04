@@ -208,6 +208,17 @@ pub(super) const RECENT_STORE_SLOTS: usize = 8;
 pub(super) const RECENT_STORE_MAX_AGE: u32 = 24;
 
 impl<'a> Arm64Backend<'a> {
+    /// Pad with NOPs until the next instruction's runtime address is a
+    /// multiple of `align`.
+    fn pad_to_runtime_alignment(&mut self, align: usize) {
+        let misalign = self.core.text.next_addr_for_alignment() % align;
+        if misalign != 0 {
+            for _ in 0..(align - misalign) / 4 {
+                self.core.text.emit_u32(enc::nop());
+            }
+        }
+    }
+
     /// Whether the MachineIR right after the current op tests `reg`
     /// against zero, the only test `select_flags` can serve: a Select on
     /// `reg`, or a trap or the block's branch on `reg` or `reg ==/!= 0`.
@@ -1019,13 +1030,11 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         // pattern does not depend on the size of the code laid out before
         // it. The previous block's `end_block` already drained the pending
         // op, so the padding cannot split a fusion pair.
-        const LOOP_HEADER_ALIGN: usize = 32;
-        let misalign = self.core.text.next_addr_for_alignment() % LOOP_HEADER_ALIGN;
-        if misalign != 0 {
-            for _ in 0..(LOOP_HEADER_ALIGN - misalign) / 4 {
-                self.core.text.emit_u32(enc::nop());
-            }
-        }
+        self.pad_to_runtime_alignment(32);
+    }
+
+    fn align_internal_entry(&mut self) {
+        self.pad_to_runtime_alignment(32);
     }
 
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {

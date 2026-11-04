@@ -152,6 +152,13 @@ pub(crate) trait ArchBackend<'a>: Sized {
     /// code laid out before it.
     fn align_loop_header(&mut self) {}
 
+    /// Pad the text cursor before binding the internal entry, the target of
+    /// every SF->SF call, which follows the public entry stub's return.
+    /// Default: nothing. x86_64 and arm64 align it to 32 bytes, so a call
+    /// target's fetch pattern does not depend on that stub's length; the
+    /// padding is never executed.
+    fn align_internal_entry(&mut self) {}
+
     /// Begin a new block. Default sets `current_block`, clears
     /// `current_edge_target`, and resets the block-entry FP state.
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
