@@ -4,19 +4,21 @@
 //! ```text
 //!   rbx = pc (current 32-byte dispatch cell)   rbp = frame base
 //!   r15 = &EnterState                          r14 = memory 0 base
-//!   r13 = memory 0 length                      r9  = cell array base
+//!   r13 = memory 0 length                      r9  = return-stack cursor
 //!   r12 = accumulator   r11 = l0   r10 = l1
 //!   rdi = prefetched next handler word
 //!   rax, rcx, rdx, rsi, r8 = scratch
 //!   xmm3 = float acc, xmm4/xmm5 = float l0/l1, xmm0-xmm2 = float scratch
 //! ```
 //!
-//! x86-64 has four fewer usable GPRs than arm64, so three chain roles that
-//! arm64 pins live in `EnterState` instead: the return-stack cursor/limit
-//! and value-stack limit. All three are read by cold call/return handlers,
-//! and moving them out is
-//! what leaves five scratch registers — enough for `idiv`'s fixed
-//! `rdx:rax` pair and `shl`'s fixed `cl` without spilling.
+//! x86-64 has four fewer usable GPRs than arm64, so two chain roles that
+//! arm64 pins live in `EnterState` instead: the return-stack limit and the
+//! value-stack limit. Both are read only by the call handlers, and moving
+//! them out is what leaves five scratch registers — enough for `idiv`'s
+//! fixed `rdx:rax` pair and `shl`'s fixed `cl` without spilling. The
+//! return-stack cursor, which every call and return reads and writes, holds
+//! r9; no handler needs the function's cell base since branch tables store
+//! absolute target cells. The chain's exit stores the cursor back.
 //!
 //! The float registers are deliberately xmm0-xmm5: those are volatile
 //! under BOTH ABIs, so the entry trampoline never has to save any of them
@@ -523,6 +525,7 @@ impl Isa for X86_64 {
         a.ins("mov [r15 + 0], rax");
         a.ins("mov [r15 + 8], rbx");
         a.ins("mov [r15 + 16], rbp");
+        a.ins(&format!("mov [r15 + {S_RET_CURSOR}], r9"));
         a.ins("mov [r15 + 104], r12");
         if win {
             a.ins("pop rsi");
@@ -566,7 +569,7 @@ impl Isa for X86_64 {
         a.ins("mov rbp, [r15 + 16]");
         a.ins("mov r14, [r15 + 24]");
         a.ins("mov r13, [r15 + 32]");
-        a.ins("mov r9, [r15 + 40]");
+        a.ins(&format!("mov r9, [r15 + {S_RET_CURSOR}]"));
         a.ins("mov r11, [r15 + 88]");
         a.ins("mov r10, [r15 + 96]");
         a.ins("mov r12, [r15 + 104]");
@@ -586,8 +589,7 @@ impl Isa for X86_64 {
         // description. The indirect handler composes them from a runtime
         // lookup instead of from cell fields.
         a.label(&st.call_core);
-        a.ins(&format!("mov rsi, [r15 + {S_RET_CURSOR}]"));
-        a.ins(&format!("cmp rsi, [r15 + {S_RET_LIMIT}]"));
+        a.ins(&format!("cmp r9, [r15 + {S_RET_LIMIT}]"));
         a.ins(&format!("jae {}", st.trap_exhaust));
         a.ins("mov r8d, ecx");
         a.ins("and r8d, 0x7fffffff"); // arg_base*8 (bit 31 is the fp flag)
@@ -598,28 +600,25 @@ impl Isa for X86_64 {
         a.ins("lea rdi, [r8 + rdi*8]");
         a.ins(&format!("cmp rdi, [r15 + {S_STACK_LIMIT}]"));
         a.ins(&format!("ja {}", st.trap_exhaust));
-        // push (ret_pc, caller frame, code | caller_l0off<<48, caller_l1off)
+        // push (ret_pc, caller frame, caller_l0off, caller_l1off)
         a.ins("lea rdi, [rbx + 32]");
-        a.ins("mov [rsi], rdi");
-        a.ins("mov [rsi + 8], rbp");
+        a.ins("mov [r9], rdi");
+        a.ins("mov [r9 + 8], rbp");
         a.ins("mov rdi, rdx");
-        a.ins("shr rdi, 48");
-        a.ins("shl rdi, 48");
-        a.ins("or rdi, r9");
-        a.ins("mov [rsi + 16], rdi");
+        a.ins("shr rdi, 48"); // caller l0off, bit 0 = float-pinned flag
+        a.ins("mov [r9 + 16], rdi");
         a.ins("mov rdi, rax");
         a.ins("shr rdi, 48");
-        a.ins("mov [rsi + 24], rdi");
-        a.ins("add rsi, 32");
-        a.ins(&format!("mov [r15 + {S_RET_CURSOR}], rsi"));
+        a.ins("mov [r9 + 24], rdi");
+        a.ins("add r9, 32");
         a.ins("mov rbp, r8");
         // The callee's first handler depends only on its cells address, not
         // on frame initialization or the pinned-local reloads, so its load
-        // starts here and the final indirect jump does not wait on it. r9
-        // took its last caller value in the return record above.
+        // starts here and the final indirect jump does not wait on it. The
+        // return pc is already recorded, so the cell pointer moves now.
         a.ins("shl rax, 16");
         a.ins("shr rax, 16"); // clean 48-bit cells address
-        a.ins("mov r9, rax");
+        a.ins("mov rbx, rax");
         a.ins("mov rax, [rax]");
         // zero the fresh locals: [zero_start*8, zero_end*8), two slots per
         // iteration after an odd leading one. No fresh locals costs two
@@ -663,7 +662,6 @@ impl Isa for X86_64 {
         a.ins("test ecx, ecx");
         a.ins(&format!("js {fp}"));
         a.label(&cont);
-        a.ins("mov rbx, r9");
         a.ins("jmp rax");
         a.label(&fp);
         a.ins("movq xmm4, r11");
@@ -858,14 +856,12 @@ impl Isa for X86_64 {
             BrTable => {
                 self.bump(a, v.counted);
                 let ra = self.src(a, v.a, 8, RAX);
-                a.ins("mov rcx, [rbx + 16]"); // flat table
+                a.ins("mov rcx, [rbx + 16]"); // flat table of target cell addresses
                 a.ins("mov rdx, [rbx + 24]"); // len - 1
                 a.ins(&format!("mov esi, {}", d(ra)));
                 a.ins("cmp esi, edx");
                 a.ins("cmova esi, edx"); // clamp: out of range takes the default
-                a.ins("mov esi, [rcx + rsi*4]"); // target instruction index
-                a.ins("shl rsi, 5");
-                a.ins("lea rbx, [r9 + rsi]");
+                a.ins("mov rbx, [rcx + rsi*8]");
                 a.ins("mov rax, [rbx]");
                 a.ins("jmp rax");
                 return;
@@ -1570,19 +1566,13 @@ impl X86_64 {
         a.ins("dec rcx");
         a.ins(&format!("jnz {cl}"));
         a.label(&pop);
-        a.ins(&format!("mov rsi, [r15 + {S_RET_CURSOR}]"));
-        a.ins("sub rsi, 32");
-        a.ins(&format!("mov [r15 + {S_RET_CURSOR}], rsi"));
-        a.ins("mov rax, [rsi]"); // ret pc
-        a.ins("mov rbp, [rsi + 8]"); // caller frame
-        a.ins("mov rdx, [rsi + 16]"); // caller code | caller_l0off<<48
-        a.ins("mov rcx, [rsi + 24]"); // caller l1off
-        a.ins("mov r9, rdx");
-        a.ins("shl r9, 16");
-        a.ins("shr r9, 16"); // caller cell base
-        a.ins("shr rdx, 48"); // caller l0off, bit 0 = float-pinned flag
-                              // Sentinel records carry a readable dummy frame, so these loads
-                              // are always safe.
+        a.ins("sub r9, 32"); // pop the return record
+        a.ins("mov rax, [r9]"); // ret pc
+        a.ins("mov rbp, [r9 + 8]"); // caller frame
+        a.ins("mov rdx, [r9 + 16]"); // caller l0off, bit 0 = float-pinned flag
+        a.ins("mov rcx, [r9 + 24]"); // caller l1off
+                                     // Sentinel records carry a readable dummy frame, so these loads are
+                                     // always safe.
         let fp = a.fresh("retfp");
         let join = a.fresh("retjoin");
         a.ins("test dl, 1");

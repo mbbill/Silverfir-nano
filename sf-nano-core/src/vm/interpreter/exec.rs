@@ -421,7 +421,7 @@ pub(super) struct PendingException {
 }
 
 /// Per-invoke execution resources: the shared value stack and the native
-/// return stack (records of `(ret_pc, frame, code_base)`, with
+/// return stack (records of `(ret_pc, frame, caller pinned offsets)`, with
 /// Rust-planted sentinel records routing a `Return` back to Rust).
 struct DriveCtx<'s> {
     stack: &'s mut [u64],
@@ -3148,7 +3148,7 @@ impl InterpInstance {
     /// Driver: run one activation on the native dispatch chain
     /// until it needs Rust. Calls, returns, and branches between local
     /// functions stay entirely inside the chain (the native return stack
-    /// carries `(ret_pc, frame, code_base)` records); Rust sees only slow
+    /// carries `(ret_pc, frame, caller pinned offsets)` records); Rust sees only slow
     /// ops, sentinel returns, host calls, and traps. On a slow exit the
     /// current function is recovered from the pc via the range map and the
     /// ORIGINAL instruction is executed by `exec_ins`, then the chain is
@@ -3210,7 +3210,7 @@ impl InterpInstance {
             frame: stack_ptr + (act.base as u64) * 8,
             mem_base: 0,
             mem_len: 0,
-            code_base: cells_base,
+            reserved: 0,
             ret_cursor: ret_ptr + ctx.ret_cursor as u64,
             ret_limit: ret_ptr + (ctx.ret_stack.len() * 8 - RET_RECORD) as u64,
             stack_limit: stack_ptr + (ctx.stack.len() as u64) * 8,
@@ -3396,7 +3396,6 @@ impl InterpInstance {
                             });
                         }
                     }
-                    state.code_base = cstart;
                 }
                 EXIT_RETURN => return Ok(StepExit::Return),
                 r if r >= EXIT_TRAP_BASE => {

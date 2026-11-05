@@ -4,7 +4,6 @@
 //! ```text
 //!   s2 = pc          s3 = frame base   s4 = &EnterState
 //!   s5 = memory 0 base                 s6 = memory 0 length
-//!   s7 = cell array base
 //!   s9 = return-stack cursor           s10 = return-stack limit
 //!   s11 = value-stack limit            a1  = dispatch counter
 //!   s1 = accumulator   s0 = l0   a0 = l1 (RV64 only)
@@ -52,7 +51,6 @@ const FRAME: &str = "s3";
 const STATE: &str = "s4";
 const MEM: &str = "s5";
 const MEMLEN: &str = "s6";
-const CODE: &str = "s7";
 const RETSP: &str = "s9";
 const RETLIM: &str = "s10";
 const STKLIM: &str = "s11";
@@ -696,7 +694,7 @@ impl Isa for RiscV {
         let (lp, sp) = (self.lp(), self.sp());
         let frame = if self.rv64() { 128 } else { 64 };
         let saved = [
-            "ra", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s9", "s10", "s11",
+            "ra", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s9", "s10", "s11",
         ];
 
         a.label(&st.exit_common);
@@ -749,7 +747,6 @@ impl Isa for RiscV {
         a.ins(&format!("{lp} {FRAME}, 16({STATE})"));
         a.ins(&format!("{lp} {MEM}, 24({STATE})"));
         a.ins(&format!("{lp} {MEMLEN}, 32({STATE})"));
-        a.ins(&format!("{lp} {CODE}, 40({STATE})"));
         a.ins(&format!("{lp} {RETSP}, 56({STATE})"));
         a.ins(&format!("{lp} {RETLIM}, 64({STATE})"));
         a.ins(&format!("{lp} {STKLIM}, 72({STATE})"));
@@ -989,11 +986,11 @@ impl Isa for RiscV {
                 a.ins(&format!("bltu {T4}, {T3}, {keep}"));
                 a.ins(&format!("mv {T4}, {T3}"));
                 a.label(&keep);
-                a.ins(&format!("slli {T4}, {T4}, 2"));
+                // Entries are 64-bit target cell addresses; RV32 reads the
+                // low word.
+                a.ins(&format!("slli {T4}, {T4}, 3"));
                 a.ins(&format!("add {T4}, {T2}, {T4}"));
-                a.ins(&format!("lw {T4}, 0({T4})")); // target instruction index
-                a.ins(&format!("slli {T4}, {T4}, 5"));
-                a.ins(&format!("add {PC}, {CODE}, {T4}"));
+                a.ins(&format!("{lp} {PC}, 0({T4})"));
                 a.ins(&format!("{lp} {T1}, 0({PC})"));
                 a.ins(&format!("jr {T1}"));
                 return;
@@ -1768,13 +1765,11 @@ impl RiscV {
         a.ins(&format!("slli {T2}, {T2}, 3"));
         a.ins(&format!("add {T2}, {T1}, {T2}"));
         self.br_far(a, "bltu", STKLIM, T2, &st.trap_exhaust);
-        // push (ret_pc, caller frame, code | caller_l0off<<48, caller_l1off)
+        // push (ret_pc, caller frame, caller_l0off, caller_l1off)
         a.ins(&format!("addi {T3}, {PC}, 32"));
         a.ins(&format!("sd {T3}, 0({RETSP})"));
         a.ins(&format!("sd {FRAME}, 8({RETSP})"));
         a.ins(&format!("srli {T3}, {T6}, 48"));
-        a.ins(&format!("slli {T3}, {T3}, 48"));
-        a.ins(&format!("or {T3}, {T3}, {CODE}"));
         a.ins(&format!("sd {T3}, 16({RETSP})"));
         a.ins(&format!("srli {T3}, {A2}, 48"));
         a.ins(&format!("sd {T3}, 24({RETSP})"));
@@ -1816,9 +1811,8 @@ impl RiscV {
             a.ins(&format!("srli {T5}, {T5}, 63"));
             a.ins(&format!("bne {T5}, zero, {fp}"));
             a.label(&cont);
-            a.ins(&format!("slli {CODE}, {A2}, 16"));
-            a.ins(&format!("srli {CODE}, {CODE}, 16"));
-            a.ins(&format!("mv {PC}, {CODE}"));
+            a.ins(&format!("slli {PC}, {A2}, 16"));
+            a.ins(&format!("srli {PC}, {PC}, 16"));
             a.ins(&format!("ld {T1}, 0({PC})"));
             a.ins(&format!("jr {T1}"));
             a.label(&fp);
@@ -1826,9 +1820,8 @@ impl RiscV {
             a.ins(&format!("fmv.d.x {FL1R}, {L1R}"));
             a.ins(&format!("j {cont}"));
         } else {
-            a.ins(&format!("slli {CODE}, {A2}, 16"));
-            a.ins(&format!("srli {CODE}, {CODE}, 16"));
-            a.ins(&format!("mv {PC}, {CODE}"));
+            a.ins(&format!("slli {PC}, {A2}, 16"));
+            a.ins(&format!("srli {PC}, {PC}, 16"));
             a.ins(&format!("ld {T1}, 0({PC})"));
             a.ins(&format!("jr {T1}"));
         }
@@ -1930,20 +1923,9 @@ impl RiscV {
         a.ins(&format!("{lp} {T1}, 0({RETSP})")); // ret pc
         a.ins(&format!("{lp} {FRAME}, 8({RETSP})"));
         a.ins(&format!("{lp} {T3}, 24({RETSP})")); // caller l1off
-        if self.rv64() {
-            a.ins(&format!("ld {T2}, 16({RETSP})")); // code | caller_l0off<<48
-            a.ins(&format!("slli {CODE}, {T2}, 16"));
-            a.ins(&format!("srli {CODE}, {CODE}, 16"));
-            a.ins(&format!("srli {T2}, {T2}, 48")); // caller l0off, bit 0 = fp
-        } else {
-            // On RV32 the packed word straddles two machine words: the
-            // cell base is the low half and the caller's l0 offset the
-            // high half's low 16 bits.
-            a.ins(&format!("lw {CODE}, 16({RETSP})"));
-            a.ins(&format!("lw {T2}, 20({RETSP})"));
-            a.ins(&format!("slli {T2}, {T2}, 16"));
-            a.ins(&format!("srli {T2}, {T2}, 16"));
-        }
+                                                   // The record's third word is the caller's l0 offset, bit 0 = fp; a
+                                                   // 64-bit word whose low half RV32 reads.
+        a.ins(&format!("{lp} {T2}, 16({RETSP})"));
         let join = a.fresh("retjoin");
         // Sentinel records carry a readable dummy frame, so these loads are
         // always safe. The caller's float-pinned flag rides bit 0 of its

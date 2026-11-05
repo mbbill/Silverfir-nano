@@ -4,7 +4,7 @@
 //! ```text
 //!   x19 = pc (current 32-byte dispatch cell)   x20 = frame base
 //!   x21 = &EnterState                          x22 = memory 0 base
-//!   x23 = memory 0 length                      x24 = cell array base
+//!   x23 = memory 0 length                      x24 = call-path scratch
 //!   x26 = return-stack cursor
 //!   x27 = return-stack limit                   x28 = value-stack limit
 //!   x8  = accumulator     x17 = l0     x14 = l1     x15 = dispatch counter
@@ -690,7 +690,6 @@ impl Isa for Arm64 {
         a.ins("ldr x20, [x21, #16]");
         a.ins("ldr x22, [x21, #24]");
         a.ins("ldr x23, [x21, #32]");
-        a.ins("ldr x24, [x21, #40]");
         a.ins("ldr x26, [x21, #56]");
         a.ins("ldr x27, [x21, #64]");
         a.ins("ldr x28, [x21, #72]");
@@ -725,11 +724,10 @@ impl Isa for Arm64 {
         a.ins("add x13, x10, x13, lsl #3");
         a.ins("cmp x13, x28");
         a.ins(&format!("b.hi {}", st.trap_exhaust));
-        // push (ret_pc, caller frame, code | caller_l0off<<48, caller_l1off)
+        // push (ret_pc, caller frame, caller_l0off, caller_l1off)
         a.ins("add x13, x19, #32");
         a.ins("stp x13, x20, [x26]");
         a.ins("lsr x13, x12, #48");
-        a.ins("orr x13, x24, x13, lsl #48");
         a.ins("str x13, [x26, #16]");
         a.ins("lsr x13, x9, #48");
         a.ins("str x13, [x26, #24]");
@@ -988,9 +986,7 @@ impl Isa for Arm64 {
                 a.ins("ldr x12, [x19, #24]");
                 a.ins(&format!("cmp {}, w12", w(ra)));
                 a.ins(&format!("csel w10, {}, w12, lo", w(ra)));
-                a.ins("ldr w10, [x11, w10, uxtw #2]");
-                a.ins("lsl x10, x10, #5");
-                a.ins("add x19, x24, x10");
+                a.ins("ldr x19, [x11, w10, uxtw #3]"); // target cell address
                 a.ins("ldr x9, [x19]");
                 a.ins("br x9");
                 return;
@@ -1434,14 +1430,12 @@ impl Arm64 {
         // Overlap the caller continuation's handler load with the remaining
         // return-record and pinned-local reloads.
         a.ins("ldr x9, [x13]");
-        a.ins("ldr x12, [x26, #16]"); // caller code | caller_l0off<<48
+        a.ins("ldr x11, [x26, #16]"); // caller l0off, bit 0 = float-pinned flag
         a.ins("ldr x10, [x26, #24]"); // caller l1off
-        a.ins("lsr x11, x12, #48");
-        a.ins("ubfx x24, x12, #0, #48");
-        // Reload the caller's pinned locals. Sentinel records carry a
-        // readable dummy frame, so these loads are always safe. The
-        // caller's float-pinned flag rides bit 0 of its recorded l0 offset
-        // (offsets are byte-scaled, so bit 0 is structurally free).
+                                      // Reload the caller's pinned locals. Sentinel records carry a
+                                      // readable dummy frame, so these loads are always safe. The
+                                      // caller's float-pinned flag rides bit 0 of its recorded l0 offset
+                                      // (offsets are byte-scaled, so bit 0 is structurally free).
         let fp = a.fresh("retfp");
         let join = a.fresh("retjoin");
         a.ins(&format!("tbnz x11, #0, {fp}"));

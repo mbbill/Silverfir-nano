@@ -22,7 +22,7 @@ use super::instr::{
     FLAG_FUSED, FLAG_GLOBAL_CONVERT, FLAG_NO_NATIVE, FLAG_SHARED_TABLE,
 };
 use super::layout::{
-    c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
+    c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned, CELL,
 };
 use super::layout::{native_may_exit_slow, slot_fields};
 use super::predecode::LinkFunction;
@@ -68,7 +68,9 @@ pub(super) const EXIT_TRAP_BASE: u64 = 16;
 pub(super) const TRAP_KINDS: &[&str] = &["out of bounds memory access", "call stack exhausted"];
 
 /// Bytes per native return-stack record:
-/// `(ret_pc, frame, code_base | caller_l0off<<48, caller_l1off)`.
+/// `(ret_pc, frame, caller_l0off, caller_l1off)`. Bit 0 of the l0 offset is
+/// the caller's float-pinned flag (offsets are byte-scaled, so it is free).
+/// Rust plants only sentinels, all four words zero but readable.
 pub(super) const RET_RECORD: usize = 32;
 
 /// Communication block between Rust and the native chain. Field offsets
@@ -76,12 +78,15 @@ pub(super) const RET_RECORD: usize = 32;
 /// `interp_gen`.
 #[repr(C)]
 pub(super) struct EnterState {
-    pub reason: u64,       // 0
-    pub pc: u64,           // 8: cell address (in on entry, out on exit)
-    pub frame: u64,        // 16: frame base pointer (in AND out: calls move it)
-    pub mem_base: u64,     // 24: memory 0 base (unused when len is 0)
-    pub mem_len: u64,      // 32
-    pub code_base: u64,    // 40: dispatch-cell base of the CURRENT function
+    pub reason: u64,   // 0
+    pub pc: u64,       // 8: cell address (in on entry, out on exit)
+    pub frame: u64,    // 16: frame base pointer (in AND out: calls move it)
+    pub mem_base: u64, // 24: memory 0 base (unused when len is 0)
+    pub mem_len: u64,  // 32
+    /// 40: unused. No engine needs a function's cell base any more, since
+    /// branch tables hold absolute target cells; the slot keeps every later
+    /// offset, which each backend hard-codes, where it is.
+    pub reserved: u64,
     pub indirect_len: u64, // 48: number of per-function info entries
     pub ret_cursor: u64,   // 56: native return-stack cursor (in and out)
     pub ret_limit: u64,    // 64: return-stack end (depth exhaustion)
@@ -233,7 +238,9 @@ pub(super) enum CallFixup {
 pub(super) struct LinkPlan {
     cells: Vec<DCell>,
     heads: Vec<u32>,
-    br_flat: Vec<u32>,
+    /// Every function's branch tables back to back, each entry the
+    /// absolute address of its target cell.
+    br_flat: Vec<u64>,
     call_fixups: Vec<CallFixup>,
     planned_cells: usize,
     planned_br_entries: usize,
@@ -341,7 +348,7 @@ impl LinkPlan {
     #[cfg(test)]
     pub(super) fn branch_bytes(&self) -> core::ops::Range<u64> {
         let start = self.br_flat.as_ptr() as u64;
-        start..start + self.br_flat.len() as u64 * core::mem::size_of::<u32>() as u64
+        start..start + self.br_flat.len() as u64 * core::mem::size_of::<u64>() as u64
     }
 
     #[cfg(test)]
@@ -1236,20 +1243,6 @@ impl NativeEngine {
         let pin = func.pinned();
         let code_len = func.code_len();
 
-        // Flatten the branch tables; BrTable cells carry a byte offset
-        // into the flat buffer until the final address fixup below.
-        let table_byte_off = &mut scratch.table_byte_off;
-        table_byte_off.clear();
-        for table_index in 0..func.br_table_count() {
-            let t = func
-                .br_table(table_index)
-                .expect("predecoded branch-table index");
-            table_byte_off.push(plan.br_flat.len() as u64 * 4);
-            for &target in t.iter() {
-                plan.br_flat.push(target);
-            }
-        }
-
         // One cell of slack past the last instruction. Every handler that
         // ends in a dispatch tail prefetches the NEXT cell's handler word
         // at entry, so the last real cell reads eight bytes beyond the
@@ -1275,6 +1268,23 @@ impl NativeEngine {
         // Every linked body contains at least its prefetch pad, so this is
         // always an in-allocation address rather than a one-past pointer.
         let cells_base = unsafe { plan.cells.as_ptr().add(cell_start) as u64 };
+        // Flatten the branch tables. Each entry is its target cell's
+        // absolute address, so a BrTable handler loads the next cell pointer
+        // directly and needs no register holding the function's cell base.
+        // BrTable cells carry a byte offset into the flat buffer until the
+        // final address fixup below.
+        let table_byte_off = &mut scratch.table_byte_off;
+        table_byte_off.clear();
+        for table_index in 0..func.br_table_count() {
+            let t = func
+                .br_table(table_index)
+                .expect("predecoded branch-table index");
+            table_byte_off.push(plan.br_flat.len() as u64 * 8);
+            for &target in t.iter() {
+                plan.br_flat
+                    .push(cells_base + u64::from(target) * u64::from(CELL));
+            }
+        }
         let lf = LinkedFunction {
             #[cfg(test)]
             cell_start,
@@ -1919,7 +1929,7 @@ mod tests {
         let mut table_byte_off = Vec::with_capacity(func.br_tables.len());
         let mut flat_len = 0usize;
         for table in &func.br_tables {
-            table_byte_off.push(flat_len as u64 * 4);
+            table_byte_off.push(flat_len as u64 * 8);
             flat_len += table.len();
         }
 
@@ -2001,10 +2011,11 @@ mod tests {
         );
         plan.finish_layout();
 
-        let expected_flat: Vec<u32> = func
+        let expected_flat: Vec<u64> = func
             .br_tables
             .iter()
             .flat_map(|table| table.iter().copied())
+            .map(|target| linked.cell_base() + u64::from(target) * u64::from(CELL))
             .collect();
         assert_eq!(plan.br_flat, expected_flat, "branch flattening differs");
         let cells = plan.cells(&linked);
@@ -2092,7 +2103,13 @@ mod tests {
             );
         }
         assert_eq!(in_place_cells.last(), cells.last());
-        assert_eq!(in_place.br_flat, plan.br_flat);
+        let relative = |flat: &[u64], cells_base: u64| -> Vec<u64> {
+            flat.iter().map(|&entry| entry - cells_base).collect()
+        };
+        assert_eq!(
+            relative(&in_place.br_flat, in_place_linked.cell_base()),
+            relative(&plan.br_flat, linked.cell_base())
+        );
         assert_eq!(in_place.call_fixups, plan.call_fixups);
         assert_eq!(in_place_types, call_indirect_types);
         assert_eq!(in_place.heads, expected_heads);
