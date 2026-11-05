@@ -83,10 +83,9 @@ pub(super) struct EnterState {
     pub frame: u64,    // 16: frame base pointer (in AND out: calls move it)
     pub mem_base: u64, // 24: memory 0 base (unused when len is 0)
     pub mem_len: u64,  // 32
-    /// 40: unused. No engine needs a function's cell base any more, since
-    /// branch tables hold absolute target cells; the slot keeps every later
-    /// offset, which each backend hard-codes, where it is.
-    pub reserved: u64,
+    /// 40: per-function indirect-call info, `[u64; 3]` per function index
+    /// (in only)
+    pub indirect_base: u64,
     pub indirect_len: u64, // 48: number of per-function info entries
     pub ret_cursor: u64,   // 56: native return-stack cursor (in and out)
     pub ret_limit: u64,    // 64: return-stack end (depth exhaustion)
@@ -98,9 +97,29 @@ pub(super) struct EnterState {
     // ride it across activation boundaries)
     pub table0_base: u64, // 112: table 0 entries (in only, RefValue slots)
     pub table0_len: u64,  // 120
-    pub indirect_base: u64, // 128: per-function indirect-call info, [u64;3]
-                          // per function index (in only)
 }
+
+// The backends hard-code these offsets.
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(EnterState, reason) == 0);
+    assert!(offset_of!(EnterState, pc) == 8);
+    assert!(offset_of!(EnterState, frame) == 16);
+    assert!(offset_of!(EnterState, mem_base) == 24);
+    assert!(offset_of!(EnterState, mem_len) == 32);
+    assert!(offset_of!(EnterState, indirect_base) == 40);
+    assert!(offset_of!(EnterState, indirect_len) == 48);
+    assert!(offset_of!(EnterState, ret_cursor) == 56);
+    assert!(offset_of!(EnterState, ret_limit) == 64);
+    assert!(offset_of!(EnterState, stack_limit) == 72);
+    assert!(offset_of!(EnterState, dispatches) == 80);
+    assert!(offset_of!(EnterState, l0_value) == 88);
+    assert!(offset_of!(EnterState, l1_value) == 96);
+    assert!(offset_of!(EnterState, acc_value) == 104);
+    assert!(offset_of!(EnterState, table0_base) == 112);
+    assert!(offset_of!(EnterState, table0_len) == 120);
+    assert!(core::mem::size_of::<EnterState>() == 128);
+};
 
 /// One 32-byte dispatch cell: [`Instr`] with the leading word replaced by
 /// the handler address.

@@ -1854,7 +1854,7 @@ impl RiscV {
         self.br_far(a, "bne", T5, "zero", &st.slow); // upper 32 bits are nonzero
         a.ins(&format!("ld {T5}, 48({STATE})")); // info length
         self.br_far(a, "bgeu", T4, T5, &st.slow);
-        a.ins(&format!("ld {T5}, 128({STATE})")); // info base
+        a.ins(&format!("ld {T5}, 40({STATE})")); // info base
         a.ins(&format!("slli {T6}, {T4}, 1"));
         a.ins(&format!("add {T6}, {T6}, {T4}")); // fi*3
         a.ins(&format!("slli {T6}, {T6}, 3"));

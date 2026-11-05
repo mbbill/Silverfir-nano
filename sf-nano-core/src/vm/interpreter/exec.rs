@@ -3210,7 +3210,6 @@ impl InterpInstance {
             frame: stack_ptr + (act.base as u64) * 8,
             mem_base: 0,
             mem_len: 0,
-            reserved: 0,
             ret_cursor: ret_ptr + ctx.ret_cursor as u64,
             ret_limit: ret_ptr + (ctx.ret_stack.len() * 8 - RET_RECORD) as u64,
             stack_limit: stack_ptr + (ctx.stack.len() as u64) * 8,

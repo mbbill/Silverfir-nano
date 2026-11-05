@@ -807,7 +807,7 @@ impl Isa for Arm64 {
         a.ins("ldr x13, [x21, #48]"); // info length
         a.ins("cmp x12, x13");
         a.ins(&format!("b.hs {}", st.slow)); // function index out of bounds
-        a.ins("ldr x13, [x21, #128]"); // info base
+        a.ins("ldr x13, [x21, #40]"); // info base
         a.ins("add x11, x12, x12, lsl #1"); // fi*3
         a.ins("add x13, x13, x11, lsl #3"); // entry = info + fi*24
         a.ins("ldr x11, [x13, #8]"); // l1off<<48 | l0off<<32 | canon type
