@@ -1582,11 +1582,19 @@ mod tests {
     fn native_handler_size(engine: &NativeEngine, ins: Instr) -> usize {
         let start = engine.handler_for(&ins, ins.flags, &Pinned::NONE);
         assert_ne!(start, 0, "missing native handler for {:?}", ins.op);
-        let end = (0..INTERP_HANDLER_SLOTS)
+        let mut end = (0..INTERP_HANDLER_SLOTS)
             .filter_map(|slot| engine.handler_at(slot))
             .filter(|&address| address > start)
             .min()
             .unwrap_or(engine.base + engine.code_len);
+        // The line guard pads ahead of the next handler with `udf #0`
+        // words (all bits zero); they belong to neither handler, and no
+        // handler ends in one.
+        // SAFETY: [start, end) lies inside the engine blob linked into
+        // the readable text segment, and both ends are 4-byte aligned.
+        while end > start && unsafe { core::ptr::read((end - 4) as *const u32) } == 0 {
+            end -= 4;
+        }
         end - start
     }
 
