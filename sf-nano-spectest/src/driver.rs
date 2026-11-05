@@ -345,6 +345,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         path: "interp_slow_exit_operands.wast",
         content: include_str!("../tests/interp_slow_exit_operands.wast"),
     });
+    wast_inputs.push(WastInput::Embedded {
+        path: "const_right_operand.wast",
+        content: include_str!("../tests/const_right_operand.wast"),
+    });
     wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
     info!("Found {} WAST files", wast_inputs.len());
 

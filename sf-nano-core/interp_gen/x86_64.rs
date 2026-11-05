@@ -323,6 +323,17 @@ impl X86_64 {
         (self.src(a, ac, 8, RAX), self.src(a, bc, 16, RCX))
     }
 
+    /// The second source as an instruction operand. A constant stays in
+    /// its cell word and is read as a memory operand, which saves the
+    /// scratch load; anything else materializes into a register first.
+    fn src_b_operand(&self, a: &mut Asm, bc: Cls, w32: bool) -> String {
+        if bc == Cls::Const {
+            format!("{} ptr [rbx + 16]", if w32 { "dword" } else { "qword" })
+        } else {
+            r(w32, self.src(a, bc, 16, RCX)).to_string()
+        }
+    }
+
     fn dst_target(&self, dc: DstCls) -> u32 {
         match dc {
             DstCls::L0 => L0R,
@@ -874,11 +885,12 @@ impl Isa for X86_64 {
             self.pre(a);
             a.ins("mov rdx, [rbx + 24]");
             a.ins("mov rsi, [rdx]");
-            let (ra, rb) = self.src_ab(a, v.a, v.b);
+            let ra = self.src(a, v.a, 8, RAX);
+            let rb = self.src_b_operand(a, v.b, w32);
             if matches!(v.op, I32_BrAnd | I32_BrAndNot) {
-                a.ins(&format!("test {}, {}", d(ra), d(rb)));
+                a.ins(&format!("test {rb}, {}", d(ra)));
             } else {
-                a.ins(&format!("cmp {}, {}", r(w32, ra), r(w32, rb)));
+                a.ins(&format!("cmp {}, {rb}", r(w32, ra)));
             }
             let nt = a.fresh("nt");
             a.ins(&format!("j{} {nt}", inv(cond)));
@@ -1177,7 +1189,19 @@ impl Isa for X86_64 {
                 self.finish_fp(a, dc, to32);
             }
             _ => {
-                if let Some((m, w32, commutative, cl)) = int_bin(v.op) {
+                if let Some((m, w32, _, false)) = int_bin(v.op).filter(|_| v.b == Cls::Const) {
+                    // A constant right operand is read from the cell, and
+                    // a slot left operand loads straight into the result
+                    // register: nothing else is live in it.
+                    let rd = self.dst_target(dc);
+                    let ra = self.src(a, v.a, 8, rd);
+                    if rd != ra {
+                        a.ins(&format!("mov {}, {}", q(rd), q(ra)));
+                    }
+                    let rb = self.src_b_operand(a, v.b, w32);
+                    a.ins(&format!("{m} {}, {rb}", r(w32, rd)));
+                    self.finish(a, dc, rd);
+                } else if let Some((m, w32, commutative, cl)) = int_bin(v.op) {
                     let (ra, rb) = self.src_ab(a, v.a, v.b);
                     let rd = self.dst_target(dc);
                     if cl {
@@ -1187,8 +1211,9 @@ impl Isa for X86_64 {
                     }
                     self.finish(a, dc, rd);
                 } else if let Some((cond, w32)) = int_cmp(v.op) {
-                    let (ra, rb) = self.src_ab(a, v.a, v.b);
-                    a.ins(&format!("cmp {}, {}", r(w32, ra), r(w32, rb)));
+                    let ra = self.src(a, v.a, 8, RAX);
+                    let rb = self.src_b_operand(a, v.b, w32);
+                    a.ins(&format!("cmp {}, {rb}", r(w32, ra)));
                     let rd = self.dst_target(dc);
                     a.ins(&format!("set{cond} {}", b8(rd)));
                     a.ins(&format!("movzx {}, {}", d(rd), b8(rd)));
