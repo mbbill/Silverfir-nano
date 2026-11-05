@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ci import x64_standings_report as corpus
-from ci import x64_wasi_standings as wasi
+from ci import standings_report as corpus
+from ci import wasi_standings as wasi
 
 
 class StandingsTests(unittest.TestCase):
@@ -51,9 +51,22 @@ class StandingsTests(unittest.TestCase):
                 native.return_value = ({"lua/fib": (100.0, "fib20/s")}, [])
                 v8.return_value = ({"lua/fib": (110.0, "fib20/s")}, [])
                 result = wasi.main([
-                    "--nano", "nano", "--wasmtime", "wasmtime",
+                    "--nano", "nano", "--wasmtime", "wasmtime", "--platform", "x64-linux",
                     "--out-md", f"{temp}/report.md", "--out-json", f"{temp}/report.json",
                 ])
             self.assertEqual(result, 1)
             self.assertTrue(Path(temp, "report.md").is_file())
             self.assertEqual(len(json.loads(Path(temp, "report.json").read_text())["failures"]), 3)
+
+    def test_platform_labels_both_reports(self):
+        row = {"silverfir-nano.jit": 100.0, "wasmtime.cranelift": 90.0, "v8": 80.0}
+        self.assertTrue(
+            corpus.render({"sort": row}, [], "arm64-darwin").startswith(
+                "# arm64-darwin cross-engine standings"
+            )
+        )
+        rates = {"lua/fib": (100.0, "fib20/s")}
+        report = wasi.render(
+            {"silverfir-nano.jit": rates, "v8": rates}, "silverfir-nano.jit", [], [], "x64-windows"
+        )
+        self.assertTrue(report.startswith("# x64-windows WASI-suite standings"))

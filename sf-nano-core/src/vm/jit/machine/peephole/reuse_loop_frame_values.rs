@@ -11,6 +11,7 @@
 //! contract. This pass only removes loads whose value is proven unchanged.
 
 use crate::collections;
+use crate::vm::jit::machine::block_lists::BlockLists;
 use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineInstKind,
     MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType,
@@ -61,7 +62,7 @@ fn try_reuse_one_frame_value(
     blocks: &mut [MachineBlock],
     header: usize,
     loop_nodes: &[usize],
-    predecessors: &[collections::Vec<usize>],
+    predecessors: &BlockLists,
     entry: MachineBlockId,
 ) {
     let mut in_loop = collections::vec![false; blocks.len()];

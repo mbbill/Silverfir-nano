@@ -6,6 +6,7 @@
 //! - `lower_*` modules — the lowering passes that transform SSA-IR into MachineIR
 //! - MachineIR transforms (peephole optimization, validation)
 
+mod block_lists;
 mod call_abi;
 mod gp32;
 #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]

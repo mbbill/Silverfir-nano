@@ -298,11 +298,14 @@ jobs:
         with:
           shared-key: correctness-${{ matrix.platform }}
 
+      # Ubuntu 26.04 dropped the qemu-user-static package (now only a
+      # virtual name with several providers); qemu-user ships the static
+      # emulators there, under the plain qemu-<arch> names 24.04 also has.
       - name: Install QEMU user-mode emulators
         if: matrix.qemu
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user-static
+          sudo apt-get install -y -qq qemu-user
 
       - name: Cache Zig
         if: matrix.zig

@@ -4926,7 +4926,7 @@ impl<'a> Riscv32Backend<'a> {
                 self.emit_jal(abi::zero_reg(), trap_label);
                 Ok(())
             }
-            MachineTerminator::JumpTable { index, entries } => {
+            MachineTerminator::JumpTable { index, entries, .. } => {
                 self.lower_jump_table(*index, entries)
             }
             MachineTerminator::Call {

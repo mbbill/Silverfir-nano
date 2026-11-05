@@ -159,6 +159,22 @@ fn add_sub_imm(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, imm12: u32)
         | rd.index()
 }
 
+/// `ADD`/`SUB` (immediate) with the immediate shifted left by 12.
+fn add_sub_imm_lsl12(sf: u32, op: u32, rd: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    add_sub_imm(sf, op, 0, rd, rn, imm12) | (1 << 22)
+}
+
+/// `rd = rn + (imm12 << 12)` (or minus, for `sub`), at 64 bits when `w64`.
+pub(crate) fn add_sub_imm_lsl12_inst(
+    w64: bool,
+    sub: bool,
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    imm12: u32,
+) -> u32 {
+    add_sub_imm_lsl12(u32::from(w64), u32::from(sub), rd, rn, imm12)
+}
+
 fn cond_select(sf: u32, op2: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, cond: Cond) -> u32 {
     (sf << 31)
         | (0b0_0_11010100 << 21)
@@ -421,6 +437,16 @@ pub(crate) fn bics_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
 /// `BICS Xd, Xn, Xm`: bit-clear (`Xn & !Xm`) and update NZCV.
 pub(crate) fn bics_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     logical_shifted_reg(1, 0b11, 1, rd, rn, rm)
+}
+
+/// `BIC Wd, Wn, Wm`: bit-clear (`Wn & !Wm`), flags untouched.
+pub(crate) fn bic_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(0, 0b00, 1, rd, rn, rm)
+}
+
+/// `BIC Xd, Xn, Xm`: bit-clear (`Xn & !Xm`), flags untouched.
+pub(crate) fn bic_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(1, 0b00, 1, rd, rn, rm)
 }
 
 pub(crate) fn tst_imm_32(rn: Arm64Reg, imm: u32) -> Option<u32> {
@@ -913,6 +939,23 @@ pub(crate) fn ldr_lit_64(rt: Arm64Reg, imm19: i32) -> u32 {
     (0b01011000 << 24) | (imm19_bits << 5) | rt.index()
 }
 
+/// LDR Dt, label (PC-relative, signed 19-bit word offset).
+pub(crate) fn ldr_lit_d(rt: Arm64FpReg, imm19: i32) -> u32 {
+    let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
+    0x5C00_0000 | (imm19_bits << 5) | rt.index()
+}
+
+/// LDR St, label (PC-relative, signed 19-bit word offset).
+pub(crate) fn ldr_lit_s(rt: Arm64FpReg, imm19: i32) -> u32 {
+    let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
+    0x1C00_0000 | (imm19_bits << 5) | rt.index()
+}
+
+/// MOVI Dd, #0 — zeroes the 64-bit lane without a GP source.
+pub(crate) fn movi_d_zero(rd: Arm64FpReg) -> u32 {
+    0x2F00_E400 | rd.index()
+}
+
 pub(crate) fn b_cond(cond: Cond, imm19: i32) -> u32 {
     let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
     (0b01010100 << 24) | (imm19_bits << 5) | (cond as u32)
@@ -938,6 +981,11 @@ pub(crate) fn blr(rn: Arm64Reg) -> u32 {
 
 pub(crate) fn ret() -> u32 {
     (0b1101011_0010 << 21) | (0b11111 << 16) | (abi::link_reg().index() << 5)
+}
+
+/// NOP (HINT #0).
+pub(crate) const fn nop() -> u32 {
+    0xd503_201f
 }
 
 // --- Integer data-processing (2 source) ---

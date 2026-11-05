@@ -52,19 +52,58 @@ pub(crate) fn cleanup_program(program: &mut SsaProgram) {
 /// target instead. The final cache-requirement pass will upgrade the target
 /// cell from write-first Reserve to Ensure and the normal cache edge will carry
 /// the value.
+///
+/// The identity must still hold where the edge leaves its block: the bound
+/// value is read from the local in the edge's own source block, and nothing
+/// later in that block writes the local, reserves its cache for a write or
+/// drops it. A read taken before `local.set` is a snapshot of the old value
+/// (`local.get x; local.set x ...; br_if` carries the old `x`), and reading
+/// the local again at the target would observe the new one.
 fn fold_block_params_sourced_from_cached_cells(program: &mut SsaProgram) -> bool {
+    // For each `cell.get_cache` result that still equals its local at the end
+    // of its block: the local and the defining block.
     let mut cache_get_cell = collections::vec![None; program.value_types.len()];
-    for block in &program.blocks {
-        for inst in &block.ops {
-            if inst.op != SsaOp::CELL_GET_CACHE || !inst.result.is_some() {
-                continue;
-            }
-            if let Some(slot) = cache_get_cell.get_mut(inst.result.0 as usize) {
-                *slot = Some(super::cell::CellId(inst.meta));
+    // `changed_in[cell] == block_index + 1` while scanning a block backward:
+    // the cell changes later in that block.
+    let mut changed_in = collections::vec![0usize; program.cell_types.len()];
+    let mut any_candidate = false;
+    for (block_index, block) in program.blocks.iter().enumerate() {
+        // Only values bound on this block's own edges can be folded.
+        let mut binds = false;
+        visit_outgoing_edges(&block.terminator, |edge| binds |= !edge.bindings.is_empty());
+        if !binds {
+            continue;
+        }
+        let stamp = block_index + 1;
+        for inst in block.ops.iter().rev() {
+            let cell = inst.meta as usize;
+            match inst.op {
+                SsaOp::CELL_SET_SLOT
+                | SsaOp::CELL_SET_CACHE
+                | SsaOp::CELL_RESERVE_CACHE
+                | SsaOp::CELL_DROP_CACHE => {
+                    if let Some(changed) = changed_in.get_mut(cell) {
+                        *changed = stamp;
+                    }
+                }
+                SsaOp::CELL_GET_CACHE
+                    if inst.result.is_some() && changed_in.get(cell) != Some(&stamp) =>
+                {
+                    if let Some(slot) = cache_get_cell.get_mut(inst.result.0 as usize) {
+                        *slot = Some((super::cell::CellId(inst.meta), block_index));
+                        any_candidate = true;
+                    }
+                }
+                _ => {}
             }
         }
     }
 
+    // Without a fresh cached-local read bound on some edge, nothing can fold;
+    // skip building the incoming-edge lists.
+    if !any_candidate {
+        return false;
+    }
     let incoming_by_block = all_incoming_edge_locations(program);
     let mut param_location = collections::vec![None; program.value_types.len()];
     for (block_index, block) in program.blocks.iter().enumerate() {
@@ -110,6 +149,8 @@ fn fold_block_params_sourced_from_cached_cells(program: &mut SsaProgram) -> bool
                     .get(binding.value.0 as usize)
                     .copied()
                     .flatten()
+                    .filter(|&(_, defined_in)| defined_in == edge_location_block(location))
+                    .map(|(cell, _)| cell)
                 else {
                     valid[param_index] = false;
                     continue;
@@ -329,6 +370,15 @@ fn cache_run_slot(inst: &SsaInst) -> Option<super::cell::CellId> {
 }
 
 fn thread_empty_goto_blocks(program: &mut SsaProgram) -> bool {
+    // Only an empty block that jumps elsewhere can be threaded; most rounds
+    // of the cleanup fixed point find none, so skip the incoming-edge lists.
+    let threadable = program.blocks.iter().enumerate().any(|(index, block)| {
+        block.ops.is_empty()
+            && matches!(&block.terminator, SsaTerminator::Goto(edge) if edge.target.as_usize() != index)
+    });
+    if !threadable {
+        return false;
+    }
     let block_count = program.blocks.len();
     let mut incoming_by_block = all_incoming_edge_locations(program);
     let mut removed = collections::vec![false; block_count];
@@ -1237,6 +1287,111 @@ mod tests {
             SsaTerminator::Branch { then_edge, .. } if then_edge.bindings.is_empty()
         ));
         validate_program(&program).unwrap();
+    }
+
+    /// The loop of `folds_loop_param_sourced_from_same_cached_cell_on_every_edge`
+    /// with the back edge carrying `back_value`, after `loop_ops` in the body.
+    fn cached_cell_loop_program(
+        loop_ops: collections::Vec<SsaInst>,
+        back_value: SsaValue,
+    ) -> SsaProgram {
+        let param = SsaValue(10);
+        SsaProgram {
+            cell_homes: collections::Vec::new(),
+            entry: SsaTarget(0),
+            blocks: collections::vec![
+                SsaBlock {
+                    id: SsaTarget(0),
+                    params: collections::Vec::new(),
+                    ops: collections::vec![SsaInst::cell_get_cache(CellId(0), SsaValue(0))],
+                    extra_args: collections::Vec::new(),
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(1),
+                        bindings: collections::vec![SsaBinding {
+                            param,
+                            value: SsaValue(0),
+                        }],
+                    }),
+                },
+                SsaBlock {
+                    id: SsaTarget(1),
+                    params: collections::vec![param],
+                    ops: loop_ops,
+                    extra_args: collections::Vec::new(),
+                    terminator: SsaTerminator::Branch {
+                        cond: param,
+                        then_edge: SsaEdge {
+                            target: SsaTarget(1),
+                            bindings: collections::vec![SsaBinding {
+                                param,
+                                value: back_value,
+                            }],
+                        },
+                        else_edge: SsaEdge {
+                            target: SsaTarget(2),
+                            bindings: collections::Vec::new(),
+                        },
+                    },
+                },
+                SsaBlock {
+                    id: SsaTarget(2),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
+                    terminator: SsaTerminator::Return { results: None },
+                },
+            ],
+            cell_types: collections::vec![ValueType::I32],
+            result_types: collections::Vec::new(),
+            cell_info: collections::vec![Default::default()],
+            block_entry_cached_cells: collections::vec![
+                collections::vec![CellId(0)],
+                collections::vec![CellId(0)],
+                collections::Vec::new(),
+            ],
+            block_entry_cache_requirements: collections::vec![
+                collections::vec![EntryCacheRequirement::Ensure],
+                collections::vec![EntryCacheRequirement::Ensure],
+                collections::Vec::new(),
+            ],
+            preferred_preserved: collections::Vec::new(),
+            value_types: collections::vec![ValueType::I32; 11],
+            value_sink_cell: collections::vec![None; 11],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
+        }
+    }
+
+    #[test]
+    fn keeps_param_carrying_a_cached_cell_snapshot_across_a_later_write() {
+        // `local.get` into v1, then `local.set` of the same local before the
+        // back edge: the edge carries the old value, not the local.
+        let mut program = cached_cell_loop_program(
+            collections::vec![
+                SsaInst::cell_get_cache(CellId(0), SsaValue(1)),
+                SsaInst::cell_set_cache(CellId(0), SsaValue(10)),
+            ],
+            SsaValue(1),
+        );
+        assert!(!fold_block_params_sourced_from_cached_cells(&mut program));
+        assert_eq!(program.blocks[1].params, collections::vec![SsaValue(10)]);
+        assert!(matches!(
+            &program.blocks[1].terminator,
+            SsaTerminator::Branch { then_edge, .. } if then_edge.bindings.len() == 1
+        ));
+    }
+
+    #[test]
+    fn keeps_param_whose_cell_read_comes_from_an_earlier_block() {
+        // The back edge carries the entry block's read past a write in the
+        // loop body; only a read in the edge's own block is checked fresh.
+        let mut program = cached_cell_loop_program(
+            collections::vec![SsaInst::cell_set_cache(CellId(0), SsaValue(10))],
+            SsaValue(0),
+        );
+        assert!(!fold_block_params_sourced_from_cached_cells(&mut program));
+        assert_eq!(program.blocks[1].params, collections::vec![SsaValue(10)]);
     }
 
     #[test]

@@ -147,10 +147,17 @@ pub(crate) trait ArchBackend<'a>: Sized {
     // buffer; the default impls emit each instruction immediately.
 
     /// Pad the text cursor before binding a loop-header block label (a
-    /// back-edge target). Default: nothing — fixed-width ISAs fetch
-    /// alignment-insensitively. x86_64 overrides this to align headers
-    /// to a fetch-window boundary so tight loops do not straddle one.
+    /// back-edge target). Default: nothing. x86_64 and arm64 align headers
+    /// to 32 bytes, so a tight loop's fetch pattern does not shift with the
+    /// code laid out before it.
     fn align_loop_header(&mut self) {}
+
+    /// Pad the text cursor before binding the internal entry, the target of
+    /// every SF->SF call, which follows the public entry stub's return.
+    /// Default: nothing. x86_64 and arm64 align it to 32 bytes, so a call
+    /// target's fetch pattern does not depend on that stub's length; the
+    /// padding is never executed.
+    fn align_internal_entry(&mut self) {}
 
     /// Begin a new block. Default sets `current_block`, clears
     /// `current_edge_target`, and resets the block-entry FP state.

@@ -16,7 +16,7 @@ pub(super) struct NarrowEquality {
     pub source: MachineReg,
 }
 
-fn dynamic_gp(reg: MachineReg) -> bool {
+pub(super) fn dynamic_gp(reg: MachineReg) -> bool {
     reg.0 >= MACHINE_FIXED_REG_COUNT && usize::from(reg.0) < super::abi::max_gp_mapped_regs()
 }
 
@@ -25,7 +25,7 @@ fn unordered_pair(lhs: MachineValue, rhs: MachineValue, a: MachineReg, b: Machin
         || (lhs == MachineValue::Reg(b) && rhs == MachineValue::Reg(a))
 }
 
-fn dead_on_edge(blocks: &[MachineBlock], edge: &MachineEdge, reg: MachineReg) -> bool {
+pub(super) fn dead_on_edge(blocks: &[MachineBlock], edge: &MachineEdge, reg: MachineReg) -> bool {
     if edge
         .args
         .iter()

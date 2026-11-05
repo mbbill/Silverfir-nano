@@ -18,6 +18,8 @@ use crate::vm::jit::arch::common::text_emitter::TextEmitter;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum Cc {
+    O = 0x0,
+    NO = 0x1,
     B = 0x2,
     AE = 0x3,
     E = 0x4,
@@ -38,6 +40,8 @@ impl Cc {
     #[inline]
     pub(crate) const fn invert(self) -> Cc {
         match self {
+            Self::O => Self::NO,
+            Self::NO => Self::O,
             Self::B => Self::AE,
             Self::AE => Self::B,
             Self::E => Self::NE,
@@ -107,7 +111,12 @@ fn emit_modrm_rr(e: &mut TextEmitter, reg: X86Reg, rm: X86Reg) {
 /// Emit ModR/M for [rm] (mod=00), [rm+disp8] (mod=01), [rm+disp32] (mod=10).
 /// Handles RSP (SIB needed) and RBP (disp8 needed) special cases.
 fn emit_modrm_mem(e: &mut TextEmitter, reg: X86Reg, base: X86Reg, disp: i32) {
-    let reg3 = reg.idx3();
+    emit_modrm_mem3(e, reg.idx3(), base, disp);
+}
+
+/// [`emit_modrm_mem`] with the reg field given as its low three bits, for
+/// XMM registers as well as GP ones.
+fn emit_modrm_mem3(e: &mut TextEmitter, reg3: u8, base: X86Reg, disp: i32) {
     let base3 = base.idx3();
 
     // RSP/R12 as base requires SIB byte
@@ -220,6 +229,24 @@ fn alu_ri8(e: &mut TextEmitter, digit: u8, w: bool, dst: X86Reg, imm8: i8) {
     e.emit_u8(0x83);
     e.emit_u8(modrm(0b11, digit, dst.idx3()));
     e.emit_u8(imm8 as u8);
+}
+
+/// The carry-consuming ALU ops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CarryOp {
+    /// `dst = dst + imm + CF`
+    Adc,
+    /// `dst = dst - imm - CF`
+    Sbb,
+}
+
+/// ADC/SBB dst, imm8 (group 83 /2 and /3).
+pub(crate) fn carry_ri8(e: &mut TextEmitter, op: CarryOp, w64: bool, dst: X86Reg, imm8: i8) {
+    let digit = match op {
+        CarryOp::Adc => 2,
+        CarryOp::Sbb => 3,
+    };
+    alu_ri8(e, digit, w64, dst, imm8);
 }
 
 /// Generic ALU r/m, imm32 (opcode group /digit, 0x81 for 64-bit).
@@ -767,6 +794,36 @@ pub(crate) fn imul_rr_32(e: &mut TextEmitter, dst: X86Reg, src: X86Reg) {
     emit_modrm_rr(e, dst, src);
 }
 
+/// IMUL dst, src, imm (three-operand, sign-extended immediate): the imm8
+/// form 6B when it fits, else 69 with imm32. A 32-bit destination holds
+/// the low half of the product and clears its upper half.
+pub(crate) fn imul_rri(e: &mut TextEmitter, w64: bool, dst: X86Reg, src: X86Reg, imm: i32) {
+    emit_rex(e, w64, dst, src);
+    if fits_i8(imm) {
+        e.emit_u8(0x6B);
+        emit_modrm_rr(e, dst, src);
+        e.emit_u8(imm as u8);
+    } else {
+        e.emit_u8(0x69);
+        emit_modrm_rr(e, dst, src);
+        emit_i32(e, imm);
+    }
+}
+
+/// LEA dst, [src + src * (1 << scale2)]: multiplies by 3, 5 or 9 in one
+/// flag-preserving operation, with lea_sum's width rules.
+pub(crate) fn lea_self_scaled(
+    e: &mut TextEmitter,
+    w64: bool,
+    dst: X86Reg,
+    src: X86Reg,
+    scale2: u8,
+) {
+    emit_rex_idx(e, w64, dst.needs_rex_ext(), src, src);
+    e.emit_u8(0x8D);
+    emit_modrm_mem_idx_scaled(e, dst.idx3(), src, src, scale2, 0);
+}
+
 /// IDIV r/m64 (signed: RDX:RAX / src -> RAX=quot, RDX=rem)
 pub(crate) fn idiv_rm_64(e: &mut TextEmitter, src: X86Reg) {
     emit_rex_b(e, true, src);
@@ -1240,8 +1297,8 @@ pub(crate) fn store_imm32_64_idx(
 // ALU with memory source — reg <- reg OP [mem]
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Integer ALU ops with an r/m source form (the reg <- r/m direction).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Integer ALU ops with r/m forms in both directions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MemAluOp {
     Add,
     Or,
@@ -1260,6 +1317,57 @@ impl MemAluOp {
             Self::Sub => 0x2B,
             Self::Xor => 0x33,
         }
+    }
+
+    /// Opcode of the `r/m, reg` direction (memory destination).
+    const fn store_opcode(self) -> u8 {
+        self.opcode() - 2
+    }
+
+    /// ModR/M.reg extension of the `r/m, imm` group (0x81 / 0x83).
+    const fn imm_ext(self) -> u8 {
+        match self {
+            Self::Add => 0,
+            Self::Or => 1,
+            Self::And => 4,
+            Self::Sub => 5,
+            Self::Xor => 6,
+        }
+    }
+}
+
+/// OP [base + index + disp], src — a read-modify-write of one memory word.
+pub(crate) fn alu_mr_idx(
+    e: &mut TextEmitter,
+    wide: bool,
+    op: MemAluOp,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    src: X86Reg,
+) {
+    emit_rex_idx(e, wide, src.needs_rex_ext(), index, base);
+    e.emit_u8(op.store_opcode());
+    emit_modrm_mem_idx(e, src.idx3(), base, index, disp);
+}
+
+/// OP [base + index + disp], imm — sign-extended imm8 or imm32 form.
+pub(crate) fn alu_mi_idx(
+    e: &mut TextEmitter,
+    wide: bool,
+    op: MemAluOp,
+    base: X86Reg,
+    index: X86Reg,
+    disp: i32,
+    imm: i32,
+) {
+    emit_rex_idx(e, wide, false, index, base);
+    e.emit_u8(if fits_i8(imm) { 0x83 } else { 0x81 });
+    emit_modrm_mem_idx(e, op.imm_ext(), base, index, disp);
+    if fits_i8(imm) {
+        e.emit_u8(imm as u8);
+    } else {
+        emit_i32(e, imm);
     }
 }
 
@@ -1303,6 +1411,63 @@ pub(crate) fn alu_rm_32_idx(
     emit_rex_idx(e, false, dst.needs_rex_ext(), index, base);
     e.emit_u8(op.opcode());
     emit_modrm_mem_idx(e, dst.idx3(), base, index, disp);
+}
+
+/// A general-purpose memory operand: `[base + disp]` or
+/// `[base + index + disp]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GpMem {
+    Base {
+        base: X86Reg,
+        disp: i32,
+    },
+    Indexed {
+        base: X86Reg,
+        index: X86Reg,
+        disp: i32,
+    },
+}
+
+/// REX prefix, opcode and ModR/M (+SIB, displacement) for one opcode with a
+/// memory r/m operand; `reg3`/`reg_ext` are the reg field and its REX.R bit.
+fn emit_op_mem(e: &mut TextEmitter, w64: bool, opcode: u8, reg3: u8, reg_ext: bool, mem: GpMem) {
+    match mem {
+        GpMem::Base { base, disp } => {
+            let b = base.needs_rex_ext();
+            if w64 || reg_ext || b {
+                e.emit_u8(rex(w64, reg_ext, false, b));
+            }
+            e.emit_u8(opcode);
+            emit_modrm_mem3(e, reg3, base, disp);
+        }
+        GpMem::Indexed { base, index, disp } => {
+            emit_rex_idx(e, w64, reg_ext, index, base);
+            e.emit_u8(opcode);
+            emit_modrm_mem_idx(e, reg3, base, index, disp);
+        }
+    }
+}
+
+/// CMP reg, [mem]: flags from `reg - [mem]`.
+pub(crate) fn cmp_reg_mem(e: &mut TextEmitter, w64: bool, reg: X86Reg, mem: GpMem) {
+    emit_op_mem(e, w64, 0x3B, reg.idx3(), reg.needs_rex_ext(), mem);
+}
+
+/// CMP [mem], reg: flags from `[mem] - reg`.
+pub(crate) fn cmp_mem_reg(e: &mut TextEmitter, w64: bool, mem: GpMem, reg: X86Reg) {
+    emit_op_mem(e, w64, 0x39, reg.idx3(), reg.needs_rex_ext(), mem);
+}
+
+/// CMP [mem], imm: flags from `[mem] - imm`, the immediate sign-extended to
+/// the operand width.
+pub(crate) fn cmp_mem_imm(e: &mut TextEmitter, w64: bool, mem: GpMem, imm: i32) {
+    if fits_i8(imm) {
+        emit_op_mem(e, w64, 0x83, 7, false, mem);
+        e.emit_u8(imm as u8);
+    } else {
+        emit_op_mem(e, w64, 0x81, 7, false, mem);
+        emit_i32(e, imm);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1364,6 +1529,400 @@ pub(crate) fn try_branch_rel8(e: &mut TextEmitter, cc: Option<Cc>, target: usize
     e.emit_u8(cc.map_or(0xEB, |cc| 0x70 + cc as u8));
     e.emit_u8(displacement as u8);
     true
+}
+
+#[cfg(test)]
+mod memory_destination_alu_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn rmw_forms_match_reference_encodings() {
+        // Reference bytes from GNU as (Intel syntax).
+        let mut text = TextEmitter::new();
+        // or DWORD PTR [r12+r14*1], 0x200000
+        alu_mi_idx(
+            &mut text,
+            false,
+            MemAluOp::Or,
+            X86Reg::R12,
+            X86Reg::R14,
+            0,
+            0x200000,
+        );
+        // add QWORD PTR [rbp+rsi*1+0x10], -1
+        alu_mi_idx(
+            &mut text,
+            true,
+            MemAluOp::Add,
+            X86Reg::RBP,
+            X86Reg::RSI,
+            0x10,
+            -1,
+        );
+        // and DWORD PTR [r13+rax*1+0x0], -2097153  (RBP/R13 base needs disp8)
+        alu_mi_idx(
+            &mut text,
+            false,
+            MemAluOp::And,
+            X86Reg::R13,
+            X86Reg::RAX,
+            0,
+            -2097153,
+        );
+        // xor DWORD PTR [r12+r9*1+0x400], r10d
+        alu_mr_idx(
+            &mut text,
+            false,
+            MemAluOp::Xor,
+            X86Reg::R12,
+            X86Reg::R9,
+            0x400,
+            X86Reg::R10,
+        );
+        // sub QWORD PTR [rdi+rcx*1], rdx
+        alu_mr_idx(
+            &mut text,
+            true,
+            MemAluOp::Sub,
+            X86Reg::RDI,
+            X86Reg::RCX,
+            0,
+            X86Reg::RDX,
+        );
+        assert_eq!(
+            text.finish().as_slice(),
+            &[
+                0x43, 0x81, 0x0C, 0x34, 0x00, 0x00, 0x20, 0x00, // or
+                0x48, 0x83, 0x44, 0x35, 0x10, 0xFF, // add
+                0x41, 0x81, 0x64, 0x05, 0x00, 0xFF, 0xFF, 0xDF, 0xFF, // and
+                0x47, 0x31, 0x94, 0x0C, 0x00, 0x04, 0x00, 0x00, // xor
+                0x48, 0x29, 0x14, 0x0F, // sub
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod truncating_conversion_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn cvtt_forms_encode_width_and_extended_registers() {
+        // Reference bytes from GNU as (Intel syntax).
+        let cases: [(fn(&mut TextEmitter, X86Reg, Xmm), X86Reg, Xmm, &[u8]); 6] = [
+            (
+                cvttsd2si_r64,
+                X86Reg::RAX,
+                0,
+                &[0xF2, 0x48, 0x0F, 0x2C, 0xC0],
+            ),
+            (
+                cvttsd2si_r32,
+                X86Reg::R8,
+                9,
+                &[0xF2, 0x45, 0x0F, 0x2C, 0xC1],
+            ),
+            (cvttss2si_r32, X86Reg::RAX, 1, &[0xF3, 0x0F, 0x2C, 0xC1]),
+            (
+                cvttss2si_r64,
+                X86Reg::R11,
+                15,
+                &[0xF3, 0x4D, 0x0F, 0x2C, 0xDF],
+            ),
+            (cvttsd2si_r32, X86Reg::RDX, 3, &[0xF2, 0x0F, 0x2C, 0xD3]),
+            (
+                cvttss2si_r64,
+                X86Reg::RSI,
+                8,
+                &[0xF3, 0x49, 0x0F, 0x2C, 0xF0],
+            ),
+        ];
+        for (emit, dst, src, expected) in cases {
+            let mut text = TextEmitter::new();
+            emit(&mut text, dst, src);
+            assert_eq!(text.finish().as_slice(), expected);
+        }
+    }
+
+    #[test]
+    fn overflow_conditions_encode_and_invert() {
+        let mut text = TextEmitter::new();
+        assert!(try_branch_rel8(&mut text, Some(Cc::O), 0x10));
+        assert!(try_branch_rel8(&mut text, Some(Cc::NO), 0x10));
+        assert_eq!(text.finish().as_slice(), &[0x70, 0x0E, 0x71, 0x0C]);
+        assert_eq!(Cc::O.invert(), Cc::NO);
+        assert_eq!(Cc::NO.invert(), Cc::O);
+    }
+}
+
+#[cfg(test)]
+mod carry_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn adc_and_sbb_imm8_match_gnu_as() {
+        // Reference bytes from GNU as (Intel syntax).
+        let mut text = TextEmitter::new();
+        carry_ri8(&mut text, CarryOp::Adc, false, X86Reg::RAX, 0);
+        carry_ri8(&mut text, CarryOp::Adc, true, X86Reg::R9, 0);
+        carry_ri8(&mut text, CarryOp::Sbb, false, X86Reg::RSI, -1);
+        carry_ri8(&mut text, CarryOp::Sbb, true, X86Reg::R14, 0);
+        carry_ri8(&mut text, CarryOp::Adc, false, X86Reg::R15, -1);
+        carry_ri8(&mut text, CarryOp::Sbb, true, X86Reg::RDI, -1);
+        let expected: &[u8] = &[
+            0x83, 0xD0, 0x00, // adc eax, 0
+            0x49, 0x83, 0xD1, 0x00, // adc r9, 0
+            0x83, 0xDE, 0xFF, // sbb esi, -1
+            0x49, 0x83, 0xDE, 0x00, // sbb r14, 0
+            0x41, 0x83, 0xD7, 0xFF, // adc r15d, -1
+            0x48, 0x83, 0xDF, 0xFF, // sbb rdi, -1
+        ];
+        assert_eq!(text.finish().as_slice(), expected);
+    }
+}
+
+#[cfg(test)]
+mod multiply_by_immediate_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn imul_immediate_and_scaled_lea_match_gnu_as() {
+        // Reference bytes from GNU as (Intel syntax). RBP/R13 bases take a
+        // zero disp8; R12 as both base and index needs no SIB escape.
+        let mut text = TextEmitter::new();
+        imul_rri(&mut text, false, X86Reg::RAX, X86Reg::RCX, 12);
+        imul_rri(&mut text, true, X86Reg::R9, X86Reg::R10, 100_000);
+        imul_rri(&mut text, true, X86Reg::RDX, X86Reg::R13, -3);
+        imul_rri(&mut text, false, X86Reg::R15, X86Reg::RAX, 0x7fff_ffff);
+        lea_self_scaled(&mut text, false, X86Reg::RAX, X86Reg::RCX, 1);
+        lea_self_scaled(&mut text, true, X86Reg::R9, X86Reg::R13, 2);
+        lea_self_scaled(&mut text, true, X86Reg::R12, X86Reg::R12, 3);
+        lea_self_scaled(&mut text, false, X86Reg::RSI, X86Reg::RBP, 1);
+        let expected: &[u8] = &[
+            0x6B, 0xC1, 0x0C, // imul eax, ecx, 12
+            0x4D, 0x69, 0xCA, 0xA0, 0x86, 0x01, 0x00, // imul r9, r10, 100000
+            0x49, 0x6B, 0xD5, 0xFD, // imul rdx, r13, -3
+            0x44, 0x69, 0xF8, 0xFF, 0xFF, 0xFF, 0x7F, // imul r15d, eax, 0x7fffffff
+            0x8D, 0x04, 0x49, // lea eax, [rcx+rcx*2]
+            0x4F, 0x8D, 0x4C, 0xAD, 0x00, // lea r9, [r13+r13*4+0]
+            0x4F, 0x8D, 0x24, 0xE4, // lea r12, [r12+r12*8]
+            0x8D, 0x74, 0x6D, 0x00, // lea esi, [rbp+rbp*2+0]
+        ];
+        assert_eq!(text.finish().as_slice(), expected);
+    }
+}
+
+#[cfg(test)]
+mod vex_scalar_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn three_operand_forms_match_gnu_as() {
+        // Reference bytes from GNU as (Intel syntax). The two-byte form
+        // covers a low `src2`; an extended `src2` needs the three-byte
+        // form's B̄ bit.
+        let cases: [(bool, ScalarFpOp, Xmm, Xmm, Xmm, &[u8]); 8] = [
+            (true, ScalarFpOp::Add, 0, 1, 2, &[0xC5, 0xF3, 0x58, 0xC2]),
+            (true, ScalarFpOp::Mul, 9, 3, 4, &[0xC5, 0x63, 0x59, 0xCC]),
+            (true, ScalarFpOp::Sub, 2, 12, 5, &[0xC5, 0x9B, 0x5C, 0xD5]),
+            (
+                true,
+                ScalarFpOp::Div,
+                3,
+                4,
+                13,
+                &[0xC4, 0xC1, 0x5B, 0x5E, 0xDD],
+            ),
+            (
+                false,
+                ScalarFpOp::Add,
+                15,
+                14,
+                8,
+                &[0xC4, 0x41, 0x0A, 0x58, 0xF8],
+            ),
+            (false, ScalarFpOp::Mul, 1, 2, 3, &[0xC5, 0xEA, 0x59, 0xCB]),
+            (
+                false,
+                ScalarFpOp::Sub,
+                10,
+                0,
+                11,
+                &[0xC4, 0x41, 0x7A, 0x5C, 0xD3],
+            ),
+            (false, ScalarFpOp::Div, 4, 4, 4, &[0xC5, 0xDA, 0x5E, 0xE4]),
+        ];
+        for (double, op, dst, src1, src2, expected) in cases {
+            let mut text = TextEmitter::new();
+            vex_scalar_rrr(&mut text, double, op, dst, src1, src2);
+            assert_eq!(
+                text.finish().as_slice(),
+                expected,
+                "{op:?} {dst} {src1} {src2}"
+            );
+        }
+    }
+
+    #[test]
+    fn vex_scalar_memory_forms_match_gnu_as() {
+        use X86Reg::*;
+        let base = |base, disp| XmmMem::Base { base, disp };
+        let indexed = |base, index, disp| XmmMem::Indexed { base, index, disp };
+        // `vaddsd 0x10(%r12,%rcx,1), %xmm2, %xmm3` and so on: extended base
+        // or index registers need the three-byte prefix, RSP needs a SIB
+        // byte, R13 with no displacement needs a zero disp8.
+        let cases: [(bool, ScalarFpOp, Xmm, Xmm, XmmMem, &[u8]); 8] = [
+            (
+                true,
+                ScalarFpOp::Add,
+                3,
+                2,
+                indexed(R12, RCX, 0x10),
+                &[0xC4, 0xC1, 0x6B, 0x58, 0x5C, 0x0C, 0x10],
+            ),
+            (
+                true,
+                ScalarFpOp::Mul,
+                8,
+                8,
+                base(RBP, 0x40),
+                &[0xC5, 0x3B, 0x59, 0x45, 0x40],
+            ),
+            (
+                false,
+                ScalarFpOp::Sub,
+                10,
+                9,
+                indexed(R12, R10, 0),
+                &[0xC4, 0x01, 0x32, 0x5C, 0x14, 0x14],
+            ),
+            (
+                true,
+                ScalarFpOp::Div,
+                2,
+                1,
+                base(R13, 0),
+                &[0xC4, 0xC1, 0x73, 0x5E, 0x55, 0x00],
+            ),
+            (
+                true,
+                ScalarFpOp::Add,
+                1,
+                15,
+                indexed(RSI, RDI, 0x12345),
+                &[0xC5, 0x83, 0x58, 0x8C, 0x3E, 0x45, 0x23, 0x01, 0x00],
+            ),
+            (
+                false,
+                ScalarFpOp::Mul,
+                4,
+                3,
+                base(RSP, -8),
+                &[0xC5, 0xE2, 0x59, 0x64, 0x24, 0xF8],
+            ),
+            (
+                true,
+                ScalarFpOp::Mul,
+                9,
+                2,
+                XmmMem::Rip,
+                &[0xC5, 0x6B, 0x59, 0x0D, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                true,
+                ScalarFpOp::Sub,
+                6,
+                6,
+                indexed(RAX, R9, 0),
+                &[0xC4, 0xA1, 0x4B, 0x5C, 0x34, 0x08],
+            ),
+        ];
+        for (double, op, dst, src1, mem, expected) in cases {
+            let mut text = TextEmitter::new();
+            let disp_offset = vex_scalar_rrm(&mut text, double, op, dst, src1, mem);
+            let bytes = text.finish();
+            assert_eq!(bytes.as_slice(), expected, "{op:?} {dst} {src1} {mem:?}");
+            assert_eq!(
+                disp_offset,
+                (mem == XmmMem::Rip).then(|| expected.len() - 4),
+                "{op:?} {mem:?} displacement offset"
+            );
+        }
+    }
+
+    #[test]
+    fn vex_scalar_loads_match_gnu_as() {
+        use X86Reg::*;
+        let base = |base, disp| XmmMem::Base { base, disp };
+        let indexed = |base, index, disp| XmmMem::Indexed { base, index, disp };
+        // Intel syntax as assembled by GNU as: VEX.vvvv is 1111b, and R13
+        // with no displacement still takes a zero disp8.
+        let cases: [(bool, Xmm, XmmMem, &[u8]); 4] = [
+            (
+                true,
+                2,
+                indexed(R12, R8, 0),
+                &[0xC4, 0x81, 0x7B, 0x10, 0x14, 0x04],
+            ),
+            (false, 9, base(RBP, 0x40), &[0xC5, 0x7A, 0x10, 0x4D, 0x40]),
+            (
+                true,
+                0,
+                indexed(RAX, RCX, 0x10),
+                &[0xC5, 0xFB, 0x10, 0x44, 0x08, 0x10],
+            ),
+            (
+                false,
+                12,
+                base(R13, 0),
+                &[0xC4, 0x41, 0x7A, 0x10, 0x65, 0x00],
+            ),
+        ];
+        for (double, dst, mem, expected) in cases {
+            let mut text = TextEmitter::new();
+            assert_eq!(vex_movs_load(&mut text, double, dst, mem), None);
+            assert_eq!(text.finish().as_slice(), expected, "{double} {dst} {mem:?}");
+        }
+        // vmovsd xmm3, QWORD PTR [rip+0x0]
+        let mut text = TextEmitter::new();
+        assert_eq!(vex_movs_rip(&mut text, true, 3), 4);
+        assert_eq!(
+            text.finish().as_slice(),
+            &[0xC5, 0xFB, 0x10, 0x1D, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn vex_scalar_unary_forms_match_gnu_as() {
+        // `vcvtss2sd %xmm11, %xmm11, %xmm9` and friends: the source repeats
+        // as src1, so the result's upper lane comes from the input.
+        let cases: [(bool, ScalarFpOp, Xmm, Xmm, &[u8]); 7] = [
+            (
+                false,
+                ScalarFpOp::Convert,
+                9,
+                11,
+                &[0xC4, 0x41, 0x22, 0x5A, 0xCB],
+            ),
+            (true, ScalarFpOp::Convert, 11, 2, &[0xC5, 0x6B, 0x5A, 0xDA]),
+            (true, ScalarFpOp::Convert, 12, 4, &[0xC5, 0x5B, 0x5A, 0xE4]),
+            (false, ScalarFpOp::Convert, 0, 3, &[0xC5, 0xE2, 0x5A, 0xC3]),
+            (true, ScalarFpOp::Sqrt, 2, 5, &[0xC5, 0xD3, 0x51, 0xD5]),
+            (
+                false,
+                ScalarFpOp::Sqrt,
+                1,
+                13,
+                &[0xC4, 0xC1, 0x12, 0x51, 0xCD],
+            ),
+            (true, ScalarFpOp::Sqrt, 14, 7, &[0xC5, 0x43, 0x51, 0xF7]),
+        ];
+        for (double, op, dst, src, expected) in cases {
+            let mut text = TextEmitter::new();
+            vex_scalar_rrr(&mut text, double, op, dst, src, src);
+            assert_eq!(text.finish().as_slice(), expected, "{op:?} {dst} {src}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1589,6 +2148,148 @@ pub(crate) fn movsd_rip(e: &mut TextEmitter, dst: Xmm) -> usize {
     sse_load_rip(e, 0xF2, dst)
 }
 
+/// Scalar FP opcodes (map 0F) shared by the SSE and VEX forms. The `double`
+/// operand of the encoders selects the F2 (f64 source) or F3 (f32 source)
+/// prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScalarFpOp {
+    Sqrt = 0x51,
+    Add = 0x58,
+    Mul = 0x59,
+    /// CVTSD2SS with an f64 source, CVTSS2SD with an f32 source.
+    Convert = 0x5A,
+    Sub = 0x5C,
+    Div = 0x5E,
+}
+
+/// AVX VEX.128 three-operand scalar arithmetic: `dst = src1 OP src2`, the
+/// destination's upper lane copied from `src1`. The unary operations
+/// (`Sqrt`, `Convert`) read only `src2` for the low lane. Unlike the
+/// two-operand SSE form it needs no copy of `src1` into `dst` first, and it
+/// carries no dependency on `dst`'s previous value. VEX.128 zeroes bits 255:128 of
+/// the destination, so it never dirties the upper YMM state and mixes with
+/// legacy SSE code without transition penalties.
+pub(crate) fn vex_scalar_rrr(
+    e: &mut TextEmitter,
+    double: bool,
+    op: ScalarFpOp,
+    dst: Xmm,
+    src1: Xmm,
+    src2: Xmm,
+) {
+    // pp: 10 = F3 (single), 11 = F2 (double). W and L are ignored (WIG/LIG)
+    // and encoded as 0.
+    let pp = if double { 0b11 } else { 0b10 };
+    let vvvv = (!src1 & 15) << 3;
+    if src2 < 8 {
+        // Two-byte VEX: implied 0F map, R̄ only.
+        e.emit_u8(0xC5);
+        e.emit_u8((u8::from(dst < 8) << 7) | vvvv | pp);
+    } else {
+        // Three-byte VEX for B̄ (X̄ unused, set); map 00001 = 0F.
+        e.emit_u8(0xC4);
+        e.emit_u8((u8::from(dst < 8) << 7) | 0x40 | 0x01);
+        e.emit_u8(vvvv | pp);
+    }
+    e.emit_u8(op as u8);
+    emit_xmm_modrm_rr(e, dst, src2);
+}
+
+/// Memory source of a scalar FP instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum XmmMem {
+    /// `[base + disp]`
+    Base { base: X86Reg, disp: i32 },
+    /// `[base + index + disp]`
+    Indexed {
+        base: X86Reg,
+        index: X86Reg,
+        disp: i32,
+    },
+    /// `[rip + disp32]`, the displacement left for patching.
+    Rip,
+}
+
+/// [`vex_scalar_rrr`] with a memory second source: `dst = src1 OP [mem]`.
+/// For `XmmMem::Rip` returns the text offset of the disp32, which is the
+/// instruction's last field.
+pub(crate) fn vex_scalar_rrm(
+    e: &mut TextEmitter,
+    double: bool,
+    op: ScalarFpOp,
+    dst: Xmm,
+    src1: Xmm,
+    mem: XmmMem,
+) -> Option<usize> {
+    vex_scalar_mem(e, double, op as u8, dst, !src1 & 15, mem)
+}
+
+/// VEX.128 `VMOVSD xmm, m64` / `VMOVSS xmm, m32`: a scalar load that zeroes
+/// every bit above the loaded element. The SSE `MOVSD`/`MOVSS` load keeps
+/// bits 255:128 of the full register, so it is a partial write; the VEX form
+/// writes the whole register and depends on nothing but memory. For
+/// `XmmMem::Rip` returns the text offset of the disp32.
+pub(crate) fn vex_movs_load(
+    e: &mut TextEmitter,
+    double: bool,
+    dst: Xmm,
+    mem: XmmMem,
+) -> Option<usize> {
+    // The load form has no second register source: VEX.vvvv must be 1111b.
+    vex_scalar_mem(e, double, 0x10, dst, 0b1111, mem)
+}
+
+/// [`vex_movs_load`] from `[rip + disp32]`; returns the text offset of the
+/// disp32, the instruction's last field, for patching.
+pub(crate) fn vex_movs_rip(e: &mut TextEmitter, double: bool, dst: Xmm) -> usize {
+    vex_scalar_mem(e, double, 0x10, dst, 0b1111, XmmMem::Rip);
+    e.len() - 4
+}
+
+/// Scalar VEX.128 map-0F instruction with a memory operand. `vvvv_inv` is
+/// the already-inverted VEX.vvvv field.
+fn vex_scalar_mem(
+    e: &mut TextEmitter,
+    double: bool,
+    opcode: u8,
+    dst: Xmm,
+    vvvv_inv: u8,
+    mem: XmmMem,
+) -> Option<usize> {
+    let pp = if double { 0b11 } else { 0b10 };
+    let vvvv = (vvvv_inv & 15) << 3;
+    let (x, b) = match mem {
+        XmmMem::Base { base, .. } => (false, base.needs_rex_ext()),
+        XmmMem::Indexed { base, index, .. } => (index.needs_rex_ext(), base.needs_rex_ext()),
+        XmmMem::Rip => (false, false),
+    };
+    if !x && !b {
+        e.emit_u8(0xC5);
+        e.emit_u8((u8::from(dst < 8) << 7) | vvvv | pp);
+    } else {
+        // Three-byte VEX: R̄ X̄ B̄ and map 00001 = 0F.
+        e.emit_u8(0xC4);
+        e.emit_u8((u8::from(dst < 8) << 7) | (u8::from(!x) << 6) | (u8::from(!b) << 5) | 0x01);
+        e.emit_u8(vvvv | pp);
+    }
+    e.emit_u8(opcode);
+    match mem {
+        XmmMem::Base { base, disp } => {
+            emit_modrm_mem3(e, dst & 7, base, disp);
+            None
+        }
+        XmmMem::Indexed { base, index, disp } => {
+            emit_modrm_mem_idx(e, dst & 7, base, index, disp);
+            None
+        }
+        XmmMem::Rip => {
+            // mod=00 rm=101 selects [rip + disp32].
+            e.emit_u8(modrm(0, dst & 7, 5));
+            Some(e.emit_u32(0))
+        }
+    }
+}
+
 pub(crate) fn addsd(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
     sse_rr(e, 0xF2, 0x0F, 0x58, dst, src);
 }
@@ -1711,6 +2412,40 @@ pub(crate) fn cvtsi2ss_r64(e: &mut TextEmitter, dst: Xmm, src: X86Reg) {
     e.emit_u8(0x0F);
     e.emit_u8(0x2A);
     emit_xmm_modrm_rr(e, dst, src.idx());
+}
+
+/// CVTT{SS,SD}2SI r32/r64, xmm: prefix [REX] 0F 2C /r. The GP destination
+/// sits in ModR/M.reg and the XMM source in ModR/M.rm.
+fn sse_cvtt(e: &mut TextEmitter, prefix: u8, w: bool, dst: X86Reg, src: Xmm) {
+    e.emit_u8(prefix);
+    let r = dst.needs_rex_ext();
+    let b = src >= 8;
+    if w || r || b {
+        e.emit_u8(rex(w, r, false, b));
+    }
+    e.emit_u8(0x0F);
+    e.emit_u8(0x2C);
+    e.emit_u8(modrm(0b11, dst.idx3(), src & 7));
+}
+
+/// CVTTSS2SI r32, xmm (f32 -> i32, truncating): F3 0F 2C
+pub(crate) fn cvttss2si_r32(e: &mut TextEmitter, dst: X86Reg, src: Xmm) {
+    sse_cvtt(e, 0xF3, false, dst, src);
+}
+
+/// CVTTSS2SI r64, xmm (f32 -> i64, truncating): F3 REX.W 0F 2C
+pub(crate) fn cvttss2si_r64(e: &mut TextEmitter, dst: X86Reg, src: Xmm) {
+    sse_cvtt(e, 0xF3, true, dst, src);
+}
+
+/// CVTTSD2SI r32, xmm (f64 -> i32, truncating): F2 0F 2C
+pub(crate) fn cvttsd2si_r32(e: &mut TextEmitter, dst: X86Reg, src: Xmm) {
+    sse_cvtt(e, 0xF2, false, dst, src);
+}
+
+/// CVTTSD2SI r64, xmm (f64 -> i64, truncating): F2 REX.W 0F 2C
+pub(crate) fn cvttsd2si_r64(e: &mut TextEmitter, dst: X86Reg, src: Xmm) {
+    sse_cvtt(e, 0xF2, true, dst, src);
 }
 
 // --- GP <-> XMM moves ---
@@ -2051,5 +2786,80 @@ mod bmi2_tests {
                 0xc6, 0xc4, 0x43, 0xfb, 0xf0, 0xc1, 0x0d, 0xc4, 0xe3, 0x7b, 0xf0, 0xc6, 0xff,
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod cmp_mem_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn compare_with_memory_forms_match_gnu_as() {
+        use X86Reg::*;
+        let base = |base, disp| GpMem::Base { base, disp };
+        let indexed = |base, index, disp| GpMem::Indexed { base, index, disp };
+        // Intel operand order: `cmp r14, [rbp + 0x40]` is GNU
+        // `cmp 0x40(%rbp), %r14`.
+        let reg_mem: [(bool, X86Reg, GpMem, &[u8]); 4] = [
+            (true, R14, base(RBP, 0x40), &[0x4C, 0x3B, 0x75, 0x40]),
+            (false, RSI, base(RBP, 0x40), &[0x3B, 0x75, 0x40]),
+            (
+                false,
+                R9,
+                indexed(R12, RCX, 8),
+                &[0x45, 0x3B, 0x4C, 0x0C, 0x08],
+            ),
+            (true, RAX, base(R13, 0), &[0x49, 0x3B, 0x45, 0x00]),
+        ];
+        for (w64, reg, mem, expected) in reg_mem {
+            let mut text = TextEmitter::new();
+            cmp_reg_mem(&mut text, w64, reg, mem);
+            assert_eq!(text.finish().as_slice(), expected, "{reg:?} {mem:?}");
+        }
+        let mem_reg: [(bool, GpMem, X86Reg, &[u8]); 2] = [
+            (
+                true,
+                base(RBP, 0x90),
+                R10,
+                &[0x4C, 0x39, 0x95, 0x90, 0x00, 0x00, 0x00],
+            ),
+            (false, indexed(R12, R8, 0), RDI, &[0x43, 0x39, 0x3C, 0x04]),
+        ];
+        for (w64, mem, reg, expected) in mem_reg {
+            let mut text = TextEmitter::new();
+            cmp_mem_reg(&mut text, w64, mem, reg);
+            assert_eq!(text.finish().as_slice(), expected, "{mem:?} {reg:?}");
+        }
+        let mem_imm: [(bool, GpMem, i32, &[u8]); 4] = [
+            (
+                false,
+                base(RBP, 0x90),
+                8,
+                &[0x83, 0xBD, 0x90, 0x00, 0x00, 0x00, 0x08],
+            ),
+            (
+                true,
+                base(RSP, -8),
+                0x12345,
+                &[0x48, 0x81, 0x7C, 0x24, 0xF8, 0x45, 0x23, 0x01, 0x00],
+            ),
+            (
+                false,
+                indexed(R12, R10, 0x10),
+                -1,
+                &[0x43, 0x83, 0x7C, 0x14, 0x10, 0xFF],
+            ),
+            (
+                true,
+                base(RBX, 0x200),
+                0x7F,
+                &[0x48, 0x83, 0xBB, 0x00, 0x02, 0x00, 0x00, 0x7F],
+            ),
+        ];
+        for (w64, mem, imm, expected) in mem_imm {
+            let mut text = TextEmitter::new();
+            cmp_mem_imm(&mut text, w64, mem, imm);
+            assert_eq!(text.finish().as_slice(), expected, "{mem:?} {imm}");
+        }
     }
 }

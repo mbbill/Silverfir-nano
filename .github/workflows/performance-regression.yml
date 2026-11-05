@@ -139,7 +139,7 @@ jobs:
                   "platform": "cross-armv7-a",
                   "runner": "ubuntu-latest",
                   "target": "armv7-unknown-linux-musleabihf",
-                  "runner_prefix": "qemu-arm-static -cpu cortex-a15",
+                  "runner_prefix": "qemu-arm -cpu cortex-a15",
                   "exe": "",
                   "dev": False,
               },
@@ -147,7 +147,7 @@ jobs:
                   "platform": "cross-riscv64",
                   "runner": "ubuntu-latest",
                   "target": "riscv64gc-unknown-linux-musl",
-                  "runner_prefix": "qemu-riscv64-static",
+                  "runner_prefix": "qemu-riscv64",
                   "exe": "",
                   "dev": False,
               },
@@ -155,7 +155,7 @@ jobs:
                   "platform": "cross-riscv32",
                   "runner": "ubuntu-latest",
                   "target": "riscv32gc-unknown-linux-musl",
-                  "runner_prefix": "qemu-riscv32-static",
+                  "runner_prefix": "qemu-riscv32",
                   "exe": "",
                   "dev": False,
               },
@@ -373,11 +373,14 @@ jobs:
           shared-key: perf-${{ matrix.platform }}-${{ matrix.engine }}
           workspaces: ". -> perf-target"
 
-      - name: Install QEMU user-static
+      # Ubuntu 26.04 dropped the qemu-user-static package (now only a
+      # virtual name with several providers); qemu-user ships the static
+      # emulators there, under the plain qemu-<arch> names 24.04 also has.
+      - name: Install QEMU user-mode emulators
         if: matrix.runner_prefix != ''
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user-static
+          sudo apt-get install -y -qq qemu-user
 
       - name: Cache Zig
         if: matrix.target == 'riscv32gc-unknown-linux-musl'
@@ -865,6 +868,7 @@ jobs:
             --regression-probability 99.99 \
             --improvement-probability 99.99 \
             --minimum-effect-percent 1.0 \
+            --placement-metric execute/fibonacci-rec \
             --placement-metric execute/fibonacci-tail \
             --placement-metric execute/tiny_keccak \
             --placement-metric execute/json_parse \
@@ -1083,6 +1087,7 @@ jobs:
             --regression-probability 99 \
             --improvement-probability 99.99 \
             --minimum-effect-percent 1.0 \
+            --placement-metric execute/fibonacci-rec \
             --placement-metric execute/fibonacci-tail \
             --placement-metric execute/tiny_keccak \
             --placement-metric execute/json_parse \

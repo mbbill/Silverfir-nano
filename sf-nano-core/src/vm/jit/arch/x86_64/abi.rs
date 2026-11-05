@@ -19,6 +19,7 @@ use crate::{
 use super::callconv;
 use super::reg::X86Reg;
 use crate::vm::jit::arch::common::scratch_pool::ScratchPool;
+use crate::vm::jit::runtime::context::ctx_offset;
 
 // ── Register plan ────────────────────────────────────────────────────────────
 
@@ -26,15 +27,16 @@ struct RegPlan {
     ctx: X86Reg,
     fp: X86Reg,
     mem0_base: X86Reg,
-    mem0_size: X86Reg,
     gp_unit_bytes: u8,
     /// Ordered GP dynamic bank. Earlier entries are preferred for allocation.
     gp_dynamic: &'static [X86Reg],
     /// Backend-owned GP registers required by x86_64 instruction forms.
     ///
     /// These are not part of the dynamic bank: ordinary lowering may need the
-    /// exact register (`RCX` for variable shifts, `RAX:RDX` for div/rem), so
-    /// x86_64 tracks them with a backend-local GP scratch owner.
+    /// exact register (`RAX:RDX` for div/rem, `RAX` for helper status), so
+    /// x86_64 tracks them with a backend-local GP scratch owner. `RCX`, the
+    /// variable shift count register, is a dynamic lane instead; shift
+    /// lowering saves it when the count lives elsewhere.
     gp_backend_owned: &'static [X86Reg],
     /// Ordered FP dynamic bank. Earlier entries are preferred for allocation.
     fp_dynamic: &'static [u32],
@@ -49,28 +51,29 @@ const REG_PLAN: RegPlan = RegPlan {
     ctx: X86Reg::RBX,
     fp: X86Reg::RBP,
     mem0_base: X86Reg::R12,
-    mem0_size: X86Reg::R13,
 
     gp_unit_bytes: 8,
 
     // Positional lane classes: [volatile | preserved | internal scratch].
-    // Caller-saved GP regs first for short-lived SSA traffic; R14/R15 are
-    // callee-saved in both SysV and Win64 and form the preserved lanes —
-    // values in them survive C helper calls, and SF->SF bodies lazy-save
-    // them (`body_frame_plan`).
+    // Caller-saved GP regs first for short-lived SSA traffic; R14, R15 and
+    // R13 are callee-saved in both SysV and Win64 and form the preserved
+    // lanes — values in them survive C helper calls, and SF->SF bodies
+    // lazy-save them (`body_frame_plan`).
     gp_dynamic: &[
         X86Reg::RSI,
         X86Reg::RDI,
         X86Reg::R8,
         X86Reg::R9,
         X86Reg::R10,
+        X86Reg::RCX,
         X86Reg::R14,
         X86Reg::R15,
+        X86Reg::R13,
         X86Reg::R11,
     ],
     // x86_64 ordinary lowering sometimes requires these exact registers.
     // They are backend-owned and tracked locally, not handed out by regalloc.
-    gp_backend_owned: &[X86Reg::RAX, X86Reg::RCX, X86Reg::RDX],
+    gp_backend_owned: &[X86Reg::RAX, X86Reg::RDX],
 
     // XMM0..XMM1 are reserved for the scratch pool; the dynamic bank
     // starts at XMM2 so the allocator never hands out a lane that the
@@ -119,8 +122,8 @@ pub(super) const W2W_FP_RET0: u32 = REG_PLAN.fp_scratch[0];
 const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
 
 // Lane-class widths over `REG_PLAN.gp_dynamic`, in positional order.
-const GP_VOLATILE_DYNAMIC: u8 = 5;
-const GP_PRESERVED_DYNAMIC: u8 = 2;
+const GP_VOLATILE_DYNAMIC: u8 = 6;
+const GP_PRESERVED_DYNAMIC: u8 = 3;
 const GP_INTERNAL_SCRATCH: u8 = 1;
 const GP_ARG_LANES: u8 = 4;
 const FP_ARG_LANES: u8 = 4;
@@ -158,12 +161,8 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
 
 // ── Scratch pool construction ────────────────────────────────────────────────
 
-pub(super) fn gp_backend_owned_regs() -> [X86Reg; 3] {
-    [
-        REG_PLAN.gp_backend_owned[0],
-        REG_PLAN.gp_backend_owned[1],
-        REG_PLAN.gp_backend_owned[2],
-    ]
+pub(super) fn gp_backend_owned_regs() -> [X86Reg; 2] {
+    [REG_PLAN.gp_backend_owned[0], REG_PLAN.gp_backend_owned[1]]
 }
 
 pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 2> {
@@ -191,19 +190,39 @@ pub(super) const fn max_total_machine_regs() -> usize {
 
 // ── Mapping: MachineReg → physical register ──────────────────────────────────
 
+/// Fixed roles that occupy a register. `MACHINE_MEM0_SIZE_REG` is not one:
+/// see [`mem0_size_addr`].
 #[inline]
 pub(super) fn map_fixed_reg(reg: MachineReg) -> X86Reg {
     match reg {
         MACHINE_CTX_REG => REG_PLAN.ctx,
         MACHINE_FP_REG => REG_PLAN.fp,
         MACHINE_MEM0_BASE_REG => REG_PLAN.mem0_base,
-        MACHINE_MEM0_SIZE_REG => REG_PLAN.mem0_size,
-        _ => unreachable!("not a fixed machine reg"),
+        _ => unreachable!("not a register-backed fixed machine reg"),
     }
+}
+
+/// Where x86_64 keeps `MACHINE_MEM0_SIZE_REG`: the runtime context's memory
+/// 0 length field, not a register. With guard pages, 32-bit accesses never
+/// compare against it, so a pinned register would sit idle in almost every
+/// body; R13 is a preserved dynamic lane instead.
+///
+/// Reading the field equals reading a register reloaded from it, because the
+/// register was only ever written by loads of this field (at body entry and
+/// after memory growth or a runtime call). Its readers take it as a memory
+/// operand; those reloads lower to nothing.
+#[inline]
+pub(super) fn mem0_size_addr() -> (X86Reg, i32) {
+    (REG_PLAN.ctx, ctx_offset::MEM0_SIZE as i32)
 }
 
 #[inline]
 pub(super) fn map_reg(reg: MachineReg) -> Result<X86Reg, WasmError> {
+    if reg == MACHINE_MEM0_SIZE_REG {
+        return Err(WasmError::internal(
+            "x86_64 keeps memory 0's size in the runtime context, not a register",
+        ));
+    }
     if reg.0 < MACHINE_FIXED_REG_COUNT {
         return Ok(map_fixed_reg(reg));
     }

@@ -6,11 +6,11 @@
 //! generated sequence is:
 //!
 //!   1. Save caller-clobbered GP dynamic regs (see
-//!      `save_caller_clobbered_gp_dynamic`). Total 48 bytes keeps RSP
-//!      16-aligned.
+//!      `save_caller_clobbered_gp_dynamic`), seven pushes.
 //!   2. `sub rsp, PRESERVED_FRAME_BYTES`, where the low `PRESERVED_IO_BYTES`
-//!      bytes are the helper I/O area and the upper `PRESERVED_FP_BYTES`
-//!      bytes save XMM2..XMM15.
+//!      bytes are the helper I/O area, the next `PRESERVED_FP_BYTES` bytes
+//!      save XMM2..XMM15, and the top `GP_SAVE_PAD_BYTES` bytes bring RSP
+//!      back to 16-byte alignment after the odd push count.
 //!   3. Write IMM0/IMM1/ARG0..ARG2 slots into the I/O area.
 //!   4. `mov rdi, ctx ; mov rsi, op_code ; lea rdx, [rsp]`
 //!   5. `mov r11, preserved_entry ; call r11`
@@ -39,10 +39,14 @@ use super::{
 
 const PRESERVED_IO_BYTES: u8 = (preserved_io::SLOT_COUNT * 8) as u8;
 const PRESERVED_FP_BYTES: u32 = (abi::FP_MACHINE_REG_COUNT as u32) * 16;
-const PRESERVED_FRAME_BYTES: u32 = PRESERVED_IO_BYTES as u32 + PRESERVED_FP_BYTES;
+/// `save_caller_clobbered_gp_dynamic` pushes seven registers.
+const GP_SAVE_BYTES: u32 = 7 * 8;
+const GP_SAVE_PAD_BYTES: u32 = GP_SAVE_BYTES.next_multiple_of(16) - GP_SAVE_BYTES;
+pub(super) const PRESERVED_FRAME_BYTES: u32 =
+    PRESERVED_IO_BYTES as u32 + PRESERVED_FP_BYTES + GP_SAVE_PAD_BYTES;
 
 /// MOVAPS [RSP+disp], XMMn.
-fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
+pub(super) fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
     let reg = (xmm & 7) as u8;
     if xmm >= 8 {
         e.emit_u8(0x44);
@@ -59,7 +63,7 @@ fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
 }
 
 /// MOVAPS XMMn, [RSP+disp].
-fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
+pub(super) fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
     let reg = (xmm & 7) as u8;
     if xmm >= 8 {
         e.emit_u8(0x44);
@@ -185,7 +189,7 @@ impl<'a> X86_64Backend<'a> {
         let call_target = X86Reg::R11;
         // Keep the result in a non-restored caller-clobbered register so the
         // dynamic restore below cannot overwrite it.
-        let result_scratch = X86Reg::RCX;
+        let result_scratch = X86Reg::RDX;
 
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(C_ARG1, op_code as u64);

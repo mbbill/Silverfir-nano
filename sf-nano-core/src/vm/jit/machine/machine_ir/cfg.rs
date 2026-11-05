@@ -104,10 +104,11 @@ pub(crate) enum MachineCallTarget {
     /// The resolved target may live in the current module or another linked
     /// compiled module once MachineIR can represent that path directly.
     /// `callee_target` preserves the logical callee identity for consumers
-    /// that care about it (debug dumps), while `callee_entry`
-    /// is the resolved native entry address used by native backends.
+    /// that care about it (debug dumps); dispatch paths that never load the
+    /// identity leave it `None`. `callee_entry` is the resolved native entry
+    /// address used by native backends.
     Indirect {
-        callee_target: MachineReg,
+        callee_target: Option<MachineReg>,
         callee_entry: MachineReg,
     },
 }
@@ -121,9 +122,15 @@ pub(crate) enum MachineTerminator {
         then_edge: MachineEdge,
         else_edge: MachineEdge,
     },
+    /// Dispatch on an i32 `index`: entries `0..len - 1` are the table and
+    /// the last entry is the default, taken by any larger index.
     JumpTable {
         index: MachineValue,
         entries: collections::Vec<MachineEdge>,
+        /// A dominating branch proves `index <= entries.len() - 1` as an
+        /// unsigned i32, so a backend may index the table without first
+        /// clamping larger values to the default entry.
+        in_range: bool,
     },
     /// Compiled call transfer into another MachineIR function.
     ///

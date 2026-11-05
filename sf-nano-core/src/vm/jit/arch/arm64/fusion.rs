@@ -5,9 +5,9 @@
 //! instruction encodings. No compiler state is accessed.
 
 use crate::vm::jit::machine::machine_ir::{
-    MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
-    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
-    MachineStorageType, MachineValue, MACHINE_MEM0_BASE_REG,
+    MachineBranchCond, MachineCompareKind, MachineIndexExtend, MachineInst, MachineInstKind,
+    MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
+    MachineSign, MachineStorageType, MachineValue, MACHINE_MEM0_BASE_REG,
 };
 
 use super::{
@@ -83,40 +83,78 @@ pub(super) fn int_binary_imm_inst(
 }
 
 fn add_sub_imm_inst_32(is_add: bool, dst: Arm64Reg, lhs: Arm64Reg, imm: u64) -> Option<u32> {
-    let imm = imm as u32;
-    if let Some(imm12) = try_imm12_u32(imm) {
-        return Some(if is_add {
-            enc::add_imm_32(dst, lhs, imm12)
+    match add_sub_imm_split(MachineIntWidth::I32, is_add, imm)? {
+        (sub, hi, 0) if hi != 0 => Some(enc::add_sub_imm_lsl12_inst(false, sub, dst, lhs, hi)),
+        (sub, 0, lo) => Some(if sub {
+            enc::sub_imm_32(dst, lhs, lo)
         } else {
-            enc::sub_imm_32(dst, lhs, imm12)
-        });
+            enc::add_imm_32(dst, lhs, lo)
+        }),
+        _ => None,
     }
-    let neg = imm.wrapping_neg();
-    try_imm12_u32(neg).map(|imm12| {
-        if is_add {
-            enc::sub_imm_32(dst, lhs, imm12)
-        } else {
-            enc::add_imm_32(dst, lhs, imm12)
-        }
-    })
 }
 
 fn add_sub_imm_inst_64(is_add: bool, dst: Arm64Reg, lhs: Arm64Reg, imm: u64) -> Option<u32> {
-    if let Some(imm12) = try_imm12_u64(imm) {
-        return Some(if is_add {
-            enc::add_imm_64(dst, lhs, imm12)
+    match add_sub_imm_split(MachineIntWidth::I64, is_add, imm)? {
+        (sub, hi, 0) if hi != 0 => Some(enc::add_sub_imm_lsl12_inst(true, sub, dst, lhs, hi)),
+        (sub, 0, lo) => Some(if sub {
+            enc::sub_imm_64(dst, lhs, lo)
         } else {
-            enc::sub_imm_64(dst, lhs, imm12)
-        });
+            enc::add_imm_64(dst, lhs, lo)
+        }),
+        _ => None,
     }
-    let neg = imm.wrapping_neg();
-    try_imm12_u64(neg).map(|imm12| {
-        if is_add {
-            enc::sub_imm_64(dst, lhs, imm12)
-        } else {
-            enc::add_imm_64(dst, lhs, imm12)
-        }
-    })
+}
+
+/// `lhs ± imm` as `(subtract, hi, lo)` with a 24-bit magnitude
+/// `hi << 12 | lo`, taking the negated immediate when only that fits.
+/// I32 operands wrap mod 2^32, so they are compared as `u32`.
+fn add_sub_imm_split(width: MachineIntWidth, is_add: bool, imm: u64) -> Option<(bool, u32, u32)> {
+    let (value, negated) = match width {
+        MachineIntWidth::I32 => (
+            u64::from(imm as u32),
+            u64::from((imm as u32).wrapping_neg()),
+        ),
+        MachineIntWidth::I64 => (imm, imm.wrapping_neg()),
+    };
+    let (sub, magnitude) = if value < 1 << 24 {
+        (!is_add, value)
+    } else if negated < 1 << 24 {
+        (is_add, negated)
+    } else {
+        return None;
+    };
+    Some((sub, (magnitude >> 12) as u32, (magnitude & 0xFFF) as u32))
+}
+
+/// `lhs ± imm` as two immediate instructions, `#hi, lsl #12` then `#lo`,
+/// when the immediate's magnitude needs both halves of a 24-bit value.
+/// Cheaper than materializing it: one instruction fewer than `mov`, `movk`
+/// and a register add.
+pub(super) fn add_sub_imm_pair(
+    width: MachineIntWidth,
+    op: MachineIntBinaryOp,
+    dst: Arm64Reg,
+    lhs: Arm64Reg,
+    imm: u64,
+) -> Option<[u32; 2]> {
+    let is_add = match op {
+        MachineIntBinaryOp::Add => true,
+        MachineIntBinaryOp::Sub => false,
+        _ => return None,
+    };
+    let (sub, hi, lo) = add_sub_imm_split(width, is_add, imm)?;
+    if hi == 0 || lo == 0 {
+        return None;
+    }
+    let w64 = width == MachineIntWidth::I64;
+    let low = match (w64, sub) {
+        (false, false) => enc::add_imm_32(dst, dst, lo),
+        (false, true) => enc::sub_imm_32(dst, dst, lo),
+        (true, false) => enc::add_imm_64(dst, dst, lo),
+        (true, true) => enc::sub_imm_64(dst, dst, lo),
+    };
+    Some([enc::add_sub_imm_lsl12_inst(w64, sub, dst, lhs, hi), low])
 }
 
 fn mul_imm_inst_32(dst: Arm64Reg, lhs: Arm64Reg, imm: u32) -> Option<u32> {
@@ -219,6 +257,24 @@ pub(super) fn cmp_imm_inst(width: MachineIntWidth, lhs: Arm64Reg, rhs: u64) -> O
     match width {
         MachineIntWidth::I32 => try_imm12_u32(rhs as u32).map(|imm12| enc::cmp_imm_32(lhs, imm12)),
         MachineIntWidth::I64 => try_imm12_u64(rhs).map(|imm12| enc::cmp_imm_64(lhs, imm12)),
+    }
+}
+
+/// Whether a branch or trap condition is `reg != 0` or `reg == 0`.
+pub(super) fn cond_tests_nonzero(cond: &MachineBranchCond, reg: MachineReg) -> bool {
+    match *cond {
+        MachineBranchCond::Value(MachineValue::Reg(r)) => r == reg,
+        MachineBranchCond::IntCompare {
+            kind: MachineCompareKind::Eq | MachineCompareKind::Ne,
+            lhs,
+            rhs,
+            ..
+        } => matches!(
+            (lhs, rhs),
+            (MachineValue::Reg(r), MachineValue::Imm64(0))
+                | (MachineValue::Imm64(0), MachineValue::Reg(r)) if r == reg
+        ),
+        _ => false,
     }
 }
 
@@ -808,5 +864,98 @@ mod tests {
             int_binary_imm_inst(MachineIntWidth::I32, MachineIntBinaryOp::Rotl, dst, src, 33,),
             Some(enc::ror_imm_32(dst, src, 31)),
         );
+    }
+    #[test]
+    fn splits_24_bit_add_sub_immediates() {
+        let r = Arm64Reg::from_raw;
+        let (w3, w4) = (r(3), r(4));
+        let (add, sub) = (MachineIntBinaryOp::Add, MachineIntBinaryOp::Sub);
+        let i32_ = MachineIntWidth::I32;
+        let i64_ = MachineIntWidth::I64;
+
+        // Reference bytes from GNU as.
+        // add w4, w3, #0x201, lsl #12; add w4, w4, #0x470
+        assert_eq!(
+            add_sub_imm_pair(i32_, add, w4, w3, 0x20_1470),
+            Some([0x1148_0464, 0x1111_c084])
+        );
+        // An I32 add of -0x201470 wraps to the same subtraction.
+        let sub_pair = Some([0x5148_0464, 0x5111_c084]);
+        assert_eq!(
+            add_sub_imm_pair(i32_, add, w4, w3, u64::from(0x20_1470u32.wrapping_neg())),
+            sub_pair
+        );
+        assert_eq!(add_sub_imm_pair(i32_, sub, w4, w3, 0x20_1470), sub_pair);
+        // sub x5, x6, #0xfff, lsl #12; sub x5, x5, #0x1
+        assert_eq!(
+            add_sub_imm_pair(i64_, add, r(5), r(6), 0xFF_F001u64.wrapping_neg()),
+            Some([0xd17f_fcc5, 0xd100_04a5])
+        );
+
+        // One instruction suffices: the low or high half is zero.
+        // add w7, w8, #0x1, lsl #12 and sub x9, x10, #0x10, lsl #12
+        assert_eq!(add_sub_imm_pair(i32_, add, r(7), r(8), 0x1000), None);
+        assert_eq!(
+            int_binary_imm_inst(i32_, add, r(7), r(8), 0x1000),
+            Some(0x1140_0507)
+        );
+        assert_eq!(
+            int_binary_imm_inst(i64_, sub, r(9), r(10), 0x1_0000),
+            Some(0xd140_4149)
+        );
+        assert_eq!(
+            int_binary_imm_inst(i64_, add, r(9), r(10), 0x1_0000u64.wrapping_neg()),
+            Some(0xd140_4149)
+        );
+
+        // Beyond 24 bits, or not an add or subtract: materialize instead.
+        assert_eq!(add_sub_imm_pair(i32_, add, w4, w3, 0x100_0001), None);
+        assert_eq!(add_sub_imm_pair(i64_, add, w4, w3, 0x1_0000_1001), None);
+        assert_eq!(int_binary_imm_inst(i32_, add, w4, w3, 0x20_1470), None);
+        assert_eq!(
+            add_sub_imm_pair(i32_, MachineIntBinaryOp::Or, w4, w3, 0x20_1470),
+            None
+        );
+    }
+    #[test]
+    fn recognizes_zero_tests_of_a_register() {
+        let reg = MachineReg(20);
+        let other = MachineReg(21);
+        let compare = |kind, lhs, rhs| MachineBranchCond::IntCompare {
+            width: MachineIntWidth::I32,
+            kind,
+            sign: MachineSign::Unsigned,
+            lhs,
+            rhs,
+        };
+        let r = MachineValue::Reg;
+        let zero = MachineValue::Imm64(0);
+
+        assert!(cond_tests_nonzero(&MachineBranchCond::Value(r(reg)), reg));
+        assert!(cond_tests_nonzero(
+            &compare(MachineCompareKind::Ne, r(reg), zero),
+            reg
+        ));
+        assert!(cond_tests_nonzero(
+            &compare(MachineCompareKind::Eq, zero, r(reg)),
+            reg
+        ));
+
+        assert!(!cond_tests_nonzero(
+            &MachineBranchCond::Value(r(other)),
+            reg
+        ));
+        assert!(!cond_tests_nonzero(
+            &compare(MachineCompareKind::Ne, r(reg), MachineValue::Imm64(1)),
+            reg
+        ));
+        assert!(!cond_tests_nonzero(
+            &compare(MachineCompareKind::Lt, r(reg), zero),
+            reg
+        ));
+        assert!(!cond_tests_nonzero(
+            &compare(MachineCompareKind::Eq, r(reg), r(other)),
+            reg
+        ));
     }
 }

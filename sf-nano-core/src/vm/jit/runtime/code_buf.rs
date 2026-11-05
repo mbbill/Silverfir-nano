@@ -92,7 +92,7 @@ impl CodeBuffer {
     /// Runtime address of the next byte an emit would write. Loop-header
     /// alignment pads against this: function text starts at arbitrary
     /// buffer offsets, so no function-relative length can align anything.
-    #[cfg(sf_backend_x64)]
+    #[cfg(any(sf_backend_x64, sf_backend_arm64))]
     #[inline]
     pub(crate) fn next_write_addr(&self) -> usize {
         self.base as usize + self.offset

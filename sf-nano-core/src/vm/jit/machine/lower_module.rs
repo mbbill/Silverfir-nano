@@ -17,9 +17,9 @@ use crate::{
             MachineCallTarget, MachineCompareKind, MachineConstId, MachineConvertOp, MachineEdge,
             MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
             MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind,
-            MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineModule,
-            MachineModuleAbi, MachineParamLoc, MachineProgram, MachineReg, MachineRegOwner,
-            MachineResultSrc, MachineReturnAbi, MachineReturnValue, MachineSign,
+            MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
+            MachineModule, MachineModuleAbi, MachineParamLoc, MachineProgram, MachineReg,
+            MachineRegOwner, MachineResultSrc, MachineReturnAbi, MachineReturnValue, MachineSign,
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         jit::middle::{
@@ -51,7 +51,8 @@ use super::{
     lower_cache_layout::{compute_block_entry_cache_params, preferred_preserved_for_cached},
     lower_const_pool::ConstPoolBuilder,
     lower_context::{
-        explicit_cached_cells, BlockLowerContext, CachedCell, EntryCacheParam, ValueRegs,
+        explicit_cached_cells, BlockLowerContext, BlockLowerScratch, CachedCell, EntryCacheParam,
+        ValueRegs,
     },
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
@@ -167,7 +168,7 @@ pub(crate) fn lower_module_with_table_dispatch_modes(
         drop(mir_lower_function_phase);
     }
     let abi = MachineModuleAbi {
-        #[cfg(sf_backend_arm64)]
+        #[cfg(any(sf_backend_arm64, sf_backend_x64))]
         memory0_is64: None,
         functions: function_abis,
     };
@@ -444,6 +445,7 @@ fn lower_function(
         &call_preserved_cache_candidates,
     );
     release_cache_planning_only_ssa_storage(&mut input.ssa);
+    let mut scratch = BlockLowerScratch::default();
     for block_index in 0..original_block_count {
         let block = take_block_for_lowering(&mut input.ssa.blocks[block_index]);
         let target = block.id;
@@ -466,6 +468,7 @@ fn lower_function(
             guard_pages,
             #[cfg(sf_has_guard_pages)]
             stack_guard_pages,
+            core::mem::take(&mut scratch),
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());
         let mut current_params = collections::Vec::new();
@@ -794,6 +797,7 @@ fn lower_function(
                     lower.take_ops(),
                     terminator,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             SsaTerminator::TailCallIndirect {
@@ -842,6 +846,7 @@ fn lower_function(
                     &mut extra_block_ids,
                     const_pool,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             SsaTerminator::TailCallRef {
@@ -881,6 +886,7 @@ fn lower_function(
                     &mut extra_block_ids,
                     const_pool,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             SsaTerminator::EhThrow { tag_idx, args } => {
@@ -903,6 +909,7 @@ fn lower_function(
                     lower.take_ops(),
                     terminator,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             SsaTerminator::EhThrowRef { exnref_slot } => {
@@ -924,6 +931,7 @@ fn lower_function(
                     lower.take_ops(),
                     terminator,
                 )?;
+                scratch = lower.into_scratch();
                 continue;
             }
             _ => {}
@@ -938,6 +946,7 @@ fn lower_function(
             lower.take_ops(),
             terminator,
         )?;
+        scratch = lower.into_scratch();
     }
 
     release_prepared_ssa_storage(&mut input.ssa);
@@ -1343,7 +1352,7 @@ fn fixed_local_table_len(modes: &[TableDispatchMode], table_idx: u32) -> Option<
         .unwrap_or(TableDispatchMode::Generic)
     {
         TableDispatchMode::FixedLocalOnly { len } => Some(len),
-        TableDispatchMode::Generic => None,
+        TableDispatchMode::Generic | TableDispatchMode::Cached => None,
     }
 }
 
@@ -1796,6 +1805,17 @@ fn lower_indirect_dispatch_cluster(
     };
     let fixed_local_table = fixed_local_table_len.is_some();
     let fixed_fast_table = fixed_local_table && !lower.use_explicit_stack_prechecks();
+    // A `Cached` table dispatches like a fixed fast table through the
+    // context's entry array, with a dynamic length and every miss sent to
+    // the generic runtime path instead of a trap. With explicit stack
+    // prechecks it keeps the generic dispatch, as fixed tables do.
+    let cached_table = match source {
+        IndirectCallSource::Table { table_idx, .. } => {
+            table_dispatch_modes.get(table_idx as usize).copied() == Some(TableDispatchMode::Cached)
+        }
+        IndirectCallSource::Ref { .. } => false,
+    } && !lower.use_explicit_stack_prechecks();
+    let fast_transfer = fixed_fast_table || cached_table;
     let (
         checked,
         trap_oob,
@@ -1805,12 +1825,18 @@ fn lower_indirect_dispatch_cluster(
         type_check,
         dispatch,
     ) = match source {
+        IndirectCallSource::Table { .. } if cached_table => {
+            let checked = Some(extra_block_ids.alloc());
+            let type_check = extra_block_ids.alloc();
+            let trap_oob = Some(extra_block_ids.alloc());
+            (checked, trap_oob, None, None, None, type_check, None)
+        }
         IndirectCallSource::Table { .. } => {
             let checked = Some(extra_block_ids.alloc());
             let trap_oob = Some(extra_block_ids.alloc());
             let self_abs_range = (!fixed_local_table).then(|| extra_block_ids.alloc());
             let type_check = extra_block_ids.alloc();
-            let trap_invalid_ref = extra_block_ids.alloc();
+            let trap_invalid_ref = Some(extra_block_ids.alloc());
             let trap_type_mismatch = fixed_local_table.then(|| extra_block_ids.alloc());
             let dispatch = (!fixed_local_table).then(|| extra_block_ids.alloc());
             (
@@ -1824,7 +1850,7 @@ fn lower_indirect_dispatch_cluster(
             )
         }
         IndirectCallSource::Ref { .. } => {
-            let trap_invalid_ref = extra_block_ids.alloc();
+            let trap_invalid_ref = Some(extra_block_ids.alloc());
             let type_check = extra_block_ids.alloc();
             let dispatch = Some(extra_block_ids.alloc());
             (
@@ -1838,8 +1864,12 @@ fn lower_indirect_dispatch_cluster(
             )
         }
     };
+    // A cached miss rejoins the generic contract before the runtime call:
+    // bounds-check the live table (trapping out of range), then publish the
+    // element's handle in the index slot, which the runtime reads.
+    let cached_miss = cached_table.then(|| (extra_block_ids.alloc(), extra_block_ids.alloc()));
     let local_prepare = extra_block_ids.alloc();
-    let local_transfer = if fixed_fast_table {
+    let local_transfer = if fast_transfer {
         local_prepare
     } else {
         extra_block_ids.alloc()
@@ -1860,6 +1890,156 @@ fn lower_indirect_dispatch_cluster(
     }
 
     match source {
+        IndirectCallSource::Table { table_idx, index } if cached_table => {
+            let index_slot = index
+                .frame_slot()
+                .expect("cached indirect dispatch publishes its index for the runtime path");
+            let runtime_call =
+                runtime_call.expect("cached indirect dispatch should allocate runtime");
+            let checked = checked.expect("cached indirect dispatch should allocate checked");
+            let trap_oob = trap_oob.expect("cached indirect dispatch should allocate trap_oob");
+            let (miss, miss_load) =
+                cached_miss.expect("cached indirect dispatch should allocate its miss path");
+            let lanes = indirect_temps;
+            emit_call_indirect_cached_bounds_setup(lower, table_idx, index_slot)?;
+            carried_args.consume_live_values(lower)?;
+            lower.ensure_no_live_values(
+                "prepared SSA-IR call_indirect reached native lowering with live linear SSA values; values must be consumed before the dispatch edge",
+            )?;
+            push_lowered_block(
+                current_block,
+                original_blocks,
+                extra_blocks,
+                current_params,
+                lower.take_ops(),
+                MachineTerminator::Branch {
+                    cond: MachineBranchCond::IntCompare {
+                        width: lower.gp_word_int_width(),
+                        kind: MachineCompareKind::Ge,
+                        sign: MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(lanes.lane0),
+                        rhs: MachineValue::Reg(lanes.lane2),
+                    },
+                    then_edge: MachineEdge {
+                        target: miss,
+                        args: carried_args.param_values(),
+                    },
+                    // The bounds setup already loaded the view array base
+                    // into lane 1; the entry load reuses it.
+                    else_edge: MachineEdge {
+                        target: checked,
+                        args: prepend_gp_word_args(
+                            &[lanes.lane0, lanes.lane1],
+                            &carried_args.param_values(),
+                        ),
+                    },
+                },
+            )?;
+            // A zero entry is a null, non-local or unresolved element.
+            push_lowered_block(
+                checked,
+                original_blocks,
+                extra_blocks,
+                prepend_gp_word_params(&[lanes.lane0, lanes.lane1], &carried_args.params),
+                build_call_indirect_fixed_table_load_block(lower, table_idx, lanes.lane0)?,
+                MachineTerminator::Branch {
+                    cond: MachineBranchCond::IntCompare {
+                        width: lower.gp_word_int_width(),
+                        kind: MachineCompareKind::Eq,
+                        sign: MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(lanes.lane2),
+                        rhs: MachineValue::Imm64(0),
+                    },
+                    then_edge: MachineEdge {
+                        target: miss,
+                        args: carried_args.param_values(),
+                    },
+                    else_edge: MachineEdge {
+                        target: type_check,
+                        args: prepend_gp_word_args(
+                            &[lanes.lane0, lanes.lane2, lanes.lane3],
+                            &carried_args.param_values(),
+                        ),
+                    },
+                },
+            )?;
+            push_lowered_block(
+                type_check,
+                original_blocks,
+                extra_blocks,
+                prepend_gp_word_params(
+                    &[lanes.lane0, lanes.lane2, lanes.lane3],
+                    &carried_args.params,
+                ),
+                build_call_indirect_expected_type_load_block(lower, type_idx)?,
+                MachineTerminator::Branch {
+                    // Both type ids are zero-extended u32 loads.
+                    cond: MachineBranchCond::IntCompare {
+                        width: MachineIntWidth::I32,
+                        kind: MachineCompareKind::Ne,
+                        sign: MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(lanes.lane3),
+                        rhs: MachineValue::Reg(lanes.lane1),
+                    },
+                    then_edge: MachineEdge {
+                        target: miss,
+                        args: carried_args.param_values(),
+                    },
+                    else_edge: MachineEdge {
+                        target: local_transfer,
+                        args: prepend_gp_word_args(
+                            &[lanes.lane0, lanes.lane2],
+                            &carried_args.param_values(),
+                        ),
+                    },
+                },
+            )?;
+            push_lowered_block(
+                trap_oob,
+                original_blocks,
+                extra_blocks,
+                collections::Vec::new(),
+                collections::Vec::new(),
+                MachineTerminator::Trap {
+                    kind: MachineTrapKind::TableOutOfBounds,
+                },
+            )?;
+            push_lowered_block(
+                miss,
+                original_blocks,
+                extra_blocks,
+                carried_args.params.clone(),
+                build_call_indirect_live_bounds_block(lower, table_idx, index_slot)?,
+                MachineTerminator::Branch {
+                    cond: MachineBranchCond::IntCompare {
+                        width: lower.gp_word_int_width(),
+                        kind: MachineCompareKind::Ge,
+                        sign: MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(lanes.lane0),
+                        rhs: MachineValue::Reg(lanes.lane2),
+                    },
+                    then_edge: MachineEdge {
+                        target: trap_oob,
+                        args: collections::Vec::new(),
+                    },
+                    else_edge: MachineEdge {
+                        target: miss_load,
+                        args: prepend_gp_word_arg(lanes.lane0, &carried_args.param_values()),
+                    },
+                },
+            )?;
+            push_lowered_block(
+                miss_load,
+                original_blocks,
+                extra_blocks,
+                prepend_gp_word_param(lanes.lane0, &carried_args.params),
+                build_call_indirect_checked_block(lower, table_idx, index_slot, true, true, true)?,
+                MachineTerminator::Jump(MachineEdge {
+                    target: runtime_call,
+                    args: carried_args.param_values(),
+                }),
+            )?;
+        }
         IndirectCallSource::Table { table_idx, index } => {
             let bounds_limit = emit_call_indirect_bounds_check_setup(
                 lower,
@@ -1901,11 +2081,13 @@ fn lower_indirect_dispatch_cluster(
                 extra_blocks,
                 prepend_gp_word_param(indirect_temps.lane0, &carried_args.params),
                 if fixed_fast_table {
-                    build_call_indirect_fixed_table_load_block(
+                    let mut ops = collections::vec![call_indirect_fixed_views_base_load(lower)?];
+                    ops.extend(build_call_indirect_fixed_table_load_block(
                         lower,
                         table_idx,
                         indirect_temps.lane0,
-                    )?
+                    )?);
+                    ops
                 } else {
                     build_call_indirect_checked_block(
                         lower,
@@ -1942,6 +2124,7 @@ fn lower_indirect_dispatch_cluster(
                     then_edge: MachineEdge {
                         target: if fixed_local_table {
                             trap_invalid_ref
+                                .expect("generic table dispatch allocates trap_invalid_ref")
                         } else {
                             type_check
                         },
@@ -2057,7 +2240,13 @@ fn lower_indirect_dispatch_cluster(
                 },
                 MachineTerminator::Branch {
                     cond: MachineBranchCond::IntCompare {
-                        width: lower.gp_word_int_width(),
+                        // A fast table compares two zero-extended u32 type
+                        // ids, which a 32-bit compare decides exactly.
+                        width: if fixed_fast_table {
+                            MachineIntWidth::I32
+                        } else {
+                            lower.gp_word_int_width()
+                        },
                         kind: MachineCompareKind::Ne,
                         sign: MachineSign::Unsigned,
                         lhs: MachineValue::Reg(if fixed_local_table {
@@ -2109,7 +2298,7 @@ fn lower_indirect_dispatch_cluster(
                 },
             )?;
             push_lowered_block(
-                trap_invalid_ref,
+                trap_invalid_ref.expect("generic table dispatch allocates trap_invalid_ref"),
                 original_blocks,
                 extra_blocks,
                 collections::Vec::new(),
@@ -2189,7 +2378,7 @@ fn lower_indirect_dispatch_cluster(
                 },
             )?;
             push_lowered_block(
-                trap_invalid_ref,
+                trap_invalid_ref.expect("call_ref dispatch allocates trap_invalid_ref"),
                 original_blocks,
                 extra_blocks,
                 collections::Vec::new(),
@@ -2251,7 +2440,7 @@ fn lower_indirect_dispatch_cluster(
             )?;
         }
     }
-    if !fixed_fast_table {
+    if !fast_transfer {
         let local_prepare_ops = match transfer {
             IndirectTransfer::Call { args, .. } => {
                 build_call_indirect_local_prepare_block(lower, args)?
@@ -2274,14 +2463,14 @@ fn lower_indirect_dispatch_cluster(
     }
     let mut local_transfer_ops = match transfer {
         IndirectTransfer::Call { results, .. } => {
-            if fixed_fast_table {
+            if fast_transfer {
                 collections::Vec::new()
             } else {
                 build_call_indirect_local_transfer_block(lower, results)?
             }
         }
         IndirectTransfer::Tail { .. } => {
-            if fixed_fast_table {
+            if fast_transfer {
                 collections::Vec::new()
             } else {
                 build_call_indirect_local_tail_transfer_block(lower)?
@@ -2297,6 +2486,10 @@ fn lower_indirect_dispatch_cluster(
     local_transfer_ops.extend(lower.take_ops());
     let mut result_success_args = collections::Vec::new();
     let mut continuation_params = collections::Vec::new();
+    // The fast transfers dispatch through a precomputed entry and never load
+    // the callee's identity; the generic transfer computes it from the
+    // element.
+    let dispatch_callee_target = (!fast_transfer).then_some(indirect_temps.lane0);
     let local_transfer_term = match continuation {
         Some(continuation) => {
             let IndirectTransfer::Call {
@@ -2318,7 +2511,7 @@ fn lower_indirect_dispatch_cluster(
             continuation_params = params;
             MachineTerminator::Call {
                 target: MachineCallTarget::Indirect {
-                    callee_target: indirect_temps.lane0,
+                    callee_target: dispatch_callee_target,
                     callee_entry: indirect_temps.lane2,
                 },
                 frame_delta: slot_offset_bytes(transfer.source_args().start)? as u32,
@@ -2332,7 +2525,7 @@ fn lower_indirect_dispatch_cluster(
         }
         None => MachineTerminator::TailCall {
             target: MachineCallTarget::Indirect {
-                callee_target: indirect_temps.lane0,
+                callee_target: dispatch_callee_target,
                 callee_entry: indirect_temps.lane2,
             },
             args: machine_call_args,
@@ -2342,7 +2535,7 @@ fn lower_indirect_dispatch_cluster(
         local_transfer,
         original_blocks,
         extra_blocks,
-        if fixed_fast_table {
+        if fast_transfer {
             prepend_gp_word_params(
                 &[local_call_target_param, local_call_entry_param],
                 &carried_args.params,
@@ -2480,13 +2673,16 @@ fn attach_edge_args(
 }
 
 #[inline]
+/// Fills `regs` with the registers a block's parameters arrive in.
 pub(super) fn target_param_regs(
+    regs: &mut collections::Vec<ValueRegs>,
     params: &[SsaValue],
     program: &SsaProgram,
     regfile: &MachineRegFile,
     gp_reg_width: u8,
-) -> Result<collections::Vec<ValueRegs>, WasmError> {
-    let mut regs = collections::Vec::with_capacity(params.len());
+) -> Result<(), WasmError> {
+    regs.clear();
+    regs.reserve(params.len());
     let mut gp_index = 0usize;
     let mut fp_index = 0usize;
     for param in params {
@@ -2518,7 +2714,7 @@ pub(super) fn target_param_regs(
             gp_index += 1;
         }
     }
-    Ok(regs)
+    Ok(())
 }
 
 fn program_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineStorageType {
@@ -2773,6 +2969,96 @@ fn emit_call_indirect_bounds_check_setup(
         },
     });
     Ok(MachineValue::Reg(table_len))
+}
+
+/// Bounds input for a `Cached` table: lane0 = the index, reloaded from its
+/// published slot (which the runtime fallback reads as well), and lane2 =
+/// the context's cached entry count. The count trails the live table while
+/// the entries are stale, so out-of-range here means "take the runtime
+/// path", never "trap".
+fn emit_call_indirect_cached_bounds_setup(
+    lower: &mut BlockLowerContext<'_>,
+    table_idx: u32,
+    index_slot: FrameSlot,
+) -> Result<(), WasmError> {
+    evict_call_indirect_control_gp_caches(lower)?;
+    let fixed_view = fixed_call_table_view_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    lower.emit_machine_inst(MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: temps.lane0,
+            addr: lower.frame_addr(index_slot)?,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+    });
+    lower.emit_machine_inst(call_indirect_fixed_views_base_load(lower)?);
+    lower.emit_machine_inst(MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: temps.lane2,
+            addr: indexed_const_addr(
+                temps.lane1,
+                table_idx,
+                fixed_view.stride as usize,
+                fixed_view.len_offset,
+            )?,
+            width: lower.gp_word_mem_width(),
+            extension: MachineLoadExtension::None,
+        },
+    });
+    Ok(())
+}
+
+/// Generic bounds input for a cached miss: lane0 = the index from its
+/// published slot, lane2 = the live table length.
+fn build_call_indirect_live_bounds_block(
+    lower: &BlockLowerContext<'_>,
+    table_idx: u32,
+    index_slot: FrameSlot,
+) -> Result<collections::Vec<MachineInst>, WasmError> {
+    let runtime_layout = lower.runtime_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    Ok(collections::vec![
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: temps.lane0,
+                addr: lower.frame_addr(index_slot)?,
+                width: MachineMemWidth::U32,
+                extension: MachineLoadExtension::ZeroExtend,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: temps.lane1,
+                addr: lower.runtime_addr(runtime_layout.context.table_views_base_offset),
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: temps.lane2,
+                addr: indexed_const_addr(
+                    temps.lane1,
+                    table_idx,
+                    runtime_layout.pointer_len_view.stride as usize,
+                    runtime_layout.pointer_len_view.len_offset,
+                )?,
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        },
+    ])
 }
 
 fn build_call_indirect_checked_block(
@@ -3161,12 +3447,34 @@ fn build_call_indirect_fixed_local_type_check_block(
     Ok(ops)
 }
 
+/// Load the fixed call-table view array base into control lane 1, where
+/// [`build_call_indirect_fixed_table_load_block`] expects it.
+fn call_indirect_fixed_views_base_load(
+    lower: &BlockLowerContext<'_>,
+) -> Result<MachineInst, WasmError> {
+    let runtime_layout = lower.runtime_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    Ok(MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: temps.lane1,
+            addr: lower.runtime_addr(runtime_layout.context.fixed_call_table_views_base_offset),
+            width: lower.gp_word_mem_width(),
+            extension: MachineLoadExtension::None,
+        },
+    })
+}
+
+/// Load one fixed call-table entry. Control lane 1 must hold the view array
+/// base on entry (see [`call_indirect_fixed_views_base_load`]). The entry's
+/// fields are read at their offsets from one scaled index, so no field load
+/// waits on index arithmetic for another.
 fn build_call_indirect_fixed_table_load_block(
     lower: &BlockLowerContext<'_>,
     table_idx: u32,
     index_reg: MachineReg,
 ) -> Result<collections::Vec<MachineInst>, WasmError> {
-    let runtime_layout = lower.runtime_abi_layout();
     let fixed_view = fixed_call_table_view_abi_layout();
     let fixed_entry = fixed_call_table_entry_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
@@ -3175,17 +3483,18 @@ fn build_call_indirect_fixed_table_load_block(
     let callee_entry = temps.lane2;
     let actual_type = temps.lane3;
     debug_assert_eq!(fixed_entry.stride, 16);
-    Ok(collections::vec![
-        MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: table_base,
-                addr: lower.runtime_addr(runtime_layout.context.fixed_call_table_views_base_offset),
-                width: lower.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
+    let field = |dst, offset: u32, width, extension| MachineInst {
+        kind: MachineInstKind::IndexedLoad {
+            dst,
+            base: table_base,
+            index: local_target,
+            index_extend: MachineIndexExtend::None,
+            offset: offset as i32,
+            width,
+            extension,
         },
+    };
+    Ok(collections::vec![
         MachineInst {
             kind: MachineInstKind::Load {
                 owner: MachineRegOwner::LinearValue,
@@ -3210,59 +3519,18 @@ fn build_call_indirect_fixed_table_load_block(
                 rhs: MachineValue::Imm64(4),
             },
         },
-        MachineInst {
-            kind: MachineInstKind::IndexedLoad {
-                dst: actual_type,
-                base: table_base,
-                index: local_target,
-                index_extend: MachineIndexExtend::None,
-                offset: fixed_entry.type_canon_offset as i32,
-                width: MachineMemWidth::U32,
-                extension: MachineLoadExtension::ZeroExtend,
-            },
-        },
-        MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: lower.gp_word_int_width(),
-                op: MachineIntBinaryOp::Add,
-                dst: local_target,
-                lhs: MachineValue::Reg(local_target),
-                rhs: MachineValue::Imm64(u64::from(fixed_entry.entry_offset)),
-            },
-        },
-        MachineInst {
-            kind: MachineInstKind::IndexedLoad {
-                dst: callee_entry,
-                base: table_base,
-                index: local_target,
-                index_extend: MachineIndexExtend::None,
-                offset: 0,
-                width: lower.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        },
-        MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: lower.gp_word_int_width(),
-                op: MachineIntBinaryOp::Sub,
-                dst: local_target,
-                lhs: MachineValue::Reg(local_target),
-                rhs: MachineValue::Imm64(u64::from(
-                    fixed_entry.entry_offset - fixed_entry.local_target_offset,
-                )),
-            },
-        },
-        MachineInst {
-            kind: MachineInstKind::IndexedLoad {
-                dst: local_target,
-                base: table_base,
-                index: local_target,
-                index_extend: MachineIndexExtend::None,
-                offset: 0,
-                width: MachineMemWidth::U32,
-                extension: MachineLoadExtension::ZeroExtend,
-            },
-        },
+        field(
+            actual_type,
+            fixed_entry.type_canon_offset,
+            MachineMemWidth::U32,
+            MachineLoadExtension::ZeroExtend,
+        ),
+        field(
+            callee_entry,
+            fixed_entry.entry_offset,
+            lower.gp_word_mem_width(),
+            MachineLoadExtension::None,
+        ),
     ])
 }
 

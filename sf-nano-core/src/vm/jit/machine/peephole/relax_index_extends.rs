@@ -1372,6 +1372,7 @@ mod tests {
                             collections::vec![MachineValue::Imm64(u64::from(u32::MAX) + 1,)],
                         ),
                     ],
+                    in_range: false,
                 },
             ),
             cfg_block(

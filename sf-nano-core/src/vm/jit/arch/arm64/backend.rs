@@ -161,6 +161,8 @@ pub(crate) struct Arm64Backend<'a> {
     /// `lower_function_literal_pool` (which the pipeline calls between
     /// edge stubs and the body-local error tail).
     pub(super) pending_direct_calls: collections::Vec<PendingDirectCall>,
+    /// FP constants loaded PC-relative; placed with the call veneers.
+    pub(super) fp_literals: super::fp_literals::FpLiteralPool,
     /// 1-slot peephole lookahead buffer. Holds the previously seen op so
     /// `emit_inst_at` can attempt a 2-op fusion (zero-store pair, FP
     /// store/load pair) when the next op arrives. Drained on `end_block`.
@@ -206,6 +208,51 @@ pub(super) const RECENT_STORE_SLOTS: usize = 8;
 pub(super) const RECENT_STORE_MAX_AGE: u32 = 24;
 
 impl<'a> Arm64Backend<'a> {
+    /// Pad with NOPs until the next instruction's runtime address is a
+    /// multiple of `align`.
+    fn pad_to_runtime_alignment(&mut self, align: usize) {
+        let misalign = self.core.text.next_addr_for_alignment() % align;
+        if misalign != 0 {
+            for _ in 0..(align - misalign) / 4 {
+                self.core.text.emit_u32(enc::nop());
+            }
+        }
+    }
+
+    /// Whether the MachineIR right after the current op tests `reg`
+    /// against zero, the only test `select_flags` can serve: a Select on
+    /// `reg`, or a trap or the block's branch on `reg` or `reg ==/!= 0`.
+    /// Outside a known op position, assume it does.
+    pub(super) fn next_tests_nonzero(&self, reg: MachineReg) -> bool {
+        let (Some(block_id), Some(index)) = (self.core.current_block, self.core.current_op_index)
+        else {
+            return true;
+        };
+        let Some(block) = self
+            .core
+            .mir_blocks()
+            .ok()
+            .and_then(|blocks| blocks.get(block_id.as_usize()))
+        else {
+            return true;
+        };
+        match block.ops.get(index + 1).map(|next| &next.kind) {
+            Some(MachineInstKind::Select {
+                cond: MachineValue::Reg(cond),
+                ..
+            }) => *cond == reg,
+            Some(MachineInstKind::TrapIf { cond, .. }) => {
+                super::fusion::cond_tests_nonzero(cond, reg)
+            }
+            Some(_) => false,
+            None => matches!(
+                &block.terminator,
+                MachineTerminator::Branch { cond, .. }
+                    if super::fusion::cond_tests_nonzero(cond, reg)
+            ),
+        }
+    }
+
     fn analyze_body(core: &CompilerCore<'a>) -> Arm64BodyAnalysis {
         let FunctionBody::Mir(function) = core.body else {
             return Arm64BodyAnalysis {
@@ -751,6 +798,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             helper_gp_candidates: analysis.helper_gp_candidates,
             helper_fp_candidates: analysis.helper_fp_candidates,
             pending_direct_calls: collections::Vec::new(),
+            fp_literals: super::fp_literals::FpLiteralPool::default(),
             pending_op: None,
             fused_copy_ops_remaining: 0,
             select_flags: None,
@@ -953,7 +1001,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             self.core.direct_call_patches.push(patch);
         }
 
-        Ok(())
+        self.fp_literals.flush(&mut self.core.text)
     }
 
     fn lower_body_local_error_tail(&mut self) {
@@ -975,6 +1023,18 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     #[cfg(sf_has_guard_pages)]
     fn lower_stack_probe(&mut self, addr: MachineAddr) -> Result<(), WasmError> {
         self.emit_stack_probe(addr)
+    }
+
+    fn align_loop_header(&mut self) {
+        // Start each loop on a 32-byte fetch block, so a loop's fetch
+        // pattern does not depend on the size of the code laid out before
+        // it. The previous block's `end_block` already drained the pending
+        // op, so the padding cannot split a fusion pair.
+        self.pad_to_runtime_alignment(32);
+    }
+
+    fn align_internal_entry(&mut self) {
+        self.pad_to_runtime_alignment(32);
     }
 
     fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
@@ -1100,19 +1160,20 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                             )
                         });
                 if temporary_is_dead {
+                    use crate::vm::jit::machine::machine_ir::MachineIntWidth;
+                    self.core.current_op_index = Some(index);
+                    let publish = self.next_tests_nonzero(fusion.dst);
                     let dst = self.map_gp_reg(fusion.dst)?;
                     let lhs = self.map_gp_reg(fusion.lhs)?;
                     let not_rhs = self.map_gp_reg(fusion.not_rhs)?;
-                    let encoded = match fusion.width {
-                        crate::vm::jit::machine::machine_ir::MachineIntWidth::I32 => {
-                            enc::bics_reg_32(dst, lhs, not_rhs)
-                        }
-                        crate::vm::jit::machine::machine_ir::MachineIntWidth::I64 => {
-                            enc::bics_reg_64(dst, lhs, not_rhs)
-                        }
+                    let encoded = match (fusion.width, publish) {
+                        (MachineIntWidth::I32, true) => enc::bics_reg_32(dst, lhs, not_rhs),
+                        (MachineIntWidth::I64, true) => enc::bics_reg_64(dst, lhs, not_rhs),
+                        (MachineIntWidth::I32, false) => enc::bic_reg_32(dst, lhs, not_rhs),
+                        (MachineIntWidth::I64, false) => enc::bic_reg_64(dst, lhs, not_rhs),
                     };
                     self.core.text.emit_u32(encoded);
-                    self.select_flags = Some((fusion.dst, enc::Cond::Ne));
+                    self.select_flags = publish.then_some((fusion.dst, enc::Cond::Ne));
                     self.gp_scratch.assert_all_free();
                     self.fp_scratch.assert_all_free();
                     return Ok(());
@@ -1304,7 +1365,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
 
     fn emit_nop_padding(buf: &mut CodeBuffer, bytes: usize) {
         debug_assert!(bytes % 4 == 0, "ARM64 NOP padding must be 4-byte aligned");
-        const ARM64_NOP: [u8; 4] = 0xd503201f_u32.to_le_bytes();
+        const ARM64_NOP: [u8; 4] = enc::nop().to_le_bytes();
         for _ in 0..bytes / 4 {
             buf.emit_bytes(&ARM64_NOP);
         }

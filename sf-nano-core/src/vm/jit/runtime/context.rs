@@ -39,6 +39,7 @@ use crate::{
             code::CompiledNativeModule,
             dispatch_view::{
                 NativeDispatchMetadata, NativeFixedCallTableEntry, NativeFixedCallTableView,
+                SelfAbsoluteFunctionRange,
             },
             layout::local_call_info_abi_layout,
         },
@@ -590,6 +591,7 @@ impl NativeContext {
         }
 
         let mut entry_tables = collections::Vec::with_capacity(table_count);
+        let self_absolute_range = store.self_absolute_range();
 
         for table_idx in 0..table_count {
             let mode = module
@@ -597,7 +599,10 @@ impl NativeContext {
                 .get(table_idx)
                 .copied()
                 .unwrap_or(TableDispatchMode::Generic);
-            if !matches!(mode, TableDispatchMode::FixedLocalOnly { .. }) {
+            if !matches!(
+                mode,
+                TableDispatchMode::FixedLocalOnly { .. } | TableDispatchMode::Cached
+            ) {
                 entry_tables.push(collections::Vec::new());
                 continue;
             }
@@ -606,7 +611,9 @@ impl NativeContext {
             let mut entry_table = collections::Vec::with_capacity(elements.len());
 
             for handle in elements.iter().copied() {
-                let Some(view) = self.function_view_for_fixed_handle(handle) else {
+                let Some(view) =
+                    self.function_view_for_dispatch_handle(handle, self_absolute_range)
+                else {
                     entry_table.push(NativeFixedCallTableEntry {
                         type_canon: u32::MAX,
                         local_target: u32::MAX,
@@ -644,12 +651,31 @@ impl NativeContext {
         self.fixed_call_table_views_len = self.fixed_call_table_views.len();
     }
 
+    /// The local function a table element names, if any. Private tables hold
+    /// local handles (`0..local_len`); shared tables hold absolute handles,
+    /// which name this instance's own functions only inside its baked
+    /// self-absolute range and map into the function views' suffix exactly
+    /// as generated code maps them.
     #[inline]
-    fn function_view_for_fixed_handle(&self, handle: RefValue) -> Option<NativeFunctionView> {
+    fn function_view_for_dispatch_handle(
+        &self,
+        handle: RefValue,
+        self_absolute_range: SelfAbsoluteFunctionRange,
+    ) -> Option<NativeFunctionView> {
         if handle.is_null() || handle.is_special() {
             return None;
         }
-        let view = self.function_views.get(handle.encoded()).copied()?;
+        let encoded = handle.encoded();
+        let index = if encoded < self.function_views_len {
+            encoded
+        } else {
+            let delta = encoded.checked_sub(self_absolute_range.base)?;
+            if delta >= self_absolute_range.count {
+                return None;
+            }
+            self.function_views_len.checked_add(delta)?
+        };
+        let view = self.function_views.get(index).copied()?;
         (view.kind == function_kind::LOCAL).then_some(view)
     }
 

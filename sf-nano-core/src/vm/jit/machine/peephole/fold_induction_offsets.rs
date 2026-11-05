@@ -26,6 +26,7 @@
 //! `reg_live_after` decides liveness exactly, as in the sibling passes.
 
 use crate::collections;
+use crate::vm::jit::machine::block_lists::BlockLists;
 use crate::vm::jit::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineBranchCond, MachineCompareKind, MachineIndexExtend,
     MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineProgram, MachineReg, MachineSign,
@@ -126,7 +127,7 @@ fn find_inductions(
     header: usize,
     latch: usize,
     loop_nodes: &[usize],
-    predecessors: &[collections::Vec<usize>],
+    predecessors: &BlockLists,
 ) -> collections::Vec<Induction> {
     let mut found = collections::Vec::new();
     let header_id = blocks[header].id;
@@ -354,7 +355,7 @@ fn const_add_operand(lhs: MachineValue, rhs: MachineValue, base: MachineReg) -> 
 fn max_entry_constant(
     blocks: &[MachineBlock],
     loop_nodes: &[usize],
-    predecessors: &[collections::Vec<usize>],
+    predecessors: &BlockLists,
     header: usize,
     position: usize,
 ) -> Option<u64> {

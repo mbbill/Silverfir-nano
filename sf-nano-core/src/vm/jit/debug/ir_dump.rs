@@ -1680,10 +1680,19 @@ fn render_machine_term(term: &MachineTerminator) -> String {
             else_edge.target.0,
             medge_args(&else_edge.args),
         ),
-        MachineTerminator::JumpTable { index, entries } => {
+        MachineTerminator::JumpTable {
+            index,
+            entries,
+            in_range,
+        } => {
             let targets: collections::Vec<String> =
                 entries.iter().map(|e| format!("b{}", e.target.0)).collect();
-            format!("jump_table {} [{}]", mval(index), targets.join(", "))
+            format!(
+                "jump_table{} {} [{}]",
+                if *in_range { ".in_range" } else { "" },
+                mval(index),
+                targets.join(", ")
+            )
         }
         MachineTerminator::Call {
             target,
@@ -1705,8 +1714,8 @@ fn render_machine_term(term: &MachineTerminator) -> String {
                 callee_target,
                 callee_entry,
             } => format!(
-                "call target=r{} entry=r{} frame_delta={} frame_params={} lane_args=[{}] success=b{} [{}]",
-                callee_target.0,
+                "call target={} entry=r{} frame_delta={} frame_params={} lane_args=[{}] success=b{} [{}]",
+                render_call_target(*callee_target),
                 callee_entry.0,
                 frame_delta,
                 args.frame_params.slots,
@@ -1728,8 +1737,8 @@ fn render_machine_term(term: &MachineTerminator) -> String {
                 callee_target,
                 callee_entry,
             } => format!(
-                "tail_call target=r{} entry=r{} frame_params={} lane_args=[{}]",
-                callee_target.0,
+                "tail_call target={} entry=r{} frame_params={} lane_args=[{}]",
+                render_call_target(*callee_target),
                 callee_entry.0,
                 args.frame_params.slots,
                 render_machine_call_args(args)
@@ -1770,6 +1779,13 @@ fn render_machine_result_src(src: crate::vm::jit::machine::machine_ir::MachineRe
         MachineResultSrc::FrameSlotOffset { slot, byte_offset } => {
             format!("fp[{}]+{}", slot.0, byte_offset)
         }
+    }
+}
+
+fn render_call_target(target: Option<crate::vm::jit::machine::machine_ir::MachineReg>) -> String {
+    match target {
+        Some(reg) => format!("r{}", reg.0),
+        None => String::from("-"),
     }
 }
 

@@ -33,6 +33,7 @@ const TUNING_READY: u8 = 1 << 7;
 const PREFER_BEXTR: u8 = 1 << 0;
 const CLEAR_INT_TO_FLOAT_DST: u8 = 1 << 1;
 const HAS_BMI2: u8 = 1 << 2;
+const HAS_AVX: u8 = 1 << 3;
 
 fn tuning() -> u8 {
     let mut state = CPU_TUNING.load(Ordering::Relaxed);
@@ -50,6 +51,9 @@ fn tuning() -> u8 {
         if leaf7_ebx & (1 << 8) != 0 {
             state |= HAS_BMI2;
         }
+        if os_enabled_avx() {
+            state |= HAS_AVX;
+        }
         if amd {
             if leaf7_ebx & (1 << 3) != 0 {
                 state |= PREFER_BEXTR;
@@ -65,6 +69,25 @@ fn tuning() -> u8 {
 /// BMI2 scalar shifts/rotates use only GP state; CPUID.7.0:EBX[8] suffices.
 pub(super) fn has_bmi2() -> bool {
     tuning() & HAS_BMI2 != 0
+}
+
+/// VEX-encoded XMM instructions raise #UD unless the OS has enabled the
+/// AVX register state in XCR0, so the CPUID bit alone is not enough. std's
+/// detector checks CPUID.1:ECX.{AVX,OSXSAVE} and XCR0[2:1]; a build without
+/// std keeps the SSE2 lowering.
+#[cfg(sf_has_std)]
+fn os_enabled_avx() -> bool {
+    std::is_x86_feature_detected!("avx")
+}
+
+#[cfg(not(sf_has_std))]
+fn os_enabled_avx() -> bool {
+    false
+}
+
+/// Three-operand VEX.128 scalar FP arithmetic is available.
+pub(super) fn has_avx() -> bool {
+    tuning() & HAS_AVX != 0
 }
 
 /// AMD's single-operation BEXTR can shorten a shift-and-mask dependency.
