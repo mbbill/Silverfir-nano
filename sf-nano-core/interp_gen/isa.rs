@@ -129,12 +129,22 @@ pub struct Caps {
     /// of the blob's content. Costs up to one page of padding, so the
     /// flash-constrained targets leave it off.
     pub page_aligned_blob: bool,
-    /// log2 of the fetch line no handler that fits in one may straddle,
-    /// or `None` to pack handlers back to back. Every dispatch enters a
-    /// handler through an indirect jump, so a handler that crosses a line
-    /// costs a second fetch on each entry; padding moves such a handler to
-    /// the next line instead. See `docs/HANDLER_LAYOUT.md`.
-    pub handler_line: Option<u32>,
+    /// The fetch line no handler that fits in one may straddle, or `None`
+    /// to pack handlers back to back. Every dispatch enters a handler
+    /// through an indirect jump, so a handler that crosses a line costs a
+    /// second fetch on each entry; padding moves such a handler to the
+    /// next line instead. See `docs/HANDLER_LAYOUT.md`.
+    pub handler_line: Option<HandlerLine>,
+}
+
+/// See [`Caps::handler_line`].
+#[derive(Clone, Copy)]
+pub struct HandlerLine {
+    /// log2 of the line size in bytes.
+    pub log2: u32,
+    /// The byte that fills the never-executed padding: a trapping encoding
+    /// where the ISA has a one-byte one.
+    pub fill: u8,
 }
 
 /// One handler the driver is asking about.

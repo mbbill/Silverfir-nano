@@ -20,8 +20,9 @@
 use super::asm::Asm;
 use super::instr::Op;
 use super::isa::{
-    Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS, SUPER_ADD4, SUPER_ADD_BRNE,
-    SUPER_AND_BREQ, SUPER_HANDLER_SLOTS, SUPER_MOVPAIR_LOAD_STORE_BRIF, SUPER_SHRU_AND,
+    Caps, HandlerLine, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS, SUPER_ADD4,
+    SUPER_ADD_BRNE, SUPER_AND_BREQ, SUPER_HANDLER_SLOTS, SUPER_MOVPAIR_LOAD_STORE_BRIF,
+    SUPER_SHRU_AND,
 };
 use super::layout::{Cls, DstCls, Fam};
 
@@ -646,7 +647,8 @@ impl Isa for Arm64 {
             float_pin_f32: true,
             native_calls: true,
             page_aligned_blob: true,
-            handler_line: None,
+            // 0x00000000 is `udf #0`
+            handler_line: Some(HandlerLine { log2: 6, fill: 0 }),
         }
     }
 

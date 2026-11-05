@@ -26,7 +26,7 @@ pub mod x86_64;
 
 use asm::{Asm, ObjFmt};
 use instr::{op_from_index, Op};
-use isa::{Isa, PairDstSplit, Stubs, Variant, SUPER_HANDLER_SLOTS};
+use isa::{HandlerLine, Isa, PairDstSplit, Stubs, Variant, SUPER_HANDLER_SLOTS};
 use layout::{family, op_base, total_slots, Cls, DstCls, Fam, PairDstCls, N_OPS};
 
 /// One emission group: a run of ops sharing a shape, in the order the
@@ -333,17 +333,17 @@ fn stubs(a: &Asm) -> Stubs {
 }
 
 /// Padding that keeps the handler between `label` and `end` inside one
-/// `1 << bits`-byte line when it fits in one, and adds nothing otherwise.
-/// The assembler resolves it at layout time from the handler's assembled
-/// size and its offset from the (line-aligned) blob base, so no handler
-/// size has to be known here. GNU-style comparisons yield -1 for true,
-/// hence the `& 1`.
-fn line_guard(base: &str, label: &str, end: &str, bits: u32) -> String {
-    let line = 1u32 << bits;
-    let mask = line - 1;
+/// line when it fits in one, and adds nothing otherwise. The assembler
+/// resolves it at layout time from the handler's assembled size and its
+/// offset from the (line-aligned) blob base, so no handler size has to be
+/// known here. GNU-style comparisons yield -1 for true, hence the `& 1`.
+fn line_guard(base: &str, label: &str, end: &str, line: HandlerLine) -> String {
+    let size = 1u32 << line.log2;
+    let mask = size - 1;
+    let fill = line.fill;
     format!(
-        "\t.fill ((((((. - {base}) & {mask}) + ({end} - {label})) > {line}) \
-         & (({end} - {label}) <= {line})) & 1) * ({line} - ((. - {base}) & {mask})), 1, 0xcc"
+        "\t.fill ((((((. - {base}) & {mask}) + ({end} - {label})) > {size}) \
+         & (({end} - {label}) <= {size})) & 1) * ({size} - ((. - {base}) & {mask})), 1, {fill:#04x}"
     )
 }
 
@@ -414,9 +414,9 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
                     group.fused
                 );
                 let label = a.fresh("h");
-                let end = caps.handler_line.map(|bits| {
+                let end = caps.handler_line.map(|line| {
                     let end = a.fresh("he");
-                    a.raw(&line_guard(&base, &label, &end, bits));
+                    a.raw(&line_guard(&base, &label, &end, line));
                     end
                 });
                 a.label(&label);

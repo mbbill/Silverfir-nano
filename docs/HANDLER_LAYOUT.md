@@ -26,7 +26,8 @@ and in the perf-CI runs of the `dev/probe-*`, `dev/pad-*` and
 4. Per-handler alignment does NOT stabilize results; it re-rolls every
    address. Measured twice (16-byte and 32-byte variants): swings up to
    +89% / -30% in both directions, plus 8-35% of engine text as padding.
-   Refuted; do not retry.
+   Refuted; do not retry. (The line guard below is a different mechanism:
+   it pads only where a handler would straddle a line.)
 5. What LANDED instead: two `.p2align 6` boundaries, one at the blob base
    and one between the prelude/stubs and the first handler (at most 128
    bytes on any target). With both sides of a comparison carrying these
@@ -38,36 +39,48 @@ and in the perf-CI runs of the `dev/probe-*`, `dev/pad-*` and
    cold family between two hot ones measured ~5% three separate times) —
    see the dispatch node's Items and Facts.
 
-## Line guard on x86-64 (2026-11-05, under evaluation)
+## Line guard (LANDED on x86-64 2026-11-05; arm64 under evaluation)
 
 `Caps::handler_line` keeps every handler that fits in one 64-byte line
 inside a single line: an assembler-evaluated `.fill` before the handler
 pads to the next line exactly when the handler would otherwise straddle
-one, and adds nothing otherwise. x86-64 enables it; the other backends
-pack as before.
+one, and adds nothing otherwise. The assembler computes the padding
+from the handler's end label at layout time, so the generator needs no
+instruction lengths. x86-64 and arm64 enable it; arm32 and RISC-V pack
+as before (flash-constrained targets, and CI measures them only for
+correctness).
 
 This is not the per-handler alignment refuted in fact 4. That moved
 every handler to a new phase and left line crossings to chance; the
 guard removes one specific cost -- the second fetch on every entry into
-a straddling handler -- for all hot handlers at once. Before it, 4,713
-of 9,711 x86-64 handlers crossed a line; after it, none of those that
-fit do. Text cost: the handler region grows from 356 KB to 460 KB.
+a straddling handler -- for all hot handlers at once. Unguarded, 4,713
+of 9,711 x86-64 handlers and 4,652 of 10,084 arm64 handlers crossed a
+line; guarded, none of those that fit do. Text cost: the x86-64 handler
+region grows from 356 KB to 460 KB, arm64 from 326 KB to 417 KB.
 
-Evidence, local Intel Xeon, same code shifted by 0-56 bytes of padding
-ahead of the handlers:
+Evidence on x86-64:
 
-- spectralnorm (wasmi rust-benchmarks): 128-154 ms unguarded, tracking
-  the number of its 19 hot handlers that cross a line (4-14);
-  113-115 ms guarded, at every shift.
-- counter-global: 1.71-2.29 ms unguarded, 1.68-1.78 ms guarded.
-- Wall time against the unguarded parent, 4 interleaved pairs:
-  c-ray +22%, coremark +15%, lua-fib +4.5%, lua-json +1.4%.
+- Local Intel Xeon, same code shifted by 0-56 bytes of padding ahead of
+  the handlers: spectralnorm (wasmi rust-benchmarks) measured 128-154 ms
+  unguarded, tracking how many of its 19 hot handlers cross a line
+  (4-14), and 113-115 ms guarded at every shift; counter-global
+  1.71-2.29 ms unguarded, 1.68-1.78 ms guarded.
+- Local CoreMark, 5 interleaved rounds against 92fa012: the guard alone
+  +5.0%; the instruction-count series that preceded it (-10.4% retired
+  instructions) alone -2.7%; both together +9.8%. Instruction savings
+  only paid off once placement stopped re-rolling under them.
+- CI run 42001110918 (ec7edf9 against 92fa012, all 46 jobs passing, no
+  REGRESSION): x64-linux on EPYC 9V74 CoreMark +47.9%, sha256 +46.2%,
+  lz4 +52.7% / +55.4%, mandelbrot +48.3%, c-ray +26.2%, lua-fib +22.1%,
+  lua-json +8.6%; x64-windows CoreMark +26.1%, lua-fib +24.8%,
+  lz4-decompress +46.8%. The size of the gain depends on the CPU's
+  front end: Zen-class runners gain most, the local Xeon least.
 
 Both CI-confirmed x86-64 regressions of 2026-11-05 (spectralnorm,
 counter-global) were placement draws of exactly this kind: identical
-instruction counts, and reproduced or cured by padding alone. Whether
-the guard holds on CI's Zen and Xeon runners is what its perf run
-measures; until then treat it as an experiment.
+instruction counts, and reproduced or cured by padding alone. The guard
+does not decollide BTB or L1-I set conflicts; those remain the subject
+of the placement project below.
 
 ## The unstarted project: profile-guided handler placement
 

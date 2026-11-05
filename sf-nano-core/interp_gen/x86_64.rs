@@ -34,7 +34,7 @@
 
 use super::asm::Asm;
 use super::instr::Op;
-use super::isa::{Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS};
+use super::isa::{Caps, HandlerLine, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS};
 use super::layout::{Cls, DstCls, Fam};
 
 const RAX: u32 = 0;
@@ -608,7 +608,11 @@ impl Isa for X86_64 {
             float_pin_f32: true,
             native_calls: true,
             page_aligned_blob: true,
-            handler_line: Some(6),
+            // int3
+            handler_line: Some(HandlerLine {
+                log2: 6,
+                fill: 0xcc,
+            }),
         }
     }
 
