@@ -433,6 +433,7 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
     // handler address or cache-line phase moves when this bank changes.
     let super_labels = isa.emit_superhandlers(&mut a, &st, counting);
     assert_eq!(super_labels.len(), SUPER_HANDLER_SLOTS);
+    isa.emit_cold(&mut a, &st);
 
     let end = a.local("sf_end");
     a.label(&end);

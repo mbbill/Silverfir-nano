@@ -185,10 +185,7 @@ fn emit_interp_engine() {
             superhandlers: apple_arm64_interp_supers_enabled(),
             counting,
         }),
-        TargetBackend::X64 => Box::new(interp_gen::x86_64::X86_64 {
-            windows: os == "windows",
-            counting,
-        }),
+        TargetBackend::X64 => Box::new(interp_gen::x86_64::X86_64::new(os == "windows", counting)),
         TargetBackend::Riscv64 => Box::new(interp_gen::riscv::RiscV {
             xlen: 64,
             // RV64GC's triple contract guarantees F and D.

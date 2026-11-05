@@ -4,7 +4,7 @@
 //! ```text
 //!   rbx = pc (current 32-byte dispatch cell)   rbp = frame base
 //!   r15 = &EnterState                          r14 = memory 0 base
-//!   r13 = memory 0 length                      r9  = return-stack cursor
+//!   r13 = memory 0 length - 8                  r9  = return-stack cursor
 //!   r12 = accumulator   r11 = l0   r10 = l1
 //!   rdi = prefetched next handler word
 //!   rax, rcx, rdx, rsi, r8 = scratch
@@ -58,6 +58,7 @@ const FL0R: u32 = 4;
 const FL1R: u32 = 5;
 
 /// State-block offsets for the roles that do not get a register here.
+const S_MEM_LEN: u32 = 32;
 const S_RET_CURSOR: u32 = 56;
 const S_RET_LIMIT: u32 = 64;
 const S_STACK_LIMIT: u32 = 72;
@@ -277,13 +278,24 @@ fn cvt_f2i_trap(op: Op) -> Option<(bool, bool, u64, u64)> {
 
 pub struct X86_64 {
     /// Win64 passes the argument in rcx and makes rdi/rsi callee-saved.
-    pub windows: bool,
+    windows: bool,
     /// Exact dispatch-counting build: the call stubs, which are not class
     /// variants, count themselves only here.
-    pub counting: bool,
+    counting: bool,
+    /// Exact memory bounds checks `emit_mem` defers out of line: (check
+    /// label, resume label, access width), emitted by `emit_cold`.
+    exact_bounds: Vec<(String, String, u32)>,
 }
 
 impl X86_64 {
+    pub fn new(windows: bool, counting: bool) -> X86_64 {
+        X86_64 {
+            windows,
+            counting,
+            exact_bounds: Vec::new(),
+        }
+    }
+
     fn pre(&self, a: &mut Asm) {
         a.ins("mov rdi, [rbx + 32]");
     }
@@ -708,7 +720,12 @@ impl Isa for X86_64 {
         a.ins("mov rbx, [r15 + 8]");
         a.ins("mov rbp, [r15 + 16]");
         a.ins("mov r14, [r15 + 24]");
-        a.ins("mov r13, [r15 + 32]");
+        // r13 is the memory length biased down by the widest scalar access,
+        // so one signed compare clears every access that ends at least 8
+        // bytes before the end (`emit_mem`). A memory shorter than 8 bytes
+        // biases negative, and every access then takes the exact check.
+        a.ins(&format!("mov r13, [r15 + {S_MEM_LEN}]"));
+        a.ins("sub r13, 8");
         a.ins(&format!("mov r9, [r15 + {S_RET_CURSOR}]"));
         a.ins("mov r11, [r15 + 88]");
         a.ins("mov r10, [r15 + 96]");
@@ -846,6 +863,18 @@ impl Isa for X86_64 {
         a.ins("mov rcx, rax");
         a.ins("mov rax, r8");
         a.ins(&format!("jmp {}", st.call_core));
+    }
+
+    fn emit_cold(&mut self, a: &mut Asm, st: &Stubs) {
+        // The exact memory bounds checks `emit_mem` defers: rcx holds the
+        // effective address, rdx is scratch at every check site.
+        for (exact, resume, size) in std::mem::take(&mut self.exact_bounds) {
+            a.label(&exact);
+            a.ins(&format!("lea rdx, [rcx + {size}]"));
+            a.ins(&format!("cmp rdx, [r15 + {S_MEM_LEN}]"));
+            a.ins(&format!("ja {}", st.trap_oob));
+            a.ins(&format!("jmp {resume}"));
+        }
     }
 
     fn wants(&self, v: &Variant) -> bool {
@@ -1321,7 +1350,7 @@ impl Isa for X86_64 {
                     a.ins(&format!("movzx {}, {}", d(rd), b8(rd)));
                     self.finish(a, dc, rd);
                 } else if mem_kind(v.op).is_some() {
-                    self.emit_mem(a, st, v);
+                    self.emit_mem(a, v);
                 } else if let Some((m, w32)) = float_bin(v.op) {
                     self.fp_bin(a, v, m, w32);
                 } else if let Some((cond, w32, swap, parity)) = float_cmp(v.op) {
@@ -1551,7 +1580,7 @@ impl X86_64 {
         self.finish(a, v.d, rd);
     }
 
-    fn emit_mem(&mut self, a: &mut Asm, st: &Stubs, v: &Variant) {
+    fn emit_mem(&mut self, a: &mut Asm, v: &Variant) {
         let (size, load, kind) = mem_kind(v.op).unwrap();
         let fp = is_fp_mem(v.op);
         let dc = v.d;
@@ -1591,9 +1620,17 @@ impl X86_64 {
             // ea = zext(addr) + offset
             a.ins(&format!("add rcx, [rbx + {}]", if load { 16 } else { 24 }));
         }
-        a.ins(&format!("lea rdx, [rcx + {size}]"));
-        a.ins("cmp rdx, r13");
-        a.ins(&format!("ja {}", st.trap_oob));
+        // rcx < 2^33 and r13 = length - 8 >= -8, so the signed compare
+        // passes exactly the accesses that end at least 8 bytes before the
+        // end. The last 8 bytes and out-of-bounds accesses take the exact
+        // check out of line, which resumes here or traps.
+        assert!(size <= 8, "a wider access needs its own bounds bias");
+        let exact = a.fresh("exact");
+        let resume = a.fresh("inb");
+        a.ins("cmp rcx, r13");
+        a.ins(&format!("jg {exact}"));
+        a.label(&resume);
+        self.exact_bounds.push((exact, resume, size));
         if load {
             if fp {
                 let vt = self.fp_target(dc);
@@ -1734,7 +1771,7 @@ impl X86_64 {
         a.ins("mov rdx, [rax + 8]"); // fill: value, copy: s
         a.ins("mov rsi, [rax + 16]"); // n
         a.ins("lea r8, [rcx + rsi]");
-        a.ins("cmp r8, r13");
+        a.ins(&format!("cmp r8, [r15 + {S_MEM_LEN}]"));
         a.ins(&format!("ja {}", st.slow)); // dst out of bounds
         let l64 = a.fresh("l64");
         let l8 = a.fresh("l8");
@@ -1775,7 +1812,7 @@ impl X86_64 {
             self.tail(a, v.counted);
         } else {
             a.ins("lea r8, [rdx + rsi]");
-            a.ins("cmp r8, r13");
+            a.ins(&format!("cmp r8, [r15 + {S_MEM_LEN}]"));
             a.ins(&format!("ja {}", st.slow)); // src out of bounds
             let back = a.fresh("copyback");
             let fwd = a.fresh("copyfwd");

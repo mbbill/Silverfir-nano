@@ -189,4 +189,9 @@ pub trait Isa {
     ) -> Vec<Option<String>> {
         vec![None; SUPER_HANDLER_SLOTS]
     }
+
+    /// Emit code the handlers branch to only on rare paths, after every
+    /// handler and superhandler, so it adds nothing to their size or line
+    /// placement.
+    fn emit_cold(&mut self, _a: &mut Asm, _st: &Stubs) {}
 }
