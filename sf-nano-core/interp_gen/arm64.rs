@@ -1409,22 +1409,19 @@ impl Arm64 {
         self.bump(a, v.counted);
         a.ins("ldr x10, [x19, #8]");
         a.ins("ldr x11, [x19, #16]");
-        a.ins("add x10, x20, x10");
-        a.ins("mov x12, x20");
         let pop = a.fresh("pop");
+        let other = a.fresh("other");
         let cl = a.fresh("cl");
-        a.ins(&format!("cbz x11, {pop}"));
-        // The accumulator doubles as the copy scratch: after a
-        // single-result copy it holds result 0, which is the
-        // call-result-in-acc convention at zero extra instructions. A
-        // dedicated load here instead cost a call-recursive microbench
-        // 6-8%: the native return path tolerates no extra
-        // store-forwarded load.
-        a.label(&cl);
-        a.ins("ldr x8, [x10], #8");
-        a.ins("str x8, [x12], #8");
-        a.ins("sub x11, x11, #1");
-        a.ins(&format!("cbnz x11, {cl}"));
+        // The accumulator doubles as the copy scratch: after the copy it
+        // holds result 0, which is the call-result-in-acc convention at
+        // zero extra instructions. A dedicated load here instead cost a
+        // call-recursive microbench 6-8%: the native return path
+        // tolerates no extra store-forwarded load. One result, the common
+        // case, copies without the loop.
+        a.ins("cmp x11, #1");
+        a.ins(&format!("b.ne {other}"));
+        a.ins("ldr x8, [x20, x10]");
+        a.ins("str x8, [x20]");
         a.label(&pop);
         a.ins("ldp x13, x20, [x26, #-32]!");
         // Overlap the caller continuation's handler load with the remaining
@@ -1451,6 +1448,17 @@ impl Arm64 {
         a.ins("fmov d17, x17");
         a.ins("fmov d18, x14");
         a.ins(&format!("b {join}"));
+        // No results (below 1, from the compare above), or several.
+        a.label(&other);
+        a.ins(&format!("b.lo {pop}"));
+        a.ins("add x10, x20, x10");
+        a.ins("mov x12, x20");
+        a.label(&cl);
+        a.ins("ldr x8, [x10], #8");
+        a.ins("str x8, [x12], #8");
+        a.ins("sub x11, x11, #1");
+        a.ins(&format!("cbnz x11, {cl}"));
+        a.ins(&format!("b {pop}"));
     }
 
     fn emit_div(&mut self, a: &mut Asm, st: &Stubs, v: &Variant) {

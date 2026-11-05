@@ -1549,22 +1549,17 @@ impl X86_64 {
         self.bump(a, v.counted);
         a.ins("mov rax, [rbx + 8]"); // first-result slot*8
         a.ins("mov rcx, [rbx + 16]"); // result count
-        a.ins("add rax, rbp");
-        a.ins("mov rdx, rbp");
         let pop = a.fresh("pop");
+        let other = a.fresh("other");
         let cl = a.fresh("cl");
-        a.ins("test rcx, rcx");
-        a.ins(&format!("jz {pop}"));
-        // The accumulator doubles as the copy scratch: after a
-        // single-result copy it holds result 0, which is the
-        // call-result-in-acc convention at zero extra instructions.
-        a.label(&cl);
-        a.ins("mov r12, [rax]");
-        a.ins("mov [rdx], r12");
-        a.ins("add rax, 8");
-        a.ins("add rdx, 8");
-        a.ins("dec rcx");
-        a.ins(&format!("jnz {cl}"));
+        // Results copy to the frame base. The accumulator doubles as the
+        // copy scratch: after the copy it holds result 0, which is the
+        // call-result-in-acc convention at zero extra instructions. One
+        // result, the common case, copies without the loop.
+        a.ins("cmp rcx, 1");
+        a.ins(&format!("jne {other}"));
+        a.ins("mov r12, [rbp + rax]");
+        a.ins("mov [rbp], r12");
         a.label(&pop);
         a.ins("sub r9, 32"); // pop the return record
         a.ins("mov rax, [r9]"); // ret pc
@@ -1590,6 +1585,19 @@ impl X86_64 {
         a.ins("movq xmm4, r11");
         a.ins("movq xmm5, r10");
         a.ins(&format!("jmp {join}"));
+        // No results (below 1, from the compare above), or several.
+        a.label(&other);
+        a.ins(&format!("jb {pop}"));
+        a.ins("add rax, rbp");
+        a.ins("mov rdx, rbp");
+        a.label(&cl);
+        a.ins("mov r12, [rax]");
+        a.ins("mov [rdx], r12");
+        a.ins("add rax, 8");
+        a.ins("add rdx, 8");
+        a.ins("dec rcx");
+        a.ins(&format!("jnz {cl}"));
+        a.ins(&format!("jmp {pop}"));
     }
 
     /// `memory.fill` / `memory.copy` on memory 0, in 64-byte SSE2 blocks
