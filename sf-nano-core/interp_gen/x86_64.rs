@@ -1615,21 +1615,21 @@ impl X86_64 {
         a.ins("mov [rbp], r12");
         a.label(&pop);
         a.ins("sub r9, 32"); // pop the return record
-        a.ins("mov rax, [r9]"); // ret pc
+        // The caller's continuation cell and its handler load first, so the
+        // dispatch target resolves alongside the remaining record and
+        // pinned-local reloads. Sentinel records point at the driver's
+        // readable exit cell and carry a readable dummy frame, so every
+        // load here is safe.
+        a.ins("mov rbx, [r9]"); // ret pc
+        a.ins("mov rax, [rbx]");
         a.ins("mov rbp, [r9 + 8]"); // caller frame
         a.ins("mov rdx, [r9 + 16]"); // caller l0off, bit 0 = float-pinned flag
         a.ins("mov rcx, [r9 + 24]"); // caller l1off
-                                     // Sentinel records carry a readable dummy frame, so these loads are
-                                     // always safe.
         let fp = a.fresh("retfp");
-        let join = a.fresh("retjoin");
         a.ins("test dl, 1");
         a.ins(&format!("jnz {fp}"));
         a.ins("mov r11, [rbp + rdx]");
         a.ins("mov r10, [rbp + rcx]");
-        a.label(&join);
-        a.ins("mov rbx, rax");
-        a.ins("mov rax, [rbx]");
         a.ins("jmp rax");
         a.label(&fp);
         a.ins("dec rdx");
@@ -1637,7 +1637,7 @@ impl X86_64 {
         a.ins("mov r10, [rbp + rcx]");
         a.ins("movq xmm4, r11");
         a.ins("movq xmm5, r10");
-        a.ins(&format!("jmp {join}"));
+        a.ins("jmp rax");
         // No results (below 1, from the compare above), or several.
         a.label(&other);
         a.ins(&format!("jb {pop}"));
