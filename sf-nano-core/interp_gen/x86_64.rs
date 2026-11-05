@@ -1614,12 +1614,12 @@ impl X86_64 {
         a.ins("mov r12, [rbp + rax]");
         a.ins("mov [rbp], r12");
         a.label(&pop);
-        a.ins("sub r9, 32"); // pop the return record
-        // The caller's continuation cell and its handler load first, so the
-        // dispatch target resolves alongside the remaining record and
-        // pinned-local reloads. Sentinel records point at the driver's
-        // readable exit cell and carry a readable dummy frame, so every
-        // load here is safe.
+        // Pop the return record. The caller's continuation cell and its
+        // handler load first, so the dispatch target resolves alongside the
+        // remaining record and pinned-local reloads. Sentinel records point
+        // at the driver's readable exit cell and carry a readable dummy
+        // frame, so every load here is safe.
+        a.ins("sub r9, 32");
         a.ins("mov rbx, [r9]"); // ret pc
         a.ins("mov rax, [rbx]");
         a.ins("mov rbp, [r9 + 8]"); // caller frame
