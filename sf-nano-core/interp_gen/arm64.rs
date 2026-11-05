@@ -78,6 +78,9 @@ pub struct Arm64 {
     pub apple_tuning: bool,
     /// Multi-cell handlers are omitted from exact dispatch-counting builds.
     pub superhandlers: bool,
+    /// Exact dispatch-counting build: the call stubs, which are not class
+    /// variants, count themselves only here.
+    pub counting: bool,
 }
 
 impl Arm64 {
@@ -705,9 +708,7 @@ impl Isa for Arm64 {
         //      b = callee_l1off<<48 | callee_l0off<<32 | fp<<31 | arg_base*8
         //      c = caller_l0off<<48 | frame_slots<<32 | n_locals<<16 | n_params
         a.label(&st.call);
-        // The counter is unconditional here: the call handler is not a
-        // class variant, so there is no per-variant predicate to consult.
-        a.ins("add x15, x15, #1");
+        self.bump(a, self.counting);
         a.ins("ldr x12, [x19, #24]");
         a.ins("ldr x11, [x19, #16]");
         a.ins("ldr x9, [x19, #8]");
@@ -746,29 +747,19 @@ impl Isa for Arm64 {
         a.ins("add x13, x20, x13, lsl #3");
         let zl = a.fresh("zl");
         let zdone = a.fresh("zdone");
-        if self.apple_tuning {
-            let zpair = a.fresh("zpair");
-            a.ins("cmp x10, x13");
-            a.ins(&format!("b.hs {zdone}"));
-            // Clear an odd leading slot, then write the even remainder two
-            // at a time. The zero-local fast path stays at two instructions.
-            a.ins("sub x16, x13, x10");
-            a.ins(&format!("tbz x16, #3, {zpair}"));
-            a.ins("str xzr, [x10], #8");
-            a.ins("cmp x10, x13");
-            a.ins(&format!("b.hs {zdone}"));
-            a.label(&zpair);
-            a.label(&zl);
-            a.ins("stp xzr, xzr, [x10], #16");
-            a.ins("cmp x10, x13");
-            a.ins(&format!("b.lo {zl}"));
-        } else {
-            a.label(&zl);
-            a.ins("cmp x10, x13");
-            a.ins(&format!("b.hs {zdone}"));
-            a.ins("str xzr, [x10], #8");
-            a.ins(&format!("b {zl}"));
-        }
+        a.ins("cmp x10, x13");
+        a.ins(&format!("b.hs {zdone}"));
+        // Clear an odd leading slot, then write the even remainder two at a
+        // time. The zero-local fast path stays at two instructions.
+        a.ins("sub x16, x13, x10");
+        a.ins(&format!("tbz x16, #3, {zl}"));
+        a.ins("str xzr, [x10], #8");
+        a.ins("cmp x10, x13");
+        a.ins(&format!("b.hs {zdone}"));
+        a.label(&zl);
+        a.ins("stp xzr, xzr, [x10], #16");
+        a.ins("cmp x10, x13");
+        a.ins(&format!("b.lo {zl}"));
         a.label(&zdone);
         a.ins("ubfx x13, x11, #32, #16"); // callee l0off
         a.ins("ldr x17, [x20, x13]");
@@ -800,7 +791,7 @@ impl Isa for Arm64 {
         // stub, which re-executes the cell and raises the proper trap or
         // routes the host call.
         a.label(&st.call_indirect);
-        a.ins("add x15, x15, #1");
+        self.bump(a, self.counting);
         a.ins("ldr x9, [x19, #8]");
         a.ins("ubfx x10, x9, #0, #32"); // index_slot*8
         a.ins("ldr x10, [x20, x10]"); // t (i32, zero-extended)

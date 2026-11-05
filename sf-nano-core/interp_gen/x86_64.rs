@@ -276,6 +276,9 @@ fn cvt_f2i_trap(op: Op) -> Option<(bool, bool, u64, u64)> {
 pub struct X86_64 {
     /// Win64 passes the argument in rcx and makes rdi/rsi callee-saved.
     pub windows: bool,
+    /// Exact dispatch-counting build: the call stubs, which are not class
+    /// variants, count themselves only here.
+    pub counting: bool,
 }
 
 impl X86_64 {
@@ -574,7 +577,7 @@ impl Isa for X86_64 {
 
         // ---- Call (wired by the cross-function fixup, not the table) ----
         a.label(&st.call);
-        self.bump(a, true);
+        self.bump(a, self.counting);
         a.ins("mov rdx, [rbx + 24]");
         a.ins("mov rcx, [rbx + 16]");
         a.ins("mov rax, [rbx + 8]");
@@ -610,22 +613,39 @@ impl Isa for X86_64 {
         a.ins("add rsi, 32");
         a.ins(&format!("mov [r15 + {S_RET_CURSOR}], rsi"));
         a.ins("mov rbp, r8");
-        // zero the fresh locals: [n_params*8, n_locals*8)
+        // The callee's first handler depends only on its cells address, not
+        // on frame initialization or the pinned-local reloads, so its load
+        // starts here and the final indirect jump does not wait on it. r9
+        // took its last caller value in the return record above.
+        a.ins("shl rax, 16");
+        a.ins("shr rax, 16"); // clean 48-bit cells address
+        a.ins("mov r9, rax");
+        a.ins("mov rax, [rax]");
+        // zero the fresh locals: [n_params*8, n_locals*8), two slots per
+        // iteration after an odd leading one. No fresh locals costs two
+        // instructions past the count.
         a.ins("movzx edi, dx"); // n_params
-        a.ins("lea rdi, [rbp + rdi*8]");
         a.ins("mov r8, rdx");
         a.ins("shr r8, 16");
         a.ins("movzx r8d, r8w"); // n_locals
-        a.ins("lea r8, [rbp + r8*8]");
-        a.ins("xor esi, esi");
+        a.ins("sub r8d, edi"); // fresh-local count
         let zl = a.fresh("zl");
         let zdone = a.fresh("zdone");
-        a.label(&zl);
-        a.ins("cmp rdi, r8");
-        a.ins(&format!("jae {zdone}"));
+        a.ins(&format!("jz {zdone}"));
+        a.ins("lea rdi, [rbp + rdi*8]");
+        a.ins("xor esi, esi");
+        a.ins("test r8b, 1");
+        a.ins(&format!("jz {zl}"));
         a.ins("mov [rdi], rsi");
         a.ins("add rdi, 8");
-        a.ins(&format!("jmp {zl}"));
+        a.ins("dec r8d");
+        a.ins(&format!("jz {zdone}"));
+        a.label(&zl);
+        a.ins("mov [rdi], rsi");
+        a.ins("mov [rdi + 8], rsi");
+        a.ins("add rdi, 16");
+        a.ins("sub r8d, 2");
+        a.ins(&format!("jnz {zl}"));
         a.label(&zdone);
         a.ins("mov rdi, rcx");
         a.ins("shr rdi, 32");
@@ -643,11 +663,7 @@ impl Isa for X86_64 {
         a.ins("test ecx, ecx");
         a.ins(&format!("js {fp}"));
         a.label(&cont);
-        a.ins("shl rax, 16");
-        a.ins("shr rax, 16"); // clean 48-bit cells address
-        a.ins("mov r9, rax");
-        a.ins("mov rbx, rax");
-        a.ins("mov rax, [rbx]");
+        a.ins("mov rbx, r9");
         a.ins("jmp rax");
         a.label(&fp);
         a.ins("movq xmm4, r11");
@@ -656,7 +672,7 @@ impl Isa for X86_64 {
 
         // ---- CallIndirect (wired by the fixup pass) ----
         a.label(&st.call_indirect);
-        self.bump(a, true);
+        self.bump(a, self.counting);
         a.ins("mov rsi, [rbx + 8]"); // cell a
         a.ins("mov eax, esi"); // index_slot*8
         a.ins("mov eax, [rbp + rax]"); // t, zero-extended by the 32-bit load

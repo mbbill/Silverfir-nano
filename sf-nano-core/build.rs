@@ -178,13 +178,16 @@ fn emit_interp_engine() {
     let backend = target_backend().expect("require_supported_isa ran first");
     let thumb = backend == TargetBackend::ThumbM
         || (backend == TargetBackend::Armv7a && env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some());
+    let counting = env::var_os("CARGO_FEATURE_INTERP_COUNT").is_some();
     let mut isa: Box<dyn Isa> = match backend {
         TargetBackend::Arm64 => Box::new(interp_gen::arm64::Arm64 {
             apple_tuning: apple_arm64_interp_tuning_enabled(),
             superhandlers: apple_arm64_interp_supers_enabled(),
+            counting,
         }),
         TargetBackend::X64 => Box::new(interp_gen::x86_64::X86_64 {
             windows: os == "windows",
+            counting,
         }),
         TargetBackend::Riscv64 => Box::new(interp_gen::riscv::RiscV {
             xlen: 64,
@@ -208,7 +211,6 @@ fn emit_interp_engine() {
             })
         }
     };
-    let counting = env::var_os("CARGO_FEATURE_INTERP_COUNT").is_some();
     let text = interp_gen::generate(&mut *isa, fmt, thumb, counting);
     let caps = isa.caps();
 
