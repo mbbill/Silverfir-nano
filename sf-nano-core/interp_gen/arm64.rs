@@ -646,6 +646,7 @@ impl Isa for Arm64 {
             float_pin_f32: true,
             native_calls: true,
             page_aligned_blob: true,
+            handler_line: None,
         }
     }
 

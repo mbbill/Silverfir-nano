@@ -332,6 +332,21 @@ fn stubs(a: &Asm) -> Stubs {
     }
 }
 
+/// Padding that keeps the handler between `label` and `end` inside one
+/// `1 << bits`-byte line when it fits in one, and adds nothing otherwise.
+/// The assembler resolves it at layout time from the handler's assembled
+/// size and its offset from the (line-aligned) blob base, so no handler
+/// size has to be known here. GNU-style comparisons yield -1 for true,
+/// hence the `& 1`.
+fn line_guard(base: &str, label: &str, end: &str, bits: u32) -> String {
+    let line = 1u32 << bits;
+    let mask = line - 1;
+    format!(
+        "\t.fill ((((((. - {base}) & {mask}) + ({end} - {label})) > {line}) \
+         & (({end} - {label}) <= {line})) & 1) * ({line} - ((. - {base}) & {mask})), 1, 0xcc"
+    )
+}
+
 /// Emit the whole engine for one backend. Returns the assembler source.
 pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> String {
     let caps = isa.caps();
@@ -399,8 +414,16 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
                     group.fused
                 );
                 let label = a.fresh("h");
+                let end = caps.handler_line.map(|bits| {
+                    let end = a.fresh("he");
+                    a.raw(&line_guard(&base, &label, &end, bits));
+                    end
+                });
                 a.label(&label);
                 isa.emit_handler(&mut a, &st, &v);
+                if let Some(end) = end {
+                    a.label(&end);
+                }
                 slot_label[slot] = Some(label);
             }
         }

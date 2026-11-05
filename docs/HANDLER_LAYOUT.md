@@ -38,6 +38,37 @@ and in the perf-CI runs of the `dev/probe-*`, `dev/pad-*` and
    cold family between two hot ones measured ~5% three separate times) —
    see the dispatch node's Items and Facts.
 
+## Line guard on x86-64 (2026-11-05, under evaluation)
+
+`Caps::handler_line` keeps every handler that fits in one 64-byte line
+inside a single line: an assembler-evaluated `.fill` before the handler
+pads to the next line exactly when the handler would otherwise straddle
+one, and adds nothing otherwise. x86-64 enables it; the other backends
+pack as before.
+
+This is not the per-handler alignment refuted in fact 4. That moved
+every handler to a new phase and left line crossings to chance; the
+guard removes one specific cost -- the second fetch on every entry into
+a straddling handler -- for all hot handlers at once. Before it, 4,713
+of 9,711 x86-64 handlers crossed a line; after it, none of those that
+fit do. Text cost: the handler region grows from 356 KB to 460 KB.
+
+Evidence, local Intel Xeon, same code shifted by 0-56 bytes of padding
+ahead of the handlers:
+
+- spectralnorm (wasmi rust-benchmarks): 128-154 ms unguarded, tracking
+  the number of its 19 hot handlers that cross a line (4-14);
+  113-115 ms guarded, at every shift.
+- counter-global: 1.71-2.29 ms unguarded, 1.68-1.78 ms guarded.
+- Wall time against the unguarded parent, 4 interleaved pairs:
+  c-ray +22%, coremark +15%, lua-fib +4.5%, lua-json +1.4%.
+
+Both CI-confirmed x86-64 regressions of 2026-11-05 (spectralnorm,
+counter-global) were placement draws of exactly this kind: identical
+instruction counts, and reproduced or cured by padding alone. Whether
+the guard holds on CI's Zen and Xeon runners is what its perf run
+measures; until then treat it as an experiment.
+
 ## The unstarted project: profile-guided handler placement
 
 The pinning above makes measurements reproducible; it deliberately does

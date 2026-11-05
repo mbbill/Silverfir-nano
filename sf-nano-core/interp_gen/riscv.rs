@@ -662,6 +662,7 @@ impl Isa for RiscV {
                 float_pin_f32: false,
                 native_calls: true,
                 page_aligned_blob: false,
+                handler_line: None,
             }
         } else {
             // One pinned local on RV32: a second would take a second
@@ -676,6 +677,7 @@ impl Isa for RiscV {
                 float_pin_f32: false,
                 native_calls: false,
                 page_aligned_blob: false,
+                handler_line: None,
             }
         }
     }

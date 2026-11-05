@@ -351,6 +351,7 @@ impl Isa for Arm32 {
             float_pin_f32: false,
             native_calls: false,
             page_aligned_blob: false,
+            handler_line: None,
         }
     }
 
