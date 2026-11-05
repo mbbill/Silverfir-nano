@@ -647,8 +647,12 @@ impl Isa for Arm64 {
             float_pin_f32: true,
             native_calls: true,
             page_aligned_blob: true,
-            // 0x00000000 is `udf #0`
-            handler_line: Some(HandlerLine { log2: 6, fill: 0 }),
+            // 0x00000000 is `udf #0`. Apple cores fetch through 128-byte
+            // lines; the others through 64-byte ones.
+            handler_line: Some(HandlerLine {
+                log2: if self.apple_tuning { 7 } else { 6 },
+                fill: 0,
+            }),
         }
     }
 

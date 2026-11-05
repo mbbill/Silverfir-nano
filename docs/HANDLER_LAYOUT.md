@@ -39,7 +39,7 @@ and in the perf-CI runs of the `dev/probe-*`, `dev/pad-*` and
    cold family between two hot ones measured ~5% three separate times) —
    see the dispatch node's Items and Facts.
 
-## Line guard (LANDED on x86-64 2026-11-05; arm64 under evaluation)
+## Line guard (LANDED on x86-64 and arm64-linux 2026-11-05; Apple under evaluation)
 
 `Caps::handler_line` keeps every handler that fits in one 64-byte line
 inside a single line: an assembler-evaluated `.fill` before the handler
@@ -75,6 +75,16 @@ Evidence on x86-64:
   lua-json +8.6%; x64-windows CoreMark +26.1%, lua-fib +24.8%,
   lz4-decompress +46.8%. The size of the gain depends on the CPU's
   front end: Zen-class runners gain most, the local Xeon least.
+
+Evidence on arm64, CI run 42012501097 (64-byte guard against none):
+Neoverse-N2 gained modestly with no regression (bzip2 +1.6%,
+funcref-exported-table +1.8%, lua-json +1.3%, wasmi fibonacci-rec
++2.0%, json_parse +3.0%). The Apple M1 runner went the other way
+(lua-fib -8.6% and lua-json -4.4% in the primary run, not reproduced by
+the cross-run confirmation; c-ray -6.2%, stream-Triad -17.1% as
+placement rows). Hypothesis, not yet verified: Apple cores fetch through
+128-byte lines, so a 64-byte guard only adds padding. Apple therefore
+guards 128-byte lines, which this section will confirm or drop.
 
 Both CI-confirmed x86-64 regressions of 2026-11-05 (spectralnorm,
 counter-global) were placement draws of exactly this kind: identical
