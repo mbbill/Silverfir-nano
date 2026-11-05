@@ -443,19 +443,56 @@ impl X86_64 {
     }
 
     /// Two-operand float ALU with the same aliasing care as [`Self::alu2`].
-    fn fp_bin(&self, a: &mut Asm, m: &str, w32: bool, dst: u32, va: u32, vb: u32) {
+    /// Float add, sub, mul or div, operands in wasm order. A right operand
+    /// in a slot or the cell is read as a memory operand, and a left one
+    /// in memory loads straight into the register the result is built
+    /// in: the destination, or xmm2 when the destination holds the right
+    /// operand and the left one is elsewhere.
+    fn fp_bin(&self, a: &mut Asm, v: &Variant, m: &str, w32: bool) {
         let sfx = if w32 { "ss" } else { "sd" };
-        let mov = if w32 { "movaps" } else { "movapd" };
-        if dst == vb && dst != va {
-            a.ins(&format!("{mov} xmm2, {}", xm(va)));
-            a.ins(&format!("{m}{sfx} xmm2, {}", xm(vb)));
-            a.ins(&format!("{mov} {}, xmm2", xm(dst)));
-            return;
+        let (mov, ld, width) = if w32 {
+            ("movaps", "movss", "dword")
+        } else {
+            ("movapd", "movsd", "qword")
+        };
+        let reg = |cls: Cls| match cls {
+            Cls::Acc => Some(FACC),
+            Cls::L0 => Some(FL0R),
+            Cls::L1 => Some(FL1R),
+            Cls::Slot | Cls::Const => None,
+        };
+        let (ra, rb) = (reg(v.a), reg(v.b));
+        let dst = self.fp_target(v.d);
+        let rhs = match (v.b, rb) {
+            (_, Some(r)) => xm(r).to_string(),
+            (Cls::Slot, _) => {
+                a.ins("mov rcx, [rbx + 16]");
+                format!("{width} ptr [rbp + rcx]")
+            }
+            _ => format!("{width} ptr [rbx + 16]"),
+        };
+        let work = if rb == Some(dst) && ra != Some(dst) {
+            2
+        } else {
+            dst
+        };
+        match (v.a, ra) {
+            (_, Some(r)) => {
+                if r != work {
+                    a.ins(&format!("{mov} {}, {}", xm(work), xm(r)));
+                }
+            }
+            (Cls::Slot, _) => {
+                a.ins("mov rax, [rbx + 8]");
+                a.ins(&format!("{ld} {}, [rbp + rax]", xm(work)));
+            }
+            _ => a.ins(&format!("{ld} {}, [rbx + 8]", xm(work))),
         }
-        if dst != va {
-            a.ins(&format!("{mov} {}, {}", xm(dst), xm(va)));
+        a.ins(&format!("{m}{sfx} {}, {rhs}", xm(work)));
+        if work != dst {
+            a.ins(&format!("{mov} {}, {}", xm(dst), xm(work)));
         }
-        a.ins(&format!("{m}{sfx} {}, {}", xm(dst), xm(vb)));
+        self.finish_fp(a, v.d, w32);
     }
 
     /// wasm `min`/`max`: NaN in either operand yields a quiet NaN, and
@@ -1221,9 +1258,7 @@ impl Isa for X86_64 {
                 } else if mem_kind(v.op).is_some() {
                     self.emit_mem(a, st, v);
                 } else if let Some((m, w32)) = float_bin(v.op) {
-                    let (va, vb) = self.src_fp_ab(a, v.a, v.b, w32);
-                    self.fp_bin(a, m, w32, self.fp_target(dc), va, vb);
-                    self.finish_fp(a, dc, w32);
+                    self.fp_bin(a, v, m, w32);
                 } else if let Some((cond, w32, swap, parity)) = float_cmp(v.op) {
                     let (va, vb) = self.src_fp_ab(a, v.a, v.b, w32);
                     let cmp = if w32 { "ucomiss" } else { "ucomisd" };
