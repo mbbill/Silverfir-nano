@@ -7448,6 +7448,24 @@ mod tests {
     }
 
     #[test]
+    fn self_tail_call_rezeroes_the_locals_its_activation_reads_unwritten() {
+        // `$acc` is read before it is written, so every activation of `$f`,
+        // including each one a self tail call starts in place, sees it zero;
+        // `$tmp` is written first and is never zeroed. A tail call that kept
+        // `$acc` would return 15.
+        let src = r#"(module
+            (func $f (param $n i32) (result i64) (local $acc i64) (local $tmp i64)
+                i64.const 3 local.set $tmp
+                local.get $n i32.eqz
+                if local.get $acc return end
+                local.get $acc local.get $tmp i64.add local.set $acc
+                local.get $n i32.const 1 i32.sub
+                return_call $f)
+            (func (export "run") (result i64) i32.const 5 call $f))"#;
+        assert_eq!(run1(src, "run", &[]).unwrap(), 0);
+    }
+
+    #[test]
     fn reference_slot_encoding_round_trips_function_range_endpoints() {
         for encoded in [0, crate::vm::value::FUNCADDR_TOP] {
             let handle = RefValue::new(encoded);
