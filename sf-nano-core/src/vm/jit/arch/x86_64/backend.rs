@@ -269,14 +269,16 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.core
     }
 
-    /// 32-byte-align loop headers so a loop body of up to 32 bytes never
-    /// straddles a 32- or 64-byte fetch line: a straddled two-instruction
-    /// loop measured 2 cycles per iteration where the aligned form sustains
-    /// 1, and a 29-byte loop placed across a 64-byte line ran 60% slower
-    /// than the same loop inside one. Padding executes only on fallthrough
+    /// 64-byte-align loop headers, so a loop occupies the fewest 64-byte
+    /// fetch lines its size allows: a straddled two-instruction loop
+    /// measured 2 cycles per iteration where the aligned form sustains 1,
+    /// a 29-byte loop placed across a 64-byte line ran 60% slower than the
+    /// same loop inside one, and stream's 97-byte Add loop started at byte
+    /// 32 of a line spans three lines and ran 21% slower on EPYC 7763 than
+    /// the same code spanning two. Padding executes only on fallthrough
     /// entry, as a few multi-byte NOPs.
     fn align_loop_header(&mut self) {
-        self.pad_to_runtime_alignment(32);
+        self.pad_to_runtime_alignment(64);
     }
 
     /// A recursive call target measured the same way: fibonacci-rec ran
