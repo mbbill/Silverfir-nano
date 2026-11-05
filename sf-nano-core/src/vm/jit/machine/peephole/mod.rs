@@ -39,7 +39,6 @@ mod copy_propagate;
 mod deduplicate_constants;
 mod eliminate_dead_params;
 mod eliminate_overwritten_frame_stores;
-mod fold_add_chains;
 mod fold_induction_offsets;
 mod forward_edge_stored_values;
 mod forward_stored_values;
@@ -74,7 +73,6 @@ struct BlockFeatures {
     store_count: usize,
     has_move: bool,
     has_address_add: bool,
-    add_sub_count: usize,
     may_fuse_isel: bool,
     has_bitwise: bool,
 }
@@ -91,10 +89,6 @@ impl BlockFeatures {
                     MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor
                 );
                 self.has_address_add |= *op == MachineIntBinaryOp::Add;
-                self.add_sub_count += usize::from(matches!(
-                    op,
-                    MachineIntBinaryOp::Add | MachineIntBinaryOp::Sub
-                ));
                 self.may_fuse_isel |= matches!(
                     op,
                     MachineIntBinaryOp::And
@@ -196,9 +190,6 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     if features.has_move || may_forward_store || may_reuse_load {
         copy_propagate::copy_propagate(block, ctx.config, &mut ctx.cp_scratch);
     }
-    if features.add_sub_count > 1 {
-        fold_add_chains::fold_add_chains(block);
-    }
     // Copy propagation can make previously distinct address bases or stored
     // values identical. Re-run forwarding so those newly exposed store/load
     // pairs do not survive into code emission.
@@ -259,7 +250,6 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
             &mut ctx.tracked_loads,
         );
         copy_propagate::copy_propagate(&mut unconditional_oracle, ctx.config, &mut ctx.cp_scratch);
-        fold_add_chains::fold_add_chains(&mut unconditional_oracle);
         forward_stored_values::forward_stored_values(
             &mut unconditional_oracle,
             ctx.config,
