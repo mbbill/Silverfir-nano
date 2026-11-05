@@ -741,9 +741,7 @@ impl Isa for X86_64 {
         a.ins("mov rcx, [rbx + 16]"); // cell b
         a.ins("mov rax, [rdx + 8]"); // l1off<<48 | l0off<<32 | canon
         a.ins("mov edi, eax"); // canonical actual
-        a.ins("mov r8, rcx");
-        a.ins("shr r8, 32");
-        a.ins("movzx r8d, r8w"); // canonical expected
+        a.ins("movzx r8d, word ptr [rbx + 20]"); // canonical expected, b bits 32..48
         a.ins("cmp rdi, r8");
         a.ins(&format!("jne {}", st.slow)); // type mismatch
         a.ins("mov r8, [rdx]"); // callee cells | fp flag (0 = slow)
@@ -964,8 +962,8 @@ impl Isa for X86_64 {
             }
             MovPair => {
                 // Strictly ordered: commit dst1 (including its pinned
-                // register, when present) before reading src2.
-                a.ins("mov rdx, [rbx + 24]"); // dst1*8 << 32 | dst2*8
+                // register, when present) before reading src2. c packs
+                // dst1*8 << 32 | dst2*8; each half loads as its own dword.
                 let v1 = match v.a {
                     Cls::L0 => L0R,
                     Cls::L1 => L1R,
@@ -975,8 +973,7 @@ impl Isa for X86_64 {
                         RAX
                     }
                 };
-                a.ins("mov rsi, rdx");
-                a.ins("shr rsi, 32");
+                a.ins("mov esi, [rbx + 28]"); // dst1*8
                 a.ins(&format!("mov [rbp + rsi], {}", q(v1)));
                 let d1 = match v.pair_d.first() {
                     None => None,
@@ -1001,7 +998,7 @@ impl Isa for X86_64 {
                 if v2 != ACC {
                     a.ins(&format!("mov {}, {}", q(ACC), q(v2)));
                 }
-                a.ins("mov edx, edx");
+                a.ins("mov edx, [rbx + 24]"); // dst2*8
                 a.ins(&format!("mov [rbp + rdx], {}", q(ACC)));
                 let d2 = match v.pair_d.second() {
                     None => None,
@@ -1017,9 +1014,8 @@ impl Isa for X86_64 {
             }
             Select => {
                 let (ra, rb) = self.src_ab(a, v.a, v.b);
-                a.ins("mov rdx, [rbx + 24]");
-                a.ins("mov rsi, rdx");
-                a.ins("shr rsi, 32"); // cond slot byte offset
+                // c packs cond*8 << 32 | dst*8.
+                a.ins("mov esi, [rbx + 28]"); // cond slot byte offset
                 a.ins("mov rsi, [rbp + rsi]");
                 let rd = self.dst_target(dc);
                 // Build in rsi so an alias between rd and either operand
@@ -1029,7 +1025,7 @@ impl Isa for X86_64 {
                 a.ins(&format!("cmovne {}, {}", q(R8), q(ra)));
                 a.ins(&format!("mov {}, {}", q(rd), q(R8)));
                 if dc != DstCls::Acc {
-                    a.ins("mov edx, edx"); // dst slot byte offset
+                    a.ins("mov edx, [rbx + 24]"); // dst slot byte offset
                     a.ins(&format!("mov [rbp + rdx], {}", q(rd)));
                 }
             }
@@ -1514,11 +1510,9 @@ impl X86_64 {
             // corpus-universal base+index pattern folded into one
             // dispatch. addr2 always comes from its slot, packed in c's
             // high half.
-            a.ins("mov rsi, [rbx + 24]");
-            a.ins("mov r8, rsi");
-            a.ins("shr r8, 32");
+            a.ins("mov r8d, [rbx + 28]"); // addr2 slot byte offset
             a.ins("add ecx, [rbp + r8]"); // wrapping i32 sum with addr2
-            a.ins("mov esi, esi"); // load: dst byte offset; store: static offset
+            a.ins("mov esi, [rbx + 24]"); // load: dst byte offset; store: static offset
             if load {
                 a.ins("add rcx, [rbx + 16]"); // ea, static offset in b
             } else {
