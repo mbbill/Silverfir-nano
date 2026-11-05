@@ -357,6 +357,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         path: "float_bin_operands.wast",
         content: include_str!("../tests/float_bin_operands.wast"),
     });
+    wast_inputs.push(WastInput::Embedded {
+        path: "int_bin_operands.wast",
+        content: include_str!("../tests/int_bin_operands.wast"),
+    });
     wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
     info!("Found {} WAST files", wast_inputs.len());
 

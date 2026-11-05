@@ -323,15 +323,80 @@ impl X86_64 {
         (self.src(a, ac, 8, RAX), self.src(a, bc, 16, RCX))
     }
 
-    /// The second source as an instruction operand. A constant stays in
-    /// its cell word and is read as a memory operand, which saves the
-    /// scratch load; anything else materializes into a register first.
-    fn src_b_operand(&self, a: &mut Asm, bc: Cls, w32: bool) -> String {
-        if bc == Cls::Const {
-            format!("{} ptr [rbx + 16]", if w32 { "dword" } else { "qword" })
-        } else {
-            r(w32, self.src(a, bc, 16, RCX)).to_string()
+    /// The register an operand class lives in, if any.
+    fn reg_of(cls: Cls) -> Option<u32> {
+        match cls {
+            Cls::Acc => Some(ACC),
+            Cls::L0 => Some(L0R),
+            Cls::L1 => Some(L1R),
+            Cls::Slot | Cls::Const => None,
         }
+    }
+
+    /// A source as an instruction operand. Register classes name their
+    /// register; a constant stays in its cell word and a slot in the frame,
+    /// both read as a memory operand, which saves a scratch load. `field` is
+    /// the cell word holding the constant or slot offset, and a slot's
+    /// offset loads into `tmp`.
+    fn src_operand(&self, a: &mut Asm, cls: Cls, w32: bool, field: u32, tmp: u32) -> String {
+        let width = if w32 { "dword" } else { "qword" };
+        match cls {
+            Cls::Const => format!("{width} ptr [rbx + {field}]"),
+            Cls::Slot => {
+                a.ins(&format!("mov {}, [rbx + {field}]", q(tmp)));
+                format!("{width} ptr [rbp + {}]", q(tmp))
+            }
+            _ => r(w32, Self::reg_of(cls).unwrap()).to_string(),
+        }
+    }
+
+    /// Both sources of a compare, at most one of them in memory: when both
+    /// are, the left one loads into rax first.
+    fn cmp_operands(&self, a: &mut Asm, v: &Variant, w32: bool) -> (String, String) {
+        if v.a.is_reg() || v.b.is_reg() {
+            (
+                self.src_operand(a, v.a, w32, 8, RAX),
+                self.src_operand(a, v.b, w32, 16, RCX),
+            )
+        } else {
+            let ra = self.src(a, v.a, 8, RAX);
+            (
+                r(w32, ra).to_string(),
+                self.src_operand(a, v.b, w32, 16, RCX),
+            )
+        }
+    }
+
+    /// A two-operand integer ALU op, operands in wasm order. The left
+    /// operand loads straight into the result register, and the right one
+    /// is read in place: a register, or a memory operand for a slot or a
+    /// constant. When the result register holds the right operand, a
+    /// commutative op takes the left operand as its source instead, and any
+    /// other builds in rsi.
+    fn int_alu(&self, a: &mut Asm, v: &Variant, m: &str, w32: bool, commutative: bool) {
+        let rd = self.dst_target(v.d);
+        let (ra, rb) = (Self::reg_of(v.a), Self::reg_of(v.b));
+        if rb == Some(rd) && ra != Some(rd) {
+            if commutative {
+                let lhs = self.src_operand(a, v.a, w32, 8, RAX);
+                a.ins(&format!("{m} {}, {lhs}", r(w32, rd)));
+            } else {
+                let sa = self.src(a, v.a, 8, RSI);
+                if sa != RSI {
+                    a.ins(&format!("mov {}, {}", q(RSI), q(sa)));
+                }
+                a.ins(&format!("{m} {}, {}", r(w32, RSI), r(w32, rd)));
+                a.ins(&format!("mov {}, {}", q(rd), q(RSI)));
+            }
+        } else {
+            let sa = self.src(a, v.a, 8, rd);
+            if sa != rd {
+                a.ins(&format!("mov {}, {}", q(rd), q(sa)));
+            }
+            let rhs = self.src_operand(a, v.b, w32, 16, RCX);
+            a.ins(&format!("{m} {}, {rhs}", r(w32, rd)));
+        }
+        self.finish(a, v.d, rd);
     }
 
     fn dst_target(&self, dc: DstCls) -> u32 {
@@ -347,26 +412,6 @@ impl X86_64 {
             a.ins("mov rdx, [rbx + 24]");
             a.ins(&format!("mov [rbp + rdx], {}", q(src)));
         }
-    }
-
-    /// Two-operand ALU with the aliasing cases spelled out: x86 destroys
-    /// its destination, so `dst == rb` needs either commutativity or a
-    /// scratch round trip.
-    fn alu2(&self, a: &mut Asm, m: &str, w32: bool, dst: u32, ra: u32, rb: u32, commutative: bool) {
-        if dst == rb && dst != ra {
-            if commutative {
-                a.ins(&format!("{m} {}, {}", r(w32, dst), r(w32, ra)));
-            } else {
-                a.ins(&format!("mov {}, {}", q(RSI), q(ra)));
-                a.ins(&format!("{m} {}, {}", r(w32, RSI), r(w32, rb)));
-                a.ins(&format!("mov {}, {}", q(dst), q(RSI)));
-            }
-            return;
-        }
-        if dst != ra {
-            a.ins(&format!("mov {}, {}", q(dst), q(ra)));
-        }
-        a.ins(&format!("{m} {}, {}", r(w32, dst), r(w32, rb)));
     }
 
     /// Variable shifts and rotates take their count in `cl` only.
@@ -920,12 +965,17 @@ impl Isa for X86_64 {
             self.pre(a);
             a.ins("mov rdx, [rbx + 24]");
             a.ins("mov rsi, [rdx]");
-            let ra = self.src(a, v.a, 8, RAX);
-            let rb = self.src_b_operand(a, v.b, w32);
+            let (lhs, rhs) = self.cmp_operands(a, v, w32);
             if matches!(v.op, I32_BrAnd | I32_BrAndNot) {
-                a.ins(&format!("test {rb}, {}", d(ra)));
+                // `test` takes a memory operand only first; it is
+                // symmetric, so put whichever operand is in memory there.
+                if lhs.contains('[') {
+                    a.ins(&format!("test {lhs}, {rhs}"));
+                } else {
+                    a.ins(&format!("test {rhs}, {lhs}"));
+                }
             } else {
-                a.ins(&format!("cmp {}, {rb}", r(w32, ra)));
+                a.ins(&format!("cmp {lhs}, {rhs}"));
             }
             let nt = a.fresh("nt");
             a.ins(&format!("j{} {nt}", inv(cond)));
@@ -1222,31 +1272,18 @@ impl Isa for X86_64 {
                 self.finish_fp(a, dc, to32);
             }
             _ => {
-                if let Some((m, w32, _, false)) = int_bin(v.op).filter(|_| v.b == Cls::Const) {
-                    // A constant right operand is read from the cell, and
-                    // a slot left operand loads straight into the result
-                    // register: nothing else is live in it.
-                    let rd = self.dst_target(dc);
-                    let ra = self.src(a, v.a, 8, rd);
-                    if rd != ra {
-                        a.ins(&format!("mov {}, {}", q(rd), q(ra)));
-                    }
-                    let rb = self.src_b_operand(a, v.b, w32);
-                    a.ins(&format!("{m} {}, {rb}", r(w32, rd)));
-                    self.finish(a, dc, rd);
-                } else if let Some((m, w32, commutative, cl)) = int_bin(v.op) {
-                    let (ra, rb) = self.src_ab(a, v.a, v.b);
-                    let rd = self.dst_target(dc);
+                if let Some((m, w32, commutative, cl)) = int_bin(v.op) {
                     if cl {
+                        let (ra, rb) = self.src_ab(a, v.a, v.b);
+                        let rd = self.dst_target(dc);
                         self.shift(a, m, w32, rd, ra, rb);
+                        self.finish(a, dc, rd);
                     } else {
-                        self.alu2(a, m, w32, rd, ra, rb, commutative);
+                        self.int_alu(a, v, m, w32, commutative);
                     }
-                    self.finish(a, dc, rd);
                 } else if let Some((cond, w32)) = int_cmp(v.op) {
-                    let ra = self.src(a, v.a, 8, RAX);
-                    let rb = self.src_b_operand(a, v.b, w32);
-                    a.ins(&format!("cmp {}, {rb}", r(w32, ra)));
+                    let (lhs, rhs) = self.cmp_operands(a, v, w32);
+                    a.ins(&format!("cmp {lhs}, {rhs}"));
                     let rd = self.dst_target(dc);
                     a.ins(&format!("set{cond} {}", b8(rd)));
                     a.ins(&format!("movzx {}, {}", d(rd), b8(rd)));
