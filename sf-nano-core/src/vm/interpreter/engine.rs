@@ -822,6 +822,19 @@ impl PinCensus {
                 slot.count += 1;
                 slot.wdom |= 1;
             }
+            if ins.op == Op::Return && ins.a < n {
+                // A single local returned from its own slot stands in for
+                // the staging copy it replaces; count that copy's read so
+                // pin selection matches the staged form.
+                let slot = &mut self.slots[ins.a as usize];
+                slot.count += 1;
+                if operand_is_float(Op::MovSlot, false) {
+                    slot.rdom |= 2;
+                    slot.f32dom |= operand_is_f32(Op::MovSlot, false);
+                } else {
+                    slot.rdom |= 1;
+                }
+            }
             if ins.op == Op::Select {
                 let dslot = ins.c & 0xffff_ffff;
                 if dslot < n {

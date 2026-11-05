@@ -1174,6 +1174,15 @@ fn update_pin_census(locals: &mut [LocalState], ins: Instr, add: bool) {
     if matches!(ins.op, Op::I32_SubBrIf | Op::I64_SubBrIf) && ins.a < n {
         census_write(locals, ins.a, false, false, true, add);
     }
+    if ins.op == Op::Return && ins.a < n {
+        census_read(
+            locals,
+            ins.a,
+            operand_is_float(Op::MovSlot, false),
+            operand_is_f32(Op::MovSlot, false),
+            add,
+        );
+    }
     if ins.op == Op::Select {
         let dst = ins.c & 0xffff_ffff;
         if dst < n {
@@ -5375,6 +5384,11 @@ mod tests {
         // The result is local $a (slot 1), returned from its own slot.
         let ret = f.code[7];
         assert_eq!((ret.a, ret.b), (1, 1));
+        // Returning $a in place must not change which locals are pinned:
+        // the census counts the read the removed staging copy made, so the
+        // loop keeps $a and $b in registers as the staged form did.
+        let pin = f.pinned();
+        assert_eq!((pin.l0, pin.l1), (1, 2));
         assert!(f.code.iter().all(|ins| ins.op != Op::I64_Ne));
     }
 
