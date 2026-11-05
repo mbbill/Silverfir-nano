@@ -2454,6 +2454,24 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         Some(fusion)
     }
 
+    /// Return the function's results from the top of the stack.
+    ///
+    /// `Return` copies its results from whatever slot `a` names, so a single
+    /// result that is still a pending `local.get` returns straight from the
+    /// local's own slot instead of first being staged in a temp. Values
+    /// below the results are discarded and need no staging either.
+    fn return_stack_results(&mut self) {
+        if self.n_results == 1 {
+            if let Some(&Desc::Local(local)) = self.stack.last() {
+                let at = self.emit(Op::Return, 0, local as u64, 1, 0);
+                self.locals[local as usize].last_read = at + 1;
+                return;
+            }
+        }
+        self.materialize_all();
+        self.emit_return();
+    }
+
     fn emit_return(&mut self) {
         let r = self.n_results;
         let base = self.height().saturating_sub(r);
@@ -3727,30 +3745,27 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     self.push_unknown_temps(params);
                     self.bump_region();
                 }
-                Opcode::END => {
-                    self.materialize_all();
-                    let f = self.frames.pop();
-                    match f {
-                        Some(f) => {
-                            if self.height() != f.base + f.results {
-                                return Err(desync());
-                            }
-                            if let Some(fx) = f.else_fixup {
-                                self.patch_instr_to_here(fx);
-                            }
-                            self.patch_fixups_to_here(&f.fixups);
-                            // Fell through live; code after a live end is live.
-                            self.bump_region();
+                Opcode::END => match self.frames.pop() {
+                    Some(f) => {
+                        self.materialize_all();
+                        if self.height() != f.base + f.results {
+                            return Err(desync());
                         }
-                        None => {
-                            // Function-level end: implicit return.
-                            if self.height() != self.n_results {
-                                return Err(desync());
-                            }
-                            self.emit_return();
+                        if let Some(fx) = f.else_fixup {
+                            self.patch_instr_to_here(fx);
                         }
+                        self.patch_fixups_to_here(&f.fixups);
+                        // Fell through live; code after a live end is live.
+                        self.bump_region();
                     }
-                }
+                    None => {
+                        // Function-level end: implicit return.
+                        if self.height() != self.n_results {
+                            return Err(desync());
+                        }
+                        self.return_stack_results();
+                    }
+                },
                 Opcode::BR => {
                     let d = match *imm {
                         Immediate::LabelIndex(d) => d,
@@ -3868,8 +3883,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     self.bump_region();
                 }
                 Opcode::RETURN => {
-                    self.materialize_all();
-                    self.emit_return();
+                    self.return_stack_results();
                     self.bump_region();
                     self.dead = true;
                 }
@@ -5306,10 +5320,13 @@ mod tests {
             0,
         );
 
-        assert_eq!(ops(&f), [Op::I64_SubBrIf, Op::MovSlot, Op::Return]);
+        // The result is local $n itself: Return reads its slot directly.
+        assert_eq!(ops(&f), [Op::I64_SubBrIf, Op::Return]);
         let hot = f.code[0];
         assert_eq!(hot.flags, FLAG_B_CONST);
         assert_eq!((hot.a, hot.b, hot.c), (0, 1, 0));
+        let ret = f.code[1];
+        assert_eq!((ret.a, ret.b), (0, 1));
         assert!(f.code.iter().all(|ins| ins.op != Op::I64_Ne));
     }
 
@@ -5347,7 +5364,6 @@ mod tests {
                 Op::I64_Add,
                 Op::MovPair,
                 Op::I64_SubBrIf,
-                Op::MovSlot,
                 Op::Return,
             ]
         );
@@ -5356,6 +5372,9 @@ mod tests {
         let hot = f.code[6];
         assert_eq!(hot.flags, FLAG_B_CONST);
         assert_eq!((hot.a, hot.b, hot.c), (3, 1, 4));
+        // The result is local $a (slot 1), returned from its own slot.
+        let ret = f.code[7];
+        assert_eq!((ret.a, ret.b), (1, 1));
         assert!(f.code.iter().all(|ins| ins.op != Op::I64_Ne));
     }
 
