@@ -1457,27 +1457,23 @@ impl X86_64 {
         let dc = v.d;
         // The address is an i32. Reading it as a 32-bit value is what
         // makes the bounds check independent of the slot zero-extension
-        // convention rather than dependent on it.
-        let addr = match v.a {
+        // convention rather than dependent on it. It lands in ecx, where
+        // the effective address is built.
+        match v.a {
             Cls::Slot => {
                 a.ins("mov rax, [rbx + 8]");
-                a.ins("mov eax, [rbp + rax]");
-                RAX
+                a.ins("mov ecx, [rbp + rax]");
             }
-            Cls::Const => {
-                a.ins("mov eax, [rbx + 8]");
-                RAX
-            }
+            Cls::Const => a.ins("mov ecx, [rbx + 8]"),
             Cls::Acc | Cls::L0 | Cls::L1 => {
                 let s = match v.a {
                     Cls::Acc => ACC,
                     Cls::L0 => L0R,
                     _ => L1R,
                 };
-                a.ins(&format!("mov eax, {}", d(s)));
-                RAX
+                a.ins(&format!("mov ecx, {}", d(s)));
             }
-        };
+        }
         if v.fused {
             // ea = zext32(addr1 + addr2) + static offset — the
             // corpus-universal base+index pattern folded into one
@@ -1486,19 +1482,16 @@ impl X86_64 {
             a.ins("mov rsi, [rbx + 24]");
             a.ins("mov r8, rsi");
             a.ins("shr r8, 32");
-            a.ins("mov r8d, [rbp + r8]"); // addr2
-            a.ins(&format!("add {}, r8d", d(addr))); // wrapping i32 sum
+            a.ins("add ecx, [rbp + r8]"); // wrapping i32 sum with addr2
+            a.ins("mov esi, esi"); // load: dst byte offset; store: static offset
             if load {
-                a.ins("mov esi, esi"); // dst byte offset
-                a.ins("mov rcx, [rbx + 16]"); // static offset
+                a.ins("add rcx, [rbx + 16]"); // ea, static offset in b
             } else {
-                a.ins("mov esi, esi"); // static offset
-                a.ins("mov rcx, rsi");
+                a.ins("add rcx, rsi"); // ea
             }
-            a.ins(&format!("add rcx, {}", q(addr))); // ea
         } else {
-            a.ins(&format!("mov rcx, [rbx + {}]", if load { 16 } else { 24 }));
-            a.ins(&format!("add rcx, {}", q(addr))); // ea = offset + zext(addr)
+            // ea = zext(addr) + offset
+            a.ins(&format!("add rcx, [rbx + {}]", if load { 16 } else { 24 }));
         }
         a.ins(&format!("lea rdx, [rcx + {size}]"));
         a.ins("cmp rdx, r13");
