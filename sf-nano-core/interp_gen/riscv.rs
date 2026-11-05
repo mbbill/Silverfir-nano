@@ -1767,15 +1767,12 @@ impl RiscV {
         a.ins(&format!("slli {T2}, {T2}, 3"));
         a.ins(&format!("add {T2}, {T1}, {T2}"));
         self.br_far(a, "bltu", STKLIM, T2, &st.trap_exhaust);
-        // push (ret_pc, caller frame, caller_l0off, caller_l1off)
+        // push (ret_pc, caller frame); `Return` reads the caller's pinned
+        // offsets back out of this call cell, the one before ret_pc
         a.ins(&format!("addi {T3}, {PC}, 32"));
         a.ins(&format!("sd {T3}, 0({RETSP})"));
         a.ins(&format!("sd {FRAME}, 8({RETSP})"));
-        a.ins(&format!("srli {T3}, {T6}, 48"));
-        a.ins(&format!("sd {T3}, 16({RETSP})"));
-        a.ins(&format!("srli {T3}, {A2}, 48"));
-        a.ins(&format!("sd {T3}, 24({RETSP})"));
-        a.ins(&format!("addi {RETSP}, {RETSP}, 32"));
+        a.ins(&format!("addi {RETSP}, {RETSP}, 16"));
         a.ins(&format!("mv {FRAME}, {T1}"));
         // zero the fresh locals: [zero_start*8, zero_end*8)
         a.ins(&format!("slli {T1}, {T6}, 48"));
@@ -1871,14 +1868,12 @@ impl RiscV {
         self.br_far(a, "bne", T3, T4, &st.slow);
         a.ins(&format!("ld {T6}, 0({T5})")); // callee cells | fp flag
         self.br_far(a, "beq", T6, "zero", &st.slow);
-        a.ins(&format!("ld {T5}, 16({T5})")); // frame metadata
-                                              // compose the call_core inputs
+        // Load the frame metadata, then compose the call_core inputs. The
+        // caller's pinned offsets stay in this cell for `Return` to read.
+        a.ins(&format!("ld {T5}, 16({T5})"));
         a.ins(&format!("andi {T4}, {T6}, 1")); // callee fp flag
         a.ins(&format!("srli {T6}, {T6}, 5"));
-        a.ins(&format!("slli {T6}, {T6}, 5")); // clean cells address
-        a.ins(&format!("srli {T3}, {T1}, 48")); // caller l1off
-        a.ins(&format!("slli {T3}, {T3}, 48"));
-        a.ins(&format!("or {T1}, {T6}, {T3}")); // a-equiv (staged in t1)
+        a.ins(&format!("slli {T1}, {T6}, 5")); // a-equiv: clean cells address (staged in t1)
         a.ins(&format!("srli {T3}, {A3}, 32"));
         a.ins(&format!("slli {A3}, {T3}, 32")); // callee l0/l1, canon cleared
         a.ins(&format!("slli {T3}, {A2}, 32"));
@@ -1886,9 +1881,7 @@ impl RiscV {
         a.ins(&format!("or {A3}, {A3}, {T3}"));
         a.ins(&format!("slli {T4}, {T4}, 31"));
         a.ins(&format!("or {A3}, {A3}, {T4}")); // b-equiv
-        a.ins(&format!("srli {T3}, {A2}, 48"));
-        a.ins(&format!("slli {T3}, {T3}, 48")); // caller l0off
-        a.ins(&format!("or {T6}, {T3}, {T5}")); // c-equiv
+        a.ins(&format!("mv {T6}, {T5}")); // c-equiv
         a.ins(&format!("mv {A2}, {T1}")); // a-equiv into place
         a.ins(&format!("j {}", st.call_core));
     }
@@ -1921,17 +1914,19 @@ impl RiscV {
         a.ins(&format!("addi {T2}, {T2}, -1"));
         a.ins(&format!("bne {T2}, zero, {cl}"));
         a.label(&pop);
-        a.ins(&format!("addi {RETSP}, {RETSP}, -32"));
-        a.ins(&format!("{lp} {T1}, 0({RETSP})")); // ret pc
+        a.ins(&format!("addi {RETSP}, {RETSP}, -16"));
+        // The record holds (ret pc, caller frame). The call cell before ret
+        // pc keeps the caller's pinned offsets in the top 16 bits of its c
+        // and a words.
+        a.ins(&format!("{lp} {T1}, 0({RETSP})"));
         a.ins(&format!("{lp} {FRAME}, 8({RETSP})"));
-        a.ins(&format!("{lp} {T3}, 24({RETSP})")); // caller l1off
-                                                   // The record's third word is the caller's l0 offset, bit 0 = fp; a
-                                                   // 64-bit word whose low half RV32 reads.
-        a.ins(&format!("{lp} {T2}, 16({RETSP})"));
+        a.ins(&format!("lhu {T3}, -18({T1})")); // caller l1off
+        a.ins(&format!("lhu {T2}, -2({T1})")); // caller l0off, bit 0 = fp
         let join = a.fresh("retjoin");
-        // Sentinel records carry a readable dummy frame, so these loads are
-        // always safe. The caller's float-pinned flag rides bit 0 of its
-        // recorded l0 offset (offsets are byte-scaled, so bit 0 is free).
+        // Sentinel records point at the driver's exit cell, behind an
+        // all-zero stand-in call cell, and carry a readable dummy frame, so
+        // these loads are always safe. The caller's float-pinned flag rides
+        // bit 0 of its l0 offset (offsets are byte-scaled, so bit 0 is free).
         if self.fp {
             let fp = a.fresh("retfp");
             a.ins(&format!("andi {T4}, {T2}, 1"));

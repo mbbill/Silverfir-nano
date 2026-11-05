@@ -67,11 +67,13 @@ pub(super) const EXIT_TRAP_BASE: u64 = 16;
 /// match `exec_ins` exactly (differential and spectest parity).
 pub(super) const TRAP_KINDS: &[&str] = &["out of bounds memory access", "call stack exhausted"];
 
-/// Bytes per native return-stack record:
-/// `(ret_pc, frame, caller_l0off, caller_l1off)`. Bit 0 of the l0 offset is
-/// the caller's float-pinned flag (offsets are byte-scaled, so it is free).
-/// Rust plants only sentinels, all four words zero but readable.
-pub(super) const RET_RECORD: usize = 32;
+/// Bytes per native return-stack record: `(ret_pc, frame)`. A native
+/// `Return` reads the caller's pinned-local offsets from the call cell just
+/// before `ret_pc`: the top 16 bits of its c word hold the l0 offset (bit 0
+/// the caller's float-pinned flag; offsets are byte-scaled, so it is free)
+/// and those of its a word the l1 offset. Rust plants only sentinels, which
+/// point at the exit cell behind an all-zero stand-in call cell.
+pub(super) const RET_RECORD: usize = 16;
 
 /// Communication block between Rust and the native chain. Field offsets
 /// are baked into every backend's trampoline; keep in sync with
@@ -175,7 +177,7 @@ fn restore_native_slow_instr(head: u32, cell: &DCell) -> Option<Instr> {
         Op::CallIndirect => (
             unscale(cell.a & ((1u64 << 48) - 1)),
             unscale(cell.b & 0xffff_ffff),
-            cell.c,
+            cell.c & ((1u64 << 48) - 1),
         ),
         Op::MemoryFill | Op::MemoryCopy => (unscale(cell.a), unscale(cell.b), unscale(cell.c)),
         Op::MemoryFillCopy => (unscale(cell.a), unscale(cell.b), cell.c),
@@ -962,11 +964,13 @@ pub(super) struct NativeEngine {
     callindirect_handler: usize,
     code_len: usize,
     entry: usize,
-    /// One synthetic cell whose handler word is the `EXIT_RETURN` stub.
-    /// Sentinel return-stack records point here, so a native `Return` that
-    /// pops a sentinel lands in Rust — the boxed cell must outlive every
-    /// record that references it.
-    exit_cell: Box<DCell>,
+    /// An all-zero stand-in call cell, then one synthetic cell whose handler
+    /// word is the `EXIT_RETURN` stub. Sentinel return-stack records point
+    /// at the second, so a native `Return` that pops a sentinel lands in
+    /// Rust, and the caller pinned-local offsets it reads from the cell
+    /// before are zero. The boxed cells must outlive every record that
+    /// references them.
+    exit_cells: Box<[DCell; 2]>,
 }
 
 impl NativeEngine {
@@ -992,12 +996,20 @@ impl NativeEngine {
             callindirect_handler: base + meta[4] as usize,
             code_len: meta[5] as usize,
             entry,
-            exit_cell: Box::new(DCell {
-                h: return_exit as u64,
-                a: 0,
-                b: 0,
-                c: 0,
-            }),
+            exit_cells: Box::new([
+                DCell {
+                    h: 0,
+                    a: 0,
+                    b: 0,
+                    c: 0,
+                },
+                DCell {
+                    h: return_exit as u64,
+                    a: 0,
+                    b: 0,
+                    c: 0,
+                },
+            ]),
         }
     }
 
@@ -1008,9 +1020,9 @@ impl NativeEngine {
         self.code_len
     }
 
-    /// Address of the sentinel exit cell (see `exit_cell`).
+    /// Address of the sentinel exit cell (see `exit_cells`).
     pub(super) fn exit_cell_addr(&self) -> u64 {
-        &*self.exit_cell as *const DCell as u64
+        &self.exit_cells[1] as *const DCell as u64
     }
 
     pub(super) fn call_handler_addr(&self) -> u64 {
@@ -2232,8 +2244,8 @@ mod tests {
         let linked = DCell {
             h: 1,
             a: 17u64 << 48 | indirect.a * 8,
-            b: 13u64 << 48 | 19u64 << 32 | indirect.b * 8,
-            c: indirect.c,
+            b: 19u64 << 32 | indirect.b * 8,
+            c: 13u64 << 48 | indirect.c,
         };
         let restored = restore_native_slow_instr(indirect.packed_head(), &linked)
             .expect("call_indirect type payload");

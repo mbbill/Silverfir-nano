@@ -731,14 +731,10 @@ impl Isa for Arm64 {
         a.ins("add x13, x10, x13, lsl #3");
         a.ins("cmp x13, x28");
         a.ins(&format!("b.hi {}", st.trap_exhaust));
-        // push (ret_pc, caller frame, caller_l0off, caller_l1off)
+        // push (ret_pc, caller frame); `Return` reads the caller's pinned
+        // offsets back out of this call cell, the one before ret_pc
         a.ins("add x13, x19, #32");
-        a.ins("stp x13, x20, [x26]");
-        a.ins("lsr x13, x12, #48");
-        a.ins("str x13, [x26, #16]");
-        a.ins("lsr x13, x9, #48");
-        a.ins("str x13, [x26, #24]");
-        a.ins("add x26, x26, #32");
+        a.ins("stp x13, x20, [x26], #16");
         // The callee's first handler is independent of frame initialization
         // and pinned-local reloads. Start that load here so the final
         // indirect branch does not wait on a fresh pointer chase.
@@ -788,7 +784,9 @@ impl Isa for Arm64 {
 
         // ---- CallIndirect (wired by the fixup pass) ----
         // cell a = caller_l1off<<48 | index_slot*8
-        //      b = caller_l0off<<48 | canon_expected<<32 | arg_base*8
+        //      b = canon_expected<<32 | arg_base*8
+        //      c = caller_l0off<<48 | module type index (read by Rust and
+        //          `Return`, not here)
         // Table 0's base/length and the per-function info table come from
         // the entry state, refreshed on every chain entry, so table.grow
         // and table.set need no invalidation protocol. Every guard failure
@@ -825,17 +823,14 @@ impl Isa for Arm64 {
         a.ins(&format!("b.ne {}", st.slow)); // type mismatch
         a.ins("ldr x12, [x13, #0]"); // callee cells | fp flag (0 = slow)
         a.ins(&format!("cbz x12, {}", st.slow));
+        // Compose the call_core inputs. The callee fp flag moves from entry
+        // bit 0 (cells are 32-byte aligned, low bits free) to the
+        // b-equivalent's bit 31. The caller's pinned offsets stay in this
+        // cell for `Return` to read.
         a.ins("ldr x16, [x13, #16]"); // frame metadata
-                                      // compose the call_core inputs; the callee fp flag moves from
-                                      // entry bit 0 (cells are 32-byte aligned, low bits free) to
-                                      // the b-equivalent's bit 31
-        a.ins("ubfx x13, x12, #0, #1");
-        a.ins("lsr x12, x12, #5");
-        a.ins("lsl x12, x12, #5"); // clean cells address
-        a.ins("lsr x9, x9, #48");
-        a.ins("orr x9, x12, x9, lsl #48"); // a-equiv: caller_l1off | cells
-        a.ins("lsr x12, x10, #48");
-        a.ins("orr x12, x16, x12, lsl #48"); // c-equiv: caller_l0off | meta
+        a.ins("and x9, x12, #0xffffffffffffffe0"); // a-equiv: clean cells address
+        a.ins("ubfx x13, x12, #0, #1"); // callee fp flag
+        a.ins("mov x12, x16"); // c-equiv
         a.ins("lsr x11, x11, #32");
         a.ins("lsl x11, x11, #32"); // callee l0/l1 offsets, canon cleared
         a.ins("ubfx x16, x10, #0, #32");
@@ -1430,16 +1425,18 @@ impl Arm64 {
         a.ins("ldr x8, [x20, x10]");
         a.ins("str x8, [x20]");
         a.label(&pop);
-        a.ins("ldp x13, x20, [x26, #-32]!");
+        a.ins("ldp x13, x20, [x26, #-16]!");
         // Overlap the caller continuation's handler load with the remaining
         // return-record and pinned-local reloads.
         a.ins("ldr x9, [x13]");
-        a.ins("ldr x11, [x26, #16]"); // caller l0off, bit 0 = float-pinned flag
-        a.ins("ldr x10, [x26, #24]"); // caller l1off
-                                      // Reload the caller's pinned locals. Sentinel records carry a
-                                      // readable dummy frame, so these loads are always safe. The
-                                      // caller's float-pinned flag rides bit 0 of its recorded l0 offset
-                                      // (offsets are byte-scaled, so bit 0 is structurally free).
+        // The call cell before ret_pc keeps the caller's pinned offsets in
+        // the top 16 bits of its c and a words. The float-pinned flag rides
+        // bit 0 of the l0 offset (offsets are byte-scaled, so bit 0 is
+        // structurally free). Sentinel records point at the driver's exit
+        // cell, behind an all-zero stand-in call cell, and carry a readable
+        // dummy frame, so these loads are always safe.
+        a.ins("ldurh w11, [x13, #-2]"); // caller l0off, bit 0 = float-pinned flag
+        a.ins("ldurh w10, [x13, #-18]"); // caller l1off
         let fp = a.fresh("retfp");
         let join = a.fresh("retjoin");
         a.ins(&format!("tbnz x11, #0, {fp}"));

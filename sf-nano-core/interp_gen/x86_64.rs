@@ -698,17 +698,12 @@ impl Isa for X86_64 {
         a.ins("lea rdi, [r8 + rdi*8]");
         a.ins(&format!("cmp rdi, [r15 + {S_STACK_LIMIT}]"));
         a.ins(&format!("ja {}", st.trap_exhaust));
-        // push (ret_pc, caller frame, caller_l0off, caller_l1off)
+        // push (ret_pc, caller frame); `Return` reads the caller's pinned
+        // offsets back out of this call cell, the one before ret_pc
         a.ins("lea rdi, [rbx + 32]");
         a.ins("mov [r9], rdi");
         a.ins("mov [r9 + 8], rbp");
-        a.ins("mov rdi, rdx");
-        a.ins("shr rdi, 48"); // caller l0off, bit 0 = float-pinned flag
-        a.ins("mov [r9 + 16], rdi");
-        a.ins("mov rdi, rax");
-        a.ins("shr rdi, 48");
-        a.ins("mov [r9 + 24], rdi");
-        a.ins("add r9, 32");
+        a.ins("add r9, 16");
         a.ins("mov rbp, r8");
         // The callee's first handler depends only on its cells address, not
         // on frame initialization or the pinned-local reloads, so its load
@@ -797,8 +792,9 @@ impl Isa for X86_64 {
         a.ins("mov r8, [rdx]"); // callee cells | fp flag (0 = slow)
         a.ins("test r8, r8");
         a.ins(&format!("jz {}", st.slow));
-        a.ins("mov rdx, [rdx + 16]"); // frame metadata
-                                      // compose the call_core inputs
+        // Compose the call_core inputs. The caller's pinned offsets stay in
+        // this cell for `Return` to read, so only the callee fields move.
+        a.ins("mov rdx, [rdx + 16]"); // c-equiv: frame metadata
         a.ins("shr rax, 32");
         a.ins("shl rax, 32"); // callee l0/l1 offsets, canon cleared
         a.ins("mov edi, ecx"); // arg_base*8
@@ -807,17 +803,9 @@ impl Isa for X86_64 {
         a.ins("and edi, 1"); // callee fp flag
         a.ins("shl rdi, 31");
         a.ins("or rax, rdi"); // b-equiv
-        a.ins("shr rcx, 48");
-        a.ins("shl rcx, 48");
-        a.ins("or rcx, rdx"); // c-equiv
-        a.ins("shr r8, 5");
-        a.ins("shl r8, 5"); // clean cells address
-        a.ins("shr rsi, 48");
-        a.ins("shl rsi, 48");
-        a.ins("or rsi, r8"); // a-equiv
-        a.ins("mov rdx, rcx");
+        a.ins("and r8, -32"); // a-equiv: clean cells address
         a.ins("mov rcx, rax");
-        a.ins("mov rax, rsi");
+        a.ins("mov rax, r8");
         a.ins(&format!("jmp {}", st.call_core));
     }
 
@@ -1653,14 +1641,17 @@ impl X86_64 {
         // Pop the return record. The caller's continuation cell and its
         // handler load first, so the dispatch target resolves alongside the
         // remaining record and pinned-local reloads. Sentinel records point
-        // at the driver's readable exit cell and carry a readable dummy
-        // frame, so every load here is safe.
-        a.ins("sub r9, 32");
-        a.ins("mov rbx, [r9]"); // ret pc
+        // at the driver's exit cell, behind an all-zero stand-in call cell,
+        // and carry a readable dummy frame, so every load here is safe.
+        a.ins("sub r9, 16");
+        // The record holds (ret pc, caller frame). The call cell before ret
+        // pc keeps the caller's pinned offsets in the top 16 bits of its c
+        // and a words.
+        a.ins("mov rbx, [r9]");
         a.ins("mov rax, [rbx]");
-        a.ins("mov rbp, [r9 + 8]"); // caller frame
-        a.ins("mov rdx, [r9 + 16]"); // caller l0off, bit 0 = float-pinned flag
-        a.ins("mov rcx, [r9 + 24]"); // caller l1off
+        a.ins("mov rbp, [r9 + 8]");
+        a.ins("movzx edx, word ptr [rbx - 2]"); // caller l0off, bit 0 = float-pinned flag
+        a.ins("movzx ecx, word ptr [rbx - 18]"); // caller l1off
         let fp = a.fresh("retfp");
         a.ins("test dl, 1");
         a.ins(&format!("jnz {fp}"));

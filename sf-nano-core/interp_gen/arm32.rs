@@ -1003,14 +1003,16 @@ impl Arm32 {
         a.ins(&format!("bne {cl}"));
         a.label(&pop);
         a.ins(&format!("ldr {T3}, [{STATE}, #{S_RET_CURSOR}]"));
-        a.ins(&format!("sub {T3}, {T3}, #32"));
+        a.ins(&format!("sub {T3}, {T3}, #16"));
         a.ins(&format!("str {T3}, [{STATE}, #{S_RET_CURSOR}]"));
-        a.ins(&format!("ldr {T0}, [{T3}]")); // ret pc
-        a.ins(&format!("ldr {FRAME}, [{T3}, #8]")); // caller frame
-                                                    // The record's third word is the caller's l0 offset; its low half
-                                                    // holds it. Sentinel records carry a readable dummy frame, so the
-                                                    // reload below is always safe.
-        a.ins(&format!("ldr {T2}, [{T3}, #16]")); // caller l0off
+        // The record holds (ret pc, caller frame). The call cell before ret
+        // pc keeps the caller's l0 offset in the top 16 bits of its c word.
+        // Sentinel records point at the driver's exit cell, behind an
+        // all-zero stand-in call cell, and carry a readable dummy frame, so
+        // the reload below is always safe.
+        a.ins(&format!("ldr {T0}, [{T3}]"));
+        a.ins(&format!("ldr {FRAME}, [{T3}, #8]"));
+        a.ins(&format!("ldrh {T2}, [{T0}, #-2]")); // caller l0off
         a.ins(&format!("add {T2}, {FRAME}, {T2}"));
         a.ins(&format!("ldr {L0R}, [{T2}]"));
         a.ins(&format!("ldr {L0_HI}, [{T2}, #4]"));

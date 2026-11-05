@@ -421,8 +421,8 @@ pub(super) struct PendingException {
 }
 
 /// Per-invoke execution resources: the shared value stack and the native
-/// return stack (records of `(ret_pc, frame, caller pinned offsets)`, with
-/// Rust-planted sentinel records routing a `Return` back to Rust).
+/// return stack (records of `(ret_pc, frame)`, with Rust-planted sentinel
+/// records routing a `Return` back to Rust).
 struct DriveCtx<'s> {
     stack: &'s mut [u64],
     ret_stack: &'s mut [u64],
@@ -1856,8 +1856,9 @@ impl InterpInstance {
             };
             let caller_l0 = lf.l0_off as u64;
             let caller_l1 = lf.l1_off as u64;
-            // Rides bit 0 of the recorded l0 offset (byte-scaled, so the
-            // bit is structurally free) into every return record.
+            // Rides bit 0 of the l0 offset (byte-scaled, so the bit is
+            // structurally free) that a native `Return` reads back from the
+            // call cell.
             let caller_fp = lf.fp_pinned as u64;
             match fixup {
                 CallFixup::Direct {
@@ -1895,11 +1896,14 @@ impl InterpInstance {
                             *plan.cell_mut(cell) = DCell {
                                 h: ci_h,
                                 a: caller_l1 << 48 | table_slot * 8,
-                                b: (caller_l0 | caller_fp) << 48 | canon << 32 | arg_base * 8,
-                                // The native handler consumes only a/b. Keep
-                                // the original type id here so a guard failure
-                                // can rebuild the slow instruction directly.
-                                c: expected_type as u64,
+                                b: canon << 32 | arg_base * 8,
+                                // The native handler consumes only a/b. The
+                                // caller's l0 offset rides c's top 16 bits,
+                                // where a native `Return` reads it as for a
+                                // direct call; the low bits keep the
+                                // original type id so a guard failure can
+                                // rebuild the slow instruction directly.
+                                c: (caller_l0 | caller_fp) << 48 | expected_type as u64,
                             };
                         }
                     }
@@ -3148,7 +3152,7 @@ impl InterpInstance {
     /// Driver: run one activation on the native dispatch chain
     /// until it needs Rust. Calls, returns, and branches between local
     /// functions stay entirely inside the chain (the native return stack
-    /// carries `(ret_pc, frame, caller pinned offsets)` records); Rust sees only slow
+    /// carries `(ret_pc, frame)` records); Rust sees only slow
     /// ops, sentinel returns, host calls, and traps. On a slow exit the
     /// current function is recovered from the pc via the range map and the
     /// ORIGINAL instruction is executed by `exec_ins`, then the chain is
@@ -3192,8 +3196,6 @@ impl InterpInstance {
             let at = ctx.ret_cursor / 8;
             ctx.ret_stack[at] = exit_cell;
             ctx.ret_stack[at + 1] = exit_cell;
-            ctx.ret_stack[at + 2] = 0;
-            ctx.ret_stack[at + 3] = 0;
             ctx.ret_cursor += RET_RECORD;
             act.route_established = true;
         }
@@ -7082,7 +7084,11 @@ mod tests {
             let (cell, ins, cell_index) = linked_cell_for_op(&inst, go, Op::CallIndirect);
             let ci_h = native.engine.callindirect_handler_addr();
             assert_eq!(cell.h, ci_h);
-            assert_eq!(cell.c, ins.c, "native cell retains the module type id");
+            assert_eq!(
+                cell.c & ((1u64 << 48) - 1),
+                ins.c,
+                "native cell retains the module type id below the caller's l0 offset"
+            );
             assert_eq!(
                 native.plan.native_call_indirect_payload(cell_index, ci_h),
                 Some((ins.a, ins.b, ins.c as u32))
@@ -7509,7 +7515,7 @@ mod tests {
             let (cell, ins, cell_index) = linked_cell_for_op(&inst, go, Op::CallIndirect);
             let ci_h = native.engine.callindirect_handler_addr();
             assert_eq!(cell.h, ci_h);
-            assert_eq!(cell.c, ins.c);
+            assert_eq!(cell.c & ((1u64 << 48) - 1), ins.c);
             assert_eq!(
                 native.plan.native_call_indirect_payload(cell_index, ci_h),
                 Some((ins.a, ins.b, ins.c as u32))
