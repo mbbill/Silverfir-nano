@@ -706,7 +706,7 @@ impl Isa for Arm64 {
         // ---- Call (wired by the cross-function fixup, not the table) ----
         // cell a = caller_l1off<<48 | callee cells (48-bit VA)
         //      b = callee_l1off<<48 | callee_l0off<<32 | fp<<31 | arg_base*8
-        //      c = caller_l0off<<48 | frame_slots<<32 | n_locals<<16 | n_params
+        //      c = caller_l0off<<48 | frame_slots<<32 | zero_end<<16 | zero_start
         a.label(&st.call);
         self.bump(a, self.counting);
         a.ins("ldr x12, [x19, #24]");
@@ -740,7 +740,7 @@ impl Isa for Arm64 {
         a.ins("ubfx x24, x9, #0, #48");
         a.ins("ldr x6, [x24]");
         a.ins("mov x20, x10");
-        // zero the fresh locals: [n_params*8, n_locals*8)
+        // zero the fresh locals: [zero_start*8, zero_end*8)
         a.ins("ubfx x10, x12, #0, #16");
         a.ins("ubfx x13, x12, #16, #16");
         a.ins("add x10, x20, x10, lsl #3");

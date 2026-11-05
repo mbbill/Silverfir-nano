@@ -1795,7 +1795,7 @@ impl InterpInstance {
                     if fs >= 1 << 16 {
                         return None;
                     }
-                    let packed = fs << 32 | (f.n_locals() as u64) << 16 | f.n_params() as u64;
+                    let packed = fs << 32 | (f.zero_end() as u64) << 16 | f.zero_start() as u64;
                     Some((
                         lf.cell_base(),
                         packed,
@@ -2588,9 +2588,10 @@ impl InterpInstance {
         // The root frame's locals get their fresh zeros here. Callee
         // frames are zeroed at the call site; the root has no call site,
         // and it used to be covered only because every invocation started
-        // on a newly allocated buffer. Temps above `n_locals` are written
-        // before they are read, by construction in the predecoder.
-        ctx.stack[args.len()..root.func.n_locals as usize].fill(0);
+        // on a newly allocated buffer. Locals outside `[zero_start,
+        // zero_end)` and every temp are written before they are read, by
+        // construction in the predecoder.
+        ctx.stack[root.func.zero_start as usize..root.func.zero_end as usize].fill(0);
 
         let mut act = root;
         let mut saved: Vec<SavedActivation> = Vec::new();
@@ -2685,10 +2686,11 @@ impl InterpInstance {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
                     // The caller already staged the params at the frame
-                    // base; locals get fresh zeros, temps are written
-                    // before read by predecode construction.
-                    let (np, nl) = (f.n_params as usize, f.n_locals as usize);
-                    ctx.stack[new_base + np..new_base + nl].fill(0);
+                    // base; locals in the zero range get fresh zeros, the
+                    // rest and every temp are written before read by
+                    // predecode construction.
+                    let (z0, z1) = (f.zero_start as usize, f.zero_end as usize);
+                    ctx.stack[new_base + z0..new_base + z1].fill(0);
                     let callee_act = Activation {
                         func: f,
                         func_index: callee,
@@ -2742,10 +2744,11 @@ impl InterpInstance {
                     if base + f.frame_slots as usize > ctx.stack.len() {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
-                    let (np, nl) = (f.n_params as usize, f.n_locals as usize);
+                    let np = f.n_params as usize;
+                    let (z0, z1) = (f.zero_start as usize, f.zero_end as usize);
                     ctx.stack
                         .copy_within(base + arg_base..base + arg_base + np, base);
-                    ctx.stack[base + np..base + nl].fill(0);
+                    ctx.stack[base + z0..base + z1].fill(0);
                     // Keep the frame AND the return record. `act` is a window
                     // onto the chain's current frame, not something Rust
                     // pushed: the record that routes this frame's return was
@@ -7332,6 +7335,80 @@ mod tests {
                 .all(|&(op, exits)| !matches!(op, Op::Call | Op::CallIndirect) || exits == 0),
             "local calls must stay native: {slow_exits:?}"
         );
+    }
+
+    /// Locals the straight-line prologue writes first are not zeroed and
+    /// take the slots after the ones that are. Interleaving the two kinds
+    /// forces that renumbering; each first call leaves every slot dirty,
+    /// so a local the next call failed to zero would show its stale value.
+    #[test]
+    fn prologue_written_locals_skip_zeroing_without_exposing_stale_slots() {
+        let src = r#"(module
+            (global $g (mut i32) (i32.const 3))
+            (func $id (param i32) (result i32) local.get 0)
+            (func $mixed (param $write i32) (result i64)
+                (local $p1 i64) (local $z1 i64) (local $p2 i64) (local $z2 i64)
+                global.get $g
+                call $id
+                i64.extend_i32_u
+                local.set $p1
+                i64.const 10
+                local.tee $p2
+                drop
+                local.get $write
+                if
+                    i64.const 100
+                    local.set $z1
+                    i64.const 1000
+                    local.set $z2
+                end
+                local.get $p1
+                local.get $z1
+                i64.add
+                local.get $p2
+                i64.add
+                local.get $z2
+                i64.add)
+            (func $tail (param $n i32) (param $acc i64) (result i64)
+                (local $z i64) (local $p i64)
+                i64.const 1
+                local.set $p
+                local.get $n
+                if
+                    i64.const 50
+                    local.set $z
+                end
+                local.get $acc
+                local.get $z
+                i64.add
+                local.get $p
+                i64.add
+                local.set $acc
+                local.get $n
+                if (result i64)
+                    local.get $n
+                    i32.const 1
+                    i32.sub
+                    local.get $acc
+                    return_call $tail
+                else
+                    local.get $acc
+                end)
+            (func (export "direct") (result i64)
+                i32.const 1
+                call $mixed
+                drop
+                i32.const 0
+                call $mixed)
+            (func (export "tail") (result i64)
+                i32.const 2
+                i64.const 0
+                call $tail))"#;
+        // p1 = 3 and p2 = 10 from the prologue; z1 and z2 stay zero.
+        assert_eq!(run1(src, "direct", &[]).unwrap(), 13);
+        // (0 + 50 + 1) -> (51 + 50 + 1) -> (102 + 0 + 1): the last
+        // iteration must see $z zeroed again by the self tail call.
+        assert_eq!(run1(src, "tail", &[]).unwrap(), 103);
     }
 
     #[test]

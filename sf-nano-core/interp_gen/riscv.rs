@@ -1780,14 +1780,14 @@ impl RiscV {
         a.ins(&format!("sd {T3}, 24({RETSP})"));
         a.ins(&format!("addi {RETSP}, {RETSP}, 32"));
         a.ins(&format!("mv {FRAME}, {T1}"));
-        // zero the fresh locals: [n_params*8, n_locals*8)
+        // zero the fresh locals: [zero_start*8, zero_end*8)
         a.ins(&format!("slli {T1}, {T6}, 48"));
-        a.ins(&format!("srli {T1}, {T1}, 48")); // n_params
+        a.ins(&format!("srli {T1}, {T1}, 48")); // zero_start
         a.ins(&format!("slli {T1}, {T1}, 3"));
         a.ins(&format!("add {T1}, {FRAME}, {T1}"));
         a.ins(&format!("srli {T2}, {T6}, 16"));
         a.ins(&format!("slli {T2}, {T2}, 48"));
-        a.ins(&format!("srli {T2}, {T2}, 48")); // n_locals
+        a.ins(&format!("srli {T2}, {T2}, 48")); // zero_end
         a.ins(&format!("slli {T2}, {T2}, 3"));
         a.ins(&format!("add {T2}, {FRAME}, {T2}"));
         let zl = a.fresh("zl");

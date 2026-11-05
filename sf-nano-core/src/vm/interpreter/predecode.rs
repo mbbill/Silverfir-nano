@@ -12,9 +12,10 @@
 //! `call`/`call_indirect`, `return`, `unreachable`. Everything else returns
 //! a clean "unsupported" error.
 //!
-//! Frame model: `[ params | locals | temps by height ]`, all u64 slots. The
-//! executor (stage A2) zero-initializes non-param locals; the predecoder
-//! only computes the frame size.
+//! Frame model: `[ params | locals | temps by height ]`, all u64 slots. An
+//! activation zero-initializes the locals in `[zero_start, zero_end)`: every
+//! fresh local except those the straight-line prologue writes before reading
+//! (`zero_range`). The predecoder computes that range and the frame size.
 
 use crate::collections::{vec, Vec};
 use crate::error::WasmError;
@@ -170,8 +171,10 @@ pub(crate) struct PredecodedFunction {
     pub wide_memargs: Vec<(u32, u64)>,
     /// Total frame slots: params + locals + max temp height.
     pub frame_slots: u32,
-    /// params + locals (== the base slot index of temps).
-    pub n_locals: u32,
+    /// The locals a fresh activation zeroes, `[zero_start, zero_end)`. Every
+    /// other fresh local is written before it is read on every path.
+    pub zero_start: u32,
+    pub zero_end: u32,
     pub n_params: u32,
     pub n_results: u32,
     /// A synthetic `Return` cell used when a slow-path tail callee (for
@@ -301,7 +304,8 @@ pub(super) fn linker_test_function(
         pinned,
         br_tables,
         wide_memargs: Vec::new(),
-        n_locals,
+        zero_start: 0,
+        zero_end: n_locals,
         n_params: 0,
         n_results: 0,
         slow_tail_return: None,
@@ -443,7 +447,8 @@ struct PredecodedFunctionParts {
     br_tables: Vec<Vec<u32>>,
     wide_memargs: Vec<(u32, u64)>,
     frame_slots: u32,
-    n_locals: u32,
+    zero_start: u32,
+    zero_end: u32,
     n_params: u32,
     n_results: u32,
     slow_tail_return: Option<u32>,
@@ -498,12 +503,12 @@ impl UnlinkedFunction<'_> {
         self.parts.frame_slots
     }
 
-    pub(crate) fn n_locals(&self) -> u32 {
-        self.parts.n_locals
+    pub(crate) fn zero_start(&self) -> u32 {
+        self.parts.zero_start
     }
 
-    pub(crate) fn n_params(&self) -> u32 {
-        self.parts.n_params
+    pub(crate) fn zero_end(&self) -> u32 {
+        self.parts.zero_end
     }
 }
 
@@ -609,7 +614,8 @@ impl PredecodedFunctionParts {
             br_tables: self.br_tables,
             wide_memargs: self.wide_memargs,
             frame_slots: self.frame_slots,
-            n_locals: self.n_locals,
+            zero_start: self.zero_start,
+            zero_end: self.zero_end,
             n_params: self.n_params,
             n_results: self.n_results,
             slow_tail_return: self.slow_tail_return,
@@ -637,6 +643,8 @@ fn predecode_function_into(
     let n_params = func.func_type().params().len() as u32;
     let n_results = func.func_type().results().len() as u32;
     let n_locals = n_params + spec.locals().len() as u32;
+    let (zero_start, zero_end) =
+        zero_range(spec.code(), n_params, n_locals, &mut scratch.local_first);
 
     // Optimistically coalesce unique loop parameters with their source
     // locals. If a decoded backedge would have to synthesize a write into
@@ -701,6 +709,8 @@ fn predecode_function_into(
             max_height: 0,
             func_index: func_index as u32,
             n_locals,
+            zero_start,
+            zero_end,
             n_results,
             last_call_idx: NO_DEF,
             last_call_height: 0,
@@ -771,7 +781,8 @@ fn predecode_function_into(
         frame_slots: n_locals + p.max_height,
         br_tables: mem::take(&mut p.br_tables),
         wide_memargs: mem::take(&mut p.wide_memargs),
-        n_locals,
+        zero_start,
+        zero_end,
         n_params,
         n_results,
         slow_tail_return: p.slow_tail_return,
@@ -906,6 +917,8 @@ struct PredecodeScratch {
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
     locals: Vec<LocalState>,
+    /// First access to each fresh local in the straight-line prologue.
+    local_first: Vec<u8>,
     canonical_loop_homes: Vec<bool>,
     unsafe_loop_homes: Vec<bool>,
     side: PredecodeSideScratch,
@@ -951,11 +964,12 @@ impl PredecodeScratch {
     /// Capacities of every allocation-owning transient vector. Persistent
     /// function output (`Instr`, branch tables, wide memargs, exceptions) is
     /// intentionally absent from this census.
-    fn capacities(&self) -> [usize; 16] {
+    fn capacities(&self) -> [usize; 17] {
         [
             self.stack.capacity(),
             self.frames.capacity(),
             self.locals.capacity(),
+            self.local_first.capacity(),
             self.canonical_loop_homes.capacity(),
             self.unsafe_loop_homes.capacity(),
             self.side.loop_candidates.capacity(),
@@ -1008,6 +1022,9 @@ struct Predecoder<'m, 'code> {
     /// inside the native dispatch chain.
     func_index: u32,
     n_locals: u32,
+    /// Fresh locals an activation zeroes (see `zero_range`).
+    zero_start: u32,
+    zero_end: u32,
     n_results: u32,
     /// Cell index / result height / region of the last emitted
     /// SINGLE-result call (u32::MAX = none). An adjacent consumer of that
@@ -2601,7 +2618,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         for i in 0..params {
             self.emit(Op::MovSlot, 0, arg_base + i as u64, 0, i as u64);
         }
-        for i in params..self.n_locals {
+        for i in self.zero_start..self.zero_end {
             self.emit(Op::MovConst, FLAG_A_CONST, 0, 0, i as u64);
         }
         self.emit(Op::Br, 0, 0, 0, 0);
@@ -3158,6 +3175,125 @@ fn probe_fixed<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Option<[u8; 
     Some(value)
 }
 
+/// First access to a fresh local within the straight-line prologue.
+const PROLOGUE_UNTOUCHED: u8 = 0;
+const PROLOGUE_READ_FIRST: u8 = 1;
+const PROLOGUE_WRITTEN_FIRST: u8 = 2;
+
+/// The fresh locals an activation must zero, as `[zero_start, zero_end)`.
+///
+/// The straight-line prologue -- every op before the first one that can
+/// skip code -- runs once, in order, on every path into the body. A fresh
+/// local it writes before anything reads it never shows its initial zero.
+/// The range is trimmed to the first and last fresh local that can, so a
+/// call stub still clears one contiguous run of slots; an empty range has
+/// `zero_start == zero_end`.
+fn zero_range(code: &[u8], n_params: u32, n_locals: u32, first: &mut Vec<u8>) -> (u32, u32) {
+    first.clear();
+    first.resize((n_locals - n_params) as usize, PROLOGUE_UNTOUCHED);
+    scan_prologue(code, n_params, first);
+    let needs_zero = |access: &u8| *access != PROLOGUE_WRITTEN_FIRST;
+    match (
+        first.iter().position(needs_zero),
+        first.iter().rposition(needs_zero),
+    ) {
+        (Some(lo), Some(hi)) => (n_params + lo as u32, n_params + hi as u32 + 1),
+        _ => (n_params, n_params),
+    }
+}
+
+/// Record each fresh local's first access, op by op, until the body can
+/// first skip an op or every fresh local has been seen.
+///
+/// Only ops after which execution always continues with the next op of
+/// the same body (or leaves the activation by trap or exception, with no
+/// handler in this function) are stepped over; anything else, including
+/// any encoding this scan does not parse, ends the prologue. That only
+/// zeroes more locals than needed, and the real decode reports malformed
+/// bytes.
+fn scan_prologue(code: &[u8], n_params: u32, first: &mut [u8]) {
+    let mut untouched = first.len();
+    let mut pos = 0;
+    while untouched != 0 {
+        let Some(bytes) = code.get(pos..) else {
+            return;
+        };
+        let Some(&opcode) = bytes.first() else {
+            return;
+        };
+        let mut cursor = 1;
+        let mut access = PROLOGUE_UNTOUCHED;
+        let mut local = 0;
+        let parsed = match opcode {
+            // local.get / local.set / local.tee
+            0x20..=0x22 => probe_u32(bytes, &mut cursor).map(|index| {
+                local = index;
+                access = if opcode == 0x20 {
+                    PROLOGUE_READ_FIRST
+                } else {
+                    PROLOGUE_WRITTEN_FIRST
+                };
+            }),
+            // nop, end, drop, select, and every numeric op without an
+            // immediate
+            0x01 | 0x0b | 0x1a | 0x1b | 0x45..=0xc4 => Some(()),
+            // block, loop: an empty or single value type, or a type index
+            0x02 | 0x03 => match bytes.get(1) {
+                Some(0x40 | 0x6f | 0x70 | 0x7b..=0x7f) => {
+                    cursor = 2;
+                    Some(())
+                }
+                Some(&byte) if byte < 0x40 || byte >= 0x80 => {
+                    probe_u32(bytes, &mut cursor).map(|_| ())
+                }
+                _ => None,
+            },
+            // call, global.get, global.set
+            0x10 | 0x23 | 0x24 => probe_u32(bytes, &mut cursor).map(|_| ()),
+            // call_indirect: type index, table index
+            0x11 => probe_u32(bytes, &mut cursor)
+                .and_then(|_| probe_u32(bytes, &mut cursor))
+                .map(|_| ()),
+            // loads and stores: the alignment flag (64 and up adds a memory
+            // index), then the offset; the same rules as `probe_fast`
+            0x28..=0x3e => probe_u32(bytes, &mut cursor)
+                .and_then(|flag| {
+                    let align = if flag < 64 {
+                        flag
+                    } else {
+                        probe_u32(bytes, &mut cursor)?;
+                        flag - 64
+                    };
+                    (align < 32).then_some(())
+                })
+                .and_then(|()| probe_u64(bytes, &mut cursor))
+                .map(|_| ()),
+            // memory.size, memory.grow
+            0x3f | 0x40 => probe_u32(bytes, &mut cursor).map(|_| ()),
+            0x41 => probe_i32(bytes, &mut cursor).map(|_| ()),
+            0x42 => probe_i64(bytes, &mut cursor).map(|_| ()),
+            0x43 => probe_fixed::<4>(bytes, &mut cursor).map(|_| ()),
+            0x44 => probe_fixed::<8>(bytes, &mut cursor).map(|_| ()),
+            _ => None,
+        };
+        if parsed.is_none() {
+            return;
+        }
+        pos += cursor;
+        if access == PROLOGUE_UNTOUCHED {
+            continue;
+        }
+        if let Some(entry) = local
+            .checked_sub(n_params)
+            .and_then(|fresh| first.get_mut(fresh as usize))
+        {
+            if *entry == PROLOGUE_UNTOUCHED {
+                *entry = access;
+                untouched -= 1;
+            }
+        }
+    }
+}
 /// Probe one common opcode without mutating the decoder cursor. A malformed
 /// immediate deliberately reports a miss: the unchanged generic fallback then
 /// produces the same public error it did before this fast lane existed.
@@ -4498,7 +4634,11 @@ mod tests {
         assert_eq!(fast.br_tables, generic.br_tables, "branch tables");
         assert_eq!(fast.wide_memargs, generic.wide_memargs, "wide memargs");
         assert_eq!(fast.frame_slots, generic.frame_slots, "frame slots");
-        assert_eq!(fast.n_locals, generic.n_locals, "local count");
+        assert_eq!(
+            (fast.zero_start, fast.zero_end),
+            (generic.zero_start, generic.zero_end),
+            "zeroed locals"
+        );
         assert_eq!(fast.n_params, generic.n_params, "parameter count");
         assert_eq!(fast.n_results, generic.n_results, "result count");
         assert_eq!(fast.pinned(), generic.pinned(), "pinned locals");

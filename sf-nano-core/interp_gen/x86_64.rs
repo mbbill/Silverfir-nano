@@ -621,13 +621,13 @@ impl Isa for X86_64 {
         a.ins("shr rax, 16"); // clean 48-bit cells address
         a.ins("mov r9, rax");
         a.ins("mov rax, [rax]");
-        // zero the fresh locals: [n_params*8, n_locals*8), two slots per
+        // zero the fresh locals: [zero_start*8, zero_end*8), two slots per
         // iteration after an odd leading one. No fresh locals costs two
         // instructions past the count.
-        a.ins("movzx edi, dx"); // n_params
+        a.ins("movzx edi, dx"); // zero_start
         a.ins("mov r8, rdx");
         a.ins("shr r8, 16");
-        a.ins("movzx r8d, r8w"); // n_locals
+        a.ins("movzx r8d, r8w"); // zero_end
         a.ins("sub r8d, edi"); // fresh-local count
         let zl = a.fresh("zl");
         let zdone = a.fresh("zdone");

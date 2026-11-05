@@ -1961,11 +1961,15 @@ mod tests {
         cells
     }
 
-    fn assert_reference_equivalence(engine: &NativeEngine, func: &PredecodedFunction) {
+    fn assert_reference_equivalence(
+        engine: &NativeEngine,
+        func: &PredecodedFunction,
+        n_locals: u32,
+    ) {
         let pin = func.pinned();
         assert_eq!(
             pin,
-            select_pinned_reference(&func.code, func.n_locals),
+            select_pinned_reference(&func.code, n_locals),
             "predecoded pinned census differs from the full-stream oracle"
         );
         let reference = engine.resolve_reference(&func.code, &pin);
@@ -2186,13 +2190,13 @@ mod tests {
     fn delayed_linker_matches_reference_on_acc_edge_cases() {
         let engine = NativeEngine::new();
         let empty = linker_test_function(Vec::new(), Vec::new(), 0);
-        assert_reference_equivalence(&engine, &empty);
+        assert_reference_equivalence(&engine, &empty, 0);
         let single = linker_test_function(
             vec![Instr::new(Op::I32_Add, FLAG_A_ACC | FLAG_DST_ACC, 0, 1, 2)],
             Vec::new(),
             3,
         );
-        assert_reference_equivalence(&engine, &single);
+        assert_reference_equivalence(&engine, &single, 3);
 
         let code = vec![
             // No predecessor: both incoming hints must be stripped. Its
@@ -2220,7 +2224,7 @@ mod tests {
             Instr::new(Op::Return, 0, 0, 0, 0),
         ];
         let func = linker_test_function(code, vec![vec![0, 3, 13], vec![2, 5, 8, 13]], 8);
-        assert_reference_equivalence(&engine, &func);
+        assert_reference_equivalence(&engine, &func, 8);
     }
 
     struct Lcg(u64);
@@ -2314,7 +2318,7 @@ mod tests {
             code.push(Instr::new(Op::Return, 0, 0, 0, 0));
             let last = code.len() as u32 - 1;
             let func = linker_test_function(code, vec![vec![0, last / 2, last]], 8);
-            assert_reference_equivalence(&engine, &func);
+            assert_reference_equivalence(&engine, &func, 8);
         }
     }
 
