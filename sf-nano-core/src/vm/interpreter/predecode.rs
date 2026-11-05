@@ -643,8 +643,7 @@ fn predecode_function_into(
     let n_params = func.func_type().params().len() as u32;
     let n_results = func.func_type().results().len() as u32;
     let n_locals = n_params + spec.locals().len() as u32;
-    let (zero_start, zero_end) =
-        zero_range(spec.code(), n_params, n_locals, &mut scratch.local_first);
+    let (zero_start, zero_end) = zero_range(spec.code(), n_params, n_locals);
 
     // Optimistically coalesce unique loop parameters with their source
     // locals. If a decoded backedge would have to synthesize a write into
@@ -917,8 +916,6 @@ struct PredecodeScratch {
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
     locals: Vec<LocalState>,
-    /// First access to each fresh local in the straight-line prologue.
-    local_first: Vec<u8>,
     canonical_loop_homes: Vec<bool>,
     unsafe_loop_homes: Vec<bool>,
     side: PredecodeSideScratch,
@@ -964,12 +961,11 @@ impl PredecodeScratch {
     /// Capacities of every allocation-owning transient vector. Persistent
     /// function output (`Instr`, branch tables, wide memargs, exceptions) is
     /// intentionally absent from this census.
-    fn capacities(&self) -> [usize; 17] {
+    fn capacities(&self) -> [usize; 16] {
         [
             self.stack.capacity(),
             self.frames.capacity(),
             self.locals.capacity(),
-            self.local_first.capacity(),
             self.canonical_loop_homes.capacity(),
             self.unsafe_loop_homes.capacity(),
             self.side.loop_candidates.capacity(),
@@ -3202,11 +3198,6 @@ fn probe_fixed<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Option<[u8; 
     Some(value)
 }
 
-/// First access to a fresh local within the straight-line prologue.
-const PROLOGUE_UNTOUCHED: u8 = 0;
-const PROLOGUE_READ_FIRST: u8 = 1;
-const PROLOGUE_WRITTEN_FIRST: u8 = 2;
-
 /// The fresh locals an activation must zero, as `[zero_start, zero_end)`.
 ///
 /// The straight-line prologue -- every op before the first one that can
@@ -3215,109 +3206,198 @@ const PROLOGUE_WRITTEN_FIRST: u8 = 2;
 /// The range is trimmed to the first and last fresh local that can, so a
 /// call stub still clears one contiguous run of slots; an empty range has
 /// `zero_start == zero_end`.
-fn zero_range(code: &[u8], n_params: u32, n_locals: u32, first: &mut Vec<u8>) -> (u32, u32) {
-    first.clear();
-    first.resize((n_locals - n_params) as usize, PROLOGUE_UNTOUCHED);
-    scan_prologue(code, n_params, first);
-    let needs_zero = |access: &u8| *access != PROLOGUE_WRITTEN_FIRST;
-    match (
-        first.iter().position(needs_zero),
-        first.iter().rposition(needs_zero),
-    ) {
-        (Some(lo), Some(hi)) => (n_params + lo as u32, n_params + hi as u32 + 1),
-        _ => (n_params, n_params),
+///
+/// Kept out of line: it runs once per function, and inlining it into the
+/// predecoder's driver only costs that driver registers.
+#[inline(never)]
+fn zero_range(code: &[u8], n_params: u32, n_locals: u32) -> (u32, u32) {
+    let n_fresh = n_locals - n_params;
+    if n_fresh == 0 {
+        return (n_params, n_params);
+    }
+    let mut ends = PrologueEnds::new(n_fresh);
+    scan_prologue(code, n_params, &mut ends);
+    match ends.needs_zero() {
+        Some((lo, hi)) => (n_params + lo, n_params + hi),
+        None => (n_params, n_params),
     }
 }
 
+/// First accesses to the fresh locals at both ends of the frame.
+///
+/// Only the ends decide the trimmed range, so the scan tracks the lowest
+/// `PROLOGUE_WINDOW` fresh locals and, when there are more than that, the
+/// highest `PROLOGUE_WINDOW` as well, one bit each. A range end that runs
+/// past its window stops at the window's edge: the locals beyond it are
+/// zeroed whether or not the prologue writes them.
+struct PrologueEnds {
+    n_fresh: u32,
+    /// Fresh index of the high window's bit 0; `n_fresh` when there is no
+    /// high window.
+    high_base: u32,
+    low_touched: u64,
+    low_written: u64,
+    high_touched: u64,
+    high_written: u64,
+    /// Tracked bits not yet touched. A local in both windows has two.
+    untouched: u32,
+}
+
+const PROLOGUE_WINDOW: u32 = u64::BITS;
+
+impl PrologueEnds {
+    fn new(n_fresh: u32) -> Self {
+        let (high_base, untouched) = if n_fresh <= PROLOGUE_WINDOW {
+            (n_fresh, n_fresh)
+        } else {
+            (n_fresh - PROLOGUE_WINDOW, 2 * PROLOGUE_WINDOW)
+        };
+        PrologueEnds {
+            n_fresh,
+            high_base,
+            low_touched: 0,
+            low_written: 0,
+            high_touched: 0,
+            high_written: 0,
+            untouched,
+        }
+    }
+
+    /// Record an access to fresh local `fresh`; only its first one counts.
+    #[inline]
+    fn access(&mut self, fresh: u32, write: bool) {
+        if fresh < PROLOGUE_WINDOW && fresh < self.n_fresh {
+            let bit = 1u64 << fresh;
+            if self.low_touched & bit == 0 {
+                self.low_touched |= bit;
+                self.untouched -= 1;
+                if write {
+                    self.low_written |= bit;
+                }
+            }
+        }
+        if fresh >= self.high_base && fresh < self.n_fresh {
+            let bit = 1u64 << (fresh - self.high_base);
+            if self.high_touched & bit == 0 {
+                self.high_touched |= bit;
+                self.untouched -= 1;
+                if write {
+                    self.high_written |= bit;
+                }
+            }
+        }
+    }
+
+    /// The fresh-index range `[lo, hi)` that still needs zeroing, or `None`
+    /// if the prologue writes every fresh local before reading it.
+    fn needs_zero(&self) -> Option<(u32, u32)> {
+        let low_full = u64::MAX >> (PROLOGUE_WINDOW - self.n_fresh.min(PROLOGUE_WINDOW));
+        let low = low_full & !self.low_written;
+        if self.high_base == self.n_fresh {
+            return (low != 0)
+                .then(|| (low.trailing_zeros(), PROLOGUE_WINDOW - low.leading_zeros()));
+        }
+        let high = !self.high_written;
+        let lo = if low == 0 {
+            PROLOGUE_WINDOW
+        } else {
+            low.trailing_zeros()
+        };
+        let hi = if high == 0 {
+            self.high_base
+        } else {
+            self.high_base + PROLOGUE_WINDOW - high.leading_zeros()
+        };
+        (lo < hi).then_some((lo, hi))
+    }
+}
+
+/// Step over one LEB128 immediate of at most `max` bytes. The module has
+/// been validated already; this only finds where the next op starts.
+#[inline]
+fn skip_leb(code: &[u8], pos: &mut usize, max: usize) -> Option<()> {
+    for _ in 0..max {
+        let byte = *code.get(*pos)?;
+        *pos += 1;
+        if byte & 0x80 == 0 {
+            return Some(());
+        }
+    }
+    None
+}
+
 /// Record each fresh local's first access, op by op, until the body can
-/// first skip an op or every fresh local has been seen.
+/// first skip an op or every tracked local has been seen.
 ///
 /// Only ops after which execution always continues with the next op of
 /// the same body (or leaves the activation by trap or exception, with no
 /// handler in this function) are stepped over; anything else, including
 /// any encoding this scan does not parse, ends the prologue. That only
-/// zeroes more locals than needed, and the real decode reports malformed
-/// bytes.
-fn scan_prologue(code: &[u8], n_params: u32, first: &mut [u8]) {
-    let mut untouched = first.len();
+/// zeroes more locals than needed.
+#[inline]
+fn scan_prologue(code: &[u8], n_params: u32, ends: &mut PrologueEnds) {
     let mut pos = 0;
-    while untouched != 0 {
-        let Some(bytes) = code.get(pos..) else {
+    while ends.untouched != 0 {
+        let Some(&opcode) = code.get(pos) else {
             return;
         };
-        let Some(&opcode) = bytes.first() else {
-            return;
-        };
-        let mut cursor = 1;
-        let mut access = PROLOGUE_UNTOUCHED;
-        let mut local = 0;
+        pos += 1;
         let parsed = match opcode {
             // local.get / local.set / local.tee
-            0x20..=0x22 => probe_u32(bytes, &mut cursor).map(|index| {
-                local = index;
-                access = if opcode == 0x20 {
-                    PROLOGUE_READ_FIRST
-                } else {
-                    PROLOGUE_WRITTEN_FIRST
-                };
+            0x20..=0x22 => code.get(pos..).and_then(|rest| {
+                let mut cursor = 0;
+                let local = probe_u32(rest, &mut cursor)?;
+                pos += cursor;
+                if let Some(fresh) = local.checked_sub(n_params) {
+                    ends.access(fresh, opcode != 0x20);
+                }
+                Some(())
             }),
             // nop, end, drop, select, and every numeric op without an
             // immediate
             0x01 | 0x0b | 0x1a | 0x1b | 0x45..=0xc4 => Some(()),
             // block, loop: an empty or single value type, or a type index
-            0x02 | 0x03 => match bytes.get(1) {
+            0x02 | 0x03 => match code.get(pos) {
                 Some(0x40 | 0x6f | 0x70 | 0x7b..=0x7f) => {
-                    cursor = 2;
+                    pos += 1;
                     Some(())
                 }
-                Some(&byte) if byte < 0x40 || byte >= 0x80 => {
-                    probe_u32(bytes, &mut cursor).map(|_| ())
-                }
+                Some(&byte) if byte < 0x40 || byte >= 0x80 => skip_leb(code, &mut pos, 5),
                 _ => None,
             },
-            // call, global.get, global.set
-            0x10 | 0x23 | 0x24 => probe_u32(bytes, &mut cursor).map(|_| ()),
+            // call, global.get, global.set, memory.size, memory.grow,
+            // i32.const
+            0x10 | 0x23 | 0x24 | 0x3f..=0x41 => skip_leb(code, &mut pos, 5),
             // call_indirect: type index, table index
-            0x11 => probe_u32(bytes, &mut cursor)
-                .and_then(|_| probe_u32(bytes, &mut cursor))
-                .map(|_| ()),
+            0x11 => skip_leb(code, &mut pos, 5).and_then(|()| skip_leb(code, &mut pos, 5)),
             // loads and stores: the alignment flag (64 and up adds a memory
-            // index), then the offset; the same rules as `probe_fast`
-            0x28..=0x3e => probe_u32(bytes, &mut cursor)
-                .and_then(|flag| {
-                    let align = if flag < 64 {
-                        flag
+            // index), then the offset
+            0x28..=0x3e => code
+                .get(pos..)
+                .and_then(|rest| {
+                    let mut cursor = 0;
+                    let flag = probe_u32(rest, &mut cursor)?;
+                    pos += cursor;
+                    if flag < 64 {
+                        Some(())
                     } else {
-                        probe_u32(bytes, &mut cursor)?;
-                        flag - 64
-                    };
-                    (align < 32).then_some(())
+                        skip_leb(code, &mut pos, 5)
+                    }
                 })
-                .and_then(|()| probe_u64(bytes, &mut cursor))
-                .map(|_| ()),
-            // memory.size, memory.grow
-            0x3f | 0x40 => probe_u32(bytes, &mut cursor).map(|_| ()),
-            0x41 => probe_i32(bytes, &mut cursor).map(|_| ()),
-            0x42 => probe_i64(bytes, &mut cursor).map(|_| ()),
-            0x43 => probe_fixed::<4>(bytes, &mut cursor).map(|_| ()),
-            0x44 => probe_fixed::<8>(bytes, &mut cursor).map(|_| ()),
+                .and_then(|()| skip_leb(code, &mut pos, 10)),
+            0x42 => skip_leb(code, &mut pos, 10),
+            0x43 => {
+                pos += 4;
+                Some(())
+            }
+            0x44 => {
+                pos += 8;
+                Some(())
+            }
             _ => None,
         };
         if parsed.is_none() {
             return;
-        }
-        pos += cursor;
-        if access == PROLOGUE_UNTOUCHED {
-            continue;
-        }
-        if let Some(entry) = local
-            .checked_sub(n_params)
-            .and_then(|fresh| first.get_mut(fresh as usize))
-        {
-            if *entry == PROLOGUE_UNTOUCHED {
-                *entry = access;
-                untouched -= 1;
-            }
         }
     }
 }
@@ -4449,6 +4529,84 @@ mod tests {
     use std::format;
     use std::string::String as StdString;
     use std::vec::Vec as StdVec;
+
+    /// `local.set index` (or `local.get`, for `op` 0x20) with a ULEB index.
+    fn local_op(code: &mut StdVec<u8>, op: u8, mut index: u32) {
+        code.push(op);
+        loop {
+            let byte = (index & 0x7f) as u8;
+            index >>= 7;
+            if index == 0 {
+                code.push(byte);
+                break;
+            }
+            code.push(byte | 0x80);
+        }
+    }
+
+    /// A body that sets each of `written` from an `i64.const`, in order,
+    /// then ends the prologue with `local.get 0; if; end`.
+    fn writes_then_branch(written: impl IntoIterator<Item = u32>) -> StdVec<u8> {
+        let mut code = StdVec::new();
+        for local in written {
+            code.extend_from_slice(&[0x42, 0x01]);
+            local_op(&mut code, 0x21, local);
+        }
+        local_op(&mut code, 0x20, 0);
+        code.extend_from_slice(&[0x04, 0x40, 0x0b, 0x0b]);
+        code
+    }
+
+    #[test]
+    fn zero_range_trims_to_the_locals_the_prologue_does_not_write_first() {
+        // One param, four fresh locals: 1 written first, 2 read first,
+        // 3 and 4 untouched.
+        let mut code = StdVec::new();
+        code.extend_from_slice(&[0x42, 0x07]);
+        local_op(&mut code, 0x21, 1);
+        local_op(&mut code, 0x20, 2);
+        code.push(0x1a);
+        local_op(&mut code, 0x20, 0);
+        code.extend_from_slice(&[0x04, 0x40]);
+        local_op(&mut code, 0x20, 4);
+        code.extend_from_slice(&[0x1a, 0x0b, 0x0b]);
+        assert_eq!(zero_range(&code, 1, 5), (2, 5));
+
+        // A write after the first branch does not count.
+        let mut late = writes_then_branch([1]);
+        late.truncate(late.len() - 1);
+        late.extend_from_slice(&[0x42, 0x01]);
+        local_op(&mut late, 0x21, 4);
+        late.push(0x0b);
+        assert_eq!(zero_range(&late, 1, 5), (2, 5));
+
+        // A read before the write keeps the local zeroed.
+        let mut read_first = StdVec::new();
+        local_op(&mut read_first, 0x20, 1);
+        local_op(&mut read_first, 0x21, 1);
+        read_first.push(0x0b);
+        assert_eq!(zero_range(&read_first, 1, 2), (1, 2));
+
+        // Everything written: an empty range.
+        assert_eq!(zero_range(&writes_then_branch(1..5), 1, 5), (1, 1));
+        assert_eq!(zero_range(&writes_then_branch([]), 1, 1), (1, 1));
+    }
+
+    #[test]
+    fn zero_range_stops_at_the_window_edge_of_a_wide_frame() {
+        // Exactly one window of fresh locals, all written but the last.
+        assert_eq!(zero_range(&writes_then_branch(1..64), 1, 65), (64, 65));
+        // 140 fresh locals; the prologue writes all but fresh 70..75. Both
+        // windows are fully written, so the range runs from the low
+        // window's edge (fresh 64) to the high window's (fresh 76).
+        let written = (0..70).chain(75..140).map(|fresh| 1 + fresh);
+        assert_eq!(zero_range(&writes_then_branch(written), 1, 141), (65, 77));
+        // Overlapping windows (100 fresh locals), all written: empty.
+        assert_eq!(zero_range(&writes_then_branch(1..101), 1, 101), (1, 1));
+        // An unwritten local inside both windows sets both ends exactly.
+        let written = (0..50).chain(51..100).map(|fresh| 1 + fresh);
+        assert_eq!(zero_range(&writes_then_branch(written), 1, 101), (51, 52));
+    }
 
     fn assert_pinned_fields_match(
         code: &[Instr],

@@ -7411,6 +7411,38 @@ mod tests {
     }
 
     #[test]
+    fn wide_frame_zeroes_unwritten_locals_between_the_tracked_windows() {
+        // 140 fresh locals. The prologue writes all but fresh 70..75, which
+        // only the first call writes; the second call reuses the same frame
+        // and must read them as zero.
+        let mut src =
+            std::string::String::from("(module (func $wide (param $write i32) (result i64) (local");
+        for _ in 0..140 {
+            src.push_str(" i64");
+        }
+        src.push(')');
+        let prologue = (0..70).chain(75..140);
+        for fresh in prologue.clone() {
+            src.push_str(&format!(" i64.const {} local.set {}", fresh + 1, fresh + 1));
+        }
+        src.push_str(" local.get $write if");
+        for fresh in 70..75 {
+            src.push_str(&format!(" i64.const 1000 local.set {}", fresh + 1));
+        }
+        src.push_str(" end i64.const 0");
+        for fresh in 0..140 {
+            src.push_str(&format!(" local.get {} i64.add", fresh + 1));
+        }
+        src.push_str(
+            ") (func (export \"run\") (result i64)
+                i32.const 1 call $wide drop
+                i32.const 0 call $wide))",
+        );
+        let expected: u64 = prologue.map(|fresh| fresh as u64 + 1).sum();
+        assert_eq!(run1(&src, "run", &[]).unwrap(), expected);
+    }
+
+    #[test]
     fn reference_slot_encoding_round_trips_function_range_endpoints() {
         for encoded in [0, crate::vm::value::FUNCADDR_TOP] {
             let handle = RefValue::new(encoded);
