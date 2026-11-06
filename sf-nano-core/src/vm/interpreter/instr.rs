@@ -35,17 +35,14 @@ pub(crate) const FLAG_DST_ACC: u16 = 1 << 4;
 /// base+index pattern). Loads pack `addr2 << 32 | dst` in c; stores
 /// pack `addr2 << 32 | static_offset` (offset < 2^32, memory 0 only).
 pub(crate) const FLAG_FUSED: u16 = 1 << 5;
-/// This memory access addresses a 64-bit memory.
+/// This memory access addresses a 64-bit memory, or this `call_indirect`
+/// indexes a 64-bit table.
 ///
 /// The generated handlers zero-extend a 32-bit address (`uxtw` and its
-/// equivalents), so a 64-bit access cannot use them; the flag denies the cell
-/// a native handler and the shared executor does the full-width arithmetic.
+/// equivalents) and bounds-check a table index with a 32-bit compare, so a
+/// 64-bit access cannot use them; the flag denies the cell a native handler
+/// and the shared executor does the full-width arithmetic.
 pub(crate) const FLAG_ADDR64: u16 = 1 << 6;
-/// This `call_indirect` targets a table another instance can reach.
-///
-/// Such a table IS the shared entity, whose elements are `RefValue` rather
-/// than 8-byte slots, so no generated handler may index it.
-pub(crate) const FLAG_SHARED_TABLE: u16 = 1 << 7;
 /// This global access needs reference conversion between storage and frame.
 ///
 /// Reachable reference globals can carry absolute world identities, while a

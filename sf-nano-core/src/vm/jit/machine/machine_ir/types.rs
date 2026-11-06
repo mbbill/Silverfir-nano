@@ -325,4 +325,8 @@ pub(crate) enum MachineTrapKind {
     IntegerOverflow,
     InvalidConversion,
     StackOverflow,
+    /// A `call_indirect` index past the end of its table.
+    UndefinedElement,
+    /// A `call_indirect` through a null table slot.
+    UninitializedElement,
 }

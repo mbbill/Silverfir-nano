@@ -1109,9 +1109,11 @@ impl<'a> DecodeContext<'a> {
     fn handle_call_indirect(&mut self, type_idx: u32, table_idx: u32) {
         let (params, results) = self.compile.resolve_type_index(type_idx);
         self.pop_typed_values(1);
+        let index64 = self.compile.store.table(table_idx as usize).limits.is64;
         let idx = self.push_op(SemanticOpKind::CallIndirect {
             type_idx,
             table_idx,
+            index64,
             params,
             results,
         });
@@ -1142,9 +1144,11 @@ impl<'a> DecodeContext<'a> {
     fn handle_return_call_indirect(&mut self, type_idx: u32, table_idx: u32) {
         let (params, results) = self.compile.resolve_type_index(type_idx);
         self.pop_typed_values(1);
+        let index64 = self.compile.store.table(table_idx as usize).limits.is64;
         self.push_op(SemanticOpKind::ReturnCallIndirect {
             type_idx,
             table_idx,
+            index64,
             params,
             results,
         });

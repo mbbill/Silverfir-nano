@@ -44,6 +44,29 @@ impl<'a> BlockLowerContext<'a> {
         Ok((self.use_value(value)?, None))
     }
 
+    /// A table index in one GP word. A 64-bit table's index takes the shape
+    /// of a 64-bit memory address: a pair on a 32-bit host, where a nonzero
+    /// high word is past the end of any table the host can hold, so it
+    /// traps here and the low word goes on to the bounds check.
+    fn use_table_index_word(&mut self, value: SsaValue) -> Result<MachineReg, WasmError> {
+        let (index, hi) = self.use_memory_index_word(value)?;
+        if let Some(hi) = hi {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::TableOutOfBounds,
+                    cond: MachineBranchCond::IntCompare {
+                        width: self.gp_word_int_width(),
+                        kind: MachineCompareKind::Ne,
+                        sign: MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(hi),
+                        rhs: MachineValue::Imm64(0),
+                    },
+                },
+            });
+        }
+        Ok(index)
+    }
+
     fn memory_index_is_64(&self, value: SsaValue) -> bool {
         matches!(
             lir_value_storage_type(self.program(), value),
@@ -826,7 +849,8 @@ impl<'a> BlockLowerContext<'a> {
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
         let index_value = single_arg(args)?.unwrap_value();
-        let index = self.use_value(index_value)?;
+        let index_is_64 = self.memory_index_is_64(index_value);
+        let index = self.use_table_index_word(index_value)?;
         let dst = self.alloc_result_value(single_result(results)?)?;
         let (continuation_ops, terminator) = if self.remaining_use_count(index_value) == 0
             && dst != index
@@ -834,8 +858,15 @@ impl<'a> BlockLowerContext<'a> {
         {
             let continuation_ops =
                 self.lower_table_access_continuation_from_index64(table_idx, dst, index, dst)?;
-            let terminator =
-                self.lower_table_bounds_check(table_idx, index, dst, index, continuation, trap)?;
+            let terminator = self.lower_table_bounds_check(
+                table_idx,
+                index,
+                index_is_64,
+                dst,
+                index,
+                continuation,
+                trap,
+            )?;
             (continuation_ops, terminator)
         } else {
             let index64 = dst;
@@ -843,6 +874,7 @@ impl<'a> BlockLowerContext<'a> {
             let continuation_ops = self.lower_table_access_continuation(
                 table_idx,
                 index,
+                index_is_64,
                 index64,
                 table_len,
                 Some(dst),
@@ -851,6 +883,7 @@ impl<'a> BlockLowerContext<'a> {
             let terminator = self.lower_table_bounds_check(
                 table_idx,
                 index,
+                index_is_64,
                 index64,
                 table_len,
                 continuation,
@@ -899,7 +932,8 @@ impl<'a> BlockLowerContext<'a> {
             let (a, b) = two_args(args)?;
             (a.unwrap_value(), b.unwrap_value())
         };
-        let index = self.use_value(index_value)?;
+        let index_is_64 = self.memory_index_is_64(index_value);
+        let index = self.use_table_index_word(index_value)?;
         let src = self.use_value(src_value)?;
         let dead_index = self.dead_value_reg(index_value);
         let scratch_count = if dead_index.is_some() { 1 } else { 2 };
@@ -912,6 +946,7 @@ impl<'a> BlockLowerContext<'a> {
         let continuation_ops = self.lower_table_access_continuation(
             table_idx,
             index,
+            index_is_64,
             index64,
             table_len,
             None,
@@ -920,6 +955,7 @@ impl<'a> BlockLowerContext<'a> {
         let terminator = self.lower_table_bounds_check(
             table_idx,
             index,
+            index_is_64,
             index64,
             table_len,
             continuation,
@@ -2232,12 +2268,13 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         table_idx: u32,
         index: MachineReg,
+        index_is_64: bool,
         index64: MachineReg,
         table_len: MachineReg,
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<MachineTerminator, WasmError> {
-        if self.gp_reg_width() == 8 {
+        if self.gp_reg_width() == 8 && !index_is_64 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Convert {
                     op: MachineConvertOp::I64ExtendI32U,
@@ -2304,13 +2341,14 @@ impl<'a> BlockLowerContext<'a> {
         &self,
         table_idx: u32,
         index: MachineReg,
+        index_is_64: bool,
         index64: MachineReg,
         scratch: MachineReg,
         load_dst: Option<MachineReg>,
         store_src: Option<MachineReg>,
     ) -> Result<collections::Vec<MachineInst>, WasmError> {
         let mut ops = collections::Vec::new();
-        if self.gp_reg_width() == 8 {
+        if self.gp_reg_width() == 8 && !index_is_64 {
             ops.push(MachineInst {
                 kind: MachineInstKind::Convert {
                     op: MachineConvertOp::I64ExtendI32U,

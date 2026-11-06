@@ -773,6 +773,7 @@ fn lower_block_body_op(
         SemanticOpKind::CallIndirect {
             type_idx,
             table_idx,
+            index64,
             params,
             results,
         } => {
@@ -784,6 +785,7 @@ fn lower_block_body_op(
             lower_call_indirect(
                 *type_idx,
                 *table_idx,
+                *index64,
                 *params,
                 *results,
                 rtypes,
@@ -1109,6 +1111,7 @@ fn lower_call_direct(
 fn lower_call_indirect(
     type_idx: u32,
     table_idx: u32,
+    index64: bool,
     params: u16,
     results: u16,
     result_types: &[ValueType],
@@ -1133,6 +1136,7 @@ fn lower_call_indirect(
         type_idx,
         table_idx,
         index,
+        index64,
         args,
         results: FrameSpan::new(call_base, results),
         result_types: result_types.to_vec().into(),
@@ -1255,6 +1259,7 @@ fn lower_tail_call_direct(
 fn lower_tail_call_indirect(
     type_idx: u32,
     table_idx: u32,
+    index64: bool,
     params: u16,
     results: u16,
     frame: FrameLayoutPlan,
@@ -1273,6 +1278,7 @@ fn lower_tail_call_indirect(
         type_idx,
         table_idx,
         index,
+        index64,
         args,
         return_results: return_results(frame, results),
     })
@@ -2254,6 +2260,7 @@ fn lower_block_terminator(
         SemanticOpKind::CallIndirect {
             type_idx,
             table_idx,
+            index64,
             params,
             results,
         } => {
@@ -2265,6 +2272,7 @@ fn lower_block_terminator(
             lower_call_indirect(
                 *type_idx,
                 *table_idx,
+                *index64,
                 *params,
                 *results,
                 rtypes,
@@ -2363,10 +2371,11 @@ fn lower_block_terminator(
         SemanticOpKind::ReturnCallIndirect {
             type_idx,
             table_idx,
+            index64,
             params,
             results,
         } => Ok(LoweredTerminator::new(lower_tail_call_indirect(
-            *type_idx, *table_idx, *params, *results, frame, state,
+            *type_idx, *table_idx, *index64, *params, *results, frame, state,
         )?)),
         SemanticOpKind::ReturnCallRef {
             type_idx,

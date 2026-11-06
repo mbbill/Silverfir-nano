@@ -692,6 +692,7 @@ fn lower_function(
                             type_idx,
                             table_idx,
                             index,
+                            index64,
                             args,
                             results,
                             result_types,
@@ -701,6 +702,7 @@ fn lower_function(
                         };
                         let type_idx = *type_idx;
                         let table_idx = *table_idx;
+                        let index64 = *index64;
                         let param_locs = derive_param_locs_from_types(&args.param_types, config);
                         let carried_args =
                             capture_indirect_carried_args(&lower, args, &param_locs)?;
@@ -709,7 +711,9 @@ fn lower_function(
                             fixed_local_table_len(table_dispatch_modes, table_idx).is_some();
                         let fixed_fast_table =
                             fixed_local_table && !lower.use_explicit_stack_prechecks();
-                        let index = if fixed_fast_table {
+                        // The dispatch lane holds a 32-bit index; an i64 one is
+                        // published and reloaded at full width instead.
+                        let index = if fixed_fast_table && !index64 {
                             prepare_call_indirect_index_in_lane(&mut lower, index)?
                         } else {
                             IndirectCallIndex::Frame(lower.publish_call_operand_to_frame(index)?)
@@ -720,7 +724,11 @@ fn lower_function(
                         let live_result = inst.result.is_some().then_some(inst.result);
                         let (continuation, continuation_params) = lower_indirect_dispatch_cluster(
                             &mut lower,
-                            IndirectCallSource::Table { table_idx, index },
+                            IndirectCallSource::Table {
+                                table_idx,
+                                index,
+                                index64,
+                            },
                             type_idx,
                             IndirectTransfer::Call {
                                 args,
@@ -804,6 +812,7 @@ fn lower_function(
                 type_idx,
                 table_idx,
                 index,
+                index64,
                 args,
                 return_results,
             } => {
@@ -811,10 +820,12 @@ fn lower_function(
                 lower.publish_call_args_to_frame(args)?;
                 let type_idx = *type_idx;
                 let table_idx = *table_idx;
+                let index64 = *index64;
                 let fixed_local_table =
                     fixed_local_table_len(table_dispatch_modes, table_idx).is_some();
                 let fixed_fast_table = fixed_local_table && !lower.use_explicit_stack_prechecks();
-                let index = if fixed_fast_table {
+                // As for `call_indirect`: an i64 index skips the dispatch lane.
+                let index = if fixed_fast_table && !index64 {
                     prepare_call_indirect_index_in_lane(&mut lower, index)?
                 } else {
                     IndirectCallIndex::Frame(lower.publish_call_operand_to_frame(index)?)
@@ -827,7 +838,11 @@ fn lower_function(
                 let return_results = *return_results;
                 let _ = lower_indirect_dispatch_cluster(
                     &mut lower,
-                    IndirectCallSource::Table { table_idx, index },
+                    IndirectCallSource::Table {
+                        table_idx,
+                        index,
+                        index64,
+                    },
                     type_idx,
                     IndirectTransfer::Tail {
                         args,
@@ -1280,6 +1295,9 @@ enum IndirectCallSource {
     Table {
         table_idx: u32,
         index: IndirectCallIndex,
+        /// The index is an i64 (a 64-bit table); see
+        /// `call_indirect_index_load`.
+        index64: bool,
     },
     Ref {
         ref_slot: FrameSlot,
@@ -1890,7 +1908,11 @@ fn lower_indirect_dispatch_cluster(
     }
 
     match source {
-        IndirectCallSource::Table { table_idx, index } if cached_table => {
+        IndirectCallSource::Table {
+            table_idx,
+            index,
+            index64,
+        } if cached_table => {
             let index_slot = index
                 .frame_slot()
                 .expect("cached indirect dispatch publishes its index for the runtime path");
@@ -1901,7 +1923,7 @@ fn lower_indirect_dispatch_cluster(
             let (miss, miss_load) =
                 cached_miss.expect("cached indirect dispatch should allocate its miss path");
             let lanes = indirect_temps;
-            emit_call_indirect_cached_bounds_setup(lower, table_idx, index_slot)?;
+            emit_call_indirect_cached_bounds_setup(lower, table_idx, index_slot, index64)?;
             carried_args.consume_live_values(lower)?;
             lower.ensure_no_live_values(
                 "prepared SSA-IR call_indirect reached native lowering with live linear SSA values; values must be consumed before the dispatch edge",
@@ -2001,7 +2023,7 @@ fn lower_indirect_dispatch_cluster(
                 collections::Vec::new(),
                 collections::Vec::new(),
                 MachineTerminator::Trap {
-                    kind: MachineTrapKind::TableOutOfBounds,
+                    kind: MachineTrapKind::UndefinedElement,
                 },
             )?;
             push_lowered_block(
@@ -2009,7 +2031,7 @@ fn lower_indirect_dispatch_cluster(
                 original_blocks,
                 extra_blocks,
                 carried_args.params.clone(),
-                build_call_indirect_live_bounds_block(lower, table_idx, index_slot)?,
+                build_call_indirect_live_bounds_block(lower, table_idx, index_slot, index64)?,
                 MachineTerminator::Branch {
                     cond: MachineBranchCond::IntCompare {
                         width: lower.gp_word_int_width(),
@@ -2033,18 +2055,25 @@ fn lower_indirect_dispatch_cluster(
                 original_blocks,
                 extra_blocks,
                 prepend_gp_word_param(lanes.lane0, &carried_args.params),
-                build_call_indirect_checked_block(lower, table_idx, index_slot, true, true, true)?,
+                build_call_indirect_checked_block(
+                    lower, table_idx, index_slot, index64, true, true, true,
+                )?,
                 MachineTerminator::Jump(MachineEdge {
                     target: runtime_call,
                     args: carried_args.param_values(),
                 }),
             )?;
         }
-        IndirectCallSource::Table { table_idx, index } => {
+        IndirectCallSource::Table {
+            table_idx,
+            index,
+            index64,
+        } => {
             let bounds_limit = emit_call_indirect_bounds_check_setup(
                 lower,
                 table_idx,
                 index,
+                index64,
                 fixed_local_table_len,
             )?;
             carried_args.consume_live_values(lower)?;
@@ -2095,6 +2124,7 @@ fn lower_indirect_dispatch_cluster(
                         index.frame_slot().expect(
                             "non-fast indirect table dispatch requires a published frame slot",
                         ),
+                        index64,
                         index.is_dispatch_lane(),
                         fixed_local_table,
                         !fixed_local_table,
@@ -2168,7 +2198,7 @@ fn lower_indirect_dispatch_cluster(
                 collections::Vec::new(),
                 collections::Vec::new(),
                 MachineTerminator::Trap {
-                    kind: MachineTrapKind::TableOutOfBounds,
+                    kind: MachineTrapKind::UndefinedElement,
                 },
             )?;
             if let Some(self_abs_range) = self_abs_range {
@@ -2303,8 +2333,9 @@ fn lower_indirect_dispatch_cluster(
                 extra_blocks,
                 collections::Vec::new(),
                 collections::Vec::new(),
+                // Only a fixed local table branches here, on a null slot.
                 MachineTerminator::Trap {
-                    kind: MachineTrapKind::InvalidFunctionReference,
+                    kind: MachineTrapKind::UninitializedElement,
                 },
             )?;
             if let Some(trap_type_mismatch) = trap_type_mismatch {
@@ -2913,10 +2944,99 @@ fn prepare_call_indirect_index_in_lane(
     Ok(IndirectCallIndex::DispatchLane)
 }
 
+/// Reloads a published `call_indirect` index into `dst`.
+///
+/// An i32 index reloads zero-extended, so a stale high half in a published
+/// GpWord carrier cannot perturb indirect dispatch. A 64-bit table's i64
+/// index keeps every bit the bounds checks need: a 64-bit host loads it
+/// whole, and a 32-bit host, whose tables never exceed `u32::MAX` entries,
+/// saturates an index with a nonzero high word to `u32::MAX`, which every
+/// bounds check then rejects. Only that last path writes `scratch`.
+fn call_indirect_index_load(
+    lower: &BlockLowerContext<'_>,
+    dst: MachineReg,
+    scratch: MachineReg,
+    index_slot: FrameSlot,
+    index64: bool,
+) -> Result<collections::Vec<MachineInst>, WasmError> {
+    let addr = lower.frame_addr(index_slot)?;
+    let load = |dst, addr, width, extension| MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst,
+            addr,
+            width,
+            extension,
+        },
+    };
+    let low = load(
+        dst,
+        addr,
+        MachineMemWidth::U32,
+        MachineLoadExtension::ZeroExtend,
+    );
+    if !index64 {
+        return Ok(collections::vec![low]);
+    }
+    if lower.gp_reg_width() == 8 {
+        return Ok(collections::vec![load(
+            dst,
+            addr,
+            MachineMemWidth::U64,
+            MachineLoadExtension::None,
+        )]);
+    }
+    let high = MachineAddr {
+        base: addr.base,
+        offset: addr
+            .offset
+            .checked_add(4)
+            .ok_or_else(|| WasmError::internal("call_indirect index slot offset overflow"))?,
+    };
+    Ok(collections::vec![
+        low,
+        load(
+            scratch,
+            high,
+            MachineMemWidth::U32,
+            MachineLoadExtension::ZeroExtend,
+        ),
+        MachineInst {
+            kind: MachineInstKind::IntCompare {
+                width: lower.gp_word_int_width(),
+                kind: MachineCompareKind::Ne,
+                sign: MachineSign::Unsigned,
+                dst: scratch,
+                lhs: MachineValue::Reg(scratch),
+                rhs: MachineValue::Imm64(0),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Select {
+                ty: MachineStorageType::GpWord,
+                dst: scratch,
+                on_true: MachineValue::Imm64(u64::from(u32::MAX)),
+                on_false: MachineValue::Reg(dst),
+                cond: MachineValue::Reg(scratch),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Move {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst,
+                src: MachineValue::Reg(scratch),
+            },
+        },
+    ])
+}
+
 fn emit_call_indirect_bounds_check_setup(
     lower: &mut BlockLowerContext<'_>,
     table_idx: u32,
     index_source: IndirectCallIndex,
+    index64: bool,
     fixed_len: Option<u32>,
 ) -> Result<MachineValue, WasmError> {
     evict_call_indirect_control_gp_caches(lower)?;
@@ -2926,19 +3046,9 @@ fn emit_call_indirect_bounds_check_setup(
     let table_views = temps.lane1;
     let table_len = temps.lane2;
     if let IndirectCallIndex::Frame(index_slot) = index_source {
-        lower.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: index,
-                addr: lower.frame_addr(index_slot)?,
-                // Wasm table indices are i32 values even on 64-bit hosts.
-                // Reload them with explicit zero-extension so stale high halves
-                // in a published GpWord carrier cannot perturb indirect dispatch.
-                width: MachineMemWidth::U32,
-                extension: MachineLoadExtension::ZeroExtend,
-            },
-        });
+        for inst in call_indirect_index_load(lower, index, table_views, index_slot, index64)? {
+            lower.emit_machine_inst(inst);
+        }
     }
     if let Some(len) = fixed_len {
         return Ok(MachineValue::Imm64(u64::from(len)));
@@ -2980,20 +3090,14 @@ fn emit_call_indirect_cached_bounds_setup(
     lower: &mut BlockLowerContext<'_>,
     table_idx: u32,
     index_slot: FrameSlot,
+    index64: bool,
 ) -> Result<(), WasmError> {
     evict_call_indirect_control_gp_caches(lower)?;
     let fixed_view = fixed_call_table_view_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::Load {
-            owner: MachineRegOwner::LinearValue,
-            ty: MachineStorageType::GpWord,
-            dst: temps.lane0,
-            addr: lower.frame_addr(index_slot)?,
-            width: MachineMemWidth::U32,
-            extension: MachineLoadExtension::ZeroExtend,
-        },
-    });
+    for inst in call_indirect_index_load(lower, temps.lane0, temps.lane1, index_slot, index64)? {
+        lower.emit_machine_inst(inst);
+    }
     lower.emit_machine_inst(call_indirect_fixed_views_base_load(lower)?);
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
@@ -3019,20 +3123,12 @@ fn build_call_indirect_live_bounds_block(
     lower: &BlockLowerContext<'_>,
     table_idx: u32,
     index_slot: FrameSlot,
+    index64: bool,
 ) -> Result<collections::Vec<MachineInst>, WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
-    Ok(collections::vec![
-        MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: temps.lane0,
-                addr: lower.frame_addr(index_slot)?,
-                width: MachineMemWidth::U32,
-                extension: MachineLoadExtension::ZeroExtend,
-            },
-        },
+    let mut ops = call_indirect_index_load(lower, temps.lane0, temps.lane1, index_slot, index64)?;
+    ops.extend([
         MachineInst {
             kind: MachineInstKind::Load {
                 owner: MachineRegOwner::LinearValue,
@@ -3058,13 +3154,15 @@ fn build_call_indirect_live_bounds_block(
                 extension: MachineLoadExtension::None,
             },
         },
-    ])
+    ]);
+    Ok(ops)
 }
 
 fn build_call_indirect_checked_block(
     lower: &BlockLowerContext<'_>,
     table_idx: u32,
     index_slot: FrameSlot,
+    index64: bool,
     index_in_reg: bool,
     fixed_local_table: bool,
     store_func_idx: bool,
@@ -3076,16 +3174,9 @@ fn build_call_indirect_checked_block(
     let func_idx = temps.lane2;
     let mut ops = collections::Vec::new();
     if !index_in_reg {
-        ops.push(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: index,
-                addr: lower.frame_addr(index_slot)?,
-                width: MachineMemWidth::U32,
-                extension: MachineLoadExtension::ZeroExtend,
-            },
-        });
+        ops.extend(call_indirect_index_load(
+            lower, index, table_base, index_slot, index64,
+        )?);
     }
     ops.extend([
         MachineInst {
@@ -3150,7 +3241,9 @@ fn build_call_indirect_checked_block(
             kind: MachineInstKind::Store {
                 ty: MachineStorageType::GpWord,
                 addr: lower.frame_addr(index_slot)?,
-                width: MachineMemWidth::U32,
+                // The runtime decodes the whole word: a narrower store
+                // would turn a null element into a dangling handle.
+                width: lower.gp_word_mem_width(),
                 src: MachineValue::Reg(func_idx),
             },
         });
