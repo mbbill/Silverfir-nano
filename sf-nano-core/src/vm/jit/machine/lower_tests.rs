@@ -5095,7 +5095,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     assert!(matches!(
         program.blocks[2].terminator,
         MachineTerminator::Trap {
-            kind: MachineTrapKind::TableOutOfBounds
+            kind: MachineTrapKind::UndefinedElement
         }
     ));
     assert!(matches!(
@@ -5119,7 +5119,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     assert!(matches!(
         program.blocks[5].terminator,
         MachineTerminator::Trap {
-            kind: MachineTrapKind::InvalidFunctionReference
+            kind: MachineTrapKind::UninitializedElement
         }
     ));
     assert!(matches!(

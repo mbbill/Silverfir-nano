@@ -171,7 +171,14 @@ fn call_runtime_by_handle(
     results_region: RuntimeCallFrameRegion,
 ) -> Result<NativeCallStatus, WasmError> {
     if handle.is_null() {
-        return Err(trap_error("null function reference"));
+        // A `call_indirect` read the null from a table slot; a `call_ref`
+        // was handed it.
+        return Err(trap_error(match type_check_kind {
+            RuntimeCallTypeCheckKind::IndirectCall => "uninitialized element",
+            RuntimeCallTypeCheckKind::None | RuntimeCallTypeCheckKind::CallRef => {
+                "null function reference"
+            }
+        }));
     }
     let (caller_handle, caller_id, owner_id, local_index) = {
         let caller_store = ctx

@@ -2023,7 +2023,7 @@ fn lower_indirect_dispatch_cluster(
                 collections::Vec::new(),
                 collections::Vec::new(),
                 MachineTerminator::Trap {
-                    kind: MachineTrapKind::TableOutOfBounds,
+                    kind: MachineTrapKind::UndefinedElement,
                 },
             )?;
             push_lowered_block(
@@ -2198,7 +2198,7 @@ fn lower_indirect_dispatch_cluster(
                 collections::Vec::new(),
                 collections::Vec::new(),
                 MachineTerminator::Trap {
-                    kind: MachineTrapKind::TableOutOfBounds,
+                    kind: MachineTrapKind::UndefinedElement,
                 },
             )?;
             if let Some(self_abs_range) = self_abs_range {
@@ -2333,8 +2333,9 @@ fn lower_indirect_dispatch_cluster(
                 extra_blocks,
                 collections::Vec::new(),
                 collections::Vec::new(),
+                // Only a fixed local table branches here, on a null slot.
                 MachineTerminator::Trap {
-                    kind: MachineTrapKind::InvalidFunctionReference,
+                    kind: MachineTrapKind::UninitializedElement,
                 },
             )?;
             if let Some(trap_type_mismatch) = trap_type_mismatch {
@@ -3240,7 +3241,9 @@ fn build_call_indirect_checked_block(
             kind: MachineInstKind::Store {
                 ty: MachineStorageType::GpWord,
                 addr: lower.frame_addr(index_slot)?,
-                width: MachineMemWidth::U32,
+                // The runtime decodes the whole word: a narrower store
+                // would turn a null element into a dangling handle.
+                width: lower.gp_word_mem_width(),
                 src: MachineValue::Reg(func_idx),
             },
         });
