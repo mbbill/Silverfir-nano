@@ -1456,8 +1456,10 @@ impl NativeEngine {
                     arg_base: ins.b,
                 });
             }
+            // The handler indexes table 0 with a 32-bit compare, so a 64-bit
+            // table keeps the slow stub (see `FLAG_ADDR64`).
             Op::CallIndirect
-                if ins.flags & FLAG_A_CONST == 0
+                if ins.flags & (FLAG_A_CONST | FLAG_ADDR64) == 0
                     && ins.c >> 32 == 0
                     && !func.has_exception_handlers_at(index as u32) =>
             {

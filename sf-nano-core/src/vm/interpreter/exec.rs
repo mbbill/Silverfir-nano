@@ -7109,6 +7109,37 @@ mod tests {
     }
 
     #[test]
+    fn table64_call_indirect_keeps_its_full_index_width() {
+        // The native handler compares a table index in 32 bits, so 2^32
+        // would alias entry 0 instead of trapping.
+        let (bin, _) = instantiate(
+            r#"(module
+                (type $unary (func (param i32) (result i32)))
+                (table i64 2 funcref)
+                (elem (i64.const 0) $double $double)
+                (func $double (type $unary) local.get 0 i32.const 2 i32.mul)
+                (func (export "go") (param i64 i32) (result i32)
+                    local.get 1 local.get 0 call_indirect (type $unary)))"#,
+        );
+        let module = Module::new("table64-indirect", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instance");
+        let go = inst.find_export("go").expect("go");
+        let mut result = [u64::MAX];
+        inst.invoke(go, &[1, 21], &mut result).expect("in bounds");
+        assert_eq!(result, [42]);
+        let err = inst
+            .invoke(go, &[1 << 32, 21], &mut result)
+            .expect_err("2^32 is out of bounds");
+        assert_eq!(err.message(), "undefined element");
+    }
+
+    #[test]
     fn static_call_indirect_keeps_generic_slow_restore() {
         let (bin, _) = instantiate(
             r#"(module
