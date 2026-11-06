@@ -119,6 +119,8 @@ pub(crate) enum SemanticOpKind {
     CallIndirect {
         type_idx: u32,
         table_idx: u32,
+        /// The table is 64-bit, so its index operand is an i64.
+        index64: bool,
         params: u16,
         results: u16,
     },
@@ -135,6 +137,8 @@ pub(crate) enum SemanticOpKind {
     ReturnCallIndirect {
         type_idx: u32,
         table_idx: u32,
+        /// The table is 64-bit, so its index operand is an i64.
+        index64: bool,
         params: u16,
         results: u16,
     },

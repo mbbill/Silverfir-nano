@@ -430,11 +430,13 @@ fn render_call(bop: &SsaCallOp) -> String {
             type_idx,
             table_idx,
             index,
+            index64,
             args,
             results,
             ..
         } => format!(
-            "call_indirect type={type_idx} table={table_idx} index={} args={} results=fp[{}..{})",
+            "call_indirect type={type_idx} table={table_idx} index{}={} args={} results=fp[{}..{})",
+            if *index64 { "64" } else { "" },
             render_ssa_call_operand_loc(index),
             render_ssa_call_args(args),
             results.start.0,
@@ -505,10 +507,12 @@ fn render_lir_terminator(term: &SsaTerminator) -> String {
             type_idx,
             table_idx,
             index,
+            index64,
             args,
             return_results,
         } => format!(
-            "tail_call_indirect type={type_idx} table={table_idx} index={} args={} results={}",
+            "tail_call_indirect type={type_idx} table={table_idx} index{}={} args={} results={}",
+            if *index64 { "64" } else { "" },
             render_ssa_call_operand_loc(index),
             render_ssa_call_args(args),
             render_frame_span_or_void(*return_results),
