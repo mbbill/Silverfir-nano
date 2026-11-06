@@ -1852,7 +1852,23 @@ impl RiscV {
         a.ins(&format!("srli {T5}, {T4}, 32"));
         self.br_far(a, "bne", T5, "zero", &st.slow); // upper 32 bits are nonzero
         a.ins(&format!("ld {T5}, 48({STATE})")); // info length
-        self.br_far(a, "bgeu", T4, T5, &st.slow);
+        let local = a.fresh("cilocal");
+        // A local function index goes straight on. A table another instance
+        // can reach holds world identities instead: map this instance's own
+        // back to local indices, and let anything outside its range wrap
+        // past the map length. A gap reads u32::MAX and fails the index
+        // check below.
+        a.ins(&format!("bltu {T4}, {T5}, {local}"));
+        a.ins(&format!("ld {T6}, 128({STATE})")); // self_abs_base
+        a.ins(&format!("sub {T4}, {T4}, {T6}"));
+        a.ins(&format!("ld {T6}, 136({STATE})")); // map length
+        self.br_far(a, "bgeu", T4, T6, &st.slow); // not this instance's function
+        a.ins(&format!("ld {T6}, 144({STATE})")); // identity -> local index map
+        a.ins(&format!("slli {T3}, {T4}, 2"));
+        a.ins(&format!("add {T6}, {T6}, {T3}"));
+        a.ins(&format!("lwu {T4}, 0({T6})"));
+        self.br_far(a, "bgeu", T4, T5, &st.slow); // gap
+        a.label(&local);
         a.ins(&format!("ld {T5}, 40({STATE})")); // info base
         a.ins(&format!("slli {T6}, {T4}, 1"));
         a.ins(&format!("add {T6}, {T6}, {T4}")); // fi*3

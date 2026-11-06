@@ -788,9 +788,9 @@ impl Isa for Arm64 {
         // Table 0's base/length and the per-function info table come from
         // the entry state, refreshed on every chain entry, so table.grow
         // and table.set need no invalidation protocol. Every guard failure
-        // (bounds, null, type mismatch, import callee) bails to the slow
-        // stub, which re-executes the cell and raises the proper trap or
-        // routes the host call.
+        // (bounds, null, type mismatch, import callee, a peer's function)
+        // bails to the slow stub, which re-executes the cell and raises the
+        // proper trap or routes the call.
         a.label(&st.call_indirect);
         self.bump(a, self.counting);
         a.ins("ldr x9, [x19, #8]");
@@ -809,7 +809,22 @@ impl Isa for Arm64 {
         a.ins(&format!("cbnz x13, {}", st.slow)); // upper 32 bits are nonzero
         a.ins("ldr x13, [x21, #48]"); // info length
         a.ins("cmp x12, x13");
-        a.ins(&format!("b.hs {}", st.slow)); // function index out of bounds
+        let local = a.fresh("cilocal");
+        // A local function index goes straight on. A table another instance
+        // can reach holds world identities instead: map this instance's own
+        // back to local indices, and let anything outside its range wrap
+        // past the map length. A gap reads u32::MAX and fails the index
+        // check below.
+        a.ins(&format!("b.lo {local}"));
+        a.ins("ldp x16, x9, [x21, #128]"); // self_abs_base, map length
+        a.ins("sub x12, x12, x16");
+        a.ins("cmp x12, x9");
+        a.ins(&format!("b.hs {}", st.slow)); // not this instance's function
+        a.ins("ldr x16, [x21, #144]"); // identity -> local index map
+        a.ins("ldr w12, [x16, x12, lsl #2]");
+        a.ins("cmp x12, x13");
+        a.ins(&format!("b.hs {}", st.slow)); // gap
+        a.label(&local);
         a.ins("ldr x13, [x21, #40]"); // info base
         a.ins("add x11, x12, x12, lsl #1"); // fi*3
         a.ins("add x13, x13, x11, lsl #3"); // entry = info + fi*24

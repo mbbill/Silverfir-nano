@@ -232,14 +232,16 @@ fn localize_slot_with(
 /// A table's entries, in one of two tiers.
 ///
 /// This mirrors what the JIT does with `TableDispatchMode`: a table nobody
-/// else can see keeps a private array the dispatch chain may index directly,
-/// while one that is imported or exported must be the SHARED entity, because
-/// another instance can write to it and both sides have to observe that.
+/// else can see keeps a private array of slots, while one that is imported
+/// or exported must be the SHARED entity, because another instance can write
+/// to it and both sides have to observe that.
 ///
-/// The tiers differ in element type, which is the whole reason for the split:
-/// the chain reads 8-byte slots, and `TableInst` holds `RefValue`, which is
-/// narrower on the 32-bit targets. A shared table therefore never reaches a
-/// native handler.
+/// The tiers also differ in what they hold for this instance's own
+/// functions: a private array stores their local indices, a shared
+/// `TableInst` their world identities, which a reader maps back through
+/// `self_local_by_abs`. Element width differs only on a 32-bit host, where
+/// a `RefValue` is narrower than a slot; see `fast_base` for which tiers the
+/// dispatch chain indexes.
 enum TableEntries {
     Private(Vec<u64>),
     Shared(TableInst),
@@ -312,12 +314,17 @@ impl TableEntries {
 
     /// The base pointer the dispatch chain indexes, when there is one.
     ///
-    /// `None` for a shared table: its elements are `RefValue`, not 8-byte
-    /// slots, so no native handler may read them.
+    /// A shared table has one where a `RefValue` is a full 8-byte slot: its
+    /// machine form is then its own bits (`ref_to_machine_raw` is the
+    /// identity), so the chain reads `TableInst`'s buffer in place. Only a
+    /// grow moves that buffer, and every writer runs outside the chain,
+    /// which re-reads this on each entry. On a 32-bit host a shared table
+    /// has none; no 32-bit backend has a native call handler either.
     #[inline]
     fn fast_base(&self) -> Option<*const u64> {
         match self {
             Self::Private(v) => Some(v.as_ptr()),
+            Self::Shared(t) if SLOT_GP_UNIT_BYTES == 8 => Some(t.elements().as_ptr().cast()),
             Self::Shared(_) => None,
         }
     }
@@ -3201,9 +3208,9 @@ impl InterpInstance {
         }
         // The raw pointers below stay valid across `exec_ins`: the value
         // stack, return stack, and globals never reallocate inside drive,
-        // and linked cells are only dropped with the whole instance.
-        // Memory CAN grow (slow path), so its base/len refresh on every
-        // re-entry.
+        // the self-identity map is fixed at instantiation, and linked cells
+        // are only dropped with the whole instance. Memory CAN grow (slow
+        // path), so its base/len refresh on every re-entry.
         let stack_ptr = ctx.stack.as_mut_ptr() as u64;
         let ret_ptr = ctx.ret_stack.as_mut_ptr() as u64;
         let mut state = EnterState {
@@ -3229,6 +3236,9 @@ impl InterpInstance {
                 .native
                 .as_ref()
                 .map_or(0, |n| n.indirect_info.len() as u64),
+            self_abs_base: self.self_abs_base as u64,
+            self_abs_len: self.self_local_by_abs.len() as u64,
+            self_abs_map: self.self_local_by_abs.as_ptr() as u64,
         };
         let mut cur_base = act.base;
         let mut cur_l0_slot = (l0_off / 8) as usize;
@@ -3238,13 +3248,14 @@ impl InterpInstance {
                 state.mem_base = m.inst.memory_ptr() as u64;
                 state.mem_len = m.inst.memory_len() as u64;
             }
-            // Table 0 can move or grow only on the slow path, so a
-            // per-entry refresh keeps the native indirect-call handler
-            // valid with no invalidation protocol.
+            // Table 0 can move or grow only while the chain is out: on the
+            // slow path, or, for a shared table, in a host or another
+            // instance reached from it. A per-entry refresh therefore keeps
+            // the native indirect-call handler valid with no invalidation
+            // protocol.
             if let Some(t) = self.tables.first() {
-                // Only a private table has a base the chain may index; a
-                // shared one holds `RefValue`, so it is left at zero and its
-                // accesses run on the slow path.
+                // A table with no base the chain may index is left at zero,
+                // so its indirect calls run on the slow path.
                 match t.entries.fast_base() {
                     Some(base) => {
                         state.table0_base = base as u64;
@@ -7054,17 +7065,18 @@ mod tests {
     }
 
     #[test]
-    fn exported_table_call_indirect_guard_uses_native_payload_fast_path() {
+    fn exported_table_call_indirect_resolves_own_identities_natively() {
         let (bin, _) = instantiate(
             r#"(module
                 (type $unused (func))
                 (type $unary (func (param i32) (result i32)))
-                (table (export "table") 2 funcref)
-                (elem (i32.const 0) $double $square)
+                (table (export "table") 4 funcref)
+                (elem (i32.const 0) $double $square $nop)
                 (func $double (type $unary) (param i32) (result i32)
                     local.get 0 i32.const 2 i32.mul)
                 (func $square (type $unary) (param i32) (result i32)
                     local.get 0 local.get 0 i32.mul)
+                (func $nop (type $unused))
                 (func (export "go") (param i32 i32) (result i32)
                     local.get 1 local.get 0 call_indirect (type $unary)))"#,
         );
@@ -7080,7 +7092,11 @@ mod tests {
 
         {
             let native = inst.native.as_ref().expect("native state");
-            assert!(inst.tables[0].entries.fast_base().is_none());
+            // The shared entity holds world identities, which no local index
+            // can equal, and the chain still indexes it in place.
+            let first = inst.tables[0].entries.get(0).expect("slot 0");
+            assert!(first as usize >= inst.module.functions().len());
+            assert!(inst.tables[0].entries.fast_base().is_some());
             let (cell, ins, cell_index) = linked_cell_for_op(&inst, go, Op::CallIndirect);
             let ci_h = native.engine.callindirect_handler_addr();
             assert_eq!(cell.h, ci_h);
@@ -7095,17 +7111,29 @@ mod tests {
             );
         }
 
+        let indirect_exits = |inst: &InterpInstance| {
+            inst.slow_exit_stats()
+                .into_iter()
+                .find(|&(op, _)| op == Op::CallIndirect)
+                .map_or(0, |(_, n)| n)
+        };
         let mut result = [u64::MAX];
         inst.invoke(go, &[0, 21], &mut result).expect("double");
         assert_eq!(result, [42]);
         inst.invoke(go, &[1, 7], &mut result).expect("square");
         assert_eq!(result, [49]);
-        assert_eq!(
-            inst.slow_exit_stats()
-                .into_iter()
-                .find(|&(op, _)| op == Op::CallIndirect),
-            Some((Op::CallIndirect, 2))
-        );
+        assert_eq!(indirect_exits(&inst), 0, "own identities resolve natively");
+
+        // Every guard failure still reaches the slow path, which traps.
+        for (slot, message) in [
+            (2, "indirect call type mismatch"),
+            (3, "uninitialized element"),
+            (4, "undefined element"),
+        ] {
+            let err = inst.invoke(go, &[slot, 1], &mut result).expect_err(message);
+            assert_eq!(err.message(), message, "slot {slot}");
+        }
+        assert_eq!(indirect_exits(&inst), 3);
     }
 
     #[test]

@@ -796,7 +796,21 @@ impl Isa for X86_64 {
         a.ins("shr rdx, 32");
         a.ins(&format!("jnz {}", st.slow)); // upper 32 bits are nonzero
         a.ins("cmp rcx, [r15 + 48]"); // info length
-        a.ins(&format!("jae {}", st.slow)); // function index out of bounds
+        let local = a.fresh("cilocal");
+        // A local function index goes straight on. A table another instance
+        // can reach holds world identities instead: map this instance's own
+        // back to local indices, and let anything outside its range wrap
+        // past the map length. A gap reads u32::MAX and fails the index
+        // check below.
+        a.ins(&format!("jb {local}"));
+        a.ins("sub rcx, [r15 + 128]"); // minus self_abs_base
+        a.ins("cmp rcx, [r15 + 136]"); // map length
+        a.ins(&format!("jae {}", st.slow)); // not this instance's function
+        a.ins("mov rdx, [r15 + 144]"); // identity -> local index map
+        a.ins("mov ecx, [rdx + rcx*4]");
+        a.ins("cmp rcx, [r15 + 48]");
+        a.ins(&format!("jae {}", st.slow)); // gap
+        a.label(&local);
         a.ins("mov rdx, [r15 + 40]"); // info base
         a.ins("lea rax, [rcx + rcx*2]"); // fi*3
         a.ins("lea rdx, [rdx + rax*8]"); // entry = info + fi*24

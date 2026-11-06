@@ -46,7 +46,6 @@ use super::instr::{operand_is_f32, result_is_f32};
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
     FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_GLOBAL_CONVERT, FLAG_NO_NATIVE,
-    FLAG_SHARED_TABLE,
 };
 #[cfg(test)]
 use super::layout::slot_fields;
@@ -1583,13 +1582,6 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         }
     }
 
-    fn table_is_shared(&self, idx: u64) -> bool {
-        self.module
-            .tables()
-            .get(idx as usize)
-            .is_some_and(|t| t.is_import() || !t.export_names().is_empty())
-    }
-
     fn memory_is_64(&self, idx: u64) -> bool {
         self.module
             .memories()
@@ -2600,9 +2592,6 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 // instead of trapping. Deny it the handler.
                 if self.table_is_64(type_idx >> 32) {
                     flags |= FLAG_ADDR64;
-                }
-                if self.table_is_shared(type_idx >> 32) {
-                    flags |= FLAG_SHARED_TABLE;
                 }
                 let op = if tail {
                     Op::ReturnCallIndirect

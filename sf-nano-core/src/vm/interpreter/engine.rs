@@ -19,7 +19,7 @@ use crate::collections::Vec;
 use super::instr::{operand_is_f32, operand_is_float, result_is_f32, result_is_float};
 use super::instr::{
     Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC,
-    FLAG_FUSED, FLAG_GLOBAL_CONVERT, FLAG_NO_NATIVE, FLAG_SHARED_TABLE,
+    FLAG_FUSED, FLAG_GLOBAL_CONVERT, FLAG_NO_NATIVE,
 };
 use super::layout::{
     c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned, CELL,
@@ -99,6 +99,15 @@ pub(super) struct EnterState {
     // ride it across activation boundaries)
     pub table0_base: u64, // 112: table 0 entries (in only, RefValue slots)
     pub table0_len: u64,  // 120
+    /// 128: lowest world identity this instance owns, `usize::MAX` when it
+    /// owns none (in only). A table another instance can reach holds
+    /// identities rather than local indices; the indirect-call handler maps
+    /// this instance's own back through `self_abs_map`.
+    pub self_abs_base: u64,
+    pub self_abs_len: u64, // 136: entries in `self_abs_map`
+    /// 144: identity minus `self_abs_base` -> local function index, one
+    /// `u32` each, `u32::MAX` for a gap (in only)
+    pub self_abs_map: u64,
 }
 
 // The backends hard-code these offsets.
@@ -120,7 +129,10 @@ const _: () = {
     assert!(offset_of!(EnterState, acc_value) == 104);
     assert!(offset_of!(EnterState, table0_base) == 112);
     assert!(offset_of!(EnterState, table0_len) == 120);
-    assert!(core::mem::size_of::<EnterState>() == 128);
+    assert!(offset_of!(EnterState, self_abs_base) == 128);
+    assert!(offset_of!(EnterState, self_abs_len) == 136);
+    assert!(offset_of!(EnterState, self_abs_map) == 144);
+    assert!(core::mem::size_of::<EnterState>() == 152);
 };
 
 /// One 32-byte dispatch cell: [`Instr`] with the leading word replaced by
@@ -1068,7 +1080,7 @@ impl NativeEngine {
     fn handler_for(&self, ins: &Instr, flags: u16, pin: &Pinned) -> usize {
         // The generated handlers zero-extend a 32-bit address, so a 64-bit
         // memory access has no native form and takes the shared executor.
-        if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_GLOBAL_CONVERT | FLAG_NO_NATIVE) != 0 {
+        if flags & (FLAG_ADDR64 | FLAG_GLOBAL_CONVERT | FLAG_NO_NATIVE) != 0 {
             return 0;
         }
         match op_slot(ins, flags, pin) {
@@ -1081,9 +1093,7 @@ impl NativeEngine {
     /// Kept only as a differential oracle for the cached production path.
     #[cfg(test)]
     fn handler_for_uncached_reference(&self, ins: &Instr, flags: u16, pin: &Pinned) -> usize {
-        if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_GLOBAL_CONVERT) != 0
-            || !super::layout::native_guard(ins)
-        {
+        if flags & (FLAG_ADDR64 | FLAG_GLOBAL_CONVERT) != 0 || !super::layout::native_guard(ins) {
             return 0;
         }
         match op_slot(ins, flags, pin) {
@@ -2279,7 +2289,7 @@ mod tests {
             Instr::new(Op::I32_Add, FLAG_A_ACC | FLAG_DST_ACC, 4, 1, 5),
             // Permanently slow consumer: strips its hint and the producer's
             // store-skipping hint, then recomputes both handlers.
-            Instr::new(Op::TableGet, FLAG_A_ACC | FLAG_SHARED_TABLE, 5, 0, 6),
+            Instr::new(Op::TableGet, FLAG_A_ACC, 5, 0, 6),
             // Calls are valid accumulator producers even though their table
             // handler is zero.
             Instr::new(Op::Call, 0, 0, 0, 0),
