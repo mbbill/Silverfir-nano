@@ -647,8 +647,9 @@ impl Isa for Arm64 {
             float_pin_f32: true,
             native_calls: true,
             page_aligned_blob: true,
-            // 0x00000000 is `udf #0`. EXPERIMENT: Apple builds take no
-            // line guard, to measure the 128-byte guard against none.
+            // 0x00000000 is `udf #0`. Apple builds take no line guard:
+            // the 64-byte one measured slower on M1 and a 128-byte one is
+            // unmeasured (docs/HANDLER_LAYOUT.md, "Line guard").
             handler_line: (!self.apple_tuning).then_some(HandlerLine { log2: 6, fill: 0 }),
         }
     }
