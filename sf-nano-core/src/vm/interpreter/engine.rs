@@ -22,7 +22,7 @@ use super::instr::{
     FLAG_FUSED, FLAG_GLOBAL_CONVERT, FLAG_NO_NATIVE, FLAG_SHARED_TABLE,
 };
 use super::layout::{
-    c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned,
+    c_is_branch_target, family, op_slot, total_slots, transform_bc, writes_acc, Fam, Pinned, CELL,
 };
 use super::layout::{native_may_exit_slow, slot_fields};
 use super::predecode::LinkFunction;
@@ -67,21 +67,27 @@ pub(super) const EXIT_TRAP_BASE: u64 = 16;
 /// match `exec_ins` exactly (differential and spectest parity).
 pub(super) const TRAP_KINDS: &[&str] = &["out of bounds memory access", "call stack exhausted"];
 
-/// Bytes per native return-stack record:
-/// `(ret_pc, frame, code_base | caller_l0off<<48, caller_l1off)`.
-pub(super) const RET_RECORD: usize = 32;
+/// Bytes per native return-stack record: `(ret_pc, frame)`. A native
+/// `Return` reads the caller's pinned-local offsets from the call cell just
+/// before `ret_pc`: the top 16 bits of its c word hold the l0 offset (bit 0
+/// the caller's float-pinned flag; offsets are byte-scaled, so it is free)
+/// and those of its a word the l1 offset. Rust plants only sentinels, which
+/// point at the exit cell behind an all-zero stand-in call cell.
+pub(super) const RET_RECORD: usize = 16;
 
 /// Communication block between Rust and the native chain. Field offsets
 /// are baked into every backend's trampoline; keep in sync with
 /// `interp_gen`.
 #[repr(C)]
 pub(super) struct EnterState {
-    pub reason: u64,       // 0
-    pub pc: u64,           // 8: cell address (in on entry, out on exit)
-    pub frame: u64,        // 16: frame base pointer (in AND out: calls move it)
-    pub mem_base: u64,     // 24: memory 0 base (unused when len is 0)
-    pub mem_len: u64,      // 32
-    pub code_base: u64,    // 40: dispatch-cell base of the CURRENT function
+    pub reason: u64,   // 0
+    pub pc: u64,       // 8: cell address (in on entry, out on exit)
+    pub frame: u64,    // 16: frame base pointer (in AND out: calls move it)
+    pub mem_base: u64, // 24: memory 0 base (unused when len is 0)
+    pub mem_len: u64,  // 32
+    /// 40: per-function indirect-call info, `[u64; 3]` per function index
+    /// (in only)
+    pub indirect_base: u64,
     pub indirect_len: u64, // 48: number of per-function info entries
     pub ret_cursor: u64,   // 56: native return-stack cursor (in and out)
     pub ret_limit: u64,    // 64: return-stack end (depth exhaustion)
@@ -93,9 +99,29 @@ pub(super) struct EnterState {
     // ride it across activation boundaries)
     pub table0_base: u64, // 112: table 0 entries (in only, RefValue slots)
     pub table0_len: u64,  // 120
-    pub indirect_base: u64, // 128: per-function indirect-call info, [u64;3]
-                          // per function index (in only)
 }
+
+// The backends hard-code these offsets.
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(EnterState, reason) == 0);
+    assert!(offset_of!(EnterState, pc) == 8);
+    assert!(offset_of!(EnterState, frame) == 16);
+    assert!(offset_of!(EnterState, mem_base) == 24);
+    assert!(offset_of!(EnterState, mem_len) == 32);
+    assert!(offset_of!(EnterState, indirect_base) == 40);
+    assert!(offset_of!(EnterState, indirect_len) == 48);
+    assert!(offset_of!(EnterState, ret_cursor) == 56);
+    assert!(offset_of!(EnterState, ret_limit) == 64);
+    assert!(offset_of!(EnterState, stack_limit) == 72);
+    assert!(offset_of!(EnterState, dispatches) == 80);
+    assert!(offset_of!(EnterState, l0_value) == 88);
+    assert!(offset_of!(EnterState, l1_value) == 96);
+    assert!(offset_of!(EnterState, acc_value) == 104);
+    assert!(offset_of!(EnterState, table0_base) == 112);
+    assert!(offset_of!(EnterState, table0_len) == 120);
+    assert!(core::mem::size_of::<EnterState>() == 128);
+};
 
 /// One 32-byte dispatch cell: [`Instr`] with the leading word replaced by
 /// the handler address.
@@ -151,7 +177,7 @@ fn restore_native_slow_instr(head: u32, cell: &DCell) -> Option<Instr> {
         Op::CallIndirect => (
             unscale(cell.a & ((1u64 << 48) - 1)),
             unscale(cell.b & 0xffff_ffff),
-            cell.c,
+            cell.c & ((1u64 << 48) - 1),
         ),
         Op::MemoryFill | Op::MemoryCopy => (unscale(cell.a), unscale(cell.b), unscale(cell.c)),
         Op::MemoryFillCopy => (unscale(cell.a), unscale(cell.b), cell.c),
@@ -233,7 +259,9 @@ pub(super) enum CallFixup {
 pub(super) struct LinkPlan {
     cells: Vec<DCell>,
     heads: Vec<u32>,
-    br_flat: Vec<u32>,
+    /// Every function's branch tables back to back, each entry the
+    /// absolute address of its target cell.
+    br_flat: Vec<u64>,
     call_fixups: Vec<CallFixup>,
     planned_cells: usize,
     planned_br_entries: usize,
@@ -341,7 +369,7 @@ impl LinkPlan {
     #[cfg(test)]
     pub(super) fn branch_bytes(&self) -> core::ops::Range<u64> {
         let start = self.br_flat.as_ptr() as u64;
-        start..start + self.br_flat.len() as u64 * core::mem::size_of::<u32>() as u64
+        start..start + self.br_flat.len() as u64 * core::mem::size_of::<u64>() as u64
     }
 
     #[cfg(test)]
@@ -822,6 +850,19 @@ impl PinCensus {
                 slot.count += 1;
                 slot.wdom |= 1;
             }
+            if ins.op == Op::Return && ins.a < n {
+                // A single local returned from its own slot stands in for
+                // the staging copy it replaces; count that copy's read so
+                // pin selection matches the staged form.
+                let slot = &mut self.slots[ins.a as usize];
+                slot.count += 1;
+                if operand_is_float(Op::MovSlot, false) {
+                    slot.rdom |= 2;
+                    slot.f32dom |= operand_is_f32(Op::MovSlot, false);
+                } else {
+                    slot.rdom |= 1;
+                }
+            }
             if ins.op == Op::Select {
                 let dslot = ins.c & 0xffff_ffff;
                 if dslot < n {
@@ -923,11 +964,13 @@ pub(super) struct NativeEngine {
     callindirect_handler: usize,
     code_len: usize,
     entry: usize,
-    /// One synthetic cell whose handler word is the `EXIT_RETURN` stub.
-    /// Sentinel return-stack records point here, so a native `Return` that
-    /// pops a sentinel lands in Rust — the boxed cell must outlive every
-    /// record that references it.
-    exit_cell: Box<DCell>,
+    /// An all-zero stand-in call cell, then one synthetic cell whose handler
+    /// word is the `EXIT_RETURN` stub. Sentinel return-stack records point
+    /// at the second, so a native `Return` that pops a sentinel lands in
+    /// Rust, and the caller pinned-local offsets it reads from the cell
+    /// before are zero. The boxed cells must outlive every record that
+    /// references them.
+    exit_cells: Box<[DCell; 2]>,
 }
 
 impl NativeEngine {
@@ -953,12 +996,20 @@ impl NativeEngine {
             callindirect_handler: base + meta[4] as usize,
             code_len: meta[5] as usize,
             entry,
-            exit_cell: Box::new(DCell {
-                h: return_exit as u64,
-                a: 0,
-                b: 0,
-                c: 0,
-            }),
+            exit_cells: Box::new([
+                DCell {
+                    h: 0,
+                    a: 0,
+                    b: 0,
+                    c: 0,
+                },
+                DCell {
+                    h: return_exit as u64,
+                    a: 0,
+                    b: 0,
+                    c: 0,
+                },
+            ]),
         }
     }
 
@@ -969,9 +1020,9 @@ impl NativeEngine {
         self.code_len
     }
 
-    /// Address of the sentinel exit cell (see `exit_cell`).
+    /// Address of the sentinel exit cell (see `exit_cells`).
     pub(super) fn exit_cell_addr(&self) -> u64 {
-        &*self.exit_cell as *const DCell as u64
+        &self.exit_cells[1] as *const DCell as u64
     }
 
     pub(super) fn call_handler_addr(&self) -> u64 {
@@ -1223,20 +1274,6 @@ impl NativeEngine {
         let pin = func.pinned();
         let code_len = func.code_len();
 
-        // Flatten the branch tables; BrTable cells carry a byte offset
-        // into the flat buffer until the final address fixup below.
-        let table_byte_off = &mut scratch.table_byte_off;
-        table_byte_off.clear();
-        for table_index in 0..func.br_table_count() {
-            let t = func
-                .br_table(table_index)
-                .expect("predecoded branch-table index");
-            table_byte_off.push(plan.br_flat.len() as u64 * 4);
-            for &target in t.iter() {
-                plan.br_flat.push(target);
-            }
-        }
-
         // One cell of slack past the last instruction. Every handler that
         // ends in a dispatch tail prefetches the NEXT cell's handler word
         // at entry, so the last real cell reads eight bytes beyond the
@@ -1262,6 +1299,23 @@ impl NativeEngine {
         // Every linked body contains at least its prefetch pad, so this is
         // always an in-allocation address rather than a one-past pointer.
         let cells_base = unsafe { plan.cells.as_ptr().add(cell_start) as u64 };
+        // Flatten the branch tables. Each entry is its target cell's
+        // absolute address, so a BrTable handler loads the next cell pointer
+        // directly and needs no register holding the function's cell base.
+        // BrTable cells carry a byte offset into the flat buffer until the
+        // final address fixup below.
+        let table_byte_off = &mut scratch.table_byte_off;
+        table_byte_off.clear();
+        for table_index in 0..func.br_table_count() {
+            let t = func
+                .br_table(table_index)
+                .expect("predecoded branch-table index");
+            table_byte_off.push(plan.br_flat.len() as u64 * 8);
+            for &target in t.iter() {
+                plan.br_flat
+                    .push(cells_base + u64::from(target) * u64::from(CELL));
+            }
+        }
         let lf = LinkedFunction {
             #[cfg(test)]
             cell_start,
@@ -1540,11 +1594,19 @@ mod tests {
     fn native_handler_size(engine: &NativeEngine, ins: Instr) -> usize {
         let start = engine.handler_for(&ins, ins.flags, &Pinned::NONE);
         assert_ne!(start, 0, "missing native handler for {:?}", ins.op);
-        let end = (0..INTERP_HANDLER_SLOTS)
+        let mut end = (0..INTERP_HANDLER_SLOTS)
             .filter_map(|slot| engine.handler_at(slot))
             .filter(|&address| address > start)
             .min()
             .unwrap_or(engine.base + engine.code_len);
+        // The line guard pads ahead of the next handler with `udf #0`
+        // words (all bits zero); they belong to neither handler, and no
+        // handler ends in one.
+        // SAFETY: [start, end) lies inside the engine blob linked into
+        // the readable text segment, and both ends are 4-byte aligned.
+        while end > start && unsafe { core::ptr::read((end - 4) as *const u32) } == 0 {
+            end -= 4;
+        }
         end - start
     }
 
@@ -1906,7 +1968,7 @@ mod tests {
         let mut table_byte_off = Vec::with_capacity(func.br_tables.len());
         let mut flat_len = 0usize;
         for table in &func.br_tables {
-            table_byte_off.push(flat_len as u64 * 4);
+            table_byte_off.push(flat_len as u64 * 8);
             flat_len += table.len();
         }
 
@@ -1961,11 +2023,15 @@ mod tests {
         cells
     }
 
-    fn assert_reference_equivalence(engine: &NativeEngine, func: &PredecodedFunction) {
+    fn assert_reference_equivalence(
+        engine: &NativeEngine,
+        func: &PredecodedFunction,
+        n_locals: u32,
+    ) {
         let pin = func.pinned();
         assert_eq!(
             pin,
-            select_pinned_reference(&func.code, func.n_locals),
+            select_pinned_reference(&func.code, n_locals),
             "predecoded pinned census differs from the full-stream oracle"
         );
         let reference = engine.resolve_reference(&func.code, &pin);
@@ -1984,10 +2050,11 @@ mod tests {
         );
         plan.finish_layout();
 
-        let expected_flat: Vec<u32> = func
+        let expected_flat: Vec<u64> = func
             .br_tables
             .iter()
             .flat_map(|table| table.iter().copied())
+            .map(|target| linked.cell_base() + u64::from(target) * u64::from(CELL))
             .collect();
         assert_eq!(plan.br_flat, expected_flat, "branch flattening differs");
         let cells = plan.cells(&linked);
@@ -2075,7 +2142,13 @@ mod tests {
             );
         }
         assert_eq!(in_place_cells.last(), cells.last());
-        assert_eq!(in_place.br_flat, plan.br_flat);
+        let relative = |flat: &[u64], cells_base: u64| -> Vec<u64> {
+            flat.iter().map(|&entry| entry - cells_base).collect()
+        };
+        assert_eq!(
+            relative(&in_place.br_flat, in_place_linked.cell_base()),
+            relative(&plan.br_flat, linked.cell_base())
+        );
         assert_eq!(in_place.call_fixups, plan.call_fixups);
         assert_eq!(in_place_types, call_indirect_types);
         assert_eq!(in_place.heads, expected_heads);
@@ -2171,8 +2244,8 @@ mod tests {
         let linked = DCell {
             h: 1,
             a: 17u64 << 48 | indirect.a * 8,
-            b: 13u64 << 48 | 19u64 << 32 | indirect.b * 8,
-            c: indirect.c,
+            b: 19u64 << 32 | indirect.b * 8,
+            c: 13u64 << 48 | indirect.c,
         };
         let restored = restore_native_slow_instr(indirect.packed_head(), &linked)
             .expect("call_indirect type payload");
@@ -2186,13 +2259,13 @@ mod tests {
     fn delayed_linker_matches_reference_on_acc_edge_cases() {
         let engine = NativeEngine::new();
         let empty = linker_test_function(Vec::new(), Vec::new(), 0);
-        assert_reference_equivalence(&engine, &empty);
+        assert_reference_equivalence(&engine, &empty, 0);
         let single = linker_test_function(
             vec![Instr::new(Op::I32_Add, FLAG_A_ACC | FLAG_DST_ACC, 0, 1, 2)],
             Vec::new(),
             3,
         );
-        assert_reference_equivalence(&engine, &single);
+        assert_reference_equivalence(&engine, &single, 3);
 
         let code = vec![
             // No predecessor: both incoming hints must be stripped. Its
@@ -2220,7 +2293,7 @@ mod tests {
             Instr::new(Op::Return, 0, 0, 0, 0),
         ];
         let func = linker_test_function(code, vec![vec![0, 3, 13], vec![2, 5, 8, 13]], 8);
-        assert_reference_equivalence(&engine, &func);
+        assert_reference_equivalence(&engine, &func, 8);
     }
 
     struct Lcg(u64);
@@ -2314,7 +2387,7 @@ mod tests {
             code.push(Instr::new(Op::Return, 0, 0, 0, 0));
             let last = code.len() as u32 - 1;
             let func = linker_test_function(code, vec![vec![0, last / 2, last]], 8);
-            assert_reference_equivalence(&engine, &func);
+            assert_reference_equivalence(&engine, &func, 8);
         }
     }
 

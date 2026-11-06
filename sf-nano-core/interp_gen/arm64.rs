@@ -4,7 +4,7 @@
 //! ```text
 //!   x19 = pc (current 32-byte dispatch cell)   x20 = frame base
 //!   x21 = &EnterState                          x22 = memory 0 base
-//!   x23 = memory 0 length                      x24 = cell array base
+//!   x23 = memory 0 length                      x24 = call-path scratch
 //!   x26 = return-stack cursor
 //!   x27 = return-stack limit                   x28 = value-stack limit
 //!   x8  = accumulator     x17 = l0     x14 = l1     x15 = dispatch counter
@@ -20,8 +20,9 @@
 use super::asm::Asm;
 use super::instr::Op;
 use super::isa::{
-    Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS, SUPER_ADD4, SUPER_ADD_BRNE,
-    SUPER_AND_BREQ, SUPER_HANDLER_SLOTS, SUPER_MOVPAIR_LOAD_STORE_BRIF, SUPER_SHRU_AND,
+    Caps, HandlerLine, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS, SUPER_ADD4,
+    SUPER_ADD_BRNE, SUPER_AND_BREQ, SUPER_HANDLER_SLOTS, SUPER_MOVPAIR_LOAD_STORE_BRIF,
+    SUPER_SHRU_AND,
 };
 use super::layout::{Cls, DstCls, Fam};
 
@@ -78,6 +79,9 @@ pub struct Arm64 {
     pub apple_tuning: bool,
     /// Multi-cell handlers are omitted from exact dispatch-counting builds.
     pub superhandlers: bool,
+    /// Exact dispatch-counting build: the call stubs, which are not class
+    /// variants, count themselves only here.
+    pub counting: bool,
 }
 
 impl Arm64 {
@@ -643,6 +647,10 @@ impl Isa for Arm64 {
             float_pin_f32: true,
             native_calls: true,
             page_aligned_blob: true,
+            // 0x00000000 is `udf #0`. Apple builds take no line guard:
+            // the 64-byte one measured slower on M1 and a 128-byte one is
+            // unmeasured (docs/HANDLER_LAYOUT.md, "Line guard").
+            handler_line: (!self.apple_tuning).then_some(HandlerLine { log2: 6, fill: 0 }),
         }
     }
 
@@ -687,7 +695,6 @@ impl Isa for Arm64 {
         a.ins("ldr x20, [x21, #16]");
         a.ins("ldr x22, [x21, #24]");
         a.ins("ldr x23, [x21, #32]");
-        a.ins("ldr x24, [x21, #40]");
         a.ins("ldr x26, [x21, #56]");
         a.ins("ldr x27, [x21, #64]");
         a.ins("ldr x28, [x21, #72]");
@@ -703,11 +710,9 @@ impl Isa for Arm64 {
         // ---- Call (wired by the cross-function fixup, not the table) ----
         // cell a = caller_l1off<<48 | callee cells (48-bit VA)
         //      b = callee_l1off<<48 | callee_l0off<<32 | fp<<31 | arg_base*8
-        //      c = caller_l0off<<48 | frame_slots<<32 | n_locals<<16 | n_params
+        //      c = caller_l0off<<48 | frame_slots<<32 | zero_end<<16 | zero_start
         a.label(&st.call);
-        // The counter is unconditional here: the call handler is not a
-        // class variant, so there is no per-variant predicate to consult.
-        a.ins("add x15, x15, #1");
+        self.bump(a, self.counting);
         a.ins("ldr x12, [x19, #24]");
         a.ins("ldr x11, [x19, #16]");
         a.ins("ldr x9, [x19, #8]");
@@ -724,51 +729,36 @@ impl Isa for Arm64 {
         a.ins("add x13, x10, x13, lsl #3");
         a.ins("cmp x13, x28");
         a.ins(&format!("b.hi {}", st.trap_exhaust));
-        // push (ret_pc, caller frame, code | caller_l0off<<48, caller_l1off)
+        // push (ret_pc, caller frame); `Return` reads the caller's pinned
+        // offsets back out of this call cell, the one before ret_pc
         a.ins("add x13, x19, #32");
-        a.ins("stp x13, x20, [x26]");
-        a.ins("lsr x13, x12, #48");
-        a.ins("orr x13, x24, x13, lsl #48");
-        a.ins("str x13, [x26, #16]");
-        a.ins("lsr x13, x9, #48");
-        a.ins("str x13, [x26, #24]");
-        a.ins("add x26, x26, #32");
+        a.ins("stp x13, x20, [x26], #16");
         // The callee's first handler is independent of frame initialization
         // and pinned-local reloads. Start that load here so the final
         // indirect branch does not wait on a fresh pointer chase.
         a.ins("ubfx x24, x9, #0, #48");
         a.ins("ldr x6, [x24]");
         a.ins("mov x20, x10");
-        // zero the fresh locals: [n_params*8, n_locals*8)
+        // zero the fresh locals: [zero_start*8, zero_end*8)
         a.ins("ubfx x10, x12, #0, #16");
         a.ins("ubfx x13, x12, #16, #16");
         a.ins("add x10, x20, x10, lsl #3");
         a.ins("add x13, x20, x13, lsl #3");
         let zl = a.fresh("zl");
         let zdone = a.fresh("zdone");
-        if self.apple_tuning {
-            let zpair = a.fresh("zpair");
-            a.ins("cmp x10, x13");
-            a.ins(&format!("b.hs {zdone}"));
-            // Clear an odd leading slot, then write the even remainder two
-            // at a time. The zero-local fast path stays at two instructions.
-            a.ins("sub x16, x13, x10");
-            a.ins(&format!("tbz x16, #3, {zpair}"));
-            a.ins("str xzr, [x10], #8");
-            a.ins("cmp x10, x13");
-            a.ins(&format!("b.hs {zdone}"));
-            a.label(&zpair);
-            a.label(&zl);
-            a.ins("stp xzr, xzr, [x10], #16");
-            a.ins("cmp x10, x13");
-            a.ins(&format!("b.lo {zl}"));
-        } else {
-            a.label(&zl);
-            a.ins("cmp x10, x13");
-            a.ins(&format!("b.hs {zdone}"));
-            a.ins("str xzr, [x10], #8");
-            a.ins(&format!("b {zl}"));
-        }
+        a.ins("cmp x10, x13");
+        a.ins(&format!("b.hs {zdone}"));
+        // Clear an odd leading slot, then write the even remainder two at a
+        // time. The zero-local fast path stays at two instructions.
+        a.ins("sub x16, x13, x10");
+        a.ins(&format!("tbz x16, #3, {zl}"));
+        a.ins("str xzr, [x10], #8");
+        a.ins("cmp x10, x13");
+        a.ins(&format!("b.hs {zdone}"));
+        a.label(&zl);
+        a.ins("stp xzr, xzr, [x10], #16");
+        a.ins("cmp x10, x13");
+        a.ins(&format!("b.lo {zl}"));
         a.label(&zdone);
         a.ins("ubfx x13, x11, #32, #16"); // callee l0off
         a.ins("ldr x17, [x20, x13]");
@@ -792,7 +782,9 @@ impl Isa for Arm64 {
 
         // ---- CallIndirect (wired by the fixup pass) ----
         // cell a = caller_l1off<<48 | index_slot*8
-        //      b = caller_l0off<<48 | canon_expected<<32 | arg_base*8
+        //      b = canon_expected<<32 | arg_base*8
+        //      c = caller_l0off<<48 | module type index (read by Rust and
+        //          `Return`, not here)
         // Table 0's base/length and the per-function info table come from
         // the entry state, refreshed on every chain entry, so table.grow
         // and table.set need no invalidation protocol. Every guard failure
@@ -800,7 +792,7 @@ impl Isa for Arm64 {
         // stub, which re-executes the cell and raises the proper trap or
         // routes the host call.
         a.label(&st.call_indirect);
-        a.ins("add x15, x15, #1");
+        self.bump(a, self.counting);
         a.ins("ldr x9, [x19, #8]");
         a.ins("ubfx x10, x9, #0, #32"); // index_slot*8
         a.ins("ldr x10, [x20, x10]"); // t (i32, zero-extended)
@@ -818,7 +810,7 @@ impl Isa for Arm64 {
         a.ins("ldr x13, [x21, #48]"); // info length
         a.ins("cmp x12, x13");
         a.ins(&format!("b.hs {}", st.slow)); // function index out of bounds
-        a.ins("ldr x13, [x21, #128]"); // info base
+        a.ins("ldr x13, [x21, #40]"); // info base
         a.ins("add x11, x12, x12, lsl #1"); // fi*3
         a.ins("add x13, x13, x11, lsl #3"); // entry = info + fi*24
         a.ins("ldr x11, [x13, #8]"); // l1off<<48 | l0off<<32 | canon type
@@ -829,17 +821,14 @@ impl Isa for Arm64 {
         a.ins(&format!("b.ne {}", st.slow)); // type mismatch
         a.ins("ldr x12, [x13, #0]"); // callee cells | fp flag (0 = slow)
         a.ins(&format!("cbz x12, {}", st.slow));
+        // Compose the call_core inputs. The callee fp flag moves from entry
+        // bit 0 (cells are 32-byte aligned, low bits free) to the
+        // b-equivalent's bit 31. The caller's pinned offsets stay in this
+        // cell for `Return` to read.
         a.ins("ldr x16, [x13, #16]"); // frame metadata
-                                      // compose the call_core inputs; the callee fp flag moves from
-                                      // entry bit 0 (cells are 32-byte aligned, low bits free) to
-                                      // the b-equivalent's bit 31
-        a.ins("ubfx x13, x12, #0, #1");
-        a.ins("lsr x12, x12, #5");
-        a.ins("lsl x12, x12, #5"); // clean cells address
-        a.ins("lsr x9, x9, #48");
-        a.ins("orr x9, x12, x9, lsl #48"); // a-equiv: caller_l1off | cells
-        a.ins("lsr x12, x10, #48");
-        a.ins("orr x12, x16, x12, lsl #48"); // c-equiv: caller_l0off | meta
+        a.ins("and x9, x12, #0xffffffffffffffe0"); // a-equiv: clean cells address
+        a.ins("ubfx x13, x12, #0, #1"); // callee fp flag
+        a.ins("mov x12, x16"); // c-equiv
         a.ins("lsr x11, x11, #32");
         a.ins("lsl x11, x11, #32"); // callee l0/l1 offsets, canon cleared
         a.ins("ubfx x16, x10, #0, #32");
@@ -997,9 +986,7 @@ impl Isa for Arm64 {
                 a.ins("ldr x12, [x19, #24]");
                 a.ins(&format!("cmp {}, w12", w(ra)));
                 a.ins(&format!("csel w10, {}, w12, lo", w(ra)));
-                a.ins("ldr w10, [x11, w10, uxtw #2]");
-                a.ins("lsl x10, x10, #5");
-                a.ins("add x19, x24, x10");
+                a.ins("ldr x19, [x11, w10, uxtw #3]"); // target cell address
                 a.ins("ldr x9, [x19]");
                 a.ins("br x9");
                 return;
@@ -1422,35 +1409,32 @@ impl Arm64 {
         self.bump(a, v.counted);
         a.ins("ldr x10, [x19, #8]");
         a.ins("ldr x11, [x19, #16]");
-        a.ins("add x10, x20, x10");
-        a.ins("mov x12, x20");
         let pop = a.fresh("pop");
+        let other = a.fresh("other");
         let cl = a.fresh("cl");
-        a.ins(&format!("cbz x11, {pop}"));
-        // The accumulator doubles as the copy scratch: after a
-        // single-result copy it holds result 0, which is the
-        // call-result-in-acc convention at zero extra instructions. A
-        // dedicated load here instead cost a call-recursive microbench
-        // 6-8%: the native return path tolerates no extra
-        // store-forwarded load.
-        a.label(&cl);
-        a.ins("ldr x8, [x10], #8");
-        a.ins("str x8, [x12], #8");
-        a.ins("sub x11, x11, #1");
-        a.ins(&format!("cbnz x11, {cl}"));
+        // The accumulator doubles as the copy scratch: after the copy it
+        // holds result 0, which is the call-result-in-acc convention at
+        // zero extra instructions. A dedicated load here instead cost a
+        // call-recursive microbench 6-8%: the native return path
+        // tolerates no extra store-forwarded load. One result, the common
+        // case, copies without the loop.
+        a.ins("cmp x11, #1");
+        a.ins(&format!("b.ne {other}"));
+        a.ins("ldr x8, [x20, x10]");
+        a.ins("str x8, [x20]");
         a.label(&pop);
-        a.ins("ldp x13, x20, [x26, #-32]!");
+        a.ins("ldp x13, x20, [x26, #-16]!");
         // Overlap the caller continuation's handler load with the remaining
         // return-record and pinned-local reloads.
         a.ins("ldr x9, [x13]");
-        a.ins("ldr x12, [x26, #16]"); // caller code | caller_l0off<<48
-        a.ins("ldr x10, [x26, #24]"); // caller l1off
-        a.ins("lsr x11, x12, #48");
-        a.ins("ubfx x24, x12, #0, #48");
-        // Reload the caller's pinned locals. Sentinel records carry a
-        // readable dummy frame, so these loads are always safe. The
-        // caller's float-pinned flag rides bit 0 of its recorded l0 offset
-        // (offsets are byte-scaled, so bit 0 is structurally free).
+        // The call cell before ret_pc keeps the caller's pinned offsets in
+        // the top 16 bits of its c and a words. The float-pinned flag rides
+        // bit 0 of the l0 offset (offsets are byte-scaled, so bit 0 is
+        // structurally free). Sentinel records point at the driver's exit
+        // cell, behind an all-zero stand-in call cell, and carry a readable
+        // dummy frame, so these loads are always safe.
+        a.ins("ldurh w11, [x13, #-2]"); // caller l0off, bit 0 = float-pinned flag
+        a.ins("ldurh w10, [x13, #-18]"); // caller l1off
         let fp = a.fresh("retfp");
         let join = a.fresh("retjoin");
         a.ins(&format!("tbnz x11, #0, {fp}"));
@@ -1466,6 +1450,17 @@ impl Arm64 {
         a.ins("fmov d17, x17");
         a.ins("fmov d18, x14");
         a.ins(&format!("b {join}"));
+        // No results (below 1, from the compare above), or several.
+        a.label(&other);
+        a.ins(&format!("b.lo {pop}"));
+        a.ins("add x10, x20, x10");
+        a.ins("mov x12, x20");
+        a.label(&cl);
+        a.ins("ldr x8, [x10], #8");
+        a.ins("str x8, [x12], #8");
+        a.ins("sub x11, x11, #1");
+        a.ins(&format!("cbnz x11, {cl}"));
+        a.ins(&format!("b {pop}"));
     }
 
     fn emit_div(&mut self, a: &mut Asm, st: &Stubs, v: &Variant) {

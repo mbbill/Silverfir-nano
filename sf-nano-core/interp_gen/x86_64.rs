@@ -4,19 +4,21 @@
 //! ```text
 //!   rbx = pc (current 32-byte dispatch cell)   rbp = frame base
 //!   r15 = &EnterState                          r14 = memory 0 base
-//!   r13 = memory 0 length                      r9  = cell array base
+//!   r13 = memory 0 length - 8                  r9  = return-stack cursor
 //!   r12 = accumulator   r11 = l0   r10 = l1
 //!   rdi = prefetched next handler word
 //!   rax, rcx, rdx, rsi, r8 = scratch
 //!   xmm3 = float acc, xmm4/xmm5 = float l0/l1, xmm0-xmm2 = float scratch
 //! ```
 //!
-//! x86-64 has four fewer usable GPRs than arm64, so three chain roles that
-//! arm64 pins live in `EnterState` instead: the return-stack cursor/limit
-//! and value-stack limit. All three are read by cold call/return handlers,
-//! and moving them out is
-//! what leaves five scratch registers — enough for `idiv`'s fixed
-//! `rdx:rax` pair and `shl`'s fixed `cl` without spilling.
+//! x86-64 has four fewer usable GPRs than arm64, so two chain roles that
+//! arm64 pins live in `EnterState` instead: the return-stack limit and the
+//! value-stack limit. Both are read only by the call handlers, and moving
+//! them out is what leaves five scratch registers — enough for `idiv`'s
+//! fixed `rdx:rax` pair and `shl`'s fixed `cl` without spilling. The
+//! return-stack cursor, which every call and return reads and writes, holds
+//! r9; no handler needs the function's cell base since branch tables store
+//! absolute target cells. The chain's exit stores the cursor back.
 //!
 //! The float registers are deliberately xmm0-xmm5: those are volatile
 //! under BOTH ABIs, so the entry trampoline never has to save any of them
@@ -32,7 +34,7 @@
 
 use super::asm::Asm;
 use super::instr::Op;
-use super::isa::{Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS};
+use super::isa::{Caps, HandlerLine, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS};
 use super::layout::{Cls, DstCls, Fam};
 
 const RAX: u32 = 0;
@@ -56,6 +58,7 @@ const FL0R: u32 = 4;
 const FL1R: u32 = 5;
 
 /// State-block offsets for the roles that do not get a register here.
+const S_MEM_LEN: u32 = 32;
 const S_RET_CURSOR: u32 = 56;
 const S_RET_LIMIT: u32 = 64;
 const S_STACK_LIMIT: u32 = 72;
@@ -275,10 +278,24 @@ fn cvt_f2i_trap(op: Op) -> Option<(bool, bool, u64, u64)> {
 
 pub struct X86_64 {
     /// Win64 passes the argument in rcx and makes rdi/rsi callee-saved.
-    pub windows: bool,
+    windows: bool,
+    /// Exact dispatch-counting build: the call stubs, which are not class
+    /// variants, count themselves only here.
+    counting: bool,
+    /// Exact memory bounds checks `emit_mem` defers out of line: (check
+    /// label, resume label, access width), emitted by `emit_cold`.
+    exact_bounds: Vec<(String, String, u32)>,
 }
 
 impl X86_64 {
+    pub fn new(windows: bool, counting: bool) -> X86_64 {
+        X86_64 {
+            windows,
+            counting,
+            exact_bounds: Vec::new(),
+        }
+    }
+
     fn pre(&self, a: &mut Asm) {
         a.ins("mov rdi, [rbx + 32]");
     }
@@ -318,6 +335,82 @@ impl X86_64 {
         (self.src(a, ac, 8, RAX), self.src(a, bc, 16, RCX))
     }
 
+    /// The register an operand class lives in, if any.
+    fn reg_of(cls: Cls) -> Option<u32> {
+        match cls {
+            Cls::Acc => Some(ACC),
+            Cls::L0 => Some(L0R),
+            Cls::L1 => Some(L1R),
+            Cls::Slot | Cls::Const => None,
+        }
+    }
+
+    /// A source as an instruction operand. Register classes name their
+    /// register; a constant stays in its cell word and a slot in the frame,
+    /// both read as a memory operand, which saves a scratch load. `field` is
+    /// the cell word holding the constant or slot offset, and a slot's
+    /// offset loads into `tmp`.
+    fn src_operand(&self, a: &mut Asm, cls: Cls, w32: bool, field: u32, tmp: u32) -> String {
+        let width = if w32 { "dword" } else { "qword" };
+        match cls {
+            Cls::Const => format!("{width} ptr [rbx + {field}]"),
+            Cls::Slot => {
+                a.ins(&format!("mov {}, [rbx + {field}]", q(tmp)));
+                format!("{width} ptr [rbp + {}]", q(tmp))
+            }
+            _ => r(w32, Self::reg_of(cls).unwrap()).to_string(),
+        }
+    }
+
+    /// Both sources of a compare, at most one of them in memory: when both
+    /// are, the left one loads into rax first.
+    fn cmp_operands(&self, a: &mut Asm, v: &Variant, w32: bool) -> (String, String) {
+        if v.a.is_reg() || v.b.is_reg() {
+            (
+                self.src_operand(a, v.a, w32, 8, RAX),
+                self.src_operand(a, v.b, w32, 16, RCX),
+            )
+        } else {
+            let ra = self.src(a, v.a, 8, RAX);
+            (
+                r(w32, ra).to_string(),
+                self.src_operand(a, v.b, w32, 16, RCX),
+            )
+        }
+    }
+
+    /// A two-operand integer ALU op, operands in wasm order. The left
+    /// operand loads straight into the result register, and the right one
+    /// is read in place: a register, or a memory operand for a slot or a
+    /// constant. When the result register holds the right operand, a
+    /// commutative op takes the left operand as its source instead, and any
+    /// other builds in rsi.
+    fn int_alu(&self, a: &mut Asm, v: &Variant, m: &str, w32: bool, commutative: bool) {
+        let rd = self.dst_target(v.d);
+        let (ra, rb) = (Self::reg_of(v.a), Self::reg_of(v.b));
+        if rb == Some(rd) && ra != Some(rd) {
+            if commutative {
+                let lhs = self.src_operand(a, v.a, w32, 8, RAX);
+                a.ins(&format!("{m} {}, {lhs}", r(w32, rd)));
+            } else {
+                let sa = self.src(a, v.a, 8, RSI);
+                if sa != RSI {
+                    a.ins(&format!("mov {}, {}", q(RSI), q(sa)));
+                }
+                a.ins(&format!("{m} {}, {}", r(w32, RSI), r(w32, rd)));
+                a.ins(&format!("mov {}, {}", q(rd), q(RSI)));
+            }
+        } else {
+            let sa = self.src(a, v.a, 8, rd);
+            if sa != rd {
+                a.ins(&format!("mov {}, {}", q(rd), q(sa)));
+            }
+            let rhs = self.src_operand(a, v.b, w32, 16, RCX);
+            a.ins(&format!("{m} {}, {rhs}", r(w32, rd)));
+        }
+        self.finish(a, v.d, rd);
+    }
+
     fn dst_target(&self, dc: DstCls) -> u32 {
         match dc {
             DstCls::L0 => L0R,
@@ -331,26 +424,6 @@ impl X86_64 {
             a.ins("mov rdx, [rbx + 24]");
             a.ins(&format!("mov [rbp + rdx], {}", q(src)));
         }
-    }
-
-    /// Two-operand ALU with the aliasing cases spelled out: x86 destroys
-    /// its destination, so `dst == rb` needs either commutativity or a
-    /// scratch round trip.
-    fn alu2(&self, a: &mut Asm, m: &str, w32: bool, dst: u32, ra: u32, rb: u32, commutative: bool) {
-        if dst == rb && dst != ra {
-            if commutative {
-                a.ins(&format!("{m} {}, {}", r(w32, dst), r(w32, ra)));
-            } else {
-                a.ins(&format!("mov {}, {}", q(RSI), q(ra)));
-                a.ins(&format!("{m} {}, {}", r(w32, RSI), r(w32, rb)));
-                a.ins(&format!("mov {}, {}", q(dst), q(RSI)));
-            }
-            return;
-        }
-        if dst != ra {
-            a.ins(&format!("mov {}, {}", q(dst), q(ra)));
-        }
-        a.ins(&format!("{m} {}, {}", r(w32, dst), r(w32, rb)));
     }
 
     /// Variable shifts and rotates take their count in `cl` only.
@@ -427,19 +500,56 @@ impl X86_64 {
     }
 
     /// Two-operand float ALU with the same aliasing care as [`Self::alu2`].
-    fn fp_bin(&self, a: &mut Asm, m: &str, w32: bool, dst: u32, va: u32, vb: u32) {
+    /// Float add, sub, mul or div, operands in wasm order. A right operand
+    /// in a slot or the cell is read as a memory operand, and a left one
+    /// in memory loads straight into the register the result is built
+    /// in: the destination, or xmm2 when the destination holds the right
+    /// operand and the left one is elsewhere.
+    fn fp_bin(&self, a: &mut Asm, v: &Variant, m: &str, w32: bool) {
         let sfx = if w32 { "ss" } else { "sd" };
-        let mov = if w32 { "movaps" } else { "movapd" };
-        if dst == vb && dst != va {
-            a.ins(&format!("{mov} xmm2, {}", xm(va)));
-            a.ins(&format!("{m}{sfx} xmm2, {}", xm(vb)));
-            a.ins(&format!("{mov} {}, xmm2", xm(dst)));
-            return;
+        let (mov, ld, width) = if w32 {
+            ("movaps", "movss", "dword")
+        } else {
+            ("movapd", "movsd", "qword")
+        };
+        let reg = |cls: Cls| match cls {
+            Cls::Acc => Some(FACC),
+            Cls::L0 => Some(FL0R),
+            Cls::L1 => Some(FL1R),
+            Cls::Slot | Cls::Const => None,
+        };
+        let (ra, rb) = (reg(v.a), reg(v.b));
+        let dst = self.fp_target(v.d);
+        let rhs = match (v.b, rb) {
+            (_, Some(r)) => xm(r).to_string(),
+            (Cls::Slot, _) => {
+                a.ins("mov rcx, [rbx + 16]");
+                format!("{width} ptr [rbp + rcx]")
+            }
+            _ => format!("{width} ptr [rbx + 16]"),
+        };
+        let work = if rb == Some(dst) && ra != Some(dst) {
+            2
+        } else {
+            dst
+        };
+        match (v.a, ra) {
+            (_, Some(r)) => {
+                if r != work {
+                    a.ins(&format!("{mov} {}, {}", xm(work), xm(r)));
+                }
+            }
+            (Cls::Slot, _) => {
+                a.ins("mov rax, [rbx + 8]");
+                a.ins(&format!("{ld} {}, [rbp + rax]", xm(work)));
+            }
+            _ => a.ins(&format!("{ld} {}, [rbx + 8]", xm(work))),
         }
-        if dst != va {
-            a.ins(&format!("{mov} {}, {}", xm(dst), xm(va)));
+        a.ins(&format!("{m}{sfx} {}, {rhs}", xm(work)));
+        if work != dst {
+            a.ins(&format!("{mov} {}, {}", xm(dst), xm(work)));
         }
-        a.ins(&format!("{m}{sfx} {}, {}", xm(dst), xm(vb)));
+        self.finish_fp(a, v.d, w32);
     }
 
     /// wasm `min`/`max`: NaN in either operand yields a quiet NaN, and
@@ -510,6 +620,11 @@ impl Isa for X86_64 {
             float_pin_f32: true,
             native_calls: true,
             page_aligned_blob: true,
+            // int3
+            handler_line: Some(HandlerLine {
+                log2: 6,
+                fill: 0xcc,
+            }),
         }
     }
 
@@ -520,6 +635,7 @@ impl Isa for X86_64 {
         a.ins("mov [r15 + 0], rax");
         a.ins("mov [r15 + 8], rbx");
         a.ins("mov [r15 + 16], rbp");
+        a.ins(&format!("mov [r15 + {S_RET_CURSOR}], r9"));
         a.ins("mov [r15 + 104], r12");
         if win {
             a.ins("pop rsi");
@@ -562,8 +678,13 @@ impl Isa for X86_64 {
         a.ins("mov rbx, [r15 + 8]");
         a.ins("mov rbp, [r15 + 16]");
         a.ins("mov r14, [r15 + 24]");
-        a.ins("mov r13, [r15 + 32]");
-        a.ins("mov r9, [r15 + 40]");
+        // r13 is the memory length biased down by the widest scalar access,
+        // so one signed compare clears every access that ends at least 8
+        // bytes before the end (`emit_mem`). A memory shorter than 8 bytes
+        // biases negative, and every access then takes the exact check.
+        a.ins(&format!("mov r13, [r15 + {S_MEM_LEN}]"));
+        a.ins("sub r13, 8");
+        a.ins(&format!("mov r9, [r15 + {S_RET_CURSOR}]"));
         a.ins("mov r11, [r15 + 88]");
         a.ins("mov r10, [r15 + 96]");
         a.ins("mov r12, [r15 + 104]");
@@ -574,7 +695,7 @@ impl Isa for X86_64 {
 
         // ---- Call (wired by the cross-function fixup, not the table) ----
         a.label(&st.call);
-        self.bump(a, true);
+        self.bump(a, self.counting);
         a.ins("mov rdx, [rbx + 24]");
         a.ins("mov rcx, [rbx + 16]");
         a.ins("mov rax, [rbx + 8]");
@@ -583,8 +704,7 @@ impl Isa for X86_64 {
         // description. The indirect handler composes them from a runtime
         // lookup instead of from cell fields.
         a.label(&st.call_core);
-        a.ins(&format!("mov rsi, [r15 + {S_RET_CURSOR}]"));
-        a.ins(&format!("cmp rsi, [r15 + {S_RET_LIMIT}]"));
+        a.ins(&format!("cmp r9, [r15 + {S_RET_LIMIT}]"));
         a.ins(&format!("jae {}", st.trap_exhaust));
         a.ins("mov r8d, ecx");
         a.ins("and r8d, 0x7fffffff"); // arg_base*8 (bit 31 is the fp flag)
@@ -595,37 +715,46 @@ impl Isa for X86_64 {
         a.ins("lea rdi, [r8 + rdi*8]");
         a.ins(&format!("cmp rdi, [r15 + {S_STACK_LIMIT}]"));
         a.ins(&format!("ja {}", st.trap_exhaust));
-        // push (ret_pc, caller frame, code | caller_l0off<<48, caller_l1off)
+        // push (ret_pc, caller frame); `Return` reads the caller's pinned
+        // offsets back out of this call cell, the one before ret_pc
         a.ins("lea rdi, [rbx + 32]");
-        a.ins("mov [rsi], rdi");
-        a.ins("mov [rsi + 8], rbp");
-        a.ins("mov rdi, rdx");
-        a.ins("shr rdi, 48");
-        a.ins("shl rdi, 48");
-        a.ins("or rdi, r9");
-        a.ins("mov [rsi + 16], rdi");
-        a.ins("mov rdi, rax");
-        a.ins("shr rdi, 48");
-        a.ins("mov [rsi + 24], rdi");
-        a.ins("add rsi, 32");
-        a.ins(&format!("mov [r15 + {S_RET_CURSOR}], rsi"));
+        a.ins("mov [r9], rdi");
+        a.ins("mov [r9 + 8], rbp");
+        a.ins("add r9, 16");
         a.ins("mov rbp, r8");
-        // zero the fresh locals: [n_params*8, n_locals*8)
-        a.ins("movzx edi, dx"); // n_params
-        a.ins("lea rdi, [rbp + rdi*8]");
+        // The callee's first handler depends only on its cells address, not
+        // on frame initialization or the pinned-local reloads, so its load
+        // starts here and the final indirect jump does not wait on it. The
+        // return pc is already recorded, so the cell pointer moves now.
+        a.ins("shl rax, 16");
+        a.ins("shr rax, 16"); // clean 48-bit cells address
+        a.ins("mov rbx, rax");
+        a.ins("mov rax, [rax]");
+        // zero the fresh locals: [zero_start*8, zero_end*8), two slots per
+        // iteration after an odd leading one. No fresh locals costs two
+        // instructions past the count.
+        a.ins("movzx edi, dx"); // zero_start
         a.ins("mov r8, rdx");
         a.ins("shr r8, 16");
-        a.ins("movzx r8d, r8w"); // n_locals
-        a.ins("lea r8, [rbp + r8*8]");
-        a.ins("xor esi, esi");
+        a.ins("movzx r8d, r8w"); // zero_end
+        a.ins("sub r8d, edi"); // fresh-local count
         let zl = a.fresh("zl");
         let zdone = a.fresh("zdone");
-        a.label(&zl);
-        a.ins("cmp rdi, r8");
-        a.ins(&format!("jae {zdone}"));
+        a.ins(&format!("jz {zdone}"));
+        a.ins("lea rdi, [rbp + rdi*8]");
+        a.ins("xor esi, esi");
+        a.ins("test r8b, 1");
+        a.ins(&format!("jz {zl}"));
         a.ins("mov [rdi], rsi");
         a.ins("add rdi, 8");
-        a.ins(&format!("jmp {zl}"));
+        a.ins("dec r8d");
+        a.ins(&format!("jz {zdone}"));
+        a.label(&zl);
+        a.ins("mov [rdi], rsi");
+        a.ins("mov [rdi + 8], rsi");
+        a.ins("add rdi, 16");
+        a.ins("sub r8d, 2");
+        a.ins(&format!("jnz {zl}"));
         a.label(&zdone);
         a.ins("mov rdi, rcx");
         a.ins("shr rdi, 32");
@@ -643,11 +772,6 @@ impl Isa for X86_64 {
         a.ins("test ecx, ecx");
         a.ins(&format!("js {fp}"));
         a.label(&cont);
-        a.ins("shl rax, 16");
-        a.ins("shr rax, 16"); // clean 48-bit cells address
-        a.ins("mov r9, rax");
-        a.ins("mov rbx, rax");
-        a.ins("mov rax, [rbx]");
         a.ins("jmp rax");
         a.label(&fp);
         a.ins("movq xmm4, r11");
@@ -656,7 +780,7 @@ impl Isa for X86_64 {
 
         // ---- CallIndirect (wired by the fixup pass) ----
         a.label(&st.call_indirect);
-        self.bump(a, true);
+        self.bump(a, self.counting);
         a.ins("mov rsi, [rbx + 8]"); // cell a
         a.ins("mov eax, esi"); // index_slot*8
         a.ins("mov eax, [rbp + rax]"); // t, zero-extended by the 32-bit load
@@ -673,22 +797,21 @@ impl Isa for X86_64 {
         a.ins(&format!("jnz {}", st.slow)); // upper 32 bits are nonzero
         a.ins("cmp rcx, [r15 + 48]"); // info length
         a.ins(&format!("jae {}", st.slow)); // function index out of bounds
-        a.ins("mov rdx, [r15 + 128]"); // info base
+        a.ins("mov rdx, [r15 + 40]"); // info base
         a.ins("lea rax, [rcx + rcx*2]"); // fi*3
         a.ins("lea rdx, [rdx + rax*8]"); // entry = info + fi*24
         a.ins("mov rcx, [rbx + 16]"); // cell b
         a.ins("mov rax, [rdx + 8]"); // l1off<<48 | l0off<<32 | canon
         a.ins("mov edi, eax"); // canonical actual
-        a.ins("mov r8, rcx");
-        a.ins("shr r8, 32");
-        a.ins("movzx r8d, r8w"); // canonical expected
+        a.ins("movzx r8d, word ptr [rbx + 20]"); // canonical expected, b bits 32..48
         a.ins("cmp rdi, r8");
         a.ins(&format!("jne {}", st.slow)); // type mismatch
         a.ins("mov r8, [rdx]"); // callee cells | fp flag (0 = slow)
         a.ins("test r8, r8");
         a.ins(&format!("jz {}", st.slow));
-        a.ins("mov rdx, [rdx + 16]"); // frame metadata
-                                      // compose the call_core inputs
+        // Compose the call_core inputs. The caller's pinned offsets stay in
+        // this cell for `Return` to read, so only the callee fields move.
+        a.ins("mov rdx, [rdx + 16]"); // c-equiv: frame metadata
         a.ins("shr rax, 32");
         a.ins("shl rax, 32"); // callee l0/l1 offsets, canon cleared
         a.ins("mov edi, ecx"); // arg_base*8
@@ -697,18 +820,22 @@ impl Isa for X86_64 {
         a.ins("and edi, 1"); // callee fp flag
         a.ins("shl rdi, 31");
         a.ins("or rax, rdi"); // b-equiv
-        a.ins("shr rcx, 48");
-        a.ins("shl rcx, 48");
-        a.ins("or rcx, rdx"); // c-equiv
-        a.ins("shr r8, 5");
-        a.ins("shl r8, 5"); // clean cells address
-        a.ins("shr rsi, 48");
-        a.ins("shl rsi, 48");
-        a.ins("or rsi, r8"); // a-equiv
-        a.ins("mov rdx, rcx");
+        a.ins("and r8, -32"); // a-equiv: clean cells address
         a.ins("mov rcx, rax");
-        a.ins("mov rax, rsi");
+        a.ins("mov rax, r8");
         a.ins(&format!("jmp {}", st.call_core));
+    }
+
+    fn emit_cold(&mut self, a: &mut Asm, st: &Stubs) {
+        // The exact memory bounds checks `emit_mem` defers: rcx holds the
+        // effective address, rdx is scratch at every check site.
+        for (exact, resume, size) in std::mem::take(&mut self.exact_bounds) {
+            a.label(&exact);
+            a.ins(&format!("lea rdx, [rcx + {size}]"));
+            a.ins(&format!("cmp rdx, [r15 + {S_MEM_LEN}]"));
+            a.ins(&format!("ja {}", st.trap_oob));
+            a.ins(&format!("jmp {resume}"));
+        }
     }
 
     fn wants(&self, v: &Variant) -> bool {
@@ -842,14 +969,12 @@ impl Isa for X86_64 {
             BrTable => {
                 self.bump(a, v.counted);
                 let ra = self.src(a, v.a, 8, RAX);
-                a.ins("mov rcx, [rbx + 16]"); // flat table
+                a.ins("mov rcx, [rbx + 16]"); // flat table of target cell addresses
                 a.ins("mov rdx, [rbx + 24]"); // len - 1
                 a.ins(&format!("mov esi, {}", d(ra)));
                 a.ins("cmp esi, edx");
                 a.ins("cmova esi, edx"); // clamp: out of range takes the default
-                a.ins("mov esi, [rcx + rsi*4]"); // target instruction index
-                a.ins("shl rsi, 5");
-                a.ins("lea rbx, [r9 + rsi]");
+                a.ins("mov rbx, [rcx + rsi*8]");
                 a.ins("mov rax, [rbx]");
                 a.ins("jmp rax");
                 return;
@@ -862,11 +987,17 @@ impl Isa for X86_64 {
             self.pre(a);
             a.ins("mov rdx, [rbx + 24]");
             a.ins("mov rsi, [rdx]");
-            let (ra, rb) = self.src_ab(a, v.a, v.b);
+            let (lhs, rhs) = self.cmp_operands(a, v, w32);
             if matches!(v.op, I32_BrAnd | I32_BrAndNot) {
-                a.ins(&format!("test {}, {}", d(ra), d(rb)));
+                // `test` takes a memory operand only first; it is
+                // symmetric, so put whichever operand is in memory there.
+                if lhs.contains('[') {
+                    a.ins(&format!("test {lhs}, {rhs}"));
+                } else {
+                    a.ins(&format!("test {rhs}, {lhs}"));
+                }
             } else {
-                a.ins(&format!("cmp {}, {}", r(w32, ra), r(w32, rb)));
+                a.ins(&format!("cmp {lhs}, {rhs}"));
             }
             let nt = a.fresh("nt");
             a.ins(&format!("j{} {nt}", inv(cond)));
@@ -903,8 +1034,8 @@ impl Isa for X86_64 {
             }
             MovPair => {
                 // Strictly ordered: commit dst1 (including its pinned
-                // register, when present) before reading src2.
-                a.ins("mov rdx, [rbx + 24]"); // dst1*8 << 32 | dst2*8
+                // register, when present) before reading src2. c packs
+                // dst1*8 << 32 | dst2*8; each half loads as its own dword.
                 let v1 = match v.a {
                     Cls::L0 => L0R,
                     Cls::L1 => L1R,
@@ -914,8 +1045,7 @@ impl Isa for X86_64 {
                         RAX
                     }
                 };
-                a.ins("mov rsi, rdx");
-                a.ins("shr rsi, 32");
+                a.ins("mov esi, [rbx + 28]"); // dst1*8
                 a.ins(&format!("mov [rbp + rsi], {}", q(v1)));
                 let d1 = match v.pair_d.first() {
                     None => None,
@@ -940,7 +1070,7 @@ impl Isa for X86_64 {
                 if v2 != ACC {
                     a.ins(&format!("mov {}, {}", q(ACC), q(v2)));
                 }
-                a.ins("mov edx, edx");
+                a.ins("mov edx, [rbx + 24]"); // dst2*8
                 a.ins(&format!("mov [rbp + rdx], {}", q(ACC)));
                 let d2 = match v.pair_d.second() {
                     None => None,
@@ -956,9 +1086,8 @@ impl Isa for X86_64 {
             }
             Select => {
                 let (ra, rb) = self.src_ab(a, v.a, v.b);
-                a.ins("mov rdx, [rbx + 24]");
-                a.ins("mov rsi, rdx");
-                a.ins("shr rsi, 32"); // cond slot byte offset
+                // c packs cond*8 << 32 | dst*8.
+                a.ins("mov esi, [rbx + 28]"); // cond slot byte offset
                 a.ins("mov rsi, [rbp + rsi]");
                 let rd = self.dst_target(dc);
                 // Build in rsi so an alias between rd and either operand
@@ -968,7 +1097,7 @@ impl Isa for X86_64 {
                 a.ins(&format!("cmovne {}, {}", q(R8), q(ra)));
                 a.ins(&format!("mov {}, {}", q(rd), q(R8)));
                 if dc != DstCls::Acc {
-                    a.ins("mov edx, edx"); // dst slot byte offset
+                    a.ins("mov edx, [rbx + 24]"); // dst slot byte offset
                     a.ins(&format!("mov [rbp + rdx], {}", q(rd)));
                 }
             }
@@ -1166,27 +1295,25 @@ impl Isa for X86_64 {
             }
             _ => {
                 if let Some((m, w32, commutative, cl)) = int_bin(v.op) {
-                    let (ra, rb) = self.src_ab(a, v.a, v.b);
-                    let rd = self.dst_target(dc);
                     if cl {
+                        let (ra, rb) = self.src_ab(a, v.a, v.b);
+                        let rd = self.dst_target(dc);
                         self.shift(a, m, w32, rd, ra, rb);
+                        self.finish(a, dc, rd);
                     } else {
-                        self.alu2(a, m, w32, rd, ra, rb, commutative);
+                        self.int_alu(a, v, m, w32, commutative);
                     }
-                    self.finish(a, dc, rd);
                 } else if let Some((cond, w32)) = int_cmp(v.op) {
-                    let (ra, rb) = self.src_ab(a, v.a, v.b);
-                    a.ins(&format!("cmp {}, {}", r(w32, ra), r(w32, rb)));
+                    let (lhs, rhs) = self.cmp_operands(a, v, w32);
+                    a.ins(&format!("cmp {lhs}, {rhs}"));
                     let rd = self.dst_target(dc);
                     a.ins(&format!("set{cond} {}", b8(rd)));
                     a.ins(&format!("movzx {}, {}", d(rd), b8(rd)));
                     self.finish(a, dc, rd);
                 } else if mem_kind(v.op).is_some() {
-                    self.emit_mem(a, st, v);
+                    self.emit_mem(a, v);
                 } else if let Some((m, w32)) = float_bin(v.op) {
-                    let (va, vb) = self.src_fp_ab(a, v.a, v.b, w32);
-                    self.fp_bin(a, m, w32, self.fp_target(dc), va, vb);
-                    self.finish_fp(a, dc, w32);
+                    self.fp_bin(a, v, m, w32);
                 } else if let Some((cond, w32, swap, parity)) = float_cmp(v.op) {
                     let (va, vb) = self.src_fp_ab(a, v.a, v.b, w32);
                     let cmp = if w32 { "ucomiss" } else { "ucomisd" };
@@ -1414,58 +1541,57 @@ impl X86_64 {
         self.finish(a, v.d, rd);
     }
 
-    fn emit_mem(&mut self, a: &mut Asm, st: &Stubs, v: &Variant) {
+    fn emit_mem(&mut self, a: &mut Asm, v: &Variant) {
         let (size, load, kind) = mem_kind(v.op).unwrap();
         let fp = is_fp_mem(v.op);
         let dc = v.d;
         // The address is an i32. Reading it as a 32-bit value is what
         // makes the bounds check independent of the slot zero-extension
-        // convention rather than dependent on it.
-        let addr = match v.a {
+        // convention rather than dependent on it. It lands in ecx, where
+        // the effective address is built.
+        match v.a {
             Cls::Slot => {
                 a.ins("mov rax, [rbx + 8]");
-                a.ins("mov eax, [rbp + rax]");
-                RAX
+                a.ins("mov ecx, [rbp + rax]");
             }
-            Cls::Const => {
-                a.ins("mov eax, [rbx + 8]");
-                RAX
-            }
+            Cls::Const => a.ins("mov ecx, [rbx + 8]"),
             Cls::Acc | Cls::L0 | Cls::L1 => {
                 let s = match v.a {
                     Cls::Acc => ACC,
                     Cls::L0 => L0R,
                     _ => L1R,
                 };
-                a.ins(&format!("mov eax, {}", d(s)));
-                RAX
+                a.ins(&format!("mov ecx, {}", d(s)));
             }
-        };
+        }
         if v.fused {
             // ea = zext32(addr1 + addr2) + static offset — the
             // corpus-universal base+index pattern folded into one
             // dispatch. addr2 always comes from its slot, packed in c's
             // high half.
-            a.ins("mov rsi, [rbx + 24]");
-            a.ins("mov r8, rsi");
-            a.ins("shr r8, 32");
-            a.ins("mov r8d, [rbp + r8]"); // addr2
-            a.ins(&format!("add {}, r8d", d(addr))); // wrapping i32 sum
+            a.ins("mov r8d, [rbx + 28]"); // addr2 slot byte offset
+            a.ins("add ecx, [rbp + r8]"); // wrapping i32 sum with addr2
+            a.ins("mov esi, [rbx + 24]"); // load: dst byte offset; store: static offset
             if load {
-                a.ins("mov esi, esi"); // dst byte offset
-                a.ins("mov rcx, [rbx + 16]"); // static offset
+                a.ins("add rcx, [rbx + 16]"); // ea, static offset in b
             } else {
-                a.ins("mov esi, esi"); // static offset
-                a.ins("mov rcx, rsi");
+                a.ins("add rcx, rsi"); // ea
             }
-            a.ins(&format!("add rcx, {}", q(addr))); // ea
         } else {
-            a.ins(&format!("mov rcx, [rbx + {}]", if load { 16 } else { 24 }));
-            a.ins(&format!("add rcx, {}", q(addr))); // ea = offset + zext(addr)
+            // ea = zext(addr) + offset
+            a.ins(&format!("add rcx, [rbx + {}]", if load { 16 } else { 24 }));
         }
-        a.ins(&format!("lea rdx, [rcx + {size}]"));
-        a.ins("cmp rdx, r13");
-        a.ins(&format!("ja {}", st.trap_oob));
+        // rcx < 2^33 and r13 = length - 8 >= -8, so the signed compare
+        // passes exactly the accesses that end at least 8 bytes before the
+        // end. The last 8 bytes and out-of-bounds accesses take the exact
+        // check out of line, which resumes here or traps.
+        assert!(size <= 8, "a wider access needs its own bounds bias");
+        let exact = a.fresh("exact");
+        let resume = a.fresh("inb");
+        a.ins("cmp rcx, r13");
+        a.ins(&format!("jg {exact}"));
+        a.label(&resume);
+        self.exact_bounds.push((exact, resume, size));
         if load {
             if fp {
                 let vt = self.fp_target(dc);
@@ -1537,45 +1663,37 @@ impl X86_64 {
         self.bump(a, v.counted);
         a.ins("mov rax, [rbx + 8]"); // first-result slot*8
         a.ins("mov rcx, [rbx + 16]"); // result count
-        a.ins("add rax, rbp");
-        a.ins("mov rdx, rbp");
         let pop = a.fresh("pop");
+        let other = a.fresh("other");
         let cl = a.fresh("cl");
-        a.ins("test rcx, rcx");
-        a.ins(&format!("jz {pop}"));
-        // The accumulator doubles as the copy scratch: after a
-        // single-result copy it holds result 0, which is the
-        // call-result-in-acc convention at zero extra instructions.
-        a.label(&cl);
-        a.ins("mov r12, [rax]");
-        a.ins("mov [rdx], r12");
-        a.ins("add rax, 8");
-        a.ins("add rdx, 8");
-        a.ins("dec rcx");
-        a.ins(&format!("jnz {cl}"));
+        // Results copy to the frame base. The accumulator doubles as the
+        // copy scratch: after the copy it holds result 0, which is the
+        // call-result-in-acc convention at zero extra instructions. One
+        // result, the common case, copies without the loop.
+        a.ins("cmp rcx, 1");
+        a.ins(&format!("jne {other}"));
+        a.ins("mov r12, [rbp + rax]");
+        a.ins("mov [rbp], r12");
         a.label(&pop);
-        a.ins(&format!("mov rsi, [r15 + {S_RET_CURSOR}]"));
-        a.ins("sub rsi, 32");
-        a.ins(&format!("mov [r15 + {S_RET_CURSOR}], rsi"));
-        a.ins("mov rax, [rsi]"); // ret pc
-        a.ins("mov rbp, [rsi + 8]"); // caller frame
-        a.ins("mov rdx, [rsi + 16]"); // caller code | caller_l0off<<48
-        a.ins("mov rcx, [rsi + 24]"); // caller l1off
-        a.ins("mov r9, rdx");
-        a.ins("shl r9, 16");
-        a.ins("shr r9, 16"); // caller cell base
-        a.ins("shr rdx, 48"); // caller l0off, bit 0 = float-pinned flag
-                              // Sentinel records carry a readable dummy frame, so these loads
-                              // are always safe.
+        // Pop the return record. The caller's continuation cell and its
+        // handler load first, so the dispatch target resolves alongside the
+        // remaining record and pinned-local reloads. Sentinel records point
+        // at the driver's exit cell, behind an all-zero stand-in call cell,
+        // and carry a readable dummy frame, so every load here is safe.
+        a.ins("sub r9, 16");
+        // The record holds (ret pc, caller frame). The call cell before ret
+        // pc keeps the caller's pinned offsets in the top 16 bits of its c
+        // and a words.
+        a.ins("mov rbx, [r9]");
+        a.ins("mov rax, [rbx]");
+        a.ins("mov rbp, [r9 + 8]");
+        a.ins("movzx edx, word ptr [rbx - 2]"); // caller l0off, bit 0 = float-pinned flag
+        a.ins("movzx ecx, word ptr [rbx - 18]"); // caller l1off
         let fp = a.fresh("retfp");
-        let join = a.fresh("retjoin");
         a.ins("test dl, 1");
         a.ins(&format!("jnz {fp}"));
         a.ins("mov r11, [rbp + rdx]");
         a.ins("mov r10, [rbp + rcx]");
-        a.label(&join);
-        a.ins("mov rbx, rax");
-        a.ins("mov rax, [rbx]");
         a.ins("jmp rax");
         a.label(&fp);
         a.ins("dec rdx");
@@ -1583,7 +1701,20 @@ impl X86_64 {
         a.ins("mov r10, [rbp + rcx]");
         a.ins("movq xmm4, r11");
         a.ins("movq xmm5, r10");
-        a.ins(&format!("jmp {join}"));
+        a.ins("jmp rax");
+        // No results (below 1, from the compare above), or several.
+        a.label(&other);
+        a.ins(&format!("jb {pop}"));
+        a.ins("add rax, rbp");
+        a.ins("mov rdx, rbp");
+        a.label(&cl);
+        a.ins("mov r12, [rax]");
+        a.ins("mov [rdx], r12");
+        a.ins("add rax, 8");
+        a.ins("add rdx, 8");
+        a.ins("dec rcx");
+        a.ins(&format!("jnz {cl}"));
+        a.ins(&format!("jmp {pop}"));
     }
 
     /// `memory.fill` / `memory.copy` on memory 0, in 64-byte SSE2 blocks
@@ -1601,7 +1732,7 @@ impl X86_64 {
         a.ins("mov rdx, [rax + 8]"); // fill: value, copy: s
         a.ins("mov rsi, [rax + 16]"); // n
         a.ins("lea r8, [rcx + rsi]");
-        a.ins("cmp r8, r13");
+        a.ins(&format!("cmp r8, [r15 + {S_MEM_LEN}]"));
         a.ins(&format!("ja {}", st.slow)); // dst out of bounds
         let l64 = a.fresh("l64");
         let l8 = a.fresh("l8");
@@ -1642,7 +1773,7 @@ impl X86_64 {
             self.tail(a, v.counted);
         } else {
             a.ins("lea r8, [rdx + rsi]");
-            a.ins("cmp r8, r13");
+            a.ins(&format!("cmp r8, [r15 + {S_MEM_LEN}]"));
             a.ins(&format!("ja {}", st.slow)); // src out of bounds
             let back = a.fresh("copyback");
             let fwd = a.fresh("copyfwd");
