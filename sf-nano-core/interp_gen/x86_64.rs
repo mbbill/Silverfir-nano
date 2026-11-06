@@ -300,48 +300,6 @@ impl X86_64 {
         a.ins("mov rdi, [rbx + 32]");
     }
 
-    /// Zero the callee's fresh locals `[zero_start*8, zero_end*8)` of the
-    /// new frame: edi holds zero_start and r8d the count, with the flags of
-    /// the `sub` that produced it. Two slots per iteration after an odd
-    /// leading one; no fresh locals costs one branch.
-    fn zero_fresh_locals(a: &mut Asm) {
-        let zl = a.fresh("zl");
-        let zdone = a.fresh("zdone");
-        a.ins(&format!("jz {zdone}"));
-        a.ins("lea rdi, [rbp + rdi*8]");
-        a.ins("xor esi, esi");
-        a.ins("test r8b, 1");
-        a.ins(&format!("jz {zl}"));
-        a.ins("mov [rdi], rsi");
-        a.ins("add rdi, 8");
-        a.ins("dec r8d");
-        a.ins(&format!("jz {zdone}"));
-        a.label(&zl);
-        a.ins("mov [rdi], rsi");
-        a.ins("mov [rdi + 8], rsi");
-        a.ins("add rdi, 16");
-        a.ins("sub r8d, 2");
-        a.ins(&format!("jnz {zl}"));
-        a.label(&zdone);
-    }
-
-    /// Jump to the callee's first handler (already in rax) once its pinned
-    /// locals are in r11/r10. `fp_jcc` branches when the callee has
-    /// float-pinned slots; their twins load in a block out of line, because
-    /// making integer code take a branch here measured 11% on a zero-float
-    /// call microbench.
-    fn enter_callee(a: &mut Asm, fp_jcc: &str) {
-        let fp = a.fresh("callfp");
-        let cont = a.fresh("callcont");
-        a.ins(&format!("{fp_jcc} {fp}"));
-        a.label(&cont);
-        a.ins("jmp rax");
-        a.label(&fp);
-        a.ins("movq xmm4, r11");
-        a.ins("movq xmm5, r10");
-        a.ins(&format!("jmp {cont}"));
-    }
-
     fn bump(&self, a: &mut Asm, on: bool) {
         if on {
             a.ins(&format!("inc qword ptr [r15 + {S_DISPATCHES}]"));
@@ -736,52 +694,15 @@ impl Isa for X86_64 {
         a.ins("jmp rax");
 
         // ---- Call (wired by the cross-function fixup, not the table) ----
-        // A direct call reads its callee description straight from the call
-        // cell. Every field the activation needs is a 16-bit lane of a cell
-        // word, so each is one zero-extending load rather than a register
-        // shift-and-mask (cell layout in `exec.rs` call fixups):
-        //   a: caller l1off(16) | callee cells(48)
-        //   b: callee l1off(16) | callee l0off(16) | fp(1) | arg_base*8(31)
-        //   c: caller l0off(16) | frame_slots(16) | zero_end(16) | zero_start(16)
         a.label(&st.call);
         self.bump(a, self.counting);
-        a.ins(&format!("cmp r9, [r15 + {S_RET_LIMIT}]"));
-        a.ins(&format!("jae {}", st.trap_exhaust));
-        a.ins("mov r8d, [rbx + 16]");
-        a.ins("and r8d, 0x7fffffff"); // arg_base*8 (bit 31 is the fp flag)
-        a.ins("add r8, rbp"); // new frame base
-        a.ins("movzx edi, word ptr [rbx + 28]"); // frame_slots
-        a.ins("lea rdi, [r8 + rdi*8]");
-        a.ins(&format!("cmp rdi, [r15 + {S_STACK_LIMIT}]"));
-        a.ins(&format!("ja {}", st.trap_exhaust));
-        // push (ret_pc, caller frame); `Return` reads the caller's pinned
-        // offsets back out of this call cell, the one before ret_pc
-        a.ins("lea rdi, [rbx + 32]");
-        a.ins("mov [r9], rdi");
-        a.ins("mov [r9 + 8], rbp");
-        a.ins("add r9, 16");
-        a.ins("mov rbp, r8");
-        // The callee's first handler load starts as soon as its cells
-        // address is known; rcx keeps the call cell for the fields below.
-        a.ins("mov rcx, rbx");
-        a.ins("mov rbx, [rbx + 8]");
-        a.ins("shl rbx, 16");
-        a.ins("shr rbx, 16"); // clean 48-bit cells address
-        a.ins("mov rax, [rbx]");
-        a.ins("movzx edi, word ptr [rcx + 24]"); // zero_start
-        a.ins("movzx r8d, word ptr [rcx + 26]"); // zero_end
-        a.ins("sub r8d, edi"); // fresh-local count
-        Self::zero_fresh_locals(a);
-        a.ins("movzx edi, word ptr [rcx + 20]"); // callee l0off
-        a.ins("mov r11, [rbp + rdi]");
-        a.ins("movzx edi, word ptr [rcx + 22]"); // callee l1off
-        a.ins("mov r10, [rbp + rdi]");
-        a.ins("test byte ptr [rcx + 19], 0x80"); // callee fp flag, b bit 31
-        Self::enter_callee(a, "jnz");
+        a.ins("mov rdx, [rbx + 24]");
+        a.ins("mov rcx, [rbx + 16]");
+        a.ins("mov rax, [rbx + 8]");
 
-        // Shared activation entry for call_indirect: rax/rcx/rdx hold the
-        // a/b/c-shaped callee description it composes from a runtime lookup
-        // (only the callee lanes are meaningful).
+        // Shared activation entry: rax/rcx/rdx hold the a/b/c-shaped callee
+        // description. The indirect handler composes them from a runtime
+        // lookup instead of from cell fields.
         a.label(&st.call_core);
         a.ins(&format!("cmp r9, [r15 + {S_RET_LIMIT}]"));
         a.ins(&format!("jae {}", st.trap_exhaust));
@@ -794,19 +715,47 @@ impl Isa for X86_64 {
         a.ins("lea rdi, [r8 + rdi*8]");
         a.ins(&format!("cmp rdi, [r15 + {S_STACK_LIMIT}]"));
         a.ins(&format!("ja {}", st.trap_exhaust));
+        // push (ret_pc, caller frame); `Return` reads the caller's pinned
+        // offsets back out of this call cell, the one before ret_pc
         a.ins("lea rdi, [rbx + 32]");
         a.ins("mov [r9], rdi");
         a.ins("mov [r9 + 8], rbp");
         a.ins("add r9, 16");
         a.ins("mov rbp, r8");
-        a.ins("mov rbx, rax"); // clean cells address
+        // The callee's first handler depends only on its cells address, not
+        // on frame initialization or the pinned-local reloads, so its load
+        // starts here and the final indirect jump does not wait on it. The
+        // return pc is already recorded, so the cell pointer moves now.
+        a.ins("shl rax, 16");
+        a.ins("shr rax, 16"); // clean 48-bit cells address
+        a.ins("mov rbx, rax");
         a.ins("mov rax, [rax]");
+        // zero the fresh locals: [zero_start*8, zero_end*8), two slots per
+        // iteration after an odd leading one. No fresh locals costs two
+        // instructions past the count.
         a.ins("movzx edi, dx"); // zero_start
         a.ins("mov r8, rdx");
         a.ins("shr r8, 16");
         a.ins("movzx r8d, r8w"); // zero_end
         a.ins("sub r8d, edi"); // fresh-local count
-        Self::zero_fresh_locals(a);
+        let zl = a.fresh("zl");
+        let zdone = a.fresh("zdone");
+        a.ins(&format!("jz {zdone}"));
+        a.ins("lea rdi, [rbp + rdi*8]");
+        a.ins("xor esi, esi");
+        a.ins("test r8b, 1");
+        a.ins(&format!("jz {zl}"));
+        a.ins("mov [rdi], rsi");
+        a.ins("add rdi, 8");
+        a.ins("dec r8d");
+        a.ins(&format!("jz {zdone}"));
+        a.label(&zl);
+        a.ins("mov [rdi], rsi");
+        a.ins("mov [rdi + 8], rsi");
+        a.ins("add rdi, 16");
+        a.ins("sub r8d, 2");
+        a.ins(&format!("jnz {zl}"));
+        a.label(&zdone);
         a.ins("mov rdi, rcx");
         a.ins("shr rdi, 32");
         a.ins("movzx edi, di"); // callee l0off
@@ -814,8 +763,20 @@ impl Isa for X86_64 {
         a.ins("mov rdi, rcx");
         a.ins("shr rdi, 48"); // callee l1off
         a.ins("mov r10, [rbp + rdi]");
+        // Float twins only when the callee has float-pinned slots (cell b
+        // bit 31). Integer code falls through; the transfer block sits out
+        // of line, because making integer code take a branch here measured
+        // 11% on a zero-float call microbench.
+        let fp = a.fresh("callfp");
+        let cont = a.fresh("callcont");
         a.ins("test ecx, ecx");
-        Self::enter_callee(a, "js");
+        a.ins(&format!("js {fp}"));
+        a.label(&cont);
+        a.ins("jmp rax");
+        a.label(&fp);
+        a.ins("movq xmm4, r11");
+        a.ins("movq xmm5, r10");
+        a.ins(&format!("jmp {cont}"));
 
         // ---- CallIndirect (wired by the fixup pass) ----
         a.label(&st.call_indirect);
