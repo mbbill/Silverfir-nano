@@ -900,7 +900,7 @@ mod tests {
     /// relationships relevant to plain, packed, and paired destinations.
     #[test]
     fn specialized_op_slot_matches_generic_reference() {
-        use super::super::instr::{FLAG_ADDR64, FLAG_GLOBAL_CONVERT, FLAG_SHARED_TABLE};
+        use super::super::instr::{FLAG_ADDR64, FLAG_GLOBAL_CONVERT};
         use crate::collections::Vec;
 
         const L0: u64 = 11;
@@ -960,9 +960,8 @@ mod tests {
         ];
         for slow in [
             FLAG_ADDR64,
-            FLAG_SHARED_TABLE,
             FLAG_GLOBAL_CONVERT,
-            FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_GLOBAL_CONVERT,
+            FLAG_ADDR64 | FLAG_GLOBAL_CONVERT,
         ] {
             for class_flags in representative_class_flags {
                 flag_cases.push(class_flags | slow);

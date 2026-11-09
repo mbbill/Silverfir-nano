@@ -16,9 +16,8 @@
 //! Fourteen usable registers is the tightest budget of any backend here,
 //! and a wasm value is eight bytes, so the accumulator and the pinned local
 //! are register PAIRS — which uses four of them. What gets pushed out to
-//! `EnterState` as a result: the cell array base, return-stack cursor and
-//! limit, and the value-stack limit. All four are
-//! read by cold handlers only.
+//! `EnterState` as a result: the return-stack cursor and limit, and the
+//! value-stack limit. All three are read by cold handlers only.
 //!
 //! Two scope decisions, both about the same budget:
 //!
@@ -55,7 +54,6 @@ const T2: &str = "r2";
 const T3: &str = "r3";
 
 /// State-block offsets for the roles that do not get a register here.
-const S_CODE: u32 = 40;
 const S_RET_CURSOR: u32 = 56;
 const S_DISPATCHES: u32 = 80;
 
@@ -353,6 +351,7 @@ impl Isa for Arm32 {
             float_pin_f32: false,
             native_calls: false,
             page_aligned_blob: false,
+            handler_line: None,
         }
     }
 
@@ -558,9 +557,9 @@ impl Isa for Arm32 {
                 // the link pass parked in the last slot.
                 a.ins(&format!("cmp {T3}, {T2}"));
                 self.cond_mov(a, "hs", T3, T2);
-                a.ins(&format!("ldr {T3}, [{T1}, {T3}, lsl #2]"));
-                a.ins(&format!("ldr {T1}, [{STATE}, #{S_CODE}]"));
-                a.ins(&format!("add {PC}, {T1}, {T3}, lsl #5"));
+                // Entries are 64-bit target cell addresses; read the low
+                // word.
+                a.ins(&format!("ldr {PC}, [{T1}, {T3}, lsl #3]"));
                 a.ins(&format!("ldr {T0}, [{PC}]"));
                 a.ins(&format!("bx {T0}"));
                 return;
@@ -1004,18 +1003,16 @@ impl Arm32 {
         a.ins(&format!("bne {cl}"));
         a.label(&pop);
         a.ins(&format!("ldr {T3}, [{STATE}, #{S_RET_CURSOR}]"));
-        a.ins(&format!("sub {T3}, {T3}, #32"));
+        a.ins(&format!("sub {T3}, {T3}, #16"));
         a.ins(&format!("str {T3}, [{STATE}, #{S_RET_CURSOR}]"));
-        a.ins(&format!("ldr {T0}, [{T3}]")); // ret pc
-        a.ins(&format!("ldr {FRAME}, [{T3}, #8]")); // caller frame
-                                                    // The packed word straddles two machine words here: the cell base
-                                                    // is the low half and the caller's l0 offset the high half's low
-                                                    // 16 bits. Sentinel records carry a readable dummy frame, so the
-                                                    // reload below is always safe.
-        a.ins(&format!("ldr {T1}, [{T3}, #16]")); // caller cell base
-        a.ins(&format!("str {T1}, [{STATE}, #{S_CODE}]"));
-        a.ins(&format!("ldr {T2}, [{T3}, #20]"));
-        a.ins(&format!("uxth {T2}, {T2}")); // caller l0off
+        // The record holds (ret pc, caller frame). The call cell before ret
+        // pc keeps the caller's l0 offset in the top 16 bits of its c word.
+        // Sentinel records point at the driver's exit cell, behind an
+        // all-zero stand-in call cell, and carry a readable dummy frame, so
+        // the reload below is always safe.
+        a.ins(&format!("ldr {T0}, [{T3}]"));
+        a.ins(&format!("ldr {FRAME}, [{T3}, #8]"));
+        a.ins(&format!("ldrh {T2}, [{T0}, #-2]")); // caller l0off
         a.ins(&format!("add {T2}, {FRAME}, {T2}"));
         a.ins(&format!("ldr {L0R}, [{T2}]"));
         a.ins(&format!("ldr {L0_HI}, [{T2}, #4]"));

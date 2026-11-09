@@ -947,6 +947,8 @@ pub(crate) enum SsaCallOp {
         type_idx: u32,
         table_idx: u32,
         index: SsaCallOperandLoc,
+        /// `index` is an i64: the table is 64-bit.
+        index64: bool,
         args: SsaCallArgs,
         results: FrameSpan,
         result_types: collections::Vec<ValueType>,
@@ -989,6 +991,8 @@ pub(crate) enum SsaTerminator {
         type_idx: u32,
         table_idx: u32,
         index: SsaCallOperandLoc,
+        /// `index` is an i64: the table is 64-bit.
+        index64: bool,
         args: SsaCallArgs,
         return_results: Option<FrameSpan>,
     },

@@ -4,7 +4,6 @@
 //! ```text
 //!   s2 = pc          s3 = frame base   s4 = &EnterState
 //!   s5 = memory 0 base                 s6 = memory 0 length
-//!   s7 = cell array base
 //!   s9 = return-stack cursor           s10 = return-stack limit
 //!   s11 = value-stack limit            a1  = dispatch counter
 //!   s1 = accumulator   s0 = l0   a0 = l1 (RV64 only)
@@ -52,7 +51,6 @@ const FRAME: &str = "s3";
 const STATE: &str = "s4";
 const MEM: &str = "s5";
 const MEMLEN: &str = "s6";
-const CODE: &str = "s7";
 const RETSP: &str = "s9";
 const RETLIM: &str = "s10";
 const STKLIM: &str = "s11";
@@ -664,6 +662,7 @@ impl Isa for RiscV {
                 float_pin_f32: false,
                 native_calls: true,
                 page_aligned_blob: false,
+                handler_line: None,
             }
         } else {
             // One pinned local on RV32: a second would take a second
@@ -678,6 +677,7 @@ impl Isa for RiscV {
                 float_pin_f32: false,
                 native_calls: false,
                 page_aligned_blob: false,
+                handler_line: None,
             }
         }
     }
@@ -696,7 +696,7 @@ impl Isa for RiscV {
         let (lp, sp) = (self.lp(), self.sp());
         let frame = if self.rv64() { 128 } else { 64 };
         let saved = [
-            "ra", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s9", "s10", "s11",
+            "ra", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s9", "s10", "s11",
         ];
 
         a.label(&st.exit_common);
@@ -749,7 +749,6 @@ impl Isa for RiscV {
         a.ins(&format!("{lp} {FRAME}, 16({STATE})"));
         a.ins(&format!("{lp} {MEM}, 24({STATE})"));
         a.ins(&format!("{lp} {MEMLEN}, 32({STATE})"));
-        a.ins(&format!("{lp} {CODE}, 40({STATE})"));
         a.ins(&format!("{lp} {RETSP}, 56({STATE})"));
         a.ins(&format!("{lp} {RETLIM}, 64({STATE})"));
         a.ins(&format!("{lp} {STKLIM}, 72({STATE})"));
@@ -989,11 +988,11 @@ impl Isa for RiscV {
                 a.ins(&format!("bltu {T4}, {T3}, {keep}"));
                 a.ins(&format!("mv {T4}, {T3}"));
                 a.label(&keep);
-                a.ins(&format!("slli {T4}, {T4}, 2"));
+                // Entries are 64-bit target cell addresses; RV32 reads the
+                // low word.
+                a.ins(&format!("slli {T4}, {T4}, 3"));
                 a.ins(&format!("add {T4}, {T2}, {T4}"));
-                a.ins(&format!("lw {T4}, 0({T4})")); // target instruction index
-                a.ins(&format!("slli {T4}, {T4}, 5"));
-                a.ins(&format!("add {PC}, {CODE}, {T4}"));
+                a.ins(&format!("{lp} {PC}, 0({T4})"));
                 a.ins(&format!("{lp} {T1}, 0({PC})"));
                 a.ins(&format!("jr {T1}"));
                 return;
@@ -1768,26 +1767,21 @@ impl RiscV {
         a.ins(&format!("slli {T2}, {T2}, 3"));
         a.ins(&format!("add {T2}, {T1}, {T2}"));
         self.br_far(a, "bltu", STKLIM, T2, &st.trap_exhaust);
-        // push (ret_pc, caller frame, code | caller_l0off<<48, caller_l1off)
+        // push (ret_pc, caller frame); `Return` reads the caller's pinned
+        // offsets back out of this call cell, the one before ret_pc
         a.ins(&format!("addi {T3}, {PC}, 32"));
         a.ins(&format!("sd {T3}, 0({RETSP})"));
         a.ins(&format!("sd {FRAME}, 8({RETSP})"));
-        a.ins(&format!("srli {T3}, {T6}, 48"));
-        a.ins(&format!("slli {T3}, {T3}, 48"));
-        a.ins(&format!("or {T3}, {T3}, {CODE}"));
-        a.ins(&format!("sd {T3}, 16({RETSP})"));
-        a.ins(&format!("srli {T3}, {A2}, 48"));
-        a.ins(&format!("sd {T3}, 24({RETSP})"));
-        a.ins(&format!("addi {RETSP}, {RETSP}, 32"));
+        a.ins(&format!("addi {RETSP}, {RETSP}, 16"));
         a.ins(&format!("mv {FRAME}, {T1}"));
-        // zero the fresh locals: [n_params*8, n_locals*8)
+        // zero the fresh locals: [zero_start*8, zero_end*8)
         a.ins(&format!("slli {T1}, {T6}, 48"));
-        a.ins(&format!("srli {T1}, {T1}, 48")); // n_params
+        a.ins(&format!("srli {T1}, {T1}, 48")); // zero_start
         a.ins(&format!("slli {T1}, {T1}, 3"));
         a.ins(&format!("add {T1}, {FRAME}, {T1}"));
         a.ins(&format!("srli {T2}, {T6}, 16"));
         a.ins(&format!("slli {T2}, {T2}, 48"));
-        a.ins(&format!("srli {T2}, {T2}, 48")); // n_locals
+        a.ins(&format!("srli {T2}, {T2}, 48")); // zero_end
         a.ins(&format!("slli {T2}, {T2}, 3"));
         a.ins(&format!("add {T2}, {FRAME}, {T2}"));
         let zl = a.fresh("zl");
@@ -1816,9 +1810,8 @@ impl RiscV {
             a.ins(&format!("srli {T5}, {T5}, 63"));
             a.ins(&format!("bne {T5}, zero, {fp}"));
             a.label(&cont);
-            a.ins(&format!("slli {CODE}, {A2}, 16"));
-            a.ins(&format!("srli {CODE}, {CODE}, 16"));
-            a.ins(&format!("mv {PC}, {CODE}"));
+            a.ins(&format!("slli {PC}, {A2}, 16"));
+            a.ins(&format!("srli {PC}, {PC}, 16"));
             a.ins(&format!("ld {T1}, 0({PC})"));
             a.ins(&format!("jr {T1}"));
             a.label(&fp);
@@ -1826,9 +1819,8 @@ impl RiscV {
             a.ins(&format!("fmv.d.x {FL1R}, {L1R}"));
             a.ins(&format!("j {cont}"));
         } else {
-            a.ins(&format!("slli {CODE}, {A2}, 16"));
-            a.ins(&format!("srli {CODE}, {CODE}, 16"));
-            a.ins(&format!("mv {PC}, {CODE}"));
+            a.ins(&format!("slli {PC}, {A2}, 16"));
+            a.ins(&format!("srli {PC}, {PC}, 16"));
             a.ins(&format!("ld {T1}, 0({PC})"));
             a.ins(&format!("jr {T1}"));
         }
@@ -1860,8 +1852,24 @@ impl RiscV {
         a.ins(&format!("srli {T5}, {T4}, 32"));
         self.br_far(a, "bne", T5, "zero", &st.slow); // upper 32 bits are nonzero
         a.ins(&format!("ld {T5}, 48({STATE})")); // info length
-        self.br_far(a, "bgeu", T4, T5, &st.slow);
-        a.ins(&format!("ld {T5}, 128({STATE})")); // info base
+        let local = a.fresh("cilocal");
+        // A local function index goes straight on. A table another instance
+        // can reach holds world identities instead: map this instance's own
+        // back to local indices, and let anything outside its range wrap
+        // past the map length. A gap reads u32::MAX and fails the index
+        // check below.
+        a.ins(&format!("bltu {T4}, {T5}, {local}"));
+        a.ins(&format!("ld {T6}, 128({STATE})")); // self_abs_base
+        a.ins(&format!("sub {T4}, {T4}, {T6}"));
+        a.ins(&format!("ld {T6}, 136({STATE})")); // map length
+        self.br_far(a, "bgeu", T4, T6, &st.slow); // not this instance's function
+        a.ins(&format!("ld {T6}, 144({STATE})")); // identity -> local index map
+        a.ins(&format!("slli {T3}, {T4}, 2"));
+        a.ins(&format!("add {T6}, {T6}, {T3}"));
+        a.ins(&format!("lwu {T4}, 0({T6})"));
+        self.br_far(a, "bgeu", T4, T5, &st.slow); // gap
+        a.label(&local);
+        a.ins(&format!("ld {T5}, 40({STATE})")); // info base
         a.ins(&format!("slli {T6}, {T4}, 1"));
         a.ins(&format!("add {T6}, {T6}, {T4}")); // fi*3
         a.ins(&format!("slli {T6}, {T6}, 3"));
@@ -1876,14 +1884,12 @@ impl RiscV {
         self.br_far(a, "bne", T3, T4, &st.slow);
         a.ins(&format!("ld {T6}, 0({T5})")); // callee cells | fp flag
         self.br_far(a, "beq", T6, "zero", &st.slow);
-        a.ins(&format!("ld {T5}, 16({T5})")); // frame metadata
-                                              // compose the call_core inputs
+        // Load the frame metadata, then compose the call_core inputs. The
+        // caller's pinned offsets stay in this cell for `Return` to read.
+        a.ins(&format!("ld {T5}, 16({T5})"));
         a.ins(&format!("andi {T4}, {T6}, 1")); // callee fp flag
         a.ins(&format!("srli {T6}, {T6}, 5"));
-        a.ins(&format!("slli {T6}, {T6}, 5")); // clean cells address
-        a.ins(&format!("srli {T3}, {T1}, 48")); // caller l1off
-        a.ins(&format!("slli {T3}, {T3}, 48"));
-        a.ins(&format!("or {T1}, {T6}, {T3}")); // a-equiv (staged in t1)
+        a.ins(&format!("slli {T1}, {T6}, 5")); // a-equiv: clean cells address (staged in t1)
         a.ins(&format!("srli {T3}, {A3}, 32"));
         a.ins(&format!("slli {A3}, {T3}, 32")); // callee l0/l1, canon cleared
         a.ins(&format!("slli {T3}, {A2}, 32"));
@@ -1891,9 +1897,7 @@ impl RiscV {
         a.ins(&format!("or {A3}, {A3}, {T3}"));
         a.ins(&format!("slli {T4}, {T4}, 31"));
         a.ins(&format!("or {A3}, {A3}, {T4}")); // b-equiv
-        a.ins(&format!("srli {T3}, {A2}, 48"));
-        a.ins(&format!("slli {T3}, {T3}, 48")); // caller l0off
-        a.ins(&format!("or {T6}, {T3}, {T5}")); // c-equiv
+        a.ins(&format!("mv {T6}, {T5}")); // c-equiv
         a.ins(&format!("mv {A2}, {T1}")); // a-equiv into place
         a.ins(&format!("j {}", st.call_core));
     }
@@ -1926,28 +1930,19 @@ impl RiscV {
         a.ins(&format!("addi {T2}, {T2}, -1"));
         a.ins(&format!("bne {T2}, zero, {cl}"));
         a.label(&pop);
-        a.ins(&format!("addi {RETSP}, {RETSP}, -32"));
-        a.ins(&format!("{lp} {T1}, 0({RETSP})")); // ret pc
+        a.ins(&format!("addi {RETSP}, {RETSP}, -16"));
+        // The record holds (ret pc, caller frame). The call cell before ret
+        // pc keeps the caller's pinned offsets in the top 16 bits of its c
+        // and a words.
+        a.ins(&format!("{lp} {T1}, 0({RETSP})"));
         a.ins(&format!("{lp} {FRAME}, 8({RETSP})"));
-        a.ins(&format!("{lp} {T3}, 24({RETSP})")); // caller l1off
-        if self.rv64() {
-            a.ins(&format!("ld {T2}, 16({RETSP})")); // code | caller_l0off<<48
-            a.ins(&format!("slli {CODE}, {T2}, 16"));
-            a.ins(&format!("srli {CODE}, {CODE}, 16"));
-            a.ins(&format!("srli {T2}, {T2}, 48")); // caller l0off, bit 0 = fp
-        } else {
-            // On RV32 the packed word straddles two machine words: the
-            // cell base is the low half and the caller's l0 offset the
-            // high half's low 16 bits.
-            a.ins(&format!("lw {CODE}, 16({RETSP})"));
-            a.ins(&format!("lw {T2}, 20({RETSP})"));
-            a.ins(&format!("slli {T2}, {T2}, 16"));
-            a.ins(&format!("srli {T2}, {T2}, 16"));
-        }
+        a.ins(&format!("lhu {T3}, -18({T1})")); // caller l1off
+        a.ins(&format!("lhu {T2}, -2({T1})")); // caller l0off, bit 0 = fp
         let join = a.fresh("retjoin");
-        // Sentinel records carry a readable dummy frame, so these loads are
-        // always safe. The caller's float-pinned flag rides bit 0 of its
-        // recorded l0 offset (offsets are byte-scaled, so bit 0 is free).
+        // Sentinel records point at the driver's exit cell, behind an
+        // all-zero stand-in call cell, and carry a readable dummy frame, so
+        // these loads are always safe. The caller's float-pinned flag rides
+        // bit 0 of its l0 offset (offsets are byte-scaled, so bit 0 is free).
         if self.fp {
             let fp = a.fresh("retfp");
             a.ins(&format!("andi {T4}, {T2}, 1"));

@@ -12,9 +12,10 @@
 //! `call`/`call_indirect`, `return`, `unreachable`. Everything else returns
 //! a clean "unsupported" error.
 //!
-//! Frame model: `[ params | locals | temps by height ]`, all u64 slots. The
-//! executor (stage A2) zero-initializes non-param locals; the predecoder
-//! only computes the frame size.
+//! Frame model: `[ params | locals | temps by height ]`, all u64 slots. An
+//! activation zero-initializes the locals in `[zero_start, zero_end)`: the
+//! span of the fresh locals some read can see before a write
+//! (`Assignment`). The predecoder computes that range and the frame size.
 
 use crate::collections::{vec, Vec};
 use crate::error::WasmError;
@@ -45,7 +46,6 @@ use super::instr::{operand_is_f32, result_is_f32};
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
     FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_GLOBAL_CONVERT, FLAG_NO_NATIVE,
-    FLAG_SHARED_TABLE,
 };
 #[cfg(test)]
 use super::layout::slot_fields;
@@ -170,8 +170,10 @@ pub(crate) struct PredecodedFunction {
     pub wide_memargs: Vec<(u32, u64)>,
     /// Total frame slots: params + locals + max temp height.
     pub frame_slots: u32,
-    /// params + locals (== the base slot index of temps).
-    pub n_locals: u32,
+    /// The locals a fresh activation zeroes, `[zero_start, zero_end)`. Every
+    /// other fresh local is written before it is read on every path.
+    pub zero_start: u32,
+    pub zero_end: u32,
     pub n_params: u32,
     pub n_results: u32,
     /// A synthetic `Return` cell used when a slow-path tail callee (for
@@ -301,7 +303,8 @@ pub(super) fn linker_test_function(
         pinned,
         br_tables,
         wide_memargs: Vec::new(),
-        n_locals,
+        zero_start: 0,
+        zero_end: n_locals,
         n_params: 0,
         n_results: 0,
         slow_tail_return: None,
@@ -443,7 +446,8 @@ struct PredecodedFunctionParts {
     br_tables: Vec<Vec<u32>>,
     wide_memargs: Vec<(u32, u64)>,
     frame_slots: u32,
-    n_locals: u32,
+    zero_start: u32,
+    zero_end: u32,
     n_params: u32,
     n_results: u32,
     slow_tail_return: Option<u32>,
@@ -498,12 +502,12 @@ impl UnlinkedFunction<'_> {
         self.parts.frame_slots
     }
 
-    pub(crate) fn n_locals(&self) -> u32 {
-        self.parts.n_locals
+    pub(crate) fn zero_start(&self) -> u32 {
+        self.parts.zero_start
     }
 
-    pub(crate) fn n_params(&self) -> u32 {
-        self.parts.n_params
+    pub(crate) fn zero_end(&self) -> u32 {
+        self.parts.zero_end
     }
 }
 
@@ -609,7 +613,8 @@ impl PredecodedFunctionParts {
             br_tables: self.br_tables,
             wide_memargs: self.wide_memargs,
             frame_slots: self.frame_slots,
-            n_locals: self.n_locals,
+            zero_start: self.zero_start,
+            zero_end: self.zero_end,
             n_params: self.n_params,
             n_results: self.n_results,
             slow_tail_return: self.slow_tail_return,
@@ -637,6 +642,9 @@ fn predecode_function_into(
     let n_params = func.func_type().params().len() as u32;
     let n_results = func.func_type().results().len() as u32;
     let n_locals = n_params + spec.locals().len() as u32;
+    // What a self tail call re-zeroes: every fresh local until a pass has
+    // run the definite-assignment analysis (see `Assignment`).
+    let (mut tail_zero_start, mut tail_zero_end) = (n_params, n_locals);
 
     // Optimistically coalesce unique loop parameters with their source
     // locals. If a decoded backedge would have to synthesize a write into
@@ -648,6 +656,7 @@ fn predecode_function_into(
     // following function receives the capacities grown by the prior pass.
     let mut stack = mem::take(&mut scratch.stack);
     let mut frames = mem::take(&mut scratch.frames);
+    let mut assigned_frames = mem::take(&mut scratch.assigned_frames);
     let mut locals = mem::take(&mut scratch.locals);
     let mut canonical_loop_homes = mem::take(&mut scratch.canonical_loop_homes);
     let mut unsafe_loop_homes = mem::take(&mut scratch.unsafe_loop_homes);
@@ -701,6 +710,10 @@ fn predecode_function_into(
             max_height: 0,
             func_index: func_index as u32,
             n_locals,
+            zero_start: tail_zero_start,
+            zero_end: tail_zero_end,
+            self_tail_zeroed: false,
+            assignment: Assignment::new(n_params, spec.locals(), assigned_frames),
             n_results,
             last_call_idx: NO_DEF,
             last_call_height: 0,
@@ -734,15 +747,21 @@ fn predecode_function_into(
                 }
             }
         }
-        if !learned_unsafe_home {
+        // The analysis does not depend on what a pass emitted, so a pass
+        // repeated with the needed range ends up needing the same one.
+        let needed = p.assignment.zero_range();
+        let tail_zeroed_more = p.self_tail_zeroed && needed != (tail_zero_start, tail_zero_end);
+        if !learned_unsafe_home && !tail_zeroed_more {
             break p;
         }
+        (tail_zero_start, tail_zero_end) = needed;
 
         // Reclaim every buffer before retrying. In particular, a safety
         // re-decode no longer repeats the local-state and control-stack
         // allocations that prompted the retry.
         stack = mem::take(&mut p.stack);
         frames = mem::take(&mut p.frames);
+        assigned_frames = mem::take(&mut p.assignment.frames);
         locals = mem::take(&mut p.locals);
         canonical_loop_homes = mem::take(&mut p.canonical_loop_homes);
         unsafe_loop_homes = mem::take(&mut p.unsafe_loop_homes);
@@ -765,13 +784,15 @@ fn predecode_function_into(
         "final-stream pinned-local census disagrees with the incremental mutation oracle"
     );
     let mut p = p;
+    let (zero_start, zero_end) = p.assignment.zero_range();
     let parts = PredecodedFunctionParts {
         code_range,
         pinned,
         frame_slots: n_locals + p.max_height,
         br_tables: mem::take(&mut p.br_tables),
         wide_memargs: mem::take(&mut p.wide_memargs),
-        n_locals,
+        zero_start,
+        zero_end,
         n_params,
         n_results,
         slow_tail_return: p.slow_tail_return,
@@ -780,6 +801,7 @@ fn predecode_function_into(
     };
     scratch.stack = mem::take(&mut p.stack);
     scratch.frames = mem::take(&mut p.frames);
+    scratch.assigned_frames = mem::take(&mut p.assignment.frames);
     scratch.locals = mem::take(&mut p.locals);
     scratch.canonical_loop_homes = mem::take(&mut p.canonical_loop_homes);
     scratch.unsafe_loop_homes = mem::take(&mut p.unsafe_loop_homes);
@@ -905,6 +927,7 @@ struct CtlFrame {
 struct PredecodeScratch {
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
+    assigned_frames: Vec<FrameAssigned>,
     locals: Vec<LocalState>,
     canonical_loop_homes: Vec<bool>,
     unsafe_loop_homes: Vec<bool>,
@@ -1008,6 +1031,14 @@ struct Predecoder<'m, 'code> {
     /// inside the native dispatch chain.
     func_index: u32,
     n_locals: u32,
+    /// The fresh locals a self tail call re-zeroes. The first pass zeroes
+    /// them all; `predecode_function_into` repeats a pass that zeroed more
+    /// than `assignment` ends up needing.
+    zero_start: u32,
+    zero_end: u32,
+    /// A self tail call zeroed `[zero_start, zero_end)` in this pass.
+    self_tail_zeroed: bool,
+    assignment: Assignment,
     n_results: u32,
     /// Cell index / result height / region of the last emitted
     /// SINGLE-result call (u32::MAX = none). An adjacent consumer of that
@@ -1156,6 +1187,15 @@ fn update_pin_census(locals: &mut [LocalState], ins: Instr, add: bool) {
     }
     if matches!(ins.op, Op::I32_SubBrIf | Op::I64_SubBrIf) && ins.a < n {
         census_write(locals, ins.a, false, false, true, add);
+    }
+    if ins.op == Op::Return && ins.a < n {
+        census_read(
+            locals,
+            ins.a,
+            operand_is_float(Op::MovSlot, false),
+            operand_is_f32(Op::MovSlot, false),
+            add,
+        );
     }
     if ins.op == Op::Select {
         let dst = ins.c & 0xffff_ffff;
@@ -1540,13 +1580,6 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 handler.target = landing;
             }
         }
-    }
-
-    fn table_is_shared(&self, idx: u64) -> bool {
-        self.module
-            .tables()
-            .get(idx as usize)
-            .is_some_and(|t| t.is_import() || !t.export_names().is_empty())
     }
 
     fn memory_is_64(&self, idx: u64) -> bool {
@@ -2014,6 +2047,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
     }
 
     fn local_set(&mut self, idx: u32, is_tee: bool) -> Result<(), WasmError> {
+        self.assignment.write(idx);
         // Hazard flush: pending reads of this local captured the OLD value.
         let mut flushed = false;
         if self.stack.len() > 1 {
@@ -2084,6 +2118,7 @@ impl<'m, 'code> Predecoder<'m, 'code> {
             let f = &mut self.frames[n - 1 - depth as usize];
             if !f.is_loop {
                 f.end_targeted = true;
+                self.assignment.branch_to_end(depth as usize);
             }
         }
     }
@@ -2437,6 +2472,24 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         Some(fusion)
     }
 
+    /// Return the function's results from the top of the stack.
+    ///
+    /// `Return` copies its results from whatever slot `a` names, so a single
+    /// result that is still a pending `local.get` returns straight from the
+    /// local's own slot instead of first being staged in a temp. Values
+    /// below the results are discarded and need no staging either.
+    fn return_stack_results(&mut self) {
+        if self.n_results == 1 {
+            if let Some(&Desc::Local(local)) = self.stack.last() {
+                let at = self.emit(Op::Return, 0, local as u64, 1, 0);
+                self.locals[local as usize].last_read = at + 1;
+                return;
+            }
+        }
+        self.materialize_all();
+        self.emit_return();
+    }
+
     fn emit_return(&mut self) {
         let r = self.n_results;
         let base = self.height().saturating_sub(r);
@@ -2540,9 +2593,6 @@ impl<'m, 'code> Predecoder<'m, 'code> {
                 if self.table_is_64(type_idx >> 32) {
                     flags |= FLAG_ADDR64;
                 }
-                if self.table_is_shared(type_idx >> 32) {
-                    flags |= FLAG_SHARED_TABLE;
-                }
                 let op = if tail {
                     Op::ReturnCallIndirect
                 } else {
@@ -2601,9 +2651,10 @@ impl<'m, 'code> Predecoder<'m, 'code> {
         for i in 0..params {
             self.emit(Op::MovSlot, 0, arg_base + i as u64, 0, i as u64);
         }
-        for i in params..self.n_locals {
+        for i in self.zero_start..self.zero_end {
             self.emit(Op::MovConst, FLAG_A_CONST, 0, 0, i as u64);
         }
+        self.self_tail_zeroed = true;
         self.emit(Op::Br, 0, 0, 0, 0);
         self.bump_region();
         self.dead = true;
@@ -3158,6 +3209,204 @@ fn probe_fixed<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Option<[u8; 
     Some(value)
 }
 
+/// One bit per fresh local at either end of the frame: the lowest
+/// `FRESH_WINDOW` fresh locals in `low`, and in a wider frame the highest
+/// `FRESH_WINDOW` in `high` (bit 0 is fresh index `high_base`). A local in
+/// both windows has a bit in each; the locals between the windows have
+/// none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FreshBits {
+    low: u64,
+    high: u64,
+}
+
+const FRESH_WINDOW: u32 = u64::BITS;
+
+impl FreshBits {
+    const NONE: FreshBits = FreshBits { low: 0, high: 0 };
+    const ALL: FreshBits = FreshBits {
+        low: u64::MAX,
+        high: u64::MAX,
+    };
+
+    #[inline]
+    fn and(self, other: FreshBits) -> FreshBits {
+        FreshBits {
+            low: self.low & other.low,
+            high: self.high & other.high,
+        }
+    }
+}
+
+/// Definite assignment of the fresh locals, which decides the range an
+/// activation zeroes, `[zero_start, zero_end)`.
+///
+/// A fresh local needs its initial zero only if some `local.get` can read
+/// it before a write on every path to that read. Writes only add to the
+/// definitely-assigned set along a path, so one forward pass over the
+/// structured body is exact: a loop header's state is its entry state
+/// (back edges carry supersets of it), and the state after a block's end
+/// is the intersection of the states that reach that end -- its
+/// fallthrough, every branch to it (`mark_branch_target`, which also sees
+/// each `try_table` catch target with the try's entry state, a subset of
+/// every throw point's), and an `if`'s false edge when it has no `else`.
+/// Reads in unreachable code are never executed and do not count.
+///
+/// Only the ends of the needed set decide the zeroed range, so the bits
+/// cover the windows of `FreshBits`; the locals between the windows of a
+/// wide frame are zeroed regardless. Reference-typed fresh locals are
+/// always zeroed, so a slot of reference type never holds a stale value.
+struct Assignment {
+    n_params: u32,
+    /// Fresh locals with a low-window bit: `min(n_fresh, FRESH_WINDOW)`.
+    low_len: u32,
+    /// Fresh index of the high window's bit 0, and how many fresh locals
+    /// that window holds (zero when the low window covers the frame).
+    high_base: u32,
+    high_len: u32,
+    /// Fresh locals written on every path to the current point.
+    assigned: FreshBits,
+    /// Fresh locals some read can see before they are written.
+    needed: FreshBits,
+    /// One entry per open block, innermost last, kept in step with the
+    /// predecoder's control frames.
+    frames: Vec<FrameAssigned>,
+}
+
+#[derive(Clone, Copy)]
+struct FrameAssigned {
+    /// Fresh locals assigned on entry (all, for a block opened in dead code).
+    entry: FreshBits,
+    /// Intersection over the edges that reached the block's end so far
+    /// (all while none has).
+    at_end: FreshBits,
+}
+
+impl Assignment {
+    fn new(n_params: u32, fresh: &[ValueType], mut frames: Vec<FrameAssigned>) -> Self {
+        frames.clear();
+        let n_fresh = fresh.len() as u32;
+        let (high_base, high_len) = if n_fresh > FRESH_WINDOW {
+            (n_fresh - FRESH_WINDOW, FRESH_WINDOW)
+        } else {
+            (n_fresh, 0)
+        };
+        let mut a = Assignment {
+            n_params,
+            low_len: n_fresh.min(FRESH_WINDOW),
+            high_base,
+            high_len,
+            assigned: FreshBits::NONE,
+            needed: FreshBits::NONE,
+            frames,
+        };
+        // Nothing is assigned yet, so a read here marks the local needed.
+        for (i, ty) in fresh.iter().enumerate() {
+            if ty.is_ref() {
+                a.read(n_params + i as u32);
+            }
+        }
+        a
+    }
+
+    #[inline]
+    fn read(&mut self, local: u32) {
+        let fresh = local.wrapping_sub(self.n_params);
+        if fresh < self.low_len {
+            self.needed.low |= (1 << fresh) & !self.assigned.low;
+        }
+        let high = fresh.wrapping_sub(self.high_base);
+        if high < self.high_len {
+            self.needed.high |= (1 << high) & !self.assigned.high;
+        }
+    }
+
+    #[inline]
+    fn write(&mut self, local: u32) {
+        let fresh = local.wrapping_sub(self.n_params);
+        if fresh < self.low_len {
+            self.assigned.low |= 1 << fresh;
+        }
+        let high = fresh.wrapping_sub(self.high_base);
+        if high < self.high_len {
+            self.assigned.high |= 1 << high;
+        }
+    }
+
+    /// A block opens, in dead code or not.
+    fn open(&mut self, dead: bool) {
+        let entry = if dead { FreshBits::ALL } else { self.assigned };
+        self.frames.push(FrameAssigned {
+            entry,
+            at_end: FreshBits::ALL,
+        });
+    }
+
+    /// A branch from here to the end of the block `depth` levels out.
+    fn branch_to_end(&mut self, depth: usize) {
+        let n = self.frames.len();
+        if depth < n {
+            let f = &mut self.frames[n - 1 - depth];
+            f.at_end = f.at_end.and(self.assigned);
+        }
+    }
+
+    /// `else`: the then-arm reaches the end if it fell through live; the
+    /// else-arm starts from the entry state.
+    fn else_arm(&mut self, then_live: bool) {
+        if let Some(f) = self.frames.last_mut() {
+            if then_live {
+                f.at_end = f.at_end.and(self.assigned);
+            }
+            self.assigned = f.entry;
+        }
+    }
+
+    /// A block's `end`: reached by its fallthrough when `falls_live`, by the
+    /// branches recorded so far, and from entry by an `if` with no `else`.
+    /// A loop's end is reached only by its fallthrough.
+    fn close(&mut self, is_loop: bool, if_without_else: bool, falls_live: bool) {
+        let Some(f) = self.frames.pop() else {
+            return;
+        };
+        if is_loop {
+            return;
+        }
+        let mut reached = f.at_end;
+        if falls_live {
+            reached = reached.and(self.assigned);
+        }
+        if if_without_else {
+            reached = reached.and(f.entry);
+        }
+        self.assigned = reached;
+    }
+
+    /// `[zero_start, zero_end)` as local indices; empty (at `n_params`)
+    /// when no read can see an initial zero.
+    fn zero_range(&self) -> (u32, u32) {
+        let (low, high) = (self.needed.low, self.needed.high);
+        let between = self.high_base > FRESH_WINDOW;
+        let lo = if low != 0 {
+            low.trailing_zeros()
+        } else if between {
+            FRESH_WINDOW
+        } else if high != 0 {
+            self.high_base + high.trailing_zeros()
+        } else {
+            return (self.n_params, self.n_params);
+        };
+        let hi = if high != 0 {
+            self.high_base + FRESH_WINDOW - high.leading_zeros()
+        } else if between {
+            self.high_base
+        } else {
+            FRESH_WINDOW - low.leading_zeros()
+        };
+        (self.n_params + lo, self.n_params + hi)
+    }
+}
+
 /// Probe one common opcode without mutating the decoder cursor. A malformed
 /// immediate deliberately reports a miss: the unchanged generic fallback then
 /// produces the same public error it did before this fast lane existed.
@@ -3280,6 +3529,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                 }
                 match fast.lowering {
                     FastLowering::LocalGet => {
+                        self.assignment.read(fast.imm0 as u32);
                         self.stack.push(Desc::Local(fast.imm0 as u32));
                     }
                     FastLowering::LocalSet => self.local_set(fast.imm0 as u32, false)?,
@@ -3355,6 +3605,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         } else {
                             NO_DEF
                         };
+                        self.assignment.open(true);
                         self.frames.push(CtlFrame {
                             base,
                             params: p,
@@ -3384,6 +3635,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         let (p, r) = block_arity(self.types, bt)?;
                         let catches = self.resolve_try_catches(catches)?;
                         let base = self.height().saturating_sub(p);
+                        self.assignment.open(true);
                         self.frames.push(CtlFrame {
                             base,
                             params: p,
@@ -3408,6 +3660,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                             let (dead_entry, base, params, else_fixup) =
                                 (f.dead_entry, f.base, f.params, f.else_fixup.take());
                             self.dead = dead_entry;
+                            self.assignment.else_arm(false);
                             self.stack.truncate(base as usize);
                             self.push_unknown_temps(params);
                             if let Some(fx) = else_fixup {
@@ -3417,6 +3670,8 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     }
                     Opcode::END => {
                         if let Some(f) = self.frames.pop() {
+                            self.assignment
+                                .close(f.is_loop, f.is_if && !f.saw_else, false);
                             let live_after = !f.dead_entry
                                 && (f.end_targeted || f.then_fell_live || (f.is_if && !f.saw_else));
                             self.stack.truncate(f.base as usize);
@@ -3505,6 +3760,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                         self.bump_region();
                     }
                     let header = self.code.len() as u32;
+                    self.assignment.open(false);
                     self.frames.push(CtlFrame {
                         base,
                         params: p,
@@ -3553,6 +3809,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     };
                     self.bump_region();
                     let base = self.height().checked_sub(p).ok_or_else(desync)?;
+                    self.assignment.open(false);
                     self.frames.push(CtlFrame {
                         base,
                         params: p,
@@ -3576,6 +3833,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     let f = self.frames.last_mut().ok_or_else(desync)?;
                     f.saw_else = true;
                     f.then_fell_live = true;
+                    self.assignment.else_arm(true);
                     let (base, params, else_fixup) = (f.base, f.params, f.else_fixup.take());
                     // Jump from the live then-arm over the else-arm.
                     let jump = self.emit(Op::Br, 0, 0, 0, FIXUP);
@@ -3591,30 +3849,29 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     self.push_unknown_temps(params);
                     self.bump_region();
                 }
-                Opcode::END => {
-                    self.materialize_all();
-                    let f = self.frames.pop();
-                    match f {
-                        Some(f) => {
-                            if self.height() != f.base + f.results {
-                                return Err(desync());
-                            }
-                            if let Some(fx) = f.else_fixup {
-                                self.patch_instr_to_here(fx);
-                            }
-                            self.patch_fixups_to_here(&f.fixups);
-                            // Fell through live; code after a live end is live.
-                            self.bump_region();
+                Opcode::END => match self.frames.pop() {
+                    Some(f) => {
+                        self.materialize_all();
+                        if self.height() != f.base + f.results {
+                            return Err(desync());
                         }
-                        None => {
-                            // Function-level end: implicit return.
-                            if self.height() != self.n_results {
-                                return Err(desync());
-                            }
-                            self.emit_return();
+                        if let Some(fx) = f.else_fixup {
+                            self.patch_instr_to_here(fx);
                         }
+                        self.patch_fixups_to_here(&f.fixups);
+                        self.assignment
+                            .close(f.is_loop, f.is_if && !f.saw_else, true);
+                        // Fell through live; code after a live end is live.
+                        self.bump_region();
                     }
-                }
+                    None => {
+                        // Function-level end: implicit return.
+                        if self.height() != self.n_results {
+                            return Err(desync());
+                        }
+                        self.return_stack_results();
+                    }
+                },
                 Opcode::BR => {
                     let d = match *imm {
                         Immediate::LabelIndex(d) => d,
@@ -3732,8 +3989,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     self.bump_region();
                 }
                 Opcode::RETURN => {
-                    self.materialize_all();
-                    self.emit_return();
+                    self.return_stack_results();
                     self.bump_region();
                     self.dead = true;
                 }
@@ -3815,6 +4071,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                 }
                 Opcode::LOCAL_GET => {
                     if let Immediate::LocalIndex(i) = *imm {
+                        self.assignment.read(i);
                         self.stack.push(Desc::Local(i));
                     }
                 }
@@ -3881,6 +4138,7 @@ impl OpcodeHandler for Predecoder<'_, '_> {
                     }
                     let catches = self.resolve_try_catches(catches)?;
                     let base = self.height().saturating_sub(p);
+                    self.assignment.open(false);
                     self.frames.push(CtlFrame {
                         base,
                         params: p,
@@ -4291,6 +4549,128 @@ mod tests {
     use std::string::String as StdString;
     use std::vec::Vec as StdVec;
 
+    /// The zeroed range of a one-function module whose function takes one
+    /// i32 parameter and has `locals` fresh i64 locals.
+    fn zero_range_of(locals: usize, body: &str) -> (u32, u32) {
+        let src = format!(
+            "(module (func (param i32) (local {}) {body}))",
+            " i64".repeat(locals)
+        );
+        let f = predecode_wat(&src, 0);
+        (f.zero_start, f.zero_end)
+    }
+
+    #[test]
+    fn zero_range_covers_only_locals_a_read_can_see_unwritten() {
+        // Written before the first branch, read first, untouched.
+        assert_eq!(
+            zero_range_of(
+                4,
+                "i64.const 7 local.set 1 local.get 2 drop \
+                 local.get 0 if local.get 4 drop end"
+            ),
+            (2, 5)
+        );
+        // A write on both arms of an if/else, or after a branch that can
+        // only leave the function, dominates the later read.
+        assert_eq!(
+            zero_range_of(
+                2,
+                "local.get 0 if i64.const 1 local.set 1 else i64.const 2 local.set 1 end \
+                 local.get 0 br_if 0 i64.const 3 local.set 2 \
+                 local.get 1 local.get 2 i64.add drop"
+            ),
+            (1, 1)
+        );
+        // A write on one arm only, or skipped by a branch to the block end,
+        // or by an if without else, leaves the read exposed.
+        assert_eq!(
+            zero_range_of(
+                1,
+                "local.get 0 if i64.const 1 local.set 1 end local.get 1 drop"
+            ),
+            (1, 2)
+        );
+        assert_eq!(
+            zero_range_of(
+                2,
+                "block local.get 0 br_if 0 i64.const 1 local.set 1 end \
+                 local.get 1 drop i64.const 2 local.set 2 local.get 2 drop"
+            ),
+            (1, 2)
+        );
+        // A loop reads its header state: a later write in the body does not
+        // cover a read before it.
+        assert_eq!(
+            zero_range_of(
+                1,
+                "loop local.get 1 drop i64.const 1 local.set 1 local.get 0 br_if 0 end"
+            ),
+            (1, 2)
+        );
+        // A read in unreachable code never sees anything.
+        assert_eq!(
+            zero_range_of(1, "block br 0 local.get 1 drop end i64.const 1 local.set 1"),
+            (1, 1)
+        );
+        // A try_table catch target is reached with the try's entry state.
+        assert_eq!(
+            zero_range_of(
+                1,
+                "block try_table (catch_all 0) i64.const 1 local.set 1 end end \
+                 local.get 1 drop"
+            ),
+            (1, 2)
+        );
+        // ... while code the catch skips is reached only through the body.
+        assert_eq!(
+            zero_range_of(
+                1,
+                "block try_table (catch_all 0) i64.const 1 local.set 1 end \
+                 local.get 1 drop end"
+            ),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn zero_range_keeps_reference_locals_null() {
+        let f = predecode_wat(
+            "(module (func (param i32) (local i64 funcref i64) \
+             i64.const 1 local.set 1 ref.null func local.set 2 i64.const 2 local.set 3))",
+            0,
+        );
+        assert_eq!((f.zero_start, f.zero_end), (2, 3));
+    }
+
+    #[test]
+    fn zero_range_stops_at_the_window_edge_of_a_wide_frame() {
+        // `local.get` of each fresh local in `read` before anything writes
+        // it, every other fresh local written first.
+        fn read_first(n_fresh: u32, read: &[u32]) -> (u32, u32) {
+            let mut body = StdString::new();
+            for fresh in 0..n_fresh {
+                let local = 1 + fresh;
+                if read.contains(&fresh) {
+                    write!(body, "local.get {local} drop ").unwrap();
+                } else {
+                    write!(body, "i64.const 1 local.set {local} ").unwrap();
+                }
+            }
+            zero_range_of(n_fresh as usize, &body)
+        }
+        // Exactly one window of fresh locals, the last one read.
+        assert_eq!(read_first(64, &[63]), (64, 65));
+        // 140 fresh locals, read only between the windows: the range runs
+        // from the low window's edge (fresh 64) to the high window's
+        // (fresh 76), and it does so even with no read at all.
+        assert_eq!(read_first(140, &[70, 71, 72, 73, 74]), (65, 77));
+        assert_eq!(read_first(140, &[]), (65, 77));
+        // Overlapping windows (100 fresh locals): empty, or exact ends.
+        assert_eq!(read_first(100, &[]), (1, 1));
+        assert_eq!(read_first(100, &[50]), (51, 52));
+    }
+
     fn assert_pinned_fields_match(
         code: &[Instr],
         locals: &[LocalState],
@@ -4498,7 +4878,11 @@ mod tests {
         assert_eq!(fast.br_tables, generic.br_tables, "branch tables");
         assert_eq!(fast.wide_memargs, generic.wide_memargs, "wide memargs");
         assert_eq!(fast.frame_slots, generic.frame_slots, "frame slots");
-        assert_eq!(fast.n_locals, generic.n_locals, "local count");
+        assert_eq!(
+            (fast.zero_start, fast.zero_end),
+            (generic.zero_start, generic.zero_end),
+            "zeroed locals"
+        );
         assert_eq!(fast.n_params, generic.n_params, "parameter count");
         assert_eq!(fast.n_results, generic.n_results, "result count");
         assert_eq!(fast.pinned(), generic.pinned(), "pinned locals");
@@ -5166,10 +5550,13 @@ mod tests {
             0,
         );
 
-        assert_eq!(ops(&f), [Op::I64_SubBrIf, Op::MovSlot, Op::Return]);
+        // The result is local $n itself: Return reads its slot directly.
+        assert_eq!(ops(&f), [Op::I64_SubBrIf, Op::Return]);
         let hot = f.code[0];
         assert_eq!(hot.flags, FLAG_B_CONST);
         assert_eq!((hot.a, hot.b, hot.c), (0, 1, 0));
+        let ret = f.code[1];
+        assert_eq!((ret.a, ret.b), (0, 1));
         assert!(f.code.iter().all(|ins| ins.op != Op::I64_Ne));
     }
 
@@ -5207,7 +5594,6 @@ mod tests {
                 Op::I64_Add,
                 Op::MovPair,
                 Op::I64_SubBrIf,
-                Op::MovSlot,
                 Op::Return,
             ]
         );
@@ -5216,6 +5602,14 @@ mod tests {
         let hot = f.code[6];
         assert_eq!(hot.flags, FLAG_B_CONST);
         assert_eq!((hot.a, hot.b, hot.c), (3, 1, 4));
+        // The result is local $a (slot 1), returned from its own slot.
+        let ret = f.code[7];
+        assert_eq!((ret.a, ret.b), (1, 1));
+        // Returning $a in place must not change which locals are pinned:
+        // the census counts the read the removed staging copy made, so the
+        // loop keeps $a and $b in registers as the staged form did.
+        let pin = f.pinned();
+        assert_eq!((pin.l0, pin.l1), (1, 2));
         assert!(f.code.iter().all(|ins| ins.op != Op::I64_Ne));
     }
 

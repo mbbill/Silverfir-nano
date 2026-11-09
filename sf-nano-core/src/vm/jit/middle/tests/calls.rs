@@ -31,6 +31,7 @@ fn hot_loop_with_call(direct: bool) -> crate::vm::jit::wasm::semantic_ir::Semant
         op(SemanticOpKind::CallIndirect {
             type_idx: 0,
             table_idx: 0,
+            index64: false,
             params: 0,
             results: 0,
         })

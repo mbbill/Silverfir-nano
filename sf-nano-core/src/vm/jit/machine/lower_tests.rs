@@ -395,6 +395,7 @@ fn lowers_indirect_tail_call_stack_precheck_with_direct_frame_pointer_compare() 
         terminator: SsaTerminator::TailCallIndirect {
             type_idx: 0,
             table_idx: 0,
+            index64: false,
             index: SsaCallOperandLoc::Stack {
                 slot: frame.operand_slot(0),
             },
@@ -5053,6 +5054,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
             let __idx = ssa.push_call_op(SsaCallOp::CallIndirect {
                 type_idx: 3,
                 table_idx: 0,
+                index64: false,
                 index: SsaCallOperandLoc::Stack {
                     slot: call_base.advance(2),
                 },
@@ -5093,7 +5095,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     assert!(matches!(
         program.blocks[2].terminator,
         MachineTerminator::Trap {
-            kind: MachineTrapKind::TableOutOfBounds
+            kind: MachineTrapKind::UndefinedElement
         }
     ));
     assert!(matches!(
@@ -5117,7 +5119,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     assert!(matches!(
         program.blocks[5].terminator,
         MachineTerminator::Trap {
-            kind: MachineTrapKind::InvalidFunctionReference
+            kind: MachineTrapKind::UninitializedElement
         }
     ));
     assert!(matches!(
@@ -5442,6 +5444,7 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
         let call_idx = ssa.push_call_op(SsaCallOp::CallIndirect {
             type_idx: 3,
             table_idx: 0,
+            index64: false,
             index: SsaCallOperandLoc::Stack {
                 slot: call_base.advance(4),
             },
@@ -5674,6 +5677,7 @@ fn lowers_call_indirect_live_scalar_result_through_register_continuation() {
         let call_idx = ssa.push_call_op(SsaCallOp::CallIndirect {
             type_idx: 3,
             table_idx: 0,
+            index64: false,
             index: SsaCallOperandLoc::Stack {
                 slot: call_base.advance(4),
             },
@@ -6132,6 +6136,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             let __idx = ssa.push_call_op(SsaCallOp::CallIndirect {
                 type_idx: 3,
                 table_idx: 0,
+                index64: false,
                 index: SsaCallOperandLoc::Stack {
                     slot: call_base.advance(2),
                 },

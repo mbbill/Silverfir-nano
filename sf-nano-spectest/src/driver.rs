@@ -345,6 +345,30 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         path: "interp_slow_exit_operands.wast",
         content: include_str!("../tests/interp_slow_exit_operands.wast"),
     });
+    wast_inputs.push(WastInput::Embedded {
+        path: "const_right_operand.wast",
+        content: include_str!("../tests/const_right_operand.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "memory_base_index.wast",
+        content: include_str!("../tests/memory_base_index.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "float_bin_operands.wast",
+        content: include_str!("../tests/float_bin_operands.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "int_bin_operands.wast",
+        content: include_str!("../tests/int_bin_operands.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "table64_index.wast",
+        content: include_str!("../tests/table64_index.wast"),
+    });
+    wast_inputs.push(WastInput::Embedded {
+        path: "shared_table_call_indirect.wast",
+        content: include_str!("../tests/shared_table_call_indirect.wast"),
+    });
     wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
     info!("Found {} WAST files", wast_inputs.len());
 

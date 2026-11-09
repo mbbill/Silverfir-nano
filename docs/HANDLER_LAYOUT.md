@@ -26,7 +26,8 @@ and in the perf-CI runs of the `dev/probe-*`, `dev/pad-*` and
 4. Per-handler alignment does NOT stabilize results; it re-rolls every
    address. Measured twice (16-byte and 32-byte variants): swings up to
    +89% / -30% in both directions, plus 8-35% of engine text as padding.
-   Refuted; do not retry.
+   Refuted; do not retry. (The line guard below is a different mechanism:
+   it pads only where a handler would straddle a line.)
 5. What LANDED instead: two `.p2align 6` boundaries, one at the blob base
    and one between the prelude/stubs and the first handler (at most 128
    bytes on any target). With both sides of a comparison carrying these
@@ -37,6 +38,81 @@ and in the perf-CI runs of the `dev/probe-*`, `dev/pad-*` and
 6. Emission ORDER was already tuned once (hot families first; moving a
    cold family between two hot ones measured ~5% three separate times) —
    see the dispatch node's Items and Facts.
+
+## Line guard (LANDED on x86-64 and arm64-linux 2026-11-05; off on Apple)
+
+`Caps::handler_line` keeps every handler that fits in one 64-byte line
+inside a single line: an assembler-evaluated `.fill` before the handler
+pads to the next line exactly when the handler would otherwise straddle
+one, and adds nothing otherwise. The assembler computes the padding
+from the handler's end label at layout time, so the generator needs no
+instruction lengths. x86-64 and arm64 other than Apple enable it; Apple
+arm64, arm32 and RISC-V pack as before (arm32 and RISC-V are
+flash-constrained targets, and CI measures them only for correctness).
+
+This is not the per-handler alignment refuted in fact 4. That moved
+every handler to a new phase and left line crossings to chance; the
+guard removes one specific cost -- the second fetch on every entry into
+a straddling handler -- for all hot handlers at once. Unguarded, 4,713
+of 9,711 x86-64 handlers and 4,652 of 10,084 arm64 handlers crossed a
+line; guarded, none of those that fit do. Text cost: the x86-64 handler
+region grows from 356 KB to 460 KB, arm64 from 326 KB to 417 KB.
+
+Evidence on x86-64:
+
+- Local Intel Xeon, same code shifted by 0-56 bytes of padding ahead of
+  the handlers: spectralnorm (wasmi rust-benchmarks) measured 128-154 ms
+  unguarded, tracking how many of its 19 hot handlers cross a line
+  (4-14), and 113-115 ms guarded at every shift; counter-global
+  1.71-2.29 ms unguarded, 1.68-1.78 ms guarded.
+- Local CoreMark, 5 interleaved rounds against 92fa012: the guard alone
+  +5.0%; the instruction-count series that preceded it (-10.4% retired
+  instructions) alone -2.7%; both together +9.8%. Instruction savings
+  only paid off once placement stopped re-rolling under them.
+- CI run 42001110918 (ec7edf9 against 92fa012, all 46 jobs passing, no
+  REGRESSION): x64-linux on EPYC 9V74 CoreMark +47.9%, sha256 +46.2%,
+  lz4 +52.7% / +55.4%, mandelbrot +48.3%, c-ray +26.2%, lua-fib +22.1%,
+  lua-json +8.6%; x64-windows CoreMark +26.1%, lua-fib +24.8%,
+  lz4-decompress +46.8%. The size of the gain depends on the CPU's
+  front end: Zen-class runners gain most, the local Xeon least.
+
+Evidence on arm64, CI run 42012501097 (64-byte guard against none):
+Neoverse-N2 gained modestly with no regression (bzip2 +1.6%,
+funcref-exported-table +1.8%, lua-json +1.3%, wasmi fibonacci-rec
++2.0%, json_parse +3.0%). The Apple M1 runner went the other way
+(lua-fib -8.6% and lua-json -4.4% in the primary run, not reproduced by
+the cross-run confirmation; c-ray -6.2%, stream-Triad -17.1% as
+placement rows). Apple builds therefore pack as before.
+
+Evidence on Apple M5, measured locally 2026-11-08 (64- and 128-byte
+guards against none): the hypothesis that Apple cores fetch through
+128-byte lines, so a 64-byte guard only adds padding and a 128-byte one
+might pay, does not hold there. Both guards lose. The three builds came
+from `ci.performance_build` on 1adf2e98 (this branch plus #48, whose
+arm64 handler offsets all equal this branch's) and differ only in the
+guard's `.fill` padding: their generated assembly has the same 92,649
+non-label lines. Each pair ran through `ci.performance` with the CI
+settings (two initial blocks, confirmation up to 24 pairs, ASLR pinned)
+on a MacBook Air on AC power:
+
+- 128-byte guard: coremark -5.0% and lua-json -3.7% confirmed;
+  lua-sunfish -3.3% below the noise floor; lz4-compress -10.8% not
+  confirmed; no metric gained.
+- 64-byte guard: lz4-compress -7.2% confirmed; lua-sunfish -8.7% with
+  every pair negative (-13.2%..-7.2%), reported NOISY-FLOOR against the
+  floor certified on the M1 runner; lua-json -6.2%, coremark -4.1% and
+  c-ray -4.8% not confirmed.
+
+The unguarded binary's scores at the start and end of each run agree
+within 1.2% (lua-fib 2.5%), so the fanless machine did not throttle
+measurably. Each variant is one placement draw. Apple builds stay
+unguarded.
+
+Both CI-confirmed x86-64 regressions of 2026-11-05 (spectralnorm,
+counter-global) were placement draws of exactly this kind: identical
+instruction counts, and reproduced or cured by padding alone. The guard
+does not decollide BTB or L1-I set conflicts; those remain the subject
+of the placement project below.
 
 ## The unstarted project: profile-guided handler placement
 
