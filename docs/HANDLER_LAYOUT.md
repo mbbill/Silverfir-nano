@@ -82,12 +82,31 @@ funcref-exported-table +1.8%, lua-json +1.3%, wasmi fibonacci-rec
 +2.0%, json_parse +3.0%). The Apple M1 runner went the other way
 (lua-fib -8.6% and lua-json -4.4% in the primary run, not reproduced by
 the cross-run confirmation; c-ray -6.2%, stream-Triad -17.1% as
-placement rows). Apple builds therefore pack as before. An open
-hypothesis, never measured: Apple cores fetch through 128-byte lines, so
-a 64-byte guard only adds padding and a 128-byte one might pay. 9311f27
-tried that guard, but none of its darwin interpreter perf jobs got a
-macOS runner; the next measurement should compare a 128-byte guard with
-none on arm64-darwin alone.
+placement rows). Apple builds therefore pack as before.
+
+Evidence on Apple M5, measured locally 2026-11-08 (64- and 128-byte
+guards against none): the hypothesis that Apple cores fetch through
+128-byte lines, so a 64-byte guard only adds padding and a 128-byte one
+might pay, does not hold there. Both guards lose. The three builds came
+from `ci.performance_build` on 1adf2e98 (this branch plus #48, whose
+arm64 handler offsets all equal this branch's) and differ only in the
+guard's `.fill` padding: their generated assembly has the same 92,649
+non-label lines. Each pair ran through `ci.performance` with the CI
+settings (two initial blocks, confirmation up to 24 pairs, ASLR pinned)
+on a MacBook Air on AC power:
+
+- 128-byte guard: coremark -5.0% and lua-json -3.7% confirmed;
+  lua-sunfish -3.3% below the noise floor; lz4-compress -10.8% not
+  confirmed; no metric gained.
+- 64-byte guard: lz4-compress -7.2% confirmed; lua-sunfish -8.7% with
+  every pair negative (-13.2%..-7.2%), reported NOISY-FLOOR against the
+  floor certified on the M1 runner; lua-json -6.2%, coremark -4.1% and
+  c-ray -4.8% not confirmed.
+
+The unguarded binary's scores at the start and end of each run agree
+within 1.2% (lua-fib 2.5%), so the fanless machine did not throttle
+measurably. Each variant is one placement draw. Apple builds stay
+unguarded.
 
 Both CI-confirmed x86-64 regressions of 2026-11-05 (spectralnorm,
 counter-global) were placement draws of exactly this kind: identical
