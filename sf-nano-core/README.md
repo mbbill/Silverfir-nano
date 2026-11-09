@@ -9,14 +9,14 @@ target; see [engine and target support](#engine-and-target-support).
 
 ```toml
 [dependencies]
-sf-nano-core = "0.6"
+sf-nano-core = "0.7"
 ```
 
 For an interpreter-only build:
 
 ```toml
 [dependencies]
-sf-nano-core = { version = "0.6", default-features = false, features = ["interp"] }
+sf-nano-core = { version = "0.7", default-features = false, features = ["interp"] }
 ```
 
 ## Embedding
