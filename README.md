@@ -16,7 +16,7 @@
   </p>
 
   <p>
-    <a href="#performance-apple-m4">Benchmarks</a> |
+    <a href="#performance">Benchmarks</a> |
     <a href="#binary-size">Binary size</a> |
     <a href="#webassembly-compatibility">Wasm compatibility</a> |
     <a href="#validation">Validation</a> |
@@ -36,9 +36,14 @@ optimizing JIT and an interpreter behind one API
 ([compatibility](#webassembly-compatibility)).
 
 1. **Fast, JIT and interpreter** — register-allocated, region-optimized native
-   code puts the JIT at parity with Wasmtime's fully-optimizing Cranelift and
-   V8 TurboFan on Apple M4. The interpreter beats the best-in-class Wasm
-   interpreters by 1.07–1.69× ([full results](benchmarks/wasi/README.md)).
+   code. On the wasmi-benchmarks corpus the 0.7.0 JIT leads V8 and Wasmtime's
+   fully-optimizing Cranelift on x64 Linux, x64 Windows and ARM64 macOS: they
+   take a geomean 1.07–1.30× and 1.21–1.35× of its time. On this repository's
+   WASI suite it is level with both. The interpreter is the fastest of its
+   class on both suites: on the corpus wasmi 2.0 takes 1.2–1.8× its time and
+   wasm3 1.8–2.5×
+   ([WASI results](benchmarks/wasi/README.md),
+   [corpus standings](benchmarks/wasmi_benchmarks/README.md)).
 2. **Small** — pick an engine and pay for what you use. Measured on real
    RP2350 firmware, flash is 337 KiB with the interpreter and 1,042 KiB with
    the JIT ([details](#binary-size)); both run inside the board's 512 KB of
@@ -47,7 +52,7 @@ optimizing JIT and an interpreter behind one API
    sizes described below.
 3. **Portable** — six ISAs, from x86_64 and ARM64 down to RV32 and Thumb-2,
    and *both* engines cover all six. The compiler that competes with
-   Cranelift on M4 emits Thumb-2 on a Cortex-M33 — codegen quality doesn't
+   Cranelift and V8 on desktop CPUs emits Thumb-2 on a Cortex-M33 — codegen quality doesn't
    degrade as you step down.
 4. **Wasm 3.0 features** — GC, exception handling, SIMD and relaxed SIMD, tail
    calls, memory64, multi-memory, typeful references, and extended constant
@@ -59,12 +64,12 @@ optimizing JIT and an interpreter behind one API
    Where W^X or a tighter flash budget rules that out, the interpreter runs
    the same modules with no executable memory at all.
 
-## Performance (Apple M4)
+## Performance
 
-These charts are recorded measurements with dates and engine revisions in the
-linked reports, not a fresh comparison of the crates.io release.
+These charts are recorded measurements of release 0.7.0 on an Apple M5 and an
+Intel Core i9-14900K, with dates and engine revisions in the linked reports.
 
-![CoreMark on Apple M4](assets/coremark.svg)
+![CoreMark on Apple M5](assets/coremark.svg)
 
 **[Full benchmark results — every chart, the method, and the caveats →](benchmarks/wasi/README.md)**
 
@@ -136,7 +141,7 @@ Silverfir-nano has six native backends:
 They all share the same frontend, middle-end, and register allocator.
 Codegen quality doesn't degrade as you move across ISAs or step down to
 smaller targets: the same compiler that produces Cranelift-competitive
-output on Apple M4 also runs on a Raspberry Pi Pico 2, targeting both its
+output on an Apple M5 and a Core i9-14900K also runs on a Raspberry Pi Pico 2, targeting both its
 Arm Cortex-M33 (Thumb-2) and its Hazard3 RISC-V (RV32IMAC) cores.
 
 Most WebAssembly runtimes aimed at microcontrollers stop at an interpreter,

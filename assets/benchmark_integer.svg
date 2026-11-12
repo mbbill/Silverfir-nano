@@ -40,99 +40,99 @@
   </style>
   <rect class="surface" width="760" height="782" rx="8" ry="8" stroke-width="1"/>
   <text class="title" x="380" y="30" text-anchor="middle">Integer / Control Flow — Compiled</text>
-  <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 · longer bar = better · each row scaled to its own best</text>
+  <text class="sub" x="380" y="47" text-anchor="middle">Apple M5 · longer bar = better · each row scaled to its own best</text>
   <rect class="s-sf" x="176.0" y="53" width="10" height="10" rx="2"/>
   <text class="legend" x="191.0" y="62">Silverfir (JIT)</text>
   <rect class="s-cl" x="317.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="332.0" y="62">Cranelift 47.0.2</text>
+  <text class="legend" x="332.0" y="62">Cranelift 50.0.1</text>
   <rect class="s-v8" x="458.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="473.0" y="62">V8 / Node 25.9</text>
+  <text class="legend" x="473.0" y="62">V8 / Node 26.13</text>
   <rect class="s-wn" x="599.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="614.0" y="62">Winch 47.0.2</text>
+  <text class="legend" x="614.0" y="62">Winch 50.0.1</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="772"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">CoreMark</text>
   <text class="unit" x="176" y="94">score</text>
   <text class="name" x="168" y="117" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="104" width="443.0" height="18" rx="4"/>
-  <text class="val" x="625.0" y="117">44,958</text>
-  <text class="name" x="168" y="137" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="124" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="137">45,874</text>
-  <text class="name" x="168" y="157" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="144" width="437.3" height="18" rx="4"/>
-  <text class="val" x="619.3" y="157">44,378</text>
-  <text class="name" x="168" y="177" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="164" width="210.6" height="18" rx="4"/>
-  <text class="val" x="392.6" y="177">21,379</text>
+  <rect class="s-sf" x="176" y="104" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="117">52,125</text>
+  <text class="name" x="168" y="137" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="124" width="446.2" height="18" rx="4"/>
+  <text class="val" x="628.2" y="137">51,455</text>
+  <text class="name" x="168" y="157" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="144" width="434.5" height="18" rx="4"/>
+  <text class="val" x="616.5" y="157">50,109</text>
+  <text class="name" x="168" y="177" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="164" width="193.7" height="18" rx="4"/>
+  <text class="val" x="375.7" y="177">22,332</text>
   <text class="metric" x="168" y="210" text-anchor="end">SHA-256</text>
   <text class="unit" x="176" y="210">MB/s</text>
   <text class="name" x="168" y="233" text-anchor="end">Silverfir (JIT)</text>
   <rect class="s-sf" x="176" y="220" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="233">250.6</text>
-  <text class="name" x="168" y="253" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="240" width="391.0" height="18" rx="4"/>
-  <text class="val" x="573.0" y="253">216.8</text>
-  <text class="name" x="168" y="273" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="260" width="383.1" height="18" rx="4"/>
-  <text class="val" x="565.1" y="273">212.4</text>
-  <text class="name" x="168" y="293" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="280" width="230.9" height="18" rx="4"/>
-  <text class="val" x="412.9" y="293">128</text>
+  <text class="val" x="634.0" y="233">246.9</text>
+  <text class="name" x="168" y="253" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="240" width="439.2" height="18" rx="4"/>
+  <text class="val" x="621.2" y="253">239.9</text>
+  <text class="name" x="168" y="273" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="260" width="378.8" height="18" rx="4"/>
+  <text class="val" x="560.8" y="273">206.9</text>
+  <text class="name" x="168" y="293" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="280" width="232.9" height="18" rx="4"/>
+  <text class="val" x="414.9" y="293">127.2</text>
   <text class="metric" x="168" y="326" text-anchor="end">bzip2</text>
   <text class="unit" x="176" y="326">MB/s</text>
   <text class="name" x="168" y="349" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="336" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="349">30.68</text>
-  <text class="name" x="168" y="369" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="356" width="395.7" height="18" rx="4"/>
-  <text class="val" x="577.7" y="369">26.86</text>
-  <text class="name" x="168" y="389" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="376" width="437.0" height="18" rx="4"/>
-  <text class="val" x="619.0" y="389">29.66</text>
-  <text class="name" x="168" y="409" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="396" width="204.5" height="18" rx="4"/>
-  <text class="val" x="386.5" y="409">13.88</text>
+  <rect class="s-sf" x="176" y="336" width="434.1" height="18" rx="4"/>
+  <text class="val" x="616.1" y="349">31.76</text>
+  <text class="name" x="168" y="369" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="356" width="411.5" height="18" rx="4"/>
+  <text class="val" x="593.5" y="369">30.11</text>
+  <text class="name" x="168" y="389" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="376" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="389">33.07</text>
+  <text class="name" x="168" y="409" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="396" width="218.7" height="18" rx="4"/>
+  <text class="val" x="400.7" y="409">16</text>
   <text class="metric" x="168" y="442" text-anchor="end">LZ4 compress</text>
   <text class="unit" x="176" y="442">MB/s</text>
   <text class="name" x="168" y="465" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="452" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="465">926</text>
-  <text class="name" x="168" y="485" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="472" width="447.3" height="18" rx="4"/>
-  <text class="val" x="629.3" y="485">916.3</text>
-  <text class="name" x="168" y="505" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="492" width="444.8" height="18" rx="4"/>
-  <text class="val" x="626.8" y="505">911.2</text>
-  <text class="name" x="168" y="525" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="512" width="286.7" height="18" rx="4"/>
-  <text class="val" x="468.7" y="525">587.4</text>
+  <rect class="s-sf" x="176" y="452" width="418.8" height="18" rx="4"/>
+  <text class="val" x="600.8" y="465">891.9</text>
+  <text class="name" x="168" y="485" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="472" width="439.5" height="18" rx="4"/>
+  <text class="val" x="621.5" y="485">936</text>
+  <text class="name" x="168" y="505" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="492" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="505">962.7</text>
+  <text class="name" x="168" y="525" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="512" width="320.5" height="18" rx="4"/>
+  <text class="val" x="502.5" y="525">682.6</text>
   <text class="metric" x="168" y="558" text-anchor="end">LZ4 decompress</text>
   <text class="unit" x="176" y="558">MB/s</text>
   <text class="name" x="168" y="581" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="568" width="421.2" height="18" rx="4"/>
-  <text class="val" x="603.2" y="581">3,241</text>
-  <text class="name" x="168" y="601" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="588" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="601">3,478</text>
-  <text class="name" x="168" y="621" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="608" width="395.9" height="18" rx="4"/>
-  <text class="val" x="577.9" y="621">3,046</text>
-  <text class="name" x="168" y="641" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="628" width="156.0" height="18" rx="4"/>
-  <text class="val" x="338.0" y="641">1,200</text>
-  <text class="metric" x="168" y="674" text-anchor="end">sqlite speedtest1</text>
-  <text class="unit" x="176" y="674">size/s</text>
+  <rect class="s-sf" x="176" y="568" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="581">3,343</text>
+  <text class="name" x="168" y="601" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="588" width="442.8" height="18" rx="4"/>
+  <text class="val" x="624.8" y="601">3,275</text>
+  <text class="name" x="168" y="621" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="608" width="425.6" height="18" rx="4"/>
+  <text class="val" x="607.6" y="621">3,148</text>
+  <text class="name" x="168" y="641" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="628" width="210.2" height="18" rx="4"/>
+  <text class="val" x="392.2" y="641">1,555</text>
+  <text class="metric" x="168" y="674" text-anchor="end">sqlite</text>
+  <text class="unit" x="176" y="674">iteration/s</text>
   <text class="name" x="168" y="697" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="684" width="412.2" height="18" rx="4"/>
-  <text class="val" x="594.2" y="697">59.88</text>
-  <text class="name" x="168" y="717" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="704" width="431.3" height="18" rx="4"/>
-  <text class="val" x="613.3" y="717">62.66</text>
-  <text class="name" x="168" y="737" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-sf" x="176" y="684" width="444.4" height="18" rx="4"/>
+  <text class="val" x="626.4" y="697">173,672</text>
+  <text class="name" x="168" y="717" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="704" width="422.1" height="18" rx="4"/>
+  <text class="val" x="604.1" y="717">164,969</text>
+  <text class="name" x="168" y="737" text-anchor="end">V8 / Node 26.13</text>
   <rect class="s-v8" x="176" y="724" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="737">65.66</text>
-  <text class="name" x="168" y="757" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="744" width="205.8" height="18" rx="4"/>
-  <text class="val" x="387.8" y="757">29.89</text>
+  <text class="val" x="634.0" y="737">176,639</text>
+  <text class="name" x="168" y="757" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="744" width="171.1" height="18" rx="4"/>
+  <text class="val" x="353.1" y="757">66,876</text>
 </svg>

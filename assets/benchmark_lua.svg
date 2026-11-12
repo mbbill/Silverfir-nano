@@ -40,57 +40,57 @@
   </style>
   <rect class="surface" width="760" height="434" rx="8" ry="8" stroke-width="1"/>
   <text class="title" x="380" y="30" text-anchor="middle">Lua Benchmarks — Compiled</text>
-  <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 · longer bar = better · each row scaled to its own best</text>
+  <text class="sub" x="380" y="47" text-anchor="middle">Apple M5 · longer bar = better · each row scaled to its own best</text>
   <rect class="s-sf" x="176.0" y="53" width="10" height="10" rx="2"/>
   <text class="legend" x="191.0" y="62">Silverfir (JIT)</text>
   <rect class="s-cl" x="317.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="332.0" y="62">Cranelift 47.0.2</text>
+  <text class="legend" x="332.0" y="62">Cranelift 50.0.1</text>
   <rect class="s-v8" x="458.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="473.0" y="62">V8 / Node 25.9</text>
+  <text class="legend" x="473.0" y="62">V8 / Node 26.13</text>
   <rect class="s-wn" x="599.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="614.0" y="62">Winch 47.0.2</text>
+  <text class="legend" x="614.0" y="62">Winch 50.0.1</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="424"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">lua / fib</text>
   <text class="unit" x="176" y="94">fib20/s</text>
   <text class="name" x="168" y="117" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="104" width="425.9" height="18" rx="4"/>
-  <text class="val" x="607.9" y="117">2,747</text>
-  <text class="name" x="168" y="137" text-anchor="end">Cranelift 47.0.2</text>
+  <rect class="s-sf" x="176" y="104" width="418.9" height="18" rx="4"/>
+  <text class="val" x="600.9" y="117">3,102</text>
+  <text class="name" x="168" y="137" text-anchor="end">Cranelift 50.0.1</text>
   <rect class="s-cl" x="176" y="124" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="137">2,915</text>
-  <text class="name" x="168" y="157" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="144" width="290.9" height="18" rx="4"/>
-  <text class="val" x="472.9" y="157">1,876</text>
-  <text class="name" x="168" y="177" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="164" width="194.3" height="18" rx="4"/>
-  <text class="val" x="376.3" y="177">1,253</text>
+  <text class="val" x="634.0" y="137">3,347</text>
+  <text class="name" x="168" y="157" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="144" width="280.1" height="18" rx="4"/>
+  <text class="val" x="462.1" y="157">2,074</text>
+  <text class="name" x="168" y="177" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="164" width="208.1" height="18" rx="4"/>
+  <text class="val" x="390.1" y="177">1,541</text>
   <text class="metric" x="168" y="210" text-anchor="end">lua / sunfish</text>
   <text class="unit" x="176" y="210">score</text>
   <text class="name" x="168" y="233" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="220" width="410.4" height="18" rx="4"/>
-  <text class="val" x="592.4" y="233">10,494</text>
-  <text class="name" x="168" y="253" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="240" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="253">11,558</text>
-  <text class="name" x="168" y="273" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="260" width="424.2" height="18" rx="4"/>
-  <text class="val" x="606.2" y="273">10,847</text>
-  <text class="name" x="168" y="293" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="280" width="170.4" height="18" rx="4"/>
-  <text class="val" x="352.4" y="293">4,356</text>
+  <rect class="s-sf" x="176" y="220" width="436.3" height="18" rx="4"/>
+  <text class="val" x="618.3" y="233">16,328</text>
+  <text class="name" x="168" y="253" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="240" width="410.8" height="18" rx="4"/>
+  <text class="val" x="592.8" y="253">15,374</text>
+  <text class="name" x="168" y="273" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="260" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="273">16,916</text>
+  <text class="name" x="168" y="293" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="280" width="163.7" height="18" rx="4"/>
+  <text class="val" x="345.7" y="293">6,125</text>
   <text class="metric" x="168" y="326" text-anchor="end">lua / json</text>
   <text class="unit" x="176" y="326">score</text>
   <text class="name" x="168" y="349" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="336" width="422.5" height="18" rx="4"/>
-  <text class="val" x="604.5" y="349">28,996</text>
-  <text class="name" x="168" y="369" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="356" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="369">31,019</text>
-  <text class="name" x="168" y="389" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="376" width="441.2" height="18" rx="4"/>
-  <text class="val" x="623.2" y="389">30,280</text>
-  <text class="name" x="168" y="409" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="396" width="158.2" height="18" rx="4"/>
-  <text class="val" x="340.2" y="409">10,857</text>
+  <rect class="s-sf" x="176" y="336" width="445.5" height="18" rx="4"/>
+  <text class="val" x="627.5" y="349">35,109</text>
+  <text class="name" x="168" y="369" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="356" width="400.4" height="18" rx="4"/>
+  <text class="val" x="582.4" y="369">31,552</text>
+  <text class="name" x="168" y="389" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="376" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="389">35,618</text>
+  <text class="name" x="168" y="409" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="396" width="178.4" height="18" rx="4"/>
+  <text class="val" x="360.4" y="409">14,056</text>
 </svg>

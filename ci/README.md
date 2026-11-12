@@ -100,8 +100,13 @@ ARM64 macOS. Each platform runs two draws of two jobs:
   `ci/standings_filter.txt`, rendered by `ci.standings_report`. The suite is
   patched to this checkout, Nano alone is refreshed in its private lockfile,
   and `ci/wasmi_adapter.patch` is applied, as `ci.wasmi_performance` does.
+  `ci/standings_engines.patch` then moves the suite's requirements for
+  Wasmtime, the v8 crate and wasmi to their current releases, so the ranking
+  is against those rather than the versions in the suite's lockfile; raise
+  the versions in that patch when new releases should be ranked.
 - `wasi`: `benchmarks/wasi` through `ci.wasi_standings`, with the prebuilt
-  Wasmtime release for that platform and Node's V8.
+  Wasmtime release for that platform and Node's V8, both at the versions
+  `benchmarks/wasi/RESULTS.md` records.
 
 Linux pins one core with ASLR off; macOS and Windows run unpinned, so a table
 compares engines under the same conditions only within one job. The tables

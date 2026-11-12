@@ -40,43 +40,43 @@
   </style>
   <rect class="surface" width="760" height="318" rx="8" ry="8" stroke-width="1"/>
   <text class="title" x="380" y="30" text-anchor="middle">Floating-Point Benchmarks — Compiled</text>
-  <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 · longer bar = better · each row scaled to its own best</text>
+  <text class="sub" x="380" y="47" text-anchor="middle">Apple M5 · longer bar = better · each row scaled to its own best</text>
   <rect class="s-sf" x="176.0" y="53" width="10" height="10" rx="2"/>
   <text class="legend" x="191.0" y="62">Silverfir (JIT)</text>
   <rect class="s-cl" x="317.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="332.0" y="62">Cranelift 47.0.2</text>
+  <text class="legend" x="332.0" y="62">Cranelift 50.0.1</text>
   <rect class="s-v8" x="458.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="473.0" y="62">V8 / Node 25.9</text>
+  <text class="legend" x="473.0" y="62">V8 / Node 26.13</text>
   <rect class="s-wn" x="599.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="614.0" y="62">Winch 47.0.2</text>
+  <text class="legend" x="614.0" y="62">Winch 50.0.1</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="308"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">mandelbrot</text>
   <text class="unit" x="176" y="94">Kpixel/s</text>
   <text class="name" x="168" y="117" text-anchor="end">Silverfir (JIT)</text>
   <rect class="s-sf" x="176" y="104" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="117">503.3</text>
-  <text class="name" x="168" y="137" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="124" width="451.4" height="18" rx="4"/>
-  <text class="val" x="633.4" y="137">502.6</text>
-  <text class="name" x="168" y="157" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="144" width="268.4" height="18" rx="4"/>
-  <text class="val" x="450.4" y="157">298.9</text>
-  <text class="name" x="168" y="177" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="164" width="165.2" height="18" rx="4"/>
-  <text class="val" x="347.2" y="177">184</text>
+  <text class="val" x="634.0" y="117">563.2</text>
+  <text class="name" x="168" y="137" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="124" width="451.9" height="18" rx="4"/>
+  <text class="val" x="633.9" y="137">563.1</text>
+  <text class="name" x="168" y="157" text-anchor="end">V8 / Node 26.13</text>
+  <rect class="s-v8" x="176" y="144" width="263.9" height="18" rx="4"/>
+  <text class="val" x="445.9" y="157">328.8</text>
+  <text class="name" x="168" y="177" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="164" width="156.2" height="18" rx="4"/>
+  <text class="val" x="338.2" y="177">194.6</text>
   <text class="metric" x="168" y="210" text-anchor="end">c-ray</text>
   <text class="unit" x="176" y="210">Kpixel/s</text>
   <text class="name" x="168" y="233" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="220" width="414.2" height="18" rx="4"/>
-  <text class="val" x="596.2" y="233">9,809</text>
-  <text class="name" x="168" y="253" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="240" width="444.0" height="18" rx="4"/>
-  <text class="val" x="626.0" y="253">10,515</text>
-  <text class="name" x="168" y="273" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-sf" x="176" y="220" width="413.9" height="18" rx="4"/>
+  <text class="val" x="595.9" y="233">11,182</text>
+  <text class="name" x="168" y="253" text-anchor="end">Cranelift 50.0.1</text>
+  <rect class="s-cl" x="176" y="240" width="425.1" height="18" rx="4"/>
+  <text class="val" x="607.1" y="253">11,483</text>
+  <text class="name" x="168" y="273" text-anchor="end">V8 / Node 26.13</text>
   <rect class="s-v8" x="176" y="260" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="273">10,705</text>
-  <text class="name" x="168" y="293" text-anchor="end">Winch 47.0.2</text>
-  <rect class="s-wn" x="176" y="280" width="117.9" height="18" rx="4"/>
-  <text class="val" x="299.9" y="293">2,792</text>
+  <text class="val" x="634.0" y="273">12,210</text>
+  <text class="name" x="168" y="293" text-anchor="end">Winch 50.0.1</text>
+  <rect class="s-wn" x="176" y="280" width="118.2" height="18" rx="4"/>
+  <text class="val" x="300.2" y="293">3,194</text>
 </svg>

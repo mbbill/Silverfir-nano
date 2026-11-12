@@ -1,0 +1,33 @@
+diff --git a/runtimes/v8/Cargo.toml b/runtimes/v8/Cargo.toml
+index 28c279a..a04ad47 100644
+--- a/runtimes/v8/Cargo.toml
++++ b/runtimes/v8/Cargo.toml
+@@ -9,4 +9,4 @@ path = "lib.rs"
+ [dependencies]
+ benchmark-utils = { workspace = true }
+ anyhow = { workspace = true }
+-v8 = "150.1.0"
++v8 = "152.2.0"
+diff --git a/runtimes/wasmi-v2/Cargo.toml b/runtimes/wasmi-v2/Cargo.toml
+index 12f99a1..385fc0b 100644
+--- a/runtimes/wasmi-v2/Cargo.toml
++++ b/runtimes/wasmi-v2/Cargo.toml
+@@ -9,4 +9,4 @@ path = "lib.rs"
+ [dependencies]
+ benchmark-utils = { workspace = true }
+ anyhow = { workspace = true }
+-wasmi = { package = "wasmi", version = "2.0.0-beta.8", default-features = false, features = ["auto-dispatch", "validate"] }
++wasmi = { package = "wasmi", version = "2.0.0", default-features = false, features = ["auto-dispatch", "validate"] }
+diff --git a/runtimes/wasmtime/Cargo.toml b/runtimes/wasmtime/Cargo.toml
+index af3820c..7c9d390 100644
+--- a/runtimes/wasmtime/Cargo.toml
++++ b/runtimes/wasmtime/Cargo.toml
+@@ -11,7 +11,7 @@ benchmark-utils = { workspace = true }
+ anyhow = { workspace = true }
+ 
+ [dependencies.wasmtime]
+-version = "47.0.0"
++version = "50.0.1"
+ default-features = false
+ features = ["runtime", "anyhow"]
+ 
