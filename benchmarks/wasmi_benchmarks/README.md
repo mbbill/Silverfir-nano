@@ -26,7 +26,137 @@ self-contained, so a local copy opens the same way with no network.
 `WASMI_BENCHMARKS.md` is the reference for the suite itself. This file covers
 only how the recorded runs here were produced and what they say.
 
+## Release 0.7.0 standings
+
+The execute corpus, measured 2026-11-12 (UTC) for release 0.7.0 (`d3e4edec`)
+against the engines each tier is judged by, at their current releases:
+Wasmtime 50.0.1, the `v8` crate 152.2.0 and wasmi 2.0.0, with wasm3 and
+`makepad-stitch` 0.1.0 as the suite has them. Every run is wired the way
+`.github/workflows/standings.yml` does it: suite `wasmi-benchmarks@16a3d7c8`,
+this checkout's `sf-nano-core`, `ci/wasmi_adapter.patch`, and then
+`ci/standings_engines.patch`, which moves the three requirements above off
+the suite's July lockfile.
+
+Each figure is the geometric mean, over the cases both engines ran, of that
+engine's time divided by Silverfir-nano's: above 1.00× the other engine is
+slower. Where a run has two draws both are given. The last column counts the
+cases on which Silverfir-nano is the fastest engine of its tier.
+
+**JIT tier** (`silverfir-nano.jit`, `v8`, `wasmtime.cranelift`; 20 cases)
+
+| Run | V8 | Cranelift | Silverfir fastest |
+|---|---:|---:|---:|
+| x64 Linux CI, EPYC 9V74 | 1.18×, 1.17× | 1.32×, 1.31× | 12 of 20, 11 of 20 |
+| x64 Windows CI, EPYC 7763 and EPYC 9V74 | 1.07×, 1.15× | 1.21×, 1.30× | 6 of 20, 13 of 20 |
+| ARM64 macOS CI, Apple M1 (virtual) | 1.30×, 1.29× | 1.31×, 1.35× | 12 of 20, 14 of 20 |
+| Intel Core i9-14900K, bare metal | 1.18× | 1.32× | 15 of 20, 16 of 20 |
+| Apple M5 MacBook Air | 1.25× | 1.30× | 14 of 20 |
+
+**Interpreter tier** (`silverfir-nano.interpreter`, `wasmi-v2.eager.checked`,
+`wasm3.eager`, `stitch`; 20 cases, of which wasm3 and stitch run 19 because
+neither supports the tail call in `fibonacci-tail`)
+
+| Run | wasmi 2.0 | wasm3 | stitch | Silverfir fastest |
+|---|---:|---:|---:|---:|
+| x64 Linux CI | 1.76×, 1.52× | 2.41×, 2.08× | 2.11×, 1.89× | 19 of 19, 18 of 19 |
+| x64 Windows CI | 1.52×, 1.60× | 2.37×, 2.52× | 1.88×, 2.04× | 19 of 19 |
+| ARM64 macOS CI | 1.33×, 1.22× | 1.87×, 1.78× | 2.42×, 2.22× | 19 of 19, 17 of 19 |
+| Intel Core i9-14900K, bare metal | 1.37×, 1.36× | 1.97×, 1.95× | 1.73×, 1.72× | 19 of 19 |
+| Apple M5 MacBook Air | 1.41× | 1.98× | 2.60× | 19 of 19 |
+
+How each run was made:
+
+- **CI** is the manual `standings` workflow as this change leaves it:
+  [JIT run 43158583560](https://github.com/mbbill/Silverfir-nano/actions/runs/43158583560) and
+  [interpreter run 43160487110](https://github.com/mbbill/Silverfir-nano/actions/runs/43160487110),
+  two draws per platform. Linux pins one core with ASLR off; Windows and
+  macOS run unpinned. The interpreter run is red: its measurements completed,
+  and its "Write the standings table" step then failed, because
+  `ci/standings_report.py` requires every engine to have run every case and
+  two of these engines cannot run `fibonacci-tail`. The interpreter figures
+  above were computed from the Criterion estimates that run uploaded.
+- **The 14900K** is bare metal on Ubuntu 26.04.1, pinned with `taskset -c 2`
+  (a performance core) and ASLR off, two draws per tier.
+- **The M5** has no fan, so it ran one case at a time, a burst of 10 to 20 s
+  with 30 s idle after each, in a single pass on mains power.
+
+**Why the current releases.** The suite's own lockfile has Wasmtime 47.0.2,
+`v8` 150.4.0 and wasmi 2.0.0-beta.8. On the 14900K the JIT tier reads the
+same either way: 1.16× and 1.33× with the lockfile against 1.18× and 1.32×
+here. The interpreter tier does not: the released wasmi takes 1.36× the
+interpreter's time where beta.8 took 1.92×, so a ranking against the beta
+overstates the lead over wasmi by about 40%.
+
+The JIT's largest margins hold in every CI and 14900K run: `fibonacci-tail`
+against Cranelift (2.8 to 6.8×), `argon2` against both (1.9 to 4.5×),
+`reverse_complement` against both (1.9 to 2.8×), `sort` against both (1.3 to
+2.0×) and `fibonacci-rec` against Cranelift (1.5 to 2.6×). Its recurring
+losses are small: `prime_sieve` to Cranelift (0.86 to 1.05, behind in 7 of 8
+runs), `fibonacci-rec` to V8 (0.85 to 1.16, 6 of 8) and `tiny_keccak` to
+both (0.81 to 1.09). The Windows draw that landed on an EPYC 7763 is the
+weakest run for the JIT, 1.07× and 1.21× with 6 of 20 cases fastest; the
+other draw on that platform, on an EPYC 9V74, reads like the Linux runs.
+
+This corpus and the repository's own WASI suite do not give the same margin:
+there the same release is level with the same versions of both compilers
+([WASI results](../wasi/README.md)). Quote each with its suite.
+
+Per case on the 14900K, mean of the two draws, bold marking the fastest
+engine:
+
+| case | Silverfir JIT | V8 | Cranelift | V8 / nano | Cranelift / nano |
+|---|---:|---:|---:|---:|---:|
+| spectralnorm/500 | **8.68 ms** | 9.47 ms | 50 ms | 1.09 | 5.76 |
+| argon2/10000 | **16.9 ms** | 55.8 ms | 48.4 ms | 3.30 | 2.87 |
+| fibonacci-tail/1000000 | **200 µs** | 201 µs | 556 µs | 1.00 | 2.77 |
+| reverse_complement/10245 | **6.38 µs** | 14 µs | 12.3 µs | 2.19 | 1.92 |
+| sort/1000000 | **14.5 ms** | 19.4 ms | 25.1 ms | 1.34 | 1.73 |
+| fibonacci-rec/30 | 2.07 ms | **1.9 ms** | 3.11 ms | 0.92 | 1.50 |
+| json_parse/1727205 | **2.74 ms** | 3.61 ms | 3.08 ms | 1.32 | 1.12 |
+| nbody/400 | **4.92 ms** | 6.23 ms | 5 ms | 1.27 | 1.02 |
+| matrix_mul/400 | 23.3 ms | 29.1 ms | **23.1 ms** | 1.25 | 0.99 |
+| prime_sieve/10000000 | 14.4 ms | 16.8 ms | **12.8 ms** | 1.17 | 0.90 |
+| compression/152089 | **6.61 ms** | 7.18 ms | 6.64 ms | 1.09 | 1.00 |
+| tiny_keccak | 9.2 µs | **8.73 µs** | 9.89 µs | 0.95 | 1.08 |
+| regex_redux/10245 | **16.6 µs** | 17.2 µs | 17.1 µs | 1.04 | 1.03 |
+| word_count/152089 | **651 µs** | 667 µs | 665 µs | 1.02 | 1.02 |
+| bulk-ops/5000 | **243 µs** | 248 µs | 243 µs | 1.02 | 1.00 |
+| mandelbrot/150 | **11 ms** | 11.1 ms | 11.1 ms | 1.01 | 1.00 |
+| fibonacci-iter/2000000 | 401 µs | 404 µs | **401 µs** | 1.01 | 1.00 |
+| counter-global/500000 | **100 µs** | 101 µs | 101 µs | 1.00 | 1.01 |
+| counter-local/1000000 | **200 µs** | 201 µs | 201 µs | 1.00 | 1.00 |
+| counter-param/1000000 | **200 µs** | 201 µs | 201 µs | 1.00 | 1.00 |
+| **geomean** |  |  |  | **1.18** | **1.32** |
+
+| case | Silverfir interp | wasmi 2.0 | wasm3 | stitch | wasmi 2.0 / nano | wasm3 / nano | stitch / nano |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fibonacci-rec/30 | **8.42 ms** | 17.7 ms | 23.7 ms | 16.9 ms | 2.11 | 2.81 | 2.01 |
+| regex_redux/10245 | **60.4 µs** | 86.9 µs | 129 µs | 154 µs | 1.44 | 2.13 | 2.56 |
+| counter-param/1000000 | **1.27 ms** | 1.56 ms | 2.97 ms | 2.86 ms | 1.23 | 2.35 | 2.26 |
+| spectralnorm/500 | **48.8 ms** | 59.5 ms | 114 ms | 109 ms | 1.22 | 2.33 | 2.23 |
+| counter-global/500000 | **801 µs** | 1 ms | 1.87 ms | 1 ms | 1.25 | 2.33 | 1.25 |
+| argon2/10000 | **324 ms** | 431 ms | 753 ms | 521 ms | 1.33 | 2.32 | 1.61 |
+| fibonacci-iter/2000000 | **3.26 ms** | 3.95 ms | 7.45 ms | 4.44 ms | 1.21 | 2.29 | 1.36 |
+| reverse_complement/10245 | **87.7 µs** | 117 µs | 199 µs | 147 µs | 1.33 | 2.27 | 1.68 |
+| prime_sieve/10000000 | **59 ms** | 73.7 ms | 133 ms | 129 ms | 1.25 | 2.25 | 2.18 |
+| matrix_mul/400 | **176 ms** | 264 ms | 297 ms | 384 ms | 1.50 | 1.69 | 2.18 |
+| sort/1000000 | **118 ms** | 148 ms | 249 ms | 207 ms | 1.25 | 2.10 | 1.75 |
+| json_parse/1727205 | **18.1 ms** | 22.3 ms | 37.4 ms | 33.1 ms | 1.23 | 2.06 | 1.83 |
+| nbody/400 | **39.1 ms** | 61.6 ms | 65.7 ms | 76.1 ms | 1.57 | 1.68 | 1.94 |
+| tiny_keccak | **61.2 µs** | 87.6 µs | 109 µs | 99.9 µs | 1.43 | 1.78 | 1.63 |
+| fibonacci-tail/1000000 | **3.64 ms** | 6.46 ms | – | – | 1.78 | – | – |
+| mandelbrot/150 | **27.7 ms** | 40 ms | 48.5 ms | 48.5 ms | 1.44 | 1.75 | 1.75 |
+| word_count/152089 | **2.92 ms** | 3.59 ms | 4.9 ms | 4.43 ms | 1.23 | 1.68 | 1.52 |
+| compression/152089 | **17.8 ms** | 23 ms | 29 ms | 29.3 ms | 1.29 | 1.63 | 1.64 |
+| counter-local/1000000 | **1.27 ms** | 1.6 ms | 1.82 ms | 1.4 ms | 1.26 | 1.44 | 1.11 |
+| bulk-ops/5000 | **238 µs** | 302 µs | 273 µs | 284 µs | 1.27 | 1.15 | 1.19 |
+| **geomean** |  |  |  |  | **1.37** | **1.96** | **1.73** |
+
 ## The recorded run
+
+This is the last full-field run, 29 engine configurations, and it predates
+release 0.7.0; the standings above are the current record for the two tiers.
+
 
 Apple M4 (4 P-cores + 6 E-cores), 16 GB, macOS 26.5.2, `rustc` 1.97.1 stable.
 Silverfir-nano `1850f2f9` (main), wasmi-benchmarks `ee13941`, bench profile

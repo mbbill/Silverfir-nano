@@ -38,10 +38,10 @@ optimizing JIT and an interpreter behind one API
 1. **Fast, JIT and interpreter** — register-allocated, region-optimized native
    code. On the wasmi-benchmarks corpus the 0.7.0 JIT leads V8 and Wasmtime's
    fully-optimizing Cranelift on x64 Linux, x64 Windows and ARM64 macOS: they
-   take a geomean 1.15–1.35× and 1.26–1.34× of its time. On this repository's
-   WASI suite it is level with both. The interpreter is the fastest on every
-   case of the corpus and on every dispatch-sensitive WASI benchmark, a median
-   1.3–1.4× ahead of wasmi 2.0 and 1.8× ahead of wasm3
+   take a geomean 1.07–1.30× and 1.21–1.35× of its time. On this repository's
+   WASI suite it is level with both. The interpreter is the fastest of its
+   class on both suites: on the corpus wasmi 2.0 takes 1.2–1.8× its time and
+   wasm3 1.8–2.5×
    ([WASI results](benchmarks/wasi/README.md),
    [corpus standings](benchmarks/wasmi_benchmarks/README.md)).
 2. **Small** — pick an engine and pay for what you use. Measured on real
