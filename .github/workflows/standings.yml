@@ -126,6 +126,12 @@ jobs:
           (cd wasmi-benchmarks && cargo update --package sf-nano-core)
           # This revision's explicit adapter API migration (see ci/README.md).
           git -C wasmi-benchmarks apply "$(pwd)/ci/wasmi_adapter.patch"
+          # Rank against the other engines' current releases rather than
+          # the versions the suite's lockfile recorded in July. The patch
+          # moves the requirements for Wasmtime, the v8 crate and wasmi;
+          # the workspace update then re-resolves what they changed.
+          git -C wasmi-benchmarks apply "$(pwd)/ci/standings_engines.patch"
+          (cd wasmi-benchmarks && cargo update --workspace)
 
       - name: Verify the patched dependency resolves locally
         working-directory: wasmi-benchmarks
@@ -210,6 +216,7 @@ jobs:
             --note "cpu: ${CPU_MODEL}" \
             --note "rustc: $(rustc -V)" \
             --note "suite: wasmi-benchmarks@16a3d7c8" \
+            --note "engines: ci/standings_engines.patch over the suite lockfile" \
             --note "pinning: ${pinning}"
           cat standings/standings.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -253,8 +260,8 @@ jobs:
       run:
         shell: bash
     env:
-      # Prebuilt release; matches the version family in RESULTS.md.
-      WASMTIME_VERSION: v47.0.2
+      # Prebuilt release; the version RESULTS.md was measured against.
+      WASMTIME_VERSION: v50.0.1
     steps:
       - name: Configure Git for Windows checkouts
         if: runner.os == 'Windows'
@@ -305,7 +312,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "24.7.0"
+          node-version: "26.13.1"
 
       - name: Record runner CPU
         id: cpu
