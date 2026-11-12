@@ -95,12 +95,12 @@ HERO_Y0 = 72          # first tier caption, clear of the title + subtitle
 # 'column' is the header text this series has in the RESULTS.md tables.
 SERIES = [
     ('sf', 'Silverfir (JIT)',    'SF (JIT)',    '#7952d4', '#8b5cf6'),
-    ('cl', 'Cranelift 47.0.2',   'Cranelift',   '#eb6834', '#d95926'),
-    ('v8', 'V8 / Node 25.9',     'V8',          '#1baf7a', '#199e70'),
-    ('wn', 'Winch 47.0.2',       'Winch',       '#b02a8f', '#c13a9d'),
+    ('cl', 'Cranelift 50.0.1',   'Cranelift',   '#eb6834', '#d95926'),
+    ('v8', 'V8 / Node 26.13',    'V8',          '#1baf7a', '#199e70'),
+    ('wn', 'Winch 50.0.1',       'Winch',       '#b02a8f', '#c13a9d'),
     ('si', 'Silverfir (interp)', 'SF (interp)', '#a855f7', '#9085e9'),
     ('w3', 'wasm3',              'wasm3',       '#eda100', '#c98500'),
-    ('wi', 'wasmi 2.0.0-beta.7', 'wasmi',       '#4a9ede', '#3987e5'),
+    ('wi', 'wasmi 2.0.0',        'wasmi',       '#4a9ede', '#3987e5'),
 ]
 # Each entry produces its OWN chart file: comparing a JIT to an interpreter on
 # one scale is ~7x, which crushes the interpreter bars into slivers. Split by
@@ -125,7 +125,7 @@ HERO_TIERS = [
 ]
 COREMARK_LABEL = {
     'si': 'Silverfir-nano',
-    'wi': 'Wasmi 2.0.0-beta.10',
+    'wi': 'Wasmi 2.0.0',
     'w3': 'Wasm3 0.9.0',
 }
 LEGEND_LABEL = {'wi': 'wasmi 2.0'}
@@ -333,7 +333,7 @@ def make_hero(bench, filename, title, subtitle):
 #  them so the charts and the tables can never disagree. Each chart is a
 #  table wrapped in markers:
 #
-#    <!-- chart file="benchmark_x.svg" title="..." [note="Row Name=text"] -->
+#    <!-- chart file="benchmark_x.svg" title="..." [machine="..."] [note="Row Name=text"] -->
 #    | Benchmark | SF (JIT) | ... |
 #    |---|---:|...|
 #    | CoreMark (score) | 44,958 | ... |
@@ -353,7 +353,10 @@ ASSETS = os.path.join('..', '..', 'assets')
 CHART_RE = re.compile(r'<!--\s*chart\s+(?P<attrs>.*?)-->\n(?P<table>.*?)<!--\s*endchart\s*-->',
                       re.S)
 ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
-SUB = 'Apple M4 · longer bar = better · each row scaled to its own best'
+# A chart names the machine its table was measured on with machine="...";
+# a table without one is taken to be the default machine's.
+MACHINE = 'Apple M5'
+SUB = '{machine} · longer bar = better · each row scaled to its own best'
 
 
 def parse_number(cell):
@@ -390,7 +393,8 @@ def parse_charts(path):
             if name in notes:
                 bench['note'] = notes[name]
             benches.append(bench)
-        charts.append((attrs['title'], attrs['file'], benches))
+        charts.append((attrs['title'], attrs['file'], benches,
+                       attrs.get('machine', MACHINE)))
     if not charts:
         raise SystemExit(f'{path}: no <!-- chart ... --> blocks found')
     return charts
@@ -399,17 +403,17 @@ def parse_charts(path):
 if __name__ == '__main__':
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     charts = parse_charts(RESULTS)
-    for title, filename, benches in charts:
+    for title, filename, benches, machine in charts:
         stem, ext = os.path.splitext(filename)
         for suffix, group_title, keys in GROUPS:
-            make_svg(f'{title} — {group_title}', SUB, benches,
+            make_svg(f'{title} — {group_title}', SUB.format(machine=machine), benches,
                      os.path.join(ASSETS, f'{stem}{suffix}{ext}'), keys)
 
-    hero = next((b for _t, _f, benches in charts for b in benches
+    hero = next((b for _t, _f, benches, _m in charts for b in benches
                  if b['name'] == HERO_BENCH), None)
     if hero is None:
         raise SystemExit(f'{RESULTS}: no "{HERO_BENCH}" row in any chart table; '
                          f'the README hero has nothing to draw')
     make_hero(hero, os.path.join(ASSETS, HERO_FILE),
               f'{HERO_BENCH} — Nano vs Wasmi vs Wasm3',
-              f'Apple M4 MacBook Air · CoreMark {hero["unit"]} · higher is better')
+              f'{MACHINE} MacBook Air · CoreMark {hero["unit"]} · higher is better')

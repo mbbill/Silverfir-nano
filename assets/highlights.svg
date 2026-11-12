@@ -39,7 +39,7 @@
   <circle class="knot" cx="272.01" cy="126.66" r="3.5"/>
 
   <text class="name" x="350" y="38" text-anchor="middle">Fast</text>
-  <text class="fact" x="350" y="56" text-anchor="middle">Cranelift and V8 parity on Apple M4</text>
+  <text class="fact" x="350" y="56" text-anchor="middle">on par or ahead of V8 and Cranelift</text>
 
   <text class="name" x="446" y="118">Small</text>
   <text class="fact" x="446" y="136">337 KiB interpreter (July 2026)</text>

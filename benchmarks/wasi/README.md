@@ -1,23 +1,24 @@
 # WASI Benchmarks
 
-Seven WebAssembly runtimes on an Apple M4, measured 2026-07-24: Silverfir's JIT
-and interpreter, Wasmtime Cranelift 47.0.2, V8 TurboFan (Node.js 25.9), Wasmtime
-Winch 47.0.2, wasm3, and wasmi 2.0.0-beta.7. Winch was added and the Silverfir
-interpreter re-measured on 2026-07-25; wasmi moved from 1.1.0 to 2.0.0-beta.7
-on 2026-07-26. The interpreter CoreMark row was refreshed on 2026-08-31 with
-the current reported scores; its wasmi entry uses 2.0.0-beta.10.
+Seven WebAssembly runtimes, measured 2026-11-12 (UTC) on an Apple M5 MacBook
+Air and an Intel Core i9-14900K: Silverfir-nano 0.7.0's JIT and interpreter,
+Wasmtime Cranelift 50.0.1, V8 TurboFan (Node.js 26.13.1), Wasmtime Winch
+50.0.1, wasm3 0.9.0, and wasmi 2.0.0.
 
 Every metric is a **rate — higher is better**. The benchmarks self-time to a
 wall-clock target (2 s by default) and report work per second, so a regression
 suite costs about the same on any engine and the numbers stay comparable across
 a 20× spread in speed. The harness invokes CoreMark's explicit non-standard
-regression mode for this bounded run. The refreshed interpreter CoreMark row is
-the sole exception and shows the current standalone scores. CoreMark's source
-and bare command line remain compatible with upstream EEMBC CoreMark: without
-the option, its own calibration runs the measured interval for at least 10
-seconds and emits the official result format.
+regression mode for this bounded run, in every cell. CoreMark's source and bare
+command line remain compatible with upstream EEMBC CoreMark: without the
+option, its own calibration runs the measured interval for at least 10 seconds
+and emits the official result format.
 
-The compiled and interpreted engines get **separate charts**: a compiler is ~7×
+Each cell is the mean of interleaved rounds: two on the M5, with 75 s of
+cooling after each engine's sweep because that machine has no fan, and three on
+the 14900K, pinned to one performance core with ASLR off.
+
+The compiled and interpreted engines get **separate charts**: a compiler is ~6×
 an interpreter here, so putting both on one scale would crush the interpreter
 bars into slivers and hide the comparison that matters for each class. Winch is
 wasmtime's baseline (single-pass) compiler, so it rides the compiled chart but
@@ -25,55 +26,108 @@ lands about halfway to the interpreters — that gap *is* the optimizing tier.
 
 **[Full tables, method, and caveats → RESULTS.md](RESULTS.md)**
 
-## Integer / Control Flow
+## Apple M5
+
+### Integer / Control Flow
 
 ![integer — compiled](../../assets/benchmark_integer.svg)
 
 ![integer — interpreters](../../assets/benchmark_integer_interp.svg)
 
-## Lua Interpreter
+### Lua Interpreter
 
 ![lua — compiled](../../assets/benchmark_lua.svg)
 
 ![lua — interpreters](../../assets/benchmark_lua_interp.svg)
 
-## Floating Point
+### Floating Point
 
 ![fp — compiled](../../assets/benchmark_fp.svg)
 
 ![fp — interpreters](../../assets/benchmark_fp_interp.svg)
 
-## Memory Bound (STREAM)
+### Memory Bound (STREAM)
 
 ![memory — compiled](../../assets/benchmark_memory.svg)
 
 ![memory — interpreters](../../assets/benchmark_memory_interp.svg)
 
-STREAM Copy is the one row that no longer measures the engine: the current clang
-lowers the copy loop to a bulk `memory.copy`, so every runtime ends up in the
-host's `memcpy`. It is kept because it is still a fair comparison of each
-engine's bulk-copy path — see the footnote in
-[RESULTS.md](RESULTS.md#memory-bound).
+### Call Overhead
+
+![calls — compiled](../../assets/benchmark_calls.svg)
+
+![calls — interpreters](../../assets/benchmark_calls_interp.svg)
+
+STREAM Copy is the one row that does not measure the engine's generated code:
+the current clang lowers the copy loop to a bulk `memory.copy`, so every
+runtime ends up in its bulk-copy path. It is kept because it is a fair
+comparison of that path, and on the M5 it shows the Silverfir interpreter's
+copy handler a quarter behind the other engines — see the footnote in
+[RESULTS.md](RESULTS.md#apple-m5).
+
+The funcref rows are call micro-benchmarks: a direct call through a function
+reference, and the same call through an exported table.
+
+## Intel Core i9-14900K
+
+### Integer / Control Flow
+
+![integer — compiled](../../assets/benchmark_integer_x64.svg)
+
+![integer — interpreters](../../assets/benchmark_integer_x64_interp.svg)
+
+### Lua Interpreter
+
+![lua — compiled](../../assets/benchmark_lua_x64.svg)
+
+![lua — interpreters](../../assets/benchmark_lua_x64_interp.svg)
+
+### Floating Point
+
+![fp — compiled](../../assets/benchmark_fp_x64.svg)
+
+![fp — interpreters](../../assets/benchmark_fp_x64_interp.svg)
+
+### Memory Bound (STREAM)
+
+![memory — compiled](../../assets/benchmark_memory_x64.svg)
+
+![memory — interpreters](../../assets/benchmark_memory_x64_interp.svg)
+
+### Call Overhead
+
+![calls — compiled](../../assets/benchmark_calls_x64.svg)
+
+![calls — interpreters](../../assets/benchmark_calls_x64_interp.svg)
 
 ## Where Silverfir stands
 
-Against the other **optimizing compilers** it is at parity: best-of-four over
-the 15 metrics is Cranelift 9, Silverfir 4, V8 2, Winch 0. It leads on SHA-256
-(+16%) and bzip2 (+14%), ties CoreMark and mandelbrot, and trails Cranelift by
-6–9% on the Lua benchmarks. It beats V8 clearly on numeric code (mandelbrot
-1.68×, STREAM Scale 1.96×).
+Against the other **optimizing compilers** the JIT is level on this suite. It
+is a little ahead of Cranelift 50: a geomean 1.06× on the M5 and 1.04× on the
+14900K over the 14 application metrics, ahead on 14 and 9 of all 17. It is
+level with V8 14.6, at 1.03× and 0.98×, and V8 takes the most rows on both
+machines: best-of-four over the 17 metrics is V8 10, Silverfir 6, Cranelift 1
+on the M5 and V8 13, Silverfir 2, Cranelift 1, Winch 1 on the 14900K. CoreMark
+reads Silverfir 52,125, Cranelift 51,455, V8 50,109 on the M5 and V8 42,616,
+Silverfir 40,858, Cranelift 36,416 on the 14900K. It beats V8 clearly on
+mandelbrot (1.71×, 1.33×) and Lua fib (1.5×), and trails it clearly on the
+exported-table call (V8 is 3.6× and 4.6× ahead) and the STREAM arithmetic
+kernels.
 
-**Winch** takes no row, as expected of a baseline compiler: a median 0.47× of
-Cranelift and 0.46× of Silverfir's JIT, over a wide 0.27–0.98× spread. It is
-still a median 2.93× of Silverfir's interpreter — except on mandelbrot, where
-that lead narrows to 1.11×.
+On the wasmi-benchmarks corpus the same release leads both compilers on three
+platforms; [those standings](../wasmi_benchmarks/README.md) are the other half
+of the picture.
 
-Its **interpreter** wins every dispatch-sensitive benchmark — 14 of 15 metrics —
-by 1.16–2.01× over wasm3 and 1.07–2.41× over wasmi 2.0. The two rivals
-trade places by benchmark, so the margin over whichever is faster on each row is
-**1.07–1.69×**, median ~1.39×: wasmi 2.0 is the closer one on CoreMark, the
-STREAM arithmetic kernels and Lua; wasm3 is closer on bzip2, LZ4 and the float
-pair.
+**Winch** takes no row but the `memcpy` tie, as expected of a baseline
+compiler: a median 0.40× of Silverfir's JIT on the M5 and 0.51× on the 14900K,
+and a median 2.5× and 2.7× of Silverfir's interpreter.
+
+Its **interpreter** is the fastest on every dispatch-sensitive benchmark on
+both machines: 16 of 17 metrics on the M5, where it loses only the
+`memory.copy` row, and all 17 on the 14900K. Against wasmi 2.0, the closer
+rival on nearly every row, the margin is 1.04–2.77× on the M5 (median 1.34×)
+and 1.12–2.33× on the 14900K (median 1.40×); against wasm3 the medians are
+1.80× and 1.78×. CoreMark reads 1.54× wasmi and 1.92× wasm3 on the M5.
 
 ## Running them
 
@@ -102,9 +156,11 @@ draws is written to [`assets/`](../../assets) at the repo root, the one place
 this project keeps rendered images; the pages here and the top-level README
 both link into it.
 
-Nine files come out of a run: the eight above, plus
+Twenty-one files come out of a run: the twenty above, five charts for each
+machine with each split by engine class, plus
 [`assets/coremark.svg`](../../assets/coremark.svg), the summary the top-level
-README leads with. That one compares the three interpreters on a single shared
-scale and orders them fastest-first. The refreshed CoreMark row in the larger
+README leads with. A table names its machine with `machine="..."` in its
+chart marker, and the charts take their subtitle from it. That one compares the three interpreters on a single shared
+scale and orders them fastest-first. The CoreMark row in the larger
 interpreter chart uses the same ordering; its other rows retain their stable
 runtime order.

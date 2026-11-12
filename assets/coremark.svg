@@ -40,17 +40,17 @@
   </style>
   <rect class="surface" width="760" height="190" rx="8" ry="8" stroke-width="1"/>
   <text class="title" x="380" y="30" text-anchor="middle">CoreMark — Nano vs Wasmi vs Wasm3</text>
-  <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 MacBook Air · CoreMark score · higher is better</text>
+  <text class="sub" x="380" y="47" text-anchor="middle">Apple M5 MacBook Air · CoreMark score · higher is better</text>
   <line class="axis" x1="176" y1="66" x2="176" y2="178"/>
   <text class="tier" x="168" y="86" text-anchor="end">Interpreters</text>
   <line class="rule" x1="176" y1="82" x2="740" y2="82"/>
   <text class="name" x="168" y="109.5" text-anchor="end">Silverfir-nano</text>
   <rect class="s-si" x="176" y="94" width="452.0" height="22" rx="5"/>
-  <text class="val" x="636.0" y="109.5">8,586.4</text>
-  <text class="name" x="168" y="137.5" text-anchor="end">Wasmi 2.0.0-beta.10</text>
-  <rect class="s-wi" x="176" y="122" width="288.6" height="22" rx="5"/>
-  <text class="val" x="472.6" y="137.5">5,482</text>
+  <text class="val" x="636.0" y="109.5">10,021</text>
+  <text class="name" x="168" y="137.5" text-anchor="end">Wasmi 2.0.0</text>
+  <rect class="s-wi" x="176" y="122" width="293.3" height="22" rx="5"/>
+  <text class="val" x="477.3" y="137.5">6,502</text>
   <text class="name" x="168" y="165.5" text-anchor="end">Wasm3 0.9.0</text>
-  <rect class="s-w3" x="176" y="150" width="224.7" height="22" rx="5"/>
-  <text class="val" x="408.7" y="165.5">4,268</text>
+  <rect class="s-w3" x="176" y="150" width="235.0" height="22" rx="5"/>
+  <text class="val" x="419.0" y="165.5">5,209</text>
 </svg>

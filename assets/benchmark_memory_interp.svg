@@ -40,58 +40,58 @@
   </style>
   <rect class="surface" width="760" height="470" rx="8" ry="8" stroke-width="1"/>
   <text class="title" x="380" y="30" text-anchor="middle">Memory-Bound Benchmarks (STREAM) — Interpreters</text>
-  <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 · longer bar = better · each row scaled to its own best</text>
+  <text class="sub" x="380" y="47" text-anchor="middle">Apple M5 · longer bar = better · each row scaled to its own best</text>
   <rect class="s-si" x="176.0" y="53" width="10" height="10" rx="2"/>
   <text class="legend" x="191.0" y="62">Silverfir (interp)</text>
   <rect class="s-w3" x="364.0" y="53" width="10" height="10" rx="2"/>
   <text class="legend" x="379.0" y="62">wasm3</text>
   <rect class="s-wi" x="552.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="567.0" y="62">wasmi 2.0.0-beta.7</text>
+  <text class="legend" x="567.0" y="62">wasmi 2.0</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="460"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">STREAM Copy</text>
   <text class="unit" x="176" y="94">MB/s</text>
   <text class="note" x="740" y="94" text-anchor="end">lowered to memory.copy — measures the engine's bulk copy, not dispatch</text>
   <text class="name" x="168" y="117" text-anchor="end">Silverfir (interp)</text>
-  <rect class="s-si" x="176" y="104" width="440.9" height="18" rx="4"/>
-  <text class="val" x="622.9" y="117">86,816</text>
+  <rect class="s-si" x="176" y="104" width="341.3" height="18" rx="4"/>
+  <text class="val" x="523.3" y="117">124,644</text>
   <text class="name" x="168" y="137" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="124" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="137">88,992</text>
-  <text class="name" x="168" y="157" text-anchor="end">wasmi 2.0.0-beta.7</text>
-  <rect class="s-wi" x="176" y="144" width="443.1" height="18" rx="4"/>
-  <text class="val" x="625.1" y="157">87,234</text>
+  <rect class="s-w3" x="176" y="124" width="451.3" height="18" rx="4"/>
+  <text class="val" x="633.3" y="137">164,821</text>
+  <text class="name" x="168" y="157" text-anchor="end">wasmi 2.0.0</text>
+  <rect class="s-wi" x="176" y="144" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="157">165,092</text>
   <text class="metric" x="168" y="190" text-anchor="end">STREAM Scale</text>
   <text class="unit" x="176" y="190">MB/s</text>
   <text class="name" x="168" y="213" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="200" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="213">8,646</text>
+  <text class="val" x="634.0" y="213">11,000</text>
   <text class="name" x="168" y="233" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="220" width="330.8" height="18" rx="4"/>
-  <text class="val" x="512.8" y="233">6,328</text>
-  <text class="name" x="168" y="253" text-anchor="end">wasmi 2.0.0-beta.7</text>
-  <rect class="s-wi" x="176" y="240" width="393.3" height="18" rx="4"/>
-  <text class="val" x="575.3" y="253">7,523</text>
+  <rect class="s-w3" x="176" y="220" width="283.2" height="18" rx="4"/>
+  <text class="val" x="465.2" y="233">6,891</text>
+  <text class="name" x="168" y="253" text-anchor="end">wasmi 2.0.0</text>
+  <rect class="s-wi" x="176" y="240" width="389.9" height="18" rx="4"/>
+  <text class="val" x="571.9" y="253">9,488</text>
   <text class="metric" x="168" y="286" text-anchor="end">STREAM Add</text>
   <text class="unit" x="176" y="286">MB/s</text>
   <text class="name" x="168" y="309" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="296" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="309">7,167</text>
+  <text class="val" x="634.0" y="309">12,076</text>
   <text class="name" x="168" y="329" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="316" width="390.3" height="18" rx="4"/>
-  <text class="val" x="572.3" y="329">6,188</text>
-  <text class="name" x="168" y="349" text-anchor="end">wasmi 2.0.0-beta.7</text>
-  <rect class="s-wi" x="176" y="336" width="423.1" height="18" rx="4"/>
-  <text class="val" x="605.1" y="349">6,709</text>
+  <rect class="s-w3" x="176" y="316" width="253.3" height="18" rx="4"/>
+  <text class="val" x="435.3" y="329">6,767</text>
+  <text class="name" x="168" y="349" text-anchor="end">wasmi 2.0.0</text>
+  <rect class="s-wi" x="176" y="336" width="338.7" height="18" rx="4"/>
+  <text class="val" x="520.7" y="349">9,048</text>
   <text class="metric" x="168" y="382" text-anchor="end">STREAM Triad</text>
   <text class="unit" x="176" y="382">MB/s</text>
   <text class="name" x="168" y="405" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="392" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="405">7,084</text>
+  <text class="val" x="634.0" y="405">10,898</text>
   <text class="name" x="168" y="425" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="412" width="357.3" height="18" rx="4"/>
-  <text class="val" x="539.3" y="425">5,600</text>
-  <text class="name" x="168" y="445" text-anchor="end">wasmi 2.0.0-beta.7</text>
-  <rect class="s-wi" x="176" y="432" width="402.8" height="18" rx="4"/>
-  <text class="val" x="584.8" y="445">6,313</text>
+  <rect class="s-w3" x="176" y="412" width="254.0" height="18" rx="4"/>
+  <text class="val" x="436.0" y="425">6,123</text>
+  <text class="name" x="168" y="445" text-anchor="end">wasmi 2.0.0</text>
+  <rect class="s-wi" x="176" y="432" width="338.7" height="18" rx="4"/>
+  <text class="val" x="520.7" y="445">8,166</text>
 </svg>
